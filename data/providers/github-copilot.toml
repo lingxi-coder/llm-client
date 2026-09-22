@@ -1,0 +1,868 @@
+# Reached with a subscription token rather than an API key.
+provider_id = "github-copilot"
+base_url = "https://api.githubcopilot.com"
+protocol = "open_ai_chat"
+auth = "copilot_bearer"
+credential_env = "GITHUB_COPILOT_TOKEN"
+billing_mode = "subscription"
+
+display_name = "GitHub Copilot"
+description = "Models included with a Copilot subscription."
+console_url = "https://github.com/settings"
+api_key_url = "https://github.com/settings/tokens"
+credential_hint = "gho_"
+
+[[model]]
+id = "claude-fable-5"
+name = "Claude Fable 5"
+description = "Claude model for creative writing, analysis, and controlled agent workflows"
+family = "claude-fable"
+knowledge_cutoff = "2026-01-31"
+release_date = "2026-06-09"
+last_updated = "2026-06-09"
+context_window = 1000000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 10
+output_per_million = 50
+cache_read_per_million = 1
+cache_write_per_million = 12.5
+source = "models.dev"
+
+[[model]]
+id = "claude-haiku-4.5"
+name = "Claude Haiku 4.5 (latest)"
+description = "Fast Claude lane for lightweight agents, office tasks, and responsive chat"
+family = "claude-haiku"
+knowledge_cutoff = "2025-02-28"
+release_date = "2025-10-15"
+last_updated = "2025-10-15"
+context_window = 200000
+max_input = 136000
+max_output = 64000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1
+output_per_million = 5
+cache_read_per_million = 0.1
+cache_write_per_million = 1.25
+source = "models.dev"
+
+[[model]]
+id = "claude-opus-4.5"
+name = "Claude Opus 4.5 (latest)"
+description = "Flagship Claude model for deep reasoning, coding, and long-horizon agents"
+family = "claude-opus"
+knowledge_cutoff = "2025-05"
+release_date = "2025-11-24"
+last_updated = "2025-11-24"
+context_window = 200000
+max_input = 168000
+max_output = 32000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 25
+cache_read_per_million = 0.5
+cache_write_per_million = 6.25
+source = "models.dev"
+
+[[model]]
+id = "claude-opus-4.6"
+name = "Claude Opus 4.6"
+description = "High-end Claude for difficult coding, planning, and slower expert reasoning"
+family = "claude-opus"
+knowledge_cutoff = "2025-05-31"
+release_date = "2026-02-05"
+last_updated = "2026-03-13"
+context_window = 200000
+max_input = 168000
+max_output = 32000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 25
+cache_read_per_million = 0.5
+cache_write_per_million = 6.25
+source = "models.dev"
+
+[[model]]
+id = "claude-opus-4.7"
+name = "Claude Opus 4.7"
+description = "Stronger Opus tier for advanced software work and high-stakes reasoning"
+family = "claude-opus"
+knowledge_cutoff = "2026-01-31"
+release_date = "2026-04-16"
+last_updated = "2026-04-16"
+context_window = 200000
+max_input = 168000
+max_output = 32000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 25
+cache_read_per_million = 0.5
+cache_write_per_million = 6.25
+source = "models.dev"
+
+[[model]]
+id = "claude-opus-4.8"
+name = "Claude Opus 4.8"
+description = "Top Claude Opus tier for the hardest reasoning, coding, and long-horizon agents"
+family = "claude-opus"
+knowledge_cutoff = "2026-01"
+release_date = "2026-05-28"
+last_updated = "2026-05-28"
+context_window = 200000
+max_input = 168000
+max_output = 64000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 25
+cache_read_per_million = 0.5
+cache_write_per_million = 6.25
+source = "models.dev"
+
+[[model]]
+id = "claude-opus-5"
+name = "Claude Opus 5"
+description = "Strongest Claude Opus model for coding, agents, and professional work"
+family = "claude-opus"
+knowledge_cutoff = "2026-05"
+release_date = "2026-07-24"
+last_updated = "2026-07-24"
+context_window = 1000000
+max_input = 936000
+max_output = 64000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 25
+cache_read_per_million = 0.5
+cache_write_per_million = 6.25
+source = "models.dev"
+
+[[model]]
+id = "claude-sonnet-4"
+name = "Claude Sonnet 4 (latest)"
+description = "Balanced Claude model for coding, analysis, agent workflows, and cost control"
+family = "claude-sonnet"
+knowledge_cutoff = "2025-03-31"
+release_date = "2025-05-22"
+last_updated = "2025-05-22"
+context_window = 216000
+max_input = 128000
+max_output = 16000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 3
+output_per_million = 15
+cache_read_per_million = 0.3
+cache_write_per_million = 3.75
+source = "models.dev"
+
+[[model]]
+id = "claude-sonnet-4.5"
+name = "Claude Sonnet 4.5 (latest)"
+description = "Balanced Claude model for coding, analysis, agent workflows, and cost control"
+family = "claude-sonnet"
+knowledge_cutoff = "2025-07-31"
+release_date = "2025-09-29"
+last_updated = "2025-09-29"
+context_window = 200000
+max_input = 168000
+max_output = 32000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 3
+output_per_million = 15
+cache_read_per_million = 0.3
+cache_write_per_million = 3.75
+source = "models.dev"
+
+[[model]]
+id = "claude-sonnet-4.6"
+name = "Claude Sonnet 4.6"
+description = "Claude workhorse for coding agents, careful analysis, and production cost control"
+family = "claude-sonnet"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-02-17"
+last_updated = "2026-03-13"
+context_window = 200000
+max_input = 168000
+max_output = 32000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 3
+output_per_million = 15
+cache_read_per_million = 0.3
+cache_write_per_million = 3.75
+source = "models.dev"
+
+[[model]]
+id = "claude-sonnet-5"
+name = "Claude Sonnet 5"
+description = "Everyday Claude agent model for coding, planning, browsing, and general work"
+family = "claude-sonnet"
+knowledge_cutoff = "2026-01-31"
+release_date = "2026-06-30"
+last_updated = "2026-06-30"
+context_window = 1000000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 10
+cache_read_per_million = 0.2
+cache_write_per_million = 2.5
+source = "models.dev"
+
+[[model]]
+id = "gemini-3.1-pro-preview"
+name = "Gemini 3.1 Pro Preview"
+description = "Reasoning-first Gemini preview for agentic coding and complex problem solving"
+family = "gemini-pro"
+knowledge_cutoff = "2025-01"
+release_date = "2026-02-19"
+last_updated = "2026-02-19"
+context_window = 1000000
+max_input = 936000
+max_output = 64000
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 12
+cache_read_per_million = 0.2
+source = "models.dev"
+
+[[model]]
+id = "gemini-3.5-flash"
+name = "Gemini 3.5 Flash"
+description = "Fast Gemini model balancing multimodal reasoning, tool use, and cost"
+family = "gemini-flash"
+knowledge_cutoff = "2025-01"
+release_date = "2026-05-19"
+last_updated = "2026-05-19"
+context_window = 200000
+max_input = 128000
+max_output = 64000
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.5
+output_per_million = 9
+cache_read_per_million = 0.15
+source = "models.dev"
+
+[[model]]
+id = "gemini-3.6-flash"
+name = "Gemini 3.6 Flash"
+description = "Fast Gemini model balancing multimodal reasoning, tool use, and cost"
+family = "gemini-flash"
+knowledge_cutoff = "2026-03"
+release_date = "2026-07-21"
+last_updated = "2026-07-21"
+context_window = 1000000
+max_input = 936000
+max_output = 64000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 3.75
+cache_read_per_million = 0.075
+source = "models.dev"
+
+[[model]]
+id = "gemini-3.7-flash"
+name = "Gemini 3.7 Flash"
+description = "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning"
+family = "gemini-flash"
+knowledge_cutoff = "2026-03"
+release_date = "2026-08-13"
+last_updated = "2026-08-13"
+context_window = 1000000
+max_input = 936000
+max_output = 64000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 3.75
+cache_read_per_million = 0.075
+source = "models.dev"
+
+[[model]]
+id = "gpt-4.1"
+name = "GPT-4.1"
+description = "Long-lived GPT workhorse for coding, instruction following, and production apps"
+family = "gpt"
+knowledge_cutoff = "2024-04"
+release_date = "2025-04-14"
+last_updated = "2025-04-14"
+context_window = 128000
+max_input = 128000
+max_output = 16384
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 8
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-5-mini"
+name = "GPT-5 Mini"
+description = "Small GPT-5 for responsive agents, coding help, and everyday automation"
+family = "gpt-mini"
+knowledge_cutoff = "2024-05-30"
+release_date = "2025-08-07"
+last_updated = "2025-08-07"
+context_window = 264000
+max_input = 128000
+max_output = 64000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.25
+output_per_million = 2
+cache_read_per_million = 0.025
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.2"
+name = "GPT-5.2"
+description = "Reliable GPT generation for broad coding, writing, and tool-assisted product work"
+family = "gpt"
+knowledge_cutoff = "2025-08-31"
+release_date = "2025-12-11"
+last_updated = "2025-12-11"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.2-codex"
+name = "GPT-5.2 Codex"
+description = "Code-specialist GPT for repository edits, reviews, and long-running software agents"
+family = "gpt-codex"
+knowledge_cutoff = "2025-08-31"
+release_date = "2025-12-11"
+last_updated = "2025-12-11"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.3-codex"
+name = "GPT-5.3 Codex"
+description = "Coding-optimized GPT model for repository edits, reviews, and agentic software work"
+family = "gpt-codex"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-02-05"
+last_updated = "2026-02-05"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4"
+name = "GPT-5.4"
+description = "Agent-ready GPT for coding and computer-use workflows at a lower cost"
+family = "gpt"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-05"
+last_updated = "2026-03-05"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2.5
+output_per_million = 15
+cache_read_per_million = 0.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4-mini"
+name = "GPT-5.4 mini"
+description = "Strong small GPT for coding subagents, quick tool use, and high-volume work"
+family = "gpt-mini"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-17"
+last_updated = "2026-03-17"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 4.5
+cache_read_per_million = 0.075
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4-nano"
+name = "GPT-5.4 nano"
+description = "Cheapest GPT-5.4 lane for simple routing, extraction, and bulk automation"
+family = "gpt-nano"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-17"
+last_updated = "2026-03-17"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.2
+output_per_million = 1.25
+cache_read_per_million = 0.02
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.5"
+name = "GPT-5.5"
+description = "Default frontier GPT for coding, computer use, research, and knowledge work"
+family = "gpt"
+knowledge_cutoff = "2025-12-01"
+release_date = "2026-04-23"
+last_updated = "2026-04-23"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 30
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6-luna"
+name = "GPT-5.6 Luna"
+description = "Cost-efficient GPT-5.6 model for fast, high-volume workloads"
+family = "gpt-luna"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.2
+output_per_million = 1.2
+cache_read_per_million = 0.02
+cache_write_per_million = 0.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6-sol"
+name = "GPT-5.6 Sol"
+description = "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows"
+family = "gpt-sol"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 10
+cache_read_per_million = 0.2
+cache_write_per_million = 2.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6-terra"
+name = "GPT-5.6 Terra"
+description = "Balanced GPT-5.6 model for capable, cost-efficient everyday work"
+family = "gpt-terra"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 12
+cache_read_per_million = 0.2
+cache_write_per_million = 2.5
+source = "models.dev"
+
+[[model]]
+id = "grok-4.5"
+name = "Grok 4.5"
+description = "xAI's Grok model for chat, coding, agentic tools, and lower hallucination risk"
+family = "grok"
+release_date = "2026-07-08"
+last_updated = "2026-07-08"
+context_window = 500000
+max_input = 372000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 6
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "grok-4.6"
+name = "Grok 4.6"
+description = "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects"
+family = "grok"
+knowledge_cutoff = "2026-02-01"
+release_date = "2026-08-12"
+last_updated = "2026-08-12"
+context_window = 500000
+max_input = 372000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 6
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2.7-code"
+name = "Kimi K2.7 Code"
+description = "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 256000
+max_input = 224000
+max_output = 32000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.95
+output_per_million = 4
+cache_read_per_million = 0.19
+source = "models.dev"
+
+[[model]]
+id = "kimi-k3"
+name = "Kimi K3"
+description = "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 3
+output_per_million = 15
+cache_read_per_million = 0.3
+source = "models.dev"
+
+[[model]]
+id = "mai-code-1-flash-picker"
+name = "MAI-Code-1-Flash"
+description = "Microsoft coding model built for fast, efficient assistance in everyday developer workflows"
+family = "mai"
+knowledge_cutoff = "2025-12"
+release_date = "2026-06-02"
+last_updated = "2026-06-08"
+context_window = 256000
+max_input = 128000
+max_output = 128000
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 4.5
+cache_read_per_million = 0.075
+source = "models.dev"
+
+[[model]]
+id = "mai-code-1.1-flash"
+name = "MAI-Code-1.1-Flash"
+description = "Microsoft coding model with native vision support, optimized for fast and efficient software development"
+family = "mai"
+release_date = "2026-08-11"
+last_updated = "2026-08-11"
+context_window = 256000
+max_input = 128000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.2
+output_per_million = 1.2
+cache_read_per_million = 0.02
+source = "models.dev"

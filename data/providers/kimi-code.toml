@@ -1,0 +1,118 @@
+# A distinct membership-backed service: its keys, model ids, quotas and endpoint
+# are not interchangeable with the platform it is grouped with, which is why the
+# billing mode differs and the failover chain will not cross between them.
+provider_id = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+protocol = "open_ai_chat"
+auth = "api_key"
+credential_env = "KIMI_API_KEY"
+billing_mode = "subscription"
+
+display_name = "Kimi Code"
+description = "Kimi models covered by a coding subscription."
+console_url = "https://www.kimi.com/code/console"
+api_key_url = "https://www.kimi.com/code/console"
+connection = { group = "kimi", connection_id = "code", order = 0 }
+extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
+
+[[model]]
+id = "k3"
+name = "Kimi K3"
+description = "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "k3-256k"
+name = "Kimi K3-256K"
+description = "256K-context version of Kimi K3, reducing token consumption for shorter coding sessions"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 262144
+max_output = 131072
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "kimi-for-coding"
+name = "Kimi K2.7 Code"
+description = "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 262144
+max_output = 32768
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "kimi-for-coding-highspeed"
+name = "Kimi For Coding HighSpeed"
+description = "Lower-latency Kimi Code variant for interactive edits and coding-agent loops"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 262144
+max_output = 32768
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"

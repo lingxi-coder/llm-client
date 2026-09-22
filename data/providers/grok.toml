@@ -1,0 +1,142 @@
+# This vendor also speaks both wires behind one key, so its second entry is a
+# connection rather than a provider.
+provider_id = "xai"
+base_url = "https://api.x.ai/v1"
+protocol = "open_ai_chat"
+auth = "api_key"
+credential_env = "XAI_API_KEY"
+billing_mode = "per_token"
+
+display_name = "xAI Grok"
+description = "First-party Grok models over an OpenAI-compatible wire."
+console_url = "https://console.x.ai"
+api_key_url = "https://console.x.ai"
+docs_url = "https://docs.x.ai"
+connection = { group = "xai", connection_id = "openai", order = 0 }
+# catalog provenance: derived from the aggregator slice by stripping its x-ai/ qualifier; this vendor publishes no first-party slice, and the prices are the aggregator's
+
+[[model]]
+id = "grok-4.20"
+name = "Grok 4.20"
+description = "Grok 4.20 is a reasoning model from SpaceXAI with industry-leading speed and agentic tool calling capabilities. It combines the lowest hallucination rate on the market with strict prompt adherance, delivering..."
+release_date = "2026-03-31"
+context_window = 2000000
+max_output = 1800000
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 1.25
+output_per_million = 2.5
+cache_read_per_million = 0.19999999999999998
+source = "models.dev via aggregator"
+
+[[model]]
+id = "grok-4.20-multi-agent"
+name = "Grok 4.20 Multi-Agent"
+description = "Grok 4.20 Multi-Agent is a variant of SpaceXAI’s Grok 4.20 designed for collaborative, agent-based workflows. Multiple agents operate in parallel to conduct deep research, coordinate tool use, and synthesize information..."
+release_date = "2026-03-31"
+context_window = 2000000
+max_output = 1800000
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = false
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 1.25
+output_per_million = 2.5
+cache_read_per_million = 0.19999999999999998
+source = "models.dev via aggregator"
+
+[[model]]
+id = "grok-4.3"
+name = "Grok 4.3"
+description = "Grok 4.3 is a reasoning model from SpaceXAI. It accepts text and image inputs with text output, and is suited for agentic workflows, instruction-following tasks, and applications requiring high factual..."
+release_date = "2026-04-30"
+context_window = 1000000
+max_output = 900000
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 1.25
+output_per_million = 2.5
+cache_read_per_million = 0.19999999999999998
+source = "models.dev via aggregator"
+
+[[model]]
+id = "grok-4.5"
+name = "Grok 4.5"
+description = "Grok 4.5 is a model from SpaceXAI with frontier performance on coding, knowledge work, and STEM."
+release_date = "2026-07-08"
+context_window = 500000
+max_output = 450000
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 6
+cache_read_per_million = 0.3
+source = "models.dev via aggregator"
+
+[[model]]
+id = "grok-4.6"
+name = "Grok 4.6"
+description = "Grok 4.6 is SpaceXAI's smartest model with frontier performance on coding, knowledge work, and STEM."
+release_date = "2026-08-12"
+context_window = 500000
+max_output = 450000
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 6
+cache_read_per_million = 0.5
+source = "models.dev via aggregator"
+
+[[model]]
+id = "grok-build-0.1"
+name = "Grok Build 0.1"
+description = "Grok Build 0.1 is SpaceXAI’s fast coding model trained specifically for agentic software engineering workflows. It supports text and image inputs with text output, and is optimized for interactive coding..."
+release_date = "2026-05-20"
+context_window = 256000
+max_output = 230400
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 1
+output_per_million = 2
+cache_read_per_million = 0.19999999999999998
+source = "models.dev via aggregator"

@@ -1,0 +1,262 @@
+# The open platform, pay as you go. Grouped with the membership service so the
+# two are connections of one provider rather than two providers.
+provider_id = "kimi"
+base_url = "https://api.moonshot.cn/v1"
+protocol = "open_ai_chat"
+auth = "api_key"
+credential_env = "MOONSHOT_API_KEY"
+billing_mode = "per_token"
+
+display_name = "Kimi"
+description = "First-party Kimi models over an OpenAI-compatible wire."
+console_url = "https://platform.kimi.com"
+api_key_url = "https://platform.kimi.com/console/api-keys"
+connection = { group = "kimi", connection_id = "open", order = 1 }
+
+# The terminal usage object is omitted from SSE unless it is asked for, which
+# would otherwise leave the transcript and every token counter at zero.
+extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
+
+[[model]]
+id = "kimi-k2-0711-preview"
+name = "Kimi K2 0711"
+description = "Kimi model for long-context chat, coding, and agentic reasoning"
+family = "kimi-k2"
+knowledge_cutoff = "2024-10"
+release_date = "2025-07-14"
+last_updated = "2025-07-14"
+context_window = 131072
+max_output = 16384
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.6
+output_per_million = 2.5
+cache_read_per_million = 0.15
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2-0905-preview"
+name = "Kimi K2 0905"
+description = "Kimi model for long-context chat, coding, and agentic reasoning"
+family = "kimi-k2"
+knowledge_cutoff = "2024-10"
+release_date = "2025-09-05"
+last_updated = "2025-09-05"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.6
+output_per_million = 2.5
+cache_read_per_million = 0.15
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2-thinking"
+name = "Kimi K2 Thinking"
+description = "Thinking Kimi model for slower research passes, planning, and hard technical questions"
+family = "kimi-thinking"
+knowledge_cutoff = "2024-08"
+release_date = "2025-11-06"
+last_updated = "2025-11-06"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.6
+output_per_million = 2.5
+cache_read_per_million = 0.15
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2-thinking-turbo"
+name = "Kimi K2 Thinking Turbo"
+description = "Kimi reasoning model for long-horizon research, planning, and tool use"
+family = "kimi-thinking"
+knowledge_cutoff = "2024-08"
+release_date = "2025-11-06"
+last_updated = "2025-11-06"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 1.15
+output_per_million = 8
+cache_read_per_million = 0.15
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2-turbo-preview"
+name = "Kimi K2 Turbo"
+description = "Fast Kimi model for responsive chat, coding help, and agent loops"
+family = "kimi-k2"
+knowledge_cutoff = "2024-10"
+release_date = "2025-09-05"
+last_updated = "2025-09-05"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 2.4
+output_per_million = 10
+cache_read_per_million = 0.6
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2.5"
+name = "Kimi K2.5"
+description = "Earlier Kimi frontier model for long-context agents, coding, and multimodal work"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-01"
+last_updated = "2026-01"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.6
+output_per_million = 3
+cache_read_per_million = 0.1
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2.6"
+name = "Kimi K2.6"
+description = "Multimodal Kimi workhorse for agent loops, coding tasks, and visual context"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-04-21"
+last_updated = "2026-04-21"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.95
+output_per_million = 4
+cache_read_per_million = 0.16
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2.7-code"
+name = "Kimi K2.7 Code"
+description = "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.95
+output_per_million = 4
+cache_read_per_million = 0.19
+source = "models.dev"
+
+[[model]]
+id = "kimi-k2.7-code-highspeed"
+name = "Kimi K2.7 Code HighSpeed"
+description = "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 1.9
+output_per_million = 8
+cache_read_per_million = 0.38
+source = "models.dev"
+
+[[model]]
+id = "kimi-k3"
+name = "Kimi K3"
+description = "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 3
+output_per_million = 15
+cache_read_per_million = 0.3
+source = "models.dev"

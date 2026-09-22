@@ -1,0 +1,1192 @@
+# First-party OpenAI speaks the Responses API; the Chat Completions wire is what
+# the compatible providers use, not this one.
+provider_id = "openai"
+base_url = "https://api.openai.com/v1"
+protocol = "open_ai_responses"
+# The completion wire and the model directory are different things here:
+# this vendor serves one shared model list for both of its wires, in the
+# other one's shape. Left unstated, a refresh would look for a directory in
+# this wire's shape, which is not published at all.
+model_list = "open_ai_chat"
+auth = "bearer"
+credential_env = "OPENAI_API_KEY"
+billing_mode = "per_token"
+
+display_name = "OpenAI"
+description = "First-party OpenAI models over the Responses API."
+console_url = "https://platform.openai.com"
+api_key_url = "https://platform.openai.com/api-keys"
+docs_url = "https://developers.openai.com/api/docs"
+credential_hint = "sk-"
+
+# OpenAI stores Responses objects and accepts their ids to continue a chain.
+# This is opt-in because several otherwise Responses-compatible endpoints
+# accept the field but ignore it.
+extra = { supports_previous_response_id = true }
+
+[[model]]
+id = "chatgpt-image-latest"
+name = "chatgpt-image-latest"
+description = "Image model for prompt-driven generation, editing, and visual design workflows"
+family = "gpt-image"
+release_date = "2025-12-16"
+last_updated = "2025-12-16"
+input_modalities = ["text", "image"]
+output_modalities = ["text", "image"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = true
+open_weights = false
+
+[[model]]
+id = "gpt-3.5-turbo"
+name = "GPT-3.5-turbo"
+description = "Compact GPT model for low-latency assistance and high-volume workloads"
+family = "gpt"
+knowledge_cutoff = "2021-09-01"
+release_date = "2023-03-01"
+last_updated = "2023-11-06"
+context_window = 16385
+max_output = 4096
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = false
+reasoning = false
+structured_output = false
+temperature = true
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.5
+output_per_million = 1.5
+cache_read_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "gpt-4"
+name = "GPT-4"
+description = "GPT model for general reasoning, writing, coding, and tool-assisted tasks"
+family = "gpt"
+knowledge_cutoff = "2023-11"
+release_date = "2023-11-06"
+last_updated = "2024-04-09"
+context_window = 8192
+max_output = 8192
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = false
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 30
+output_per_million = 60
+source = "models.dev"
+
+[[model]]
+id = "gpt-4-turbo"
+name = "GPT-4 Turbo"
+description = "Compact GPT model for low-latency assistance and high-volume workloads"
+family = "gpt"
+knowledge_cutoff = "2023-12"
+release_date = "2023-11-06"
+last_updated = "2024-04-09"
+context_window = 128000
+max_output = 4096
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = false
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 10
+output_per_million = 30
+source = "models.dev"
+
+[[model]]
+id = "gpt-4.1"
+name = "GPT-4.1"
+description = "Long-lived GPT workhorse for coding, instruction following, and production apps"
+family = "gpt"
+knowledge_cutoff = "2024-04"
+release_date = "2025-04-14"
+last_updated = "2025-04-14"
+context_window = 1047576
+max_output = 32768
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 8
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-4.1-mini"
+name = "GPT-4.1 mini"
+description = "Affordable GPT-4.1 lane for fast coding help and structured extraction"
+family = "gpt-mini"
+knowledge_cutoff = "2024-04"
+release_date = "2025-04-14"
+last_updated = "2025-04-14"
+context_window = 1047576
+max_output = 32768
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.4
+output_per_million = 1.6
+cache_read_per_million = 0.1
+source = "models.dev"
+
+[[model]]
+id = "gpt-4.1-nano"
+name = "GPT-4.1 nano"
+description = "Tiny GPT-4.1 option for classification, routing, and very high-volume tasks"
+family = "gpt-nano"
+knowledge_cutoff = "2024-04"
+release_date = "2025-04-14"
+last_updated = "2025-04-14"
+context_window = 1047576
+max_output = 32768
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.1
+output_per_million = 0.4
+cache_read_per_million = 0.025
+source = "models.dev"
+
+[[model]]
+id = "gpt-4o"
+name = "GPT-4o"
+description = "Omni-era GPT for multimodal chat, practical coding, and general assistants"
+family = "gpt"
+knowledge_cutoff = "2023-09"
+release_date = "2024-05-13"
+last_updated = "2024-08-06"
+context_window = 128000
+max_output = 16384
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2.5
+output_per_million = 10
+cache_read_per_million = 1.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-4o-2024-05-13"
+name = "GPT-4o (2024-05-13)"
+description = "GPT model for general reasoning, writing, coding, and tool-assisted tasks"
+family = "gpt"
+knowledge_cutoff = "2023-09"
+release_date = "2024-05-13"
+last_updated = "2024-05-13"
+context_window = 128000
+max_output = 4096
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 15
+source = "models.dev"
+
+[[model]]
+id = "gpt-4o-2024-08-06"
+name = "GPT-4o (2024-08-06)"
+description = "GPT model for general reasoning, writing, coding, and tool-assisted tasks"
+family = "gpt"
+knowledge_cutoff = "2023-09"
+release_date = "2024-08-06"
+last_updated = "2024-08-06"
+context_window = 128000
+max_output = 16384
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2.5
+output_per_million = 10
+cache_read_per_million = 1.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-4o-2024-11-20"
+name = "GPT-4o (2024-11-20)"
+description = "GPT model for general reasoning, writing, coding, and tool-assisted tasks"
+family = "gpt"
+knowledge_cutoff = "2023-09"
+release_date = "2024-11-20"
+last_updated = "2024-11-20"
+context_window = 128000
+max_output = 16384
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2.5
+output_per_million = 10
+cache_read_per_million = 1.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-4o-mini"
+name = "GPT-4o mini"
+description = "Small omni GPT for cheap multimodal assistance and production-scale traffic"
+family = "gpt-mini"
+knowledge_cutoff = "2023-09"
+release_date = "2024-07-18"
+last_updated = "2024-07-18"
+context_window = 128000
+max_output = 16384
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.15
+output_per_million = 0.6
+cache_read_per_million = 0.075
+source = "models.dev"
+
+[[model]]
+id = "gpt-5"
+name = "GPT-5"
+description = "Original GPT-5 workhorse for reasoning, coding, writing, and tool workflows"
+family = "gpt"
+knowledge_cutoff = "2024-09-30"
+release_date = "2025-08-07"
+last_updated = "2025-08-07"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.25
+output_per_million = 10
+cache_read_per_million = 0.125
+source = "models.dev"
+
+[[model]]
+id = "gpt-5-mini"
+name = "GPT-5 Mini"
+description = "Small GPT-5 for responsive agents, coding help, and everyday automation"
+family = "gpt-mini"
+knowledge_cutoff = "2024-05-30"
+release_date = "2025-08-07"
+last_updated = "2025-08-07"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.25
+output_per_million = 2
+cache_read_per_million = 0.025
+source = "models.dev"
+
+[[model]]
+id = "gpt-5-nano"
+name = "GPT-5 Nano"
+description = "Tiny GPT-5 lane for routing, extraction, classification, and bulk jobs"
+family = "gpt-nano"
+knowledge_cutoff = "2024-05-30"
+release_date = "2025-08-07"
+last_updated = "2025-08-07"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.05
+output_per_million = 0.4
+cache_read_per_million = 0.005
+source = "models.dev"
+
+[[model]]
+id = "gpt-5-pro"
+name = "GPT-5 Pro"
+description = "Higher-accuracy GPT-5 tier for tough analysis, coding reviews, and planning"
+family = "gpt-pro"
+knowledge_cutoff = "2024-09-30"
+release_date = "2025-10-06"
+last_updated = "2025-10-06"
+context_window = 400000
+max_input = 272000
+max_output = 272000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 15
+output_per_million = 120
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.1"
+name = "GPT-5.1"
+description = "Sharper GPT-5 generation for coding, product work, and tool-assisted tasks"
+family = "gpt"
+knowledge_cutoff = "2024-09-30"
+release_date = "2025-11-13"
+last_updated = "2025-11-13"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.25
+output_per_million = 10
+cache_read_per_million = 0.125
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.2"
+name = "GPT-5.2"
+description = "Reliable GPT generation for broad coding, writing, and tool-assisted product work"
+family = "gpt"
+knowledge_cutoff = "2025-08-31"
+release_date = "2025-12-11"
+last_updated = "2025-12-11"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.2-chat-latest"
+name = "GPT-5.2 Chat"
+description = "Chat-tuned GPT model for conversational assistance, writing, and tool workflows"
+family = "gpt-codex"
+knowledge_cutoff = "2025-08-31"
+release_date = "2025-12-11"
+last_updated = "2025-12-11"
+context_window = 128000
+max_output = 16384
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.2-pro"
+name = "GPT-5.2 Pro"
+description = "Higher-accuracy GPT-5.2 variant for tougher reasoning and review workflows"
+family = "gpt-pro"
+knowledge_cutoff = "2025-08-31"
+release_date = "2025-12-11"
+last_updated = "2025-12-11"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = false
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 21
+output_per_million = 168
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.3-chat-latest"
+name = "GPT-5.3 Chat (latest)"
+description = "Chat-tuned GPT model for conversational assistance, writing, and tool workflows"
+family = "gpt"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-03"
+last_updated = "2026-03-03"
+context_window = 128000
+max_output = 16384
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = false
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.3-codex"
+name = "GPT-5.3 Codex"
+description = "Coding-optimized GPT model for repository edits, reviews, and agentic software work"
+family = "gpt-codex"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-02-05"
+last_updated = "2026-02-05"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.3-codex-spark"
+name = "GPT-5.3 Codex Spark"
+description = "Coding-optimized GPT model for repository edits, reviews, and agentic software work"
+family = "gpt-codex-spark"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-02-05"
+last_updated = "2026-02-05"
+context_window = 128000
+max_input = 100000
+max_output = 32000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.75
+output_per_million = 14
+cache_read_per_million = 0.175
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4"
+name = "GPT-5.4"
+description = "Agent-ready GPT for coding and computer-use workflows at a lower cost"
+family = "gpt"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-05"
+last_updated = "2026-03-05"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2.5
+output_per_million = 15
+cache_read_per_million = 0.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4-mini"
+name = "GPT-5.4 mini"
+description = "Strong small GPT for coding subagents, quick tool use, and high-volume work"
+family = "gpt-mini"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-17"
+last_updated = "2026-03-17"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 4.5
+cache_read_per_million = 0.075
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4-nano"
+name = "GPT-5.4 nano"
+description = "Cheapest GPT-5.4 lane for simple routing, extraction, and bulk automation"
+family = "gpt-nano"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-17"
+last_updated = "2026-03-17"
+context_window = 400000
+max_input = 272000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.2
+output_per_million = 1.25
+cache_read_per_million = 0.02
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.4-pro"
+name = "GPT-5.4 Pro"
+description = "More exact GPT-5.4 tier for demanding professional reasoning and agent tasks"
+family = "gpt-pro"
+knowledge_cutoff = "2025-08-31"
+release_date = "2026-03-05"
+last_updated = "2026-03-05"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = false
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 30
+output_per_million = 180
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.5"
+name = "GPT-5.5"
+description = "Default frontier GPT for coding, computer use, research, and knowledge work"
+family = "gpt"
+knowledge_cutoff = "2025-12-01"
+release_date = "2026-04-23"
+last_updated = "2026-04-23"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 30
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.5-pro"
+name = "GPT-5.5 Pro"
+description = "Highest-accuracy GPT-5.5 tier for slower, precision-heavy reasoning and coding"
+family = "gpt-pro"
+knowledge_cutoff = "2025-12-01"
+release_date = "2026-04-23"
+last_updated = "2026-04-23"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 30
+output_per_million = 180
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6"
+name = "GPT-5.6"
+description = "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows"
+family = "gpt-sol"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 4
+output_per_million = 20
+cache_read_per_million = 0.4
+cache_write_per_million = 5
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6-luna"
+name = "GPT-5.6 Luna"
+description = "Cost-efficient GPT-5.6 model for fast, high-volume workloads"
+family = "gpt-luna"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.2
+output_per_million = 1.2
+cache_read_per_million = 0.02
+cache_write_per_million = 0.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6-sol"
+name = "GPT-5.6 Sol"
+description = "Frontier GPT-5.6 model for complex professional work, coding, and agentic workflows"
+family = "gpt-sol"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 4
+output_per_million = 20
+cache_read_per_million = 0.4
+cache_write_per_million = 5
+source = "models.dev"
+
+[[model]]
+id = "gpt-5.6-terra"
+name = "GPT-5.6 Terra"
+description = "Balanced GPT-5.6 model for capable, cost-efficient everyday work"
+family = "gpt-terra"
+knowledge_cutoff = "2026-02-16"
+release_date = "2026-07-09"
+last_updated = "2026-07-09"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 12
+cache_read_per_million = 0.2
+cache_write_per_million = 2.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-6-astra"
+name = "GPT-6 Astra"
+description = "GPT-6 Astra is OpenAI's most capable model for complex reasoning, coding, computer use, research, and document creation."
+family = "gpt-astra"
+knowledge_cutoff = "2026-04-30"
+release_date = "2026-09-04"
+last_updated = "2026-09-04"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 10
+output_per_million = 50
+cache_read_per_million = 1
+cache_write_per_million = 12.5
+source = "models.dev"
+
+[[model]]
+id = "gpt-image-1"
+name = "gpt-image-1"
+description = "OpenAI image model for production generation, edits, and brand-safe visual workflows"
+family = "gpt-image"
+release_date = "2025-04-24"
+last_updated = "2025-04-24"
+input_modalities = ["text", "image"]
+output_modalities = ["image"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = true
+open_weights = false
+
+[[model]]
+id = "gpt-image-1-mini"
+name = "gpt-image-1-mini"
+description = "Image model for prompt-driven generation, editing, and visual design workflows"
+family = "gpt-image"
+release_date = "2025-09-26"
+last_updated = "2025-09-26"
+input_modalities = ["text", "image"]
+output_modalities = ["text", "image"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = true
+open_weights = false
+
+[[model]]
+id = "gpt-image-1.5"
+name = "gpt-image-1.5"
+description = "Image model for prompt-driven generation, editing, and visual design workflows"
+family = "gpt-image"
+release_date = "2025-11-25"
+last_updated = "2025-11-25"
+input_modalities = ["text", "image"]
+output_modalities = ["text", "image"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = true
+open_weights = false
+
+[[model]]
+id = "gpt-image-2"
+name = "gpt-image-2"
+description = "Image model for prompt-driven generation, editing, and visual design workflows"
+family = "gpt-image"
+release_date = "2026-04-21"
+last_updated = "2026-04-21"
+input_modalities = ["text", "image"]
+output_modalities = ["image"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 5
+output_per_million = 30
+cache_read_per_million = 1.25
+source = "models.dev"
+
+[[model]]
+id = "gpt-realtime-2.1"
+name = "GPT-Realtime-2.1"
+description = "Realtime speech-to-speech model with configurable reasoning, tool use, and robust voice-agent behavior"
+family = "gpt"
+knowledge_cutoff = "2024-09-30"
+release_date = "2026-07-06"
+last_updated = "2026-07-06"
+context_window = 128000
+max_input = 96000
+max_output = 32000
+input_modalities = ["text", "audio", "image"]
+output_modalities = ["text", "audio"]
+tool_call = true
+reasoning = true
+structured_output = false
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 4
+output_per_million = 24
+cache_read_per_million = 0.4
+source = "models.dev"
+
+[[model]]
+id = "o1"
+name = "o1"
+description = "O-series reasoning model for hard analysis, math, coding, and planning"
+family = "o"
+knowledge_cutoff = "2023-09"
+release_date = "2024-12-05"
+last_updated = "2024-12-05"
+context_window = 200000
+max_output = 100000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 15
+output_per_million = 60
+cache_read_per_million = 7.5
+source = "models.dev"
+
+[[model]]
+id = "o1-pro"
+name = "o1-pro"
+description = "O-series reasoning model for hard analysis, math, coding, and planning"
+family = "o-pro"
+knowledge_cutoff = "2023-09"
+release_date = "2025-03-19"
+last_updated = "2025-03-19"
+context_window = 200000
+max_output = 100000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 150
+output_per_million = 600
+source = "models.dev"
+
+[[model]]
+id = "o3"
+name = "o3"
+description = "Deliberate o-series reasoner for hard math, coding, and multi-step analysis"
+family = "o"
+knowledge_cutoff = "2024-05"
+release_date = "2025-04-16"
+last_updated = "2025-04-16"
+context_window = 200000
+max_output = 100000
+input_modalities = ["text", "image", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 8
+cache_read_per_million = 0.5
+source = "models.dev"
+
+[[model]]
+id = "o3-mini"
+name = "o3-mini"
+description = "Smaller o-series reasoner for economical coding, math, and planning tasks"
+family = "o-mini"
+knowledge_cutoff = "2024-05"
+release_date = "2024-12-20"
+last_updated = "2025-01-29"
+context_window = 200000
+max_output = 100000
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.1
+output_per_million = 4.4
+cache_read_per_million = 0.55
+source = "models.dev"
+
+[[model]]
+id = "o3-pro"
+name = "o3-pro"
+description = "High-effort o3 tier for difficult technical reasoning and careful answers"
+family = "o-pro"
+knowledge_cutoff = "2024-05"
+release_date = "2025-06-10"
+last_updated = "2025-06-10"
+context_window = 200000
+max_output = 100000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 20
+output_per_million = 80
+source = "models.dev"
+
+[[model]]
+id = "o4-mini"
+name = "o4-mini"
+description = "Fast o-series model for compact reasoning, coding, and tool use"
+family = "o-mini"
+knowledge_cutoff = "2024-05"
+release_date = "2025-04-16"
+last_updated = "2025-04-16"
+context_window = 200000
+max_output = 100000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.1
+output_per_million = 4.4
+cache_read_per_million = 0.275
+source = "models.dev"
+
+[[model]]
+id = "text-embedding-3-large"
+name = "text-embedding-3-large"
+description = "Embedding model for semantic search, retrieval, clustering, and ranking pipelines"
+family = "text-embedding"
+knowledge_cutoff = "2024-01"
+release_date = "2024-01-25"
+last_updated = "2024-01-25"
+context_window = 8191
+max_output = 3072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.13
+output_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "text-embedding-3-small"
+name = "text-embedding-3-small"
+description = "Embedding model for semantic search, retrieval, clustering, and ranking pipelines"
+family = "text-embedding"
+knowledge_cutoff = "2024-01"
+release_date = "2024-01-25"
+last_updated = "2024-01-25"
+context_window = 8191
+max_output = 1536
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.02
+output_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "text-embedding-ada-002"
+name = "text-embedding-ada-002"
+description = "Embedding model for semantic search, retrieval, clustering, and ranking pipelines"
+family = "text-embedding"
+knowledge_cutoff = "2022-12"
+release_date = "2022-12-15"
+last_updated = "2022-12-15"
+context_window = 8192
+max_output = 1536
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = false
+reasoning = false
+temperature = false
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.1
+output_per_million = 0
+source = "models.dev"

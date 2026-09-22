@@ -1,0 +1,268 @@
+# This vendor publishes an Anthropic-compatible endpoint alongside its
+# OpenAI-compatible one, so the two connections of this group speak different
+# wires. Neither is "the compatible one", and the catalog's advisory `api` field
+# describes the other — which is why routing stays hand-authored.
+provider_id = "zhipu"
+base_url = "https://open.bigmodel.cn/api/anthropic"
+protocol = "anthropic_messages"
+# The compatibility shim in front of this endpoint serves completions and
+# nothing else; its /v1/models is a 404. Saying so is not the same as saying
+# nothing: a 404 decoded as a list would look like a vendor that had
+# withdrawn every model it publishes.
+model_list = "none"
+auth = "api_key"
+credential_env = "ZHIPU_API_KEY"
+billing_mode = "subscription"
+
+display_name = "GLM Coding Plan"
+description = "GLM models over an Anthropic-compatible wire, covered by a coding plan."
+console_url = "https://bigmodel.cn"
+api_key_url = "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
+connection = { group = "zhipu", connection_id = "coding", order = 0 }
+
+[[model]]
+id = "glm-4.6v"
+name = "GLM-4.6V"
+description = "GLM vision model for visual reasoning, documents, and multimodal agents"
+family = "glm"
+knowledge_cutoff = "2025-04"
+release_date = "2025-12-08"
+last_updated = "2025-12-08"
+context_window = 128000
+max_output = 32768
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 0.3
+output_per_million = 0.9
+source = "models.dev"
+
+[[model]]
+id = "glm-4.7"
+name = "GLM-4.7"
+description = "Flagship GLM model for hybrid reasoning, coding, and agentic engineering"
+family = "glm"
+knowledge_cutoff = "2025-04"
+release_date = "2025-12-22"
+last_updated = "2025-12-22"
+context_window = 204800
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5-turbo"
+name = "GLM-5-Turbo"
+description = "Efficient GLM model for fast reasoning, coding, and agent workflows"
+family = "glm"
+release_date = "2026-03-16"
+last_updated = "2026-03-16"
+context_window = 200000
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5.1"
+name = "GLM-5.1"
+description = "Flagship GLM model for hybrid reasoning, coding, and agentic engineering"
+family = "glm"
+release_date = "2026-03-27"
+last_updated = "2026-03-27"
+context_window = 200000
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = false
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5.2"
+name = "GLM-5.2"
+description = "Open flagship GLM for long-horizon coding agents and million-token context work"
+family = "glm"
+release_date = "2026-06-13"
+last_updated = "2026-06-13"
+context_window = 1000000
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5.2-highspeed"
+name = "GLM-5.2 Highspeed"
+description = "Open flagship GLM for long-horizon coding agents and million-token context work"
+family = "glm"
+release_date = "2026-06-13"
+last_updated = "2026-06-13"
+context_window = 1000000
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5.3"
+name = "GLM-5.3"
+description = "Flagship GLM model for long-horizon coding, agents, and complex project delivery"
+family = "glm"
+release_date = "2026-08-14"
+last_updated = "2026-08-14"
+context_window = 1000000
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5.3-flash"
+name = "GLM-5.3-Flash"
+description = "Native multimodal GLM model for efficient coding and long-horizon agent tasks"
+family = "glm"
+release_date = "2026-08-26"
+last_updated = "2026-08-26"
+context_window = 1000000
+max_output = 131072
+input_modalities = ["text", "image", "video", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5.3-highspeed"
+name = "GLM-5.3 Highspeed"
+description = "Flagship GLM model for long-horizon coding, agents, and complex project delivery"
+family = "glm"
+release_date = "2026-08-14"
+last_updated = "2026-08-14"
+context_window = 1000000
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = false
+open_weights = true
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
+
+[[model]]
+id = "glm-5v-turbo"
+name = "GLM-5V-Turbo"
+description = "GLM vision model for visual reasoning, documents, and multimodal agents"
+family = "glm"
+release_date = "2026-04-01"
+last_updated = "2026-04-01"
+context_window = 200000
+max_output = 131072
+input_modalities = ["text", "image", "video", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0
+output_per_million = 0
+cache_read_per_million = 0
+cache_write_per_million = 0
+source = "models.dev"
