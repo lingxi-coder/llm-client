@@ -30,6 +30,7 @@ const RESERVED_HEADERS: &[&str] = &[
     "authorization",
     "proxy-authorization",
     "x-api-key",
+    "x-goog-api-key",
     "api-key",
     "cookie",
 ];
@@ -37,7 +38,21 @@ const RESERVED_HEADERS: &[&str] = &[
 /// Body fields that must come from typed request data rather than profile
 /// configuration. Unlike ordinary additive extras, these change request
 /// identity or bind it to provider-side state.
-const RESERVED_BODY_KEYS: &[&str] = &["model", "previous_response_id"];
+const RESERVED_BODY_KEYS: &[&str] = &["model", "previous_response_id", "stream"];
+
+/// Whether an extra header name can carry a credential owned by the caller.
+/// The explicit per-profile header is supported by the authenticator, so a
+/// matching extra header must receive the same protection as standard names.
+pub(crate) fn is_credential_header(profile: &ProviderProfile, name: &str) -> bool {
+    RESERVED_HEADERS
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+        || profile
+            .extra
+            .get("credential_header")
+            .and_then(Value::as_str)
+            .is_some_and(|custom| custom.eq_ignore_ascii_case(name))
+}
 
 /// Merge `extra.body` into a request body.
 ///
@@ -76,8 +91,7 @@ pub(crate) fn merge_headers(
             refused.push(name.clone());
             continue;
         };
-        let lower = name.to_ascii_lowercase();
-        let reserved = RESERVED_HEADERS.contains(&lower.as_str());
+        let reserved = is_credential_header(profile, name);
         let already = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
         if reserved || already {
             refused.push(name.clone());
@@ -147,8 +161,16 @@ mod tests {
     }
 
     #[test]
+    fn configuration_cannot_enable_streaming_for_a_completion_request() {
+        let p = profile(json!({"body": {"stream": true}}));
+        let mut body = Map::new();
+        assert_eq!(merge_body(&p, &mut body), vec!["stream".to_owned()]);
+        assert!(!body.contains_key("stream"));
+    }
+
+    #[test]
     fn an_authorization_header_cannot_be_smuggled_in_through_config() {
-        for name in ["Authorization", "x-api-key", "COOKIE"] {
+        for name in ["Authorization", "x-api-key", "x-goog-api-key", "COOKIE"] {
             let p = profile(json!({"headers": {name: "sk-not-yours"}}));
             let mut headers = vec![];
             assert_eq!(merge_headers(&p, &mut headers), vec![name.to_owned()]);
@@ -157,6 +179,20 @@ mod tests {
                 "{name} belongs to the authenticator, which runs after this"
             );
         }
+    }
+
+    #[test]
+    fn a_custom_credential_header_cannot_be_smuggled_in_through_config() {
+        let p = profile(json!({
+            "credential_header": "X-House-Token",
+            "headers": {"x-house-token": "sk-not-yours"}
+        }));
+        let mut headers = vec![];
+        assert_eq!(
+            merge_headers(&p, &mut headers),
+            vec!["x-house-token".to_owned()]
+        );
+        assert!(headers.is_empty());
     }
 
     #[test]
