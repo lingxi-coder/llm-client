@@ -42,9 +42,17 @@ profile, model, media type and purpose support it. OpenAI Responses, Anthropic
 Messages, and Gemini have native model input references; OpenAI Chat's native
 file reference is limited to PDFs; xAI references are limited to documented
 document-search inputs. Qwen's Beijing and Singapore Files APIs accept
-documents with `file-extract`; Qwen-Long places the resulting `fileid://<id>`
-reference in a system message. Qwen knowledge-base retrieval is a separate
-Responses `file_search` feature. MiniMax M3 video understanding requires upload
+documents and supported images with `file-extract`, but Qwen-Long model input
+is available only on Beijing endpoints. Qwen-Long and its `qwen-long-*` versions
+place `fileid://<id>` references in the second system message. The first system
+message comes from `req.system` or a leading text `MessageRole::System`, with a
+default role when neither is present. Images are limited to 20,000,000 bytes,
+other files to 150,000,000 bytes, and each request to 100 file references.
+Qwen-Long images and documents must use `AttachmentRef` or a same-account
+`ProviderFile` reference. Direct Base64, text document, and URL sources return
+`UnsupportedCapability` before a model request is sent. Qwen knowledge-base
+retrieval is a separate Responses `file_search` feature. MiniMax M3 video
+understanding requires upload
 with `video_understanding` followed by a `mm_file://<id>` reference; M2.7 does
 not accept video blocks. OpenRouter workspace files, Moonshot file management,
 and GLM/Z.AI auxiliary file endpoints are not treated as general chat
@@ -73,6 +81,8 @@ be treated as ordinary listable or deletable files. `download` returns original
 bytes only when that provider marks them downloadable; text extraction is a
 separate result. Each service instance is bound to one profile, authenticator,
 credential and account scope.
+After a direct Qwen upload, use `get` to wait for `processed` before sending its
+ID to the model; automatic app attachments perform that wait in the client.
 
 FileService uses no-redirect transport operations for credentialed requests.
 Custom `Transport` implementations must implement `execute_no_follow`; file
@@ -95,6 +105,13 @@ prepared files can be reuploaded once when a 404 identifies one of the files
 used by that request, even without a stable scope. Automatic Anthropic,
 OpenAI, and xAI uploads expire after 24 hours, and their cached references
 stop being reused after 23 hours.
+Qwen automatic uploads are not cached across requests. The client paces their
+upload, status, and deletion calls, waits for parsing, and attempts deletion
+after a complete response or stream. Foreground cleanup uses the remaining
+request deadline, or at most 120 seconds at stream EOF without one. Cancellation,
+early stream drop, deadline exhaustion, and deletion errors schedule background
+retries. Qwen files do not expire server-side, so applications should periodically
+list and delete any files left behind by process exit or persistent failures.
 Explicit `FileService::upload` calls retain caller-managed lifetime and should
 be deleted by the host when no longer needed.
 

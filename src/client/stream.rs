@@ -1,11 +1,14 @@
 //! `ModelStream`: the transport's frames run through the codec's decoder.
 
+use crate::client::files::AutomaticFileCleanup;
 use crate::codecs::StreamDecoder;
 use crate::framing::sse::SseFrameSplitter;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 use lingxi_agent_api::protocol::{LlmError, StreamEvent, Usage};
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Instant;
 
 /// A provider-neutral event stream: the transport's frames run through the
 /// codec's decoder. Dropping it drops the underlying byte stream, which is how
@@ -20,6 +23,8 @@ pub struct ModelStream {
     status: u16,
     headers: Vec<(String, String)>,
     executed_profile: String,
+    automatic_file_cleanup: Option<Arc<AutomaticFileCleanup>>,
+    automatic_file_cleanup_deadline: Option<Instant>,
 }
 
 impl ModelStream {
@@ -27,6 +32,8 @@ impl ModelStream {
         resp: crate::transport::StreamResponse,
         decoder: Box<dyn StreamDecoder>,
         executed_profile: String,
+        automatic_file_cleanup: Option<Arc<AutomaticFileCleanup>>,
+        automatic_file_cleanup_deadline: Option<Instant>,
     ) -> Self {
         let sse = resp
             .header("content-type")
@@ -49,6 +56,8 @@ impl ModelStream {
             status: resp.status,
             headers: resp.headers,
             executed_profile,
+            automatic_file_cleanup,
+            automatic_file_cleanup_deadline,
         }
     }
 
@@ -84,13 +93,17 @@ impl ModelStream {
 
     /// The next event, or `None` at the end. One frame can decode to several
     /// events, so decoded events are buffered and drained before the next
-    /// frame is pulled.
+    /// frame is pulled. At EOF, automatic Qwen file deletion may use the
+    /// remaining request deadline, or up to 120 seconds without one.
     pub async fn next(&mut self) -> Option<Result<StreamEvent, LlmError>> {
         loop {
             if let Some(ev) = self.ready.pop_front() {
                 return Some(Ok(ev));
             }
             if self.finished {
+                if let Some(cleanup) = self.automatic_file_cleanup.take() {
+                    cleanup.finish(self.automatic_file_cleanup_deadline).await;
+                }
                 return None;
             }
             if let Some(frame) = self.pending_frames.pop_front() {

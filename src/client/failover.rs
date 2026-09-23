@@ -241,14 +241,24 @@ impl LlmClient {
             .prepare_before_deadline(route, attempt, req, opts, started)
             .await
             .map_err(|error| (error, None, Vec::new()))?;
-        let response = self
-            .http
-            .execute(http)
-            .await
-            .map_err(|error| (error, None, prepared_file_uses.clone()))?;
-        codec
-            .decode_response(&response)
-            .map_err(|error| (error, Some(response), prepared_file_uses))
+        let cleanup = prepared_file_uses
+            .iter()
+            .find_map(|used| used.automatic_cleanup.clone());
+        let result = match self.http.execute(http).await {
+            Ok(response) => codec
+                .decode_response(&response)
+                .map_err(|error| (error, Some(response), prepared_file_uses)),
+            Err(error) => Err((error, None, prepared_file_uses)),
+        };
+        if result.is_ok() {
+            if let Some(cleanup) = cleanup {
+                let deadline = opts
+                    .total_timeout
+                    .and_then(|timeout| started.checked_add(timeout));
+                cleanup.finish(deadline).await;
+            }
+        }
+        result
     }
 
     async fn open_stream_attempt(
@@ -263,11 +273,15 @@ impl LlmClient {
             .prepare_before_deadline(route, attempt, req, opts, started)
             .await
             .map_err(|error| (error, None, Vec::new()))?;
-        let response = self
-            .http
-            .open_stream(http)
-            .await
-            .map_err(|error| (error, None, prepared_file_uses.clone()))?;
+        let cleanup = prepared_file_uses
+            .iter()
+            .find_map(|used| used.automatic_cleanup.clone());
+        let response = match self.http.open_stream(http).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err((error, None, prepared_file_uses));
+            }
+        };
         if !(200..300).contains(&response.status) {
             // Keep a bounded body for classification and stale-file detection.
             let body = collect_error_body(response.body).await;
@@ -288,6 +302,9 @@ impl LlmClient {
             response,
             codec.stream_decoder(),
             profile_name,
+            cleanup,
+            opts.total_timeout
+                .and_then(|timeout| started.checked_add(timeout)),
         ))
     }
 
@@ -430,6 +447,16 @@ impl LlmClient {
         } else {
             self.authenticators.get(&profile.auth).map(Arc::as_ref)
         };
+        let automatic_cleanup = files::needs_automatic_cleanup(profile).then(|| {
+            Arc::new(files::AutomaticFileCleanup::new(
+                Arc::clone(&self.http),
+                profile.clone(),
+                self.authenticators.get(&profile.auth).cloned(),
+                credential.cloned(),
+                attempt_opts.file_account_scope.clone(),
+                self.qwen_file_rate_limiter(profile, opts.file_account_scope.as_deref()),
+            ))
+        });
         let anthropic_request_limit = uses_first_party_anthropic_messages(profile);
         let inline_image_data_budget_bytes = if anthropic_request_limit
             && !req.attachments.is_empty()
@@ -473,6 +500,7 @@ impl LlmClient {
                     inline_image_data_budget_bytes,
                     authenticator,
                     credential,
+                    automatic_cleanup: automatic_cleanup.clone(),
                 },
             )
             .await?;

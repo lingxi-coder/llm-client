@@ -9,10 +9,11 @@ use crate::transport::{HttpRequest, HttpResponse, Transport};
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use lingxi_agent_api::protocol::{
-    AuthStrategy, LlmError, ModelProfile, ProtocolFamily, ProviderFileSource, ProviderId,
-    ProviderProfile, Secret,
+    AuthStrategy, CompletionRequest, ContentBlock, DocumentSource, ImageSource, LlmError,
+    ModelProfile, ProtocolFamily, ProviderFileSource, ProviderId, ProviderProfile, Secret,
 };
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Maximum response body retained by [`FileService::download`].
@@ -20,6 +21,13 @@ pub const MAX_PROVIDER_FILE_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 const FILE_TIMEOUT: Duration = Duration::from_secs(120);
 const GEMINI_FILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const QWEN_FILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const QWEN_FILE_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const QWEN_CLEANUP_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+const QWEN_UPLOAD_INTERVAL: Duration = Duration::from_millis(350);
+const QWEN_METADATA_INTERVAL: Duration = Duration::from_millis(110);
+const QWEN_IMAGE_MAX_UPLOAD_BYTES: u64 = 20_000_000;
+pub(crate) const QWEN_LONG_MAX_FILE_REFERENCES: usize = 100;
 const GEMINI_PDF_MAX_UPLOAD_BYTES: u64 = 50_000_000;
 const OPENAI_INPUT_FILE_MAX_UPLOAD_BYTES: u64 = 50_000_000;
 /// Automatic uploads do not expose provider IDs to callers. Providers that
@@ -36,6 +44,248 @@ pub(crate) fn automatic_file_cache_ttl(profile: &ProviderProfile) -> Option<Dura
         Some(Adapter::Anthropic | Adapter::OpenAi | Adapter::Xai)
     )
     .then_some(AUTOMATIC_FILE_CACHE_TTL)
+}
+
+/// Qwen's file-extract uploads have no provider-side expiration. Keep their
+/// automatic lifetime within one model attempt, even with a stable account scope.
+pub(crate) fn needs_automatic_cleanup(profile: &ProviderProfile) -> bool {
+    adapter(profile) == Some(Adapter::Qwen)
+}
+
+pub(crate) fn valid_qwen_file_id(file_id: &str) -> bool {
+    !file_id.is_empty()
+        && file_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+pub(crate) fn is_qwen_long_model(model: &str) -> bool {
+    model.eq_ignore_ascii_case("qwen-long") || model.to_ascii_lowercase().starts_with("qwen-long-")
+}
+
+pub(crate) fn validate_qwen_long_inputs(
+    request: &CompletionRequest,
+    resolved_attachments: &[(usize, usize)],
+) -> Result<(), LlmError> {
+    for (message_index, message) in request.messages.iter().enumerate() {
+        for (block_index, block) in message.content.iter().enumerate() {
+            if resolved_attachments.contains(&(message_index, block_index)) {
+                continue;
+            }
+            let unsupported = matches!(
+                block,
+                ContentBlock::Image {
+                    source: ImageSource::Base64 { .. } | ImageSource::Url { .. }
+                } | ContentBlock::Document {
+                    source: DocumentSource::Base64 { .. }
+                        | DocumentSource::Text { .. }
+                        | DocumentSource::Url { .. },
+                    ..
+                }
+            );
+            if unsupported {
+                return Err(LlmError::UnsupportedCapability {
+                    message: concat!(
+                        "Qwen-Long image and document inputs require an app attachment or ",
+                        "a Qwen provider file reference; inline data and URLs are unsupported"
+                    )
+                    .into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn qwen_long_region_supported(profile: &ProviderProfile) -> bool {
+    reqwest::Url::parse(&profile.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host == "dashscope.aliyuncs.com"
+                || host
+                    .strip_suffix(".cn-beijing.maas.aliyuncs.com")
+                    .is_some_and(valid_workspace_id)
+        })
+}
+
+/// Pace automatic file operations for one configured Qwen connection. The
+/// upload and metadata/delete buckets have separate documented QPS limits.
+pub(crate) struct QwenFileRateLimiter {
+    next_upload: futures::lock::Mutex<Instant>,
+    next_metadata: futures::lock::Mutex<Instant>,
+}
+
+impl QwenFileRateLimiter {
+    pub(crate) fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            next_upload: futures::lock::Mutex::new(now),
+            next_metadata: futures::lock::Mutex::new(now),
+        }
+    }
+
+    async fn wait_upload(&self) {
+        Self::wait(&self.next_upload, QWEN_UPLOAD_INTERVAL).await;
+    }
+
+    async fn wait_metadata(&self) {
+        Self::wait(&self.next_metadata, QWEN_METADATA_INTERVAL).await;
+    }
+
+    async fn wait(next: &futures::lock::Mutex<Instant>, interval: Duration) {
+        let mut next = next.lock().await;
+        let delay = next.saturating_duration_since(Instant::now());
+        if !delay.is_zero() {
+            async_delay(delay).await;
+        }
+        *next = Instant::now() + interval;
+    }
+}
+
+/// Owns automatic Qwen uploads until the model response or stream is finished.
+/// A dropped preparation/stream still schedules deletion, including when a
+/// request is cancelled while file parsing is in progress.
+pub(crate) struct AutomaticFileCleanup {
+    http: Arc<dyn Transport>,
+    profile: ProviderProfile,
+    authenticator: Option<Arc<dyn Authenticator>>,
+    credential: Option<Secret<String>>,
+    account_scope: Option<String>,
+    rate_limiter: Arc<QwenFileRateLimiter>,
+    pending: Mutex<Vec<ProviderFileRef>>,
+}
+
+impl AutomaticFileCleanup {
+    pub(crate) fn new(
+        http: Arc<dyn Transport>,
+        profile: ProviderProfile,
+        authenticator: Option<Arc<dyn Authenticator>>,
+        credential: Option<Secret<String>>,
+        account_scope: Option<String>,
+        rate_limiter: Arc<QwenFileRateLimiter>,
+    ) -> Self {
+        Self {
+            http,
+            profile,
+            authenticator,
+            credential,
+            account_scope,
+            rate_limiter,
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn rate_limiter(&self) -> Arc<QwenFileRateLimiter> {
+        Arc::clone(&self.rate_limiter)
+    }
+
+    pub(crate) fn track(&self, file: ProviderFileRef) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(file);
+    }
+
+    /// Delete after the provider has returned the complete response, using
+    /// only the caller's remaining deadline. Unfinished deletions remain
+    /// pending for the drop-time retry.
+    pub(crate) async fn finish(&self, deadline: Option<Instant>) {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + QWEN_CLEANUP_DEFAULT_TIMEOUT);
+        let files = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let service = FileService::new(
+            self.http.as_ref(),
+            &self.profile,
+            self.authenticator.as_deref(),
+            self.credential.as_ref(),
+            self.account_scope.as_deref(),
+        )
+        .with_qwen_rate_limiter(Arc::clone(&self.rate_limiter));
+        for file in files {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let deleted = if tokio::runtime::Handle::try_current().is_ok() {
+                tokio::time::timeout(remaining, service.delete(&file))
+                    .await
+                    .is_ok_and(|result| result.is_ok())
+            } else {
+                matches!(
+                    futures::future::select(
+                        Box::pin(service.delete(&file)),
+                        Box::pin(async_delay(remaining)),
+                    )
+                    .await,
+                    futures::future::Either::Left((Ok(()), _))
+                )
+            };
+            if deleted {
+                self.pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retain(|pending| pending.file_id != file.file_id);
+            }
+        }
+    }
+}
+
+impl Drop for AutomaticFileCleanup {
+    fn drop(&mut self) {
+        let files = std::mem::take(
+            self.pending
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if files.is_empty() {
+            return;
+        }
+        let http = Arc::clone(&self.http);
+        let profile = self.profile.clone();
+        let authenticator = self.authenticator.clone();
+        let credential = self.credential.clone();
+        let account_scope = self.account_scope.clone();
+        let rate_limiter = Arc::clone(&self.rate_limiter);
+        let cleanup = async move {
+            // A stream may be dropped while the provider is still unwinding
+            // its request. Do not delete the file immediately at that point.
+            async_delay(Duration::from_secs(2)).await;
+            let service = FileService::new(
+                http.as_ref(),
+                &profile,
+                authenticator.as_deref(),
+                credential.as_ref(),
+                account_scope.as_deref(),
+            )
+            .with_qwen_rate_limiter(rate_limiter);
+            for file in files {
+                for attempt in 0..3 {
+                    if service.delete(&file).await.is_ok() {
+                        break;
+                    }
+                    if attempt < 2 {
+                        async_delay(Duration::from_secs(1 << attempt)).await;
+                    }
+                }
+            }
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(cleanup);
+        } else {
+            std::thread::spawn(move || {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    runtime.block_on(cleanup);
+                }
+            });
+        }
+    }
 }
 
 /// Return the stable, non-secret endpoint fingerprint carried by provider
@@ -238,6 +488,7 @@ pub struct FileService<'a> {
     authenticator: Option<&'a dyn Authenticator>,
     credential: Option<&'a Secret<String>>,
     account_scope: Option<&'a str>,
+    qwen_rate_limiter: Option<Arc<QwenFileRateLimiter>>,
 }
 
 impl<'a> FileService<'a> {
@@ -255,6 +506,24 @@ impl<'a> FileService<'a> {
             authenticator,
             credential,
             account_scope,
+            qwen_rate_limiter: None,
+        }
+    }
+
+    pub(crate) fn with_qwen_rate_limiter(mut self, limiter: Arc<QwenFileRateLimiter>) -> Self {
+        self.qwen_rate_limiter = Some(limiter);
+        self
+    }
+
+    async fn pace_qwen_upload(&self) {
+        if let Some(limiter) = &self.qwen_rate_limiter {
+            limiter.wait_upload().await;
+        }
+    }
+
+    async fn pace_qwen_metadata(&self) {
+        if let Some(limiter) = &self.qwen_rate_limiter {
+            limiter.wait_metadata().await;
         }
     }
 
@@ -298,9 +567,18 @@ impl<'a> FileService<'a> {
             Some(Adapter::Anthropic | Adapter::OpenAi | Adapter::Xai)
         )
         .then_some(AUTOMATIC_FILE_TTL.as_secs());
-        let uploaded = self
-            .upload_with_expiration(file, purpose, expiration)
-            .await?;
+        let mut retries = 0;
+        let uploaded = loop {
+            match self.upload_with_expiration(file, purpose, expiration).await {
+                Err(LlmError::RateLimited { .. })
+                    if adapter(self.profile) == Some(Adapter::Qwen) && retries < 3 =>
+                {
+                    async_delay(Duration::from_millis(500 * (1 << retries))).await;
+                    retries += 1;
+                }
+                result => break result?,
+            }
+        };
         if adapter(self.profile) == Some(Adapter::Anthropic)
             && serde_json::to_string(&uploaded.file_id).map_or(true, |encoded| {
                 encoded.len() > MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES
@@ -315,6 +593,71 @@ impl<'a> FileService<'a> {
             });
         }
         Ok(uploaded)
+    }
+
+    /// Qwen starts parsing after upload. Only a processed file may be placed
+    /// in a model request; uploaded/processing IDs are not ready yet.
+    pub(crate) async fn wait_for_qwen_file_ready(
+        &self,
+        file: &ProviderFileRef,
+        timeout: Option<Duration>,
+    ) -> Result<(), LlmError> {
+        if adapter(self.profile) != Some(Adapter::Qwen) {
+            return Ok(());
+        }
+        if !valid_qwen_file_id(&file.file_id) {
+            return Err(provider_shape("Qwen upload returned an invalid file ID"));
+        }
+        let deadline = Instant::now()
+            + timeout
+                .unwrap_or(QWEN_FILE_PROCESSING_TIMEOUT)
+                .min(QWEN_FILE_PROCESSING_TIMEOUT);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(LlmError::TransportTimeout {
+                    message: "Qwen file parsing timed out".into(),
+                });
+            }
+            let mut request = self
+                .request(
+                    "GET",
+                    file_url(self.profile, Adapter::Qwen, &file.file_id),
+                    Bytes::new(),
+                    None,
+                )
+                .await?;
+            self.pace_qwen_metadata().await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(LlmError::TransportTimeout {
+                    message: "Qwen file parsing timed out".into(),
+                });
+            }
+            request.timeout = Some(remaining.min(FILE_TIMEOUT));
+            let response = self.http.execute_no_follow(request).await?;
+            let value = match adapter_json_success(Adapter::Qwen, &response, "file metadata") {
+                Err(LlmError::RateLimited { .. }) => {
+                    async_delay(QWEN_FILE_POLL_INTERVAL.min(remaining)).await;
+                    continue;
+                }
+                result => result?,
+            };
+            let metadata = decode_metadata(self.profile, self.account_scope, &value)?;
+            if metadata.file.file_id != file.file_id {
+                return Err(provider_shape(
+                    "Qwen file metadata returned another file ID",
+                ));
+            }
+            match metadata.status.as_deref() {
+                Some("processed") => return Ok(()),
+                Some("error") => return Err(provider_shape("Qwen file parsing failed")),
+                Some("uploaded" | "processing") => {
+                    async_delay(QWEN_FILE_POLL_INTERVAL.min(remaining)).await;
+                }
+                _ => return Err(provider_shape("Qwen file metadata has an unknown status")),
+            }
+        }
     }
 
     async fn upload_with_expiration(
@@ -371,6 +714,9 @@ impl<'a> FileService<'a> {
                 Some(format!("multipart/form-data; boundary={boundary}")),
             )
             .await?;
+        if adapter == Adapter::Qwen {
+            self.pace_qwen_upload().await;
+        }
         let response = self.http.execute_no_follow(req).await?;
         let value = adapter_json_success(adapter, &response, "file upload")?;
         let mut metadata = decode_metadata(self.profile, self.account_scope, &value)?;
@@ -404,6 +750,9 @@ impl<'a> FileService<'a> {
             file_url(self.profile, adapter, &file.file_id)
         };
         let req = self.request("GET", url, Bytes::new(), None).await?;
+        if adapter == Adapter::Qwen {
+            self.pace_qwen_metadata().await;
+        }
         let response = self.http.execute_no_follow(req).await?;
         let value = adapter_json_success(adapter, &response, "file metadata")?;
         decode_metadata(self.profile, self.account_scope, &value)
@@ -449,6 +798,9 @@ impl<'a> FileService<'a> {
         }
         let (url, cursor_field) = list_url(self.profile, adapter, purpose, cursor);
         let req = self.request("GET", url, Bytes::new(), None).await?;
+        if adapter == Adapter::Qwen {
+            self.pace_qwen_metadata().await;
+        }
         let response = self.http.execute_no_follow(req).await?;
         let value = adapter_json_success(adapter, &response, "file listing")?;
         let rows = value
@@ -469,13 +821,20 @@ impl<'a> FileService<'a> {
                 .get("has_more")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
-                .then(|| {
-                    value
-                        .get("last_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
+                .then(|| value.get("last_id").and_then(nonempty_string))
                 .flatten(),
+            CursorField::Qwen => {
+                if value.get("has_more").and_then(Value::as_bool) == Some(true) {
+                    Some(
+                        rows.last()
+                            .and_then(|row| row.get("id"))
+                            .and_then(nonempty_string)
+                            .ok_or_else(|| provider_shape("Qwen file list has no next-page ID"))?,
+                    )
+                } else {
+                    None
+                }
+            }
             CursorField::Anthropic => value.get("next_page").and_then(nonempty_string),
             CursorField::Gemini => value.get("nextPageToken").and_then(nonempty_string),
             CursorField::Xai if rows.len() >= 100 => {
@@ -528,8 +887,23 @@ impl<'a> FileService<'a> {
             )
         };
         let req = self.request(method, url, body, content_type).await?;
+        if adapter == Adapter::Qwen {
+            self.pace_qwen_metadata().await;
+        }
         let response = self.http.execute_no_follow(req).await?;
         adapter_status_result(adapter, &response, "file deletion")?;
+        if adapter == Adapter::Qwen {
+            let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
+                provider_shape(&format!("file deletion response was not JSON: {error}"))
+            })?;
+            if value.get("deleted").and_then(Value::as_bool) != Some(true)
+                || value.get("id").and_then(Value::as_str) != Some(file.file_id.as_str())
+            {
+                return Err(provider_shape(
+                    "Qwen did not confirm deletion of the requested file",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -895,9 +1269,9 @@ fn model_reference_for(
     let has_file_modality = model_declares_file_input(model_profile);
     match adapter {
         Adapter::Qwen
-            if is_qwen_region_supported(profile)
+            if qwen_long_region_supported(profile)
                 && profile.protocol == ProtocolFamily::OpenAiChat
-                && model.eq_ignore_ascii_case("qwen-long")
+                && is_qwen_long_model(model)
                 && is_qwen_file_type(&media_type) =>
         {
             ModelFileReference::FileUri
@@ -951,16 +1325,27 @@ fn model_reference_for(
     }
 }
 
-fn is_qwen_region_supported(profile: &ProviderProfile) -> bool {
-    reqwest::Url::parse(&profile.base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            matches!(
-                host.as_str(),
-                "dashscope.aliyuncs.com" | "dashscope-intl.aliyuncs.com"
-            )
-        })
+fn is_qwen_files_host(host: &str) -> bool {
+    if matches!(
+        host,
+        "dashscope.aliyuncs.com" | "dashscope-intl.aliyuncs.com"
+    ) {
+        return true;
+    }
+    [
+        ".cn-beijing.maas.aliyuncs.com",
+        ".ap-southeast-1.maas.aliyuncs.com",
+    ]
+    .iter()
+    .find_map(|suffix| host.strip_suffix(suffix))
+    .is_some_and(valid_workspace_id)
+}
+
+fn valid_workspace_id(workspace: &str) -> bool {
+    !workspace.is_empty()
+        && workspace
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 fn is_qwen_file_type(media_type: &str) -> bool {
@@ -1133,7 +1518,7 @@ fn adapter(profile: &ProviderProfile) -> Option<Adapter> {
         ("kimi" | "moonshot", "api.moonshot.cn" | "api.moonshot.ai") => Some(Adapter::Moonshot),
         ("zhipu", "api.z.ai") => Some(Adapter::Zai),
         ("zhipu", "open.bigmodel.cn") => Some(Adapter::Zhipu),
-        ("qwen", "dashscope.aliyuncs.com" | "dashscope-intl.aliyuncs.com") => Some(Adapter::Qwen),
+        ("qwen", host) if is_qwen_files_host(host) => Some(Adapter::Qwen),
         ("minimax", "api.minimaxi.com" | "api.minimax.io") => Some(Adapter::MiniMax),
         _ => None,
     }
@@ -1335,6 +1720,12 @@ fn capabilities_for_media_type(
                     limit.min(GEMINI_PDF_MAX_UPLOAD_BYTES)
                 }),
         );
+    }
+    if adapter == Adapter::Qwen
+        && capabilities.upload
+        && media_type.to_ascii_lowercase().starts_with("image/")
+    {
+        capabilities.max_upload_bytes = Some(QWEN_IMAGE_MAX_UPLOAD_BYTES);
     }
     capabilities
 }
@@ -1539,6 +1930,7 @@ fn file_url(profile: &ProviderProfile, adapter: Adapter, file_id: &str) -> Strin
 #[derive(Clone, Copy)]
 enum CursorField {
     OpenAi,
+    Qwen,
     Anthropic,
     Gemini,
     Xai,
@@ -1585,7 +1977,7 @@ fn list_url(
         Adapter::Gemini => CursorField::Gemini,
         Adapter::Xai => CursorField::Xai,
         Adapter::OpenRouter => CursorField::OpenRouter,
-        Adapter::Qwen => CursorField::OpenAi,
+        Adapter::Qwen => CursorField::Qwen,
         _ => CursorField::OpenAi,
     };
     let mut params = vec![(limit_field.to_owned(), limit.to_owned())];

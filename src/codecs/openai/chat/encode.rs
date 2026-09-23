@@ -43,7 +43,21 @@ pub fn request(
     let max_tokens_field = max_tokens_field(profile)?;
     let mut messages = Vec::new();
     let qwen_long = profile.provider_id.as_str() == "qwen"
-        && route.request_model.eq_ignore_ascii_case("qwen-long");
+        && crate::client::files::is_qwen_long_model(&route.request_model);
+    if qwen_long {
+        if !crate::client::files::qwen_long_region_supported(profile) {
+            return Err(LlmError::UnsupportedCapability {
+                message: "Qwen-Long is supported only on a Beijing Qwen endpoint".into(),
+            });
+        }
+        crate::client::files::validate_qwen_long_inputs(req, &[])?;
+    }
+    let keep_reasoning = flag(profile, "preserve_reasoning_content");
+    let pdf_only_files = flag(profile, "chat_pdf_only")
+        || reqwest::Url::parse(&profile.base_url)
+            .ok()
+            .is_some_and(|url| url.host_str() == Some("api.openai.com"));
+    let mut consumed_leading_system = false;
 
     // Several system blocks become one system message: the wire has one slot,
     // and the cacheable/non-cacheable split is a prefix-caching concern that
@@ -55,37 +69,91 @@ pub fn request(
             .map(|b| b.text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
-        messages.push(json!({"role": "system", "content": text}));
+        if !qwen_long || !text.trim().is_empty() {
+            messages.push(json!({"role": "system", "content": text}));
+        }
     }
 
     if qwen_long {
         let mut file_ids = Vec::new();
         for block in req.messages.iter().flat_map(|message| &message.content) {
-            if let ContentBlock::Document {
-                source: DocumentSource::ProviderFile { file },
-                ..
-            } = block
-            {
-                let file = crate::codecs::validate_provider_file(file, profile, opts)?;
-                if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat
-                    || file.purpose.as_deref() != Some("file-extract")
-                {
-                    return Err(crate::codecs::provider_file_protocol_error());
+            let file = match block {
+                ContentBlock::Document {
+                    source: DocumentSource::ProviderFile { file },
+                    ..
                 }
-                file_ids.push(format!("fileid://{}", file.file_id));
+                | ContentBlock::Image {
+                    source: ImageSource::ProviderFile { file },
+                } => file,
+                _ => continue,
+            };
+            let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+            if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat
+                || file.purpose.as_deref() != Some("file-extract")
+            {
+                return Err(crate::codecs::provider_file_protocol_error());
             }
+            if !crate::client::files::valid_qwen_file_id(&file.file_id) {
+                return Err(LlmError::InvalidRequest {
+                    message: "Qwen-Long file IDs must contain only letters, digits, hyphens, or underscores".into(),
+                });
+            }
+            file_ids.push(format!("fileid://{}", file.file_id));
         }
         if !file_ids.is_empty() {
-            messages.push(json!({"role": "system", "content": file_ids.join("\n")}));
+            if file_ids.len() > crate::client::files::QWEN_LONG_MAX_FILE_REFERENCES {
+                return Err(LlmError::InvalidRequest {
+                    message: format!(
+                        "Qwen-Long accepts at most {} file references per request",
+                        crate::client::files::QWEN_LONG_MAX_FILE_REFERENCES
+                    ),
+                });
+            }
+            if messages.is_empty() {
+                if let Some(first) = req
+                    .messages
+                    .first()
+                    .filter(|message| matches!(&message.role, MessageRole::System))
+                {
+                    let mut encoded = encode_message(
+                        first,
+                        keep_reasoning,
+                        pdf_only_files,
+                        qwen_long,
+                        profile,
+                        opts,
+                    )?;
+                    if encoded.len() == 1
+                        && encoded[0].get("role").and_then(Value::as_str) == Some("system")
+                        && encoded[0]
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .is_some_and(|content| !content.trim().is_empty())
+                    {
+                        messages.push(encoded.remove(0));
+                        consumed_leading_system = true;
+                    }
+                }
+                if messages.is_empty() {
+                    messages
+                        .push(json!({"role": "system", "content": "You are a helpful assistant."}));
+                }
+            } else if messages[0]
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.trim().is_empty())
+            {
+                messages[0]["content"] = Value::String("You are a helpful assistant.".into());
+            }
+            messages.push(json!({"role": "system", "content": file_ids.join(",")}));
         }
     }
 
-    let keep_reasoning = flag(profile, "preserve_reasoning_content");
-    let pdf_only_files = flag(profile, "chat_pdf_only")
-        || reqwest::Url::parse(&profile.base_url)
-            .ok()
-            .is_some_and(|url| url.host_str() == Some("api.openai.com"));
-    for m in &req.messages {
+    for m in req
+        .messages
+        .iter()
+        .skip(usize::from(consumed_leading_system))
+    {
         messages.extend(encode_message(
             m,
             keep_reasoning,
@@ -227,7 +295,14 @@ fn encode_message(
                 }
             }
             ContentBlock::Image { source } => match source {
-                ImageSource::ProviderFile { .. } => {
+                ImageSource::ProviderFile { file } => {
+                    let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                    if qwen_long
+                        && file.protocol == lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat
+                        && file.purpose.as_deref() == Some("file-extract")
+                    {
+                        continue;
+                    }
                     return Err(LlmError::UnsupportedCapability {
                         message: "Chat Completions image input does not support provider file ids"
                             .into(),

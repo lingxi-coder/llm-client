@@ -235,6 +235,7 @@ impl LlmClientBuilder {
             attachment_resolver: self.attachment_resolver,
             provider_file_cache: Mutex::new(BTreeMap::new()),
             provider_file_upload_locks: Mutex::new(BTreeMap::new()),
+            qwen_file_rate_limiters: Mutex::new(BTreeMap::new()),
             profiles: self.profiles,
             store,
         })
@@ -307,6 +308,7 @@ pub struct LlmClient {
     provider_file_cache: Mutex<BTreeMap<FileCacheKey, CachedProviderFile>>,
     provider_file_upload_locks:
         Mutex<BTreeMap<FileCacheKey, std::sync::Weak<futures::lock::Mutex<()>>>>,
+    qwen_file_rate_limiters: Mutex<BTreeMap<(String, String), Arc<files::QwenFileRateLimiter>>>,
     profiles: Vec<ProviderProfile>,
     store: store::ProviderStore,
 }
@@ -342,6 +344,7 @@ pub(crate) struct ProviderFilePreparation<'a> {
     pub inline_image_data_budget_bytes: Option<usize>,
     pub authenticator: Option<&'a dyn Authenticator>,
     pub credential: Option<&'a lingxi_agent_api::protocol::Secret<String>>,
+    pub automatic_cleanup: Option<Arc<files::AutomaticFileCleanup>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -365,12 +368,105 @@ struct CachedProviderFile {
     cached_at: Instant,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct PreparedProviderFileUse {
     // An unscoped request has no cache entry, but still needs a 404 retry.
     key: Option<FileCacheKey>,
     file_id: String,
     uri: Option<String>,
+    automatic_cleanup: Option<Arc<files::AutomaticFileCleanup>>,
+}
+
+fn is_qwen_long(profile: &ProviderProfile, model: &str) -> bool {
+    profile.provider_id.as_str() == "qwen" && files::is_qwen_long_model(model)
+}
+
+fn preflight_qwen_long_files(
+    profile: &ProviderProfile,
+    model: &str,
+    request: &CompletionRequest,
+    attachments: &[ResolvedAttachmentPayload],
+    opts: &RequestOptions,
+) -> Result<(), LlmError> {
+    if !is_qwen_long(profile, model) {
+        return Ok(());
+    }
+    if !files::qwen_long_region_supported(profile) {
+        return Err(LlmError::UnsupportedCapability {
+            message: "Qwen-Long is supported only on a Beijing Qwen endpoint".into(),
+        });
+    }
+    let resolved_positions = attachments
+        .iter()
+        .map(|payload| (payload.message_index, payload.block_index))
+        .collect::<Vec<_>>();
+    files::validate_qwen_long_inputs(request, &resolved_positions)?;
+    let mut total_references = 0;
+    for block in request.messages.iter().flat_map(|message| &message.content) {
+        let file = match block {
+            ContentBlock::Document {
+                source: DocumentSource::ProviderFile { file },
+                ..
+            }
+            | ContentBlock::Image {
+                source: ImageSource::ProviderFile { file },
+            } => file,
+            _ => continue,
+        };
+        let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+        if file.protocol != ProtocolFamily::OpenAiChat
+            || file.purpose.as_deref() != Some("file-extract")
+        {
+            return Err(crate::codecs::provider_file_protocol_error());
+        }
+        if !files::valid_qwen_file_id(&file.file_id) {
+            return Err(LlmError::InvalidRequest {
+                message:
+                    "Qwen-Long file IDs must contain only letters, digits, hyphens, or underscores"
+                        .into(),
+            });
+        }
+        total_references += 1;
+    }
+    for payload in attachments {
+        if payload.kind == AttachmentKind::Video {
+            continue;
+        }
+        let caps = files::capabilities_for_purpose(
+            profile,
+            model,
+            &payload.attachment.media_type,
+            files::FilePurpose::ModelInput,
+        );
+        if !caps.upload || caps.model_input == files::ModelFileReference::Unsupported {
+            return Err(LlmError::UnsupportedCapability {
+                message: format!(
+                    "Qwen-Long has no documented file input for media type {:?}",
+                    payload.attachment.media_type
+                ),
+            });
+        }
+        if let Some(limit) = caps.max_upload_bytes {
+            if u64::try_from(payload.bytes.len()).unwrap_or(u64::MAX) > limit {
+                return Err(LlmError::RequestTooLarge {
+                    message: format!(
+                        "Qwen-Long file {:?} exceeds the provider limit of {limit} bytes",
+                        payload.attachment.filename
+                    ),
+                });
+            }
+        }
+        total_references += 1;
+    }
+    if total_references > files::QWEN_LONG_MAX_FILE_REFERENCES {
+        return Err(LlmError::InvalidRequest {
+            message: format!(
+                "Qwen-Long accepts at most {} file references per request",
+                files::QWEN_LONG_MAX_FILE_REFERENCES
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn is_image_media_type(media_type: &str) -> bool {
@@ -777,6 +873,28 @@ impl LlmClient {
         })
     }
 
+    pub(crate) fn qwen_file_rate_limiter(
+        &self,
+        profile: &ProviderProfile,
+        stable_account_scope: Option<&str>,
+    ) -> Arc<files::QwenFileRateLimiter> {
+        let key = (
+            profile.base_url.clone(),
+            stable_account_scope
+                .unwrap_or(&profile.profile_name)
+                .to_owned(),
+        );
+        let mut limiters = self
+            .qwen_file_rate_limiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            limiters
+                .entry(key)
+                .or_insert_with(|| Arc::new(files::QwenFileRateLimiter::new())),
+        )
+    }
+
     /// Replace eligible model inputs with files uploaded for this exact
     /// failover attempt. The resolved source bytes stay app-owned and are
     /// never overwritten in the caller's request.
@@ -795,8 +913,10 @@ impl LlmClient {
             inline_image_data_budget_bytes,
             authenticator,
             credential,
+            automatic_cleanup,
         } = preparation;
         validate_first_party_image_media_types(request, profile)?;
+        preflight_qwen_long_files(profile, model, request, attachments, opts)?;
         if uses_first_party_openai_file_inputs(profile) {
             validate_first_party_openai_documents(request, profile.protocol)?;
         }
@@ -866,6 +986,7 @@ impl LlmClient {
             // request limits; documents use native references when the exact
             // provider/model pair explicitly supports them.
             if payload.kind == AttachmentKind::Image
+                && !is_qwen_long(profile, model)
                 && payload.bytes.len() <= INLINE_IMAGE_PREFERENCE_LIMIT
                 && inline_image_data_budget_bytes
                     .is_none_or(|budget| inline_image_data_bytes <= budget)
@@ -884,6 +1005,11 @@ impl LlmClient {
                 credential,
                 opts.file_account_scope.as_deref(),
             );
+            let service = if let Some(cleanup) = automatic_cleanup.as_ref() {
+                service.with_qwen_rate_limiter(cleanup.rate_limiter())
+            } else {
+                service
+            };
             let capabilities =
                 service.capabilities_for_purpose(model, &payload.attachment.media_type, purpose);
             if !capabilities.upload
@@ -919,18 +1045,20 @@ impl LlmClient {
             let file = if let Some(file) = local_files.get(&local_key) {
                 file.clone()
             } else {
-                let cache_key = stable_account_scope.map(|scope| FileCacheKey {
-                    attachment_id: payload.attachment.attachment_id.clone(),
-                    revision: payload.attachment.revision.clone(),
-                    filename: payload.attachment.filename.clone(),
-                    media_type: payload.attachment.media_type.clone(),
-                    profile_name: profile.profile_name.clone(),
-                    provider_id: profile.provider_id.clone(),
-                    protocol: profile.protocol,
-                    base_url: profile.base_url.clone(),
-                    account_scope: scope.to_owned(),
-                    purpose: purpose_key.to_owned(),
-                });
+                let cache_key = stable_account_scope
+                    .filter(|_| automatic_cleanup.is_none())
+                    .map(|scope| FileCacheKey {
+                        attachment_id: payload.attachment.attachment_id.clone(),
+                        revision: payload.attachment.revision.clone(),
+                        filename: payload.attachment.filename.clone(),
+                        media_type: payload.attachment.media_type.clone(),
+                        profile_name: profile.profile_name.clone(),
+                        provider_id: profile.provider_id.clone(),
+                        protocol: profile.protocol,
+                        base_url: profile.base_url.clone(),
+                        account_scope: scope.to_owned(),
+                        purpose: purpose_key.to_owned(),
+                    });
                 let upload_lock = cache_key.as_ref().map(|key| {
                     let mut locks = self
                         .provider_file_upload_locks
@@ -972,6 +1100,12 @@ impl LlmClient {
                             purpose,
                         )
                         .await?;
+                    if let Some(cleanup) = automatic_cleanup.as_ref() {
+                        cleanup.track(file.clone());
+                        service
+                            .wait_for_qwen_file_ready(&file, opts.total_timeout)
+                            .await?;
+                    }
                     if let Some(cache_key) = cache_key.as_ref() {
                         let now = Instant::now();
                         let retention =
@@ -999,6 +1133,7 @@ impl LlmClient {
                     key: cache_key,
                     file_id: file.file_id.clone(),
                     uri: file.uri.clone(),
+                    automatic_cleanup: automatic_cleanup.clone(),
                 });
                 file
             };

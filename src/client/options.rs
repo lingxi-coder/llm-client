@@ -27,10 +27,12 @@ pub struct RequestOptions {
     /// Stable, non-secret identity of the account used for provider file
     /// caching. Supply the same value only for the same provider account; when
     /// absent, uploaded files are scoped to the current request and are not
-    /// reused across calls.
+    /// reused across calls. Qwen automatic uploads are request-scoped even
+    /// when this value is stable, because Qwen does not expire stored files.
     pub file_account_scope: Option<String>,
     /// Total request deadline, including response body reads. `complete()`
     /// defaults to 120 seconds when omitted; `stream()` has no default total
-    /// deadline and relies on the transport's idle-read timeout.
+    /// deadline and relies on the transport's idle-read timeout. Automatic
+    /// Qwen cleanup uses only the remaining budget, then retries in the background.
     pub total_timeout: Option<Duration>,
 }
