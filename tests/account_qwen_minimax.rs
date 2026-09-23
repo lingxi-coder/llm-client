@@ -99,6 +99,7 @@ async fn qwen_usage_reads_workspace_limits_and_signed_per_key_daily_costs() {
         })),
     ]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("qwen")])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);
@@ -249,6 +250,7 @@ async fn qwen_workspace_quota_reads_all_pages() {
         json!({"success":true,"output":{"total":101,"page_no":2,"page_size":100,"quotas":second_page}}),
     ]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("qwen")])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);
@@ -282,6 +284,7 @@ async fn minimax_usage_maps_only_explicit_quota_fields() {
         }]
     })]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("minimax-intl")])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);
@@ -319,6 +322,7 @@ async fn minimax_china_quota_uses_the_china_api_host() {
         "model_remains":[]
     })]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("minimax")])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);

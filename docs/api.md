@@ -4,6 +4,19 @@
 
 本文对应本仓库的 Rust API。`lingxi-llm-client` 是库，内置 HTTP 客户端，不提供监听端口的 HTTP 服务、CLI 或密钥管理服务。核心客户端 API 可从 `lingxi_llm_client` 导入；请求、响应和配置类型通过 `lingxi_llm_client::protocol` 导入。
 
+## Region 区域过滤
+
+构建 client 必须显式调用 `.with_region(Region::ChinaMainland)` 或 `.with_region(Region::International)`，否则 `build()` 返回 `BuildError::MissingRegion`。`Region` 从 `lingxi_llm_client::protocol` 导入；`client.region()` 返回当前选择。区域在 client 生命周期内固定，切换时重新构建 client，并可复用同一配置目录。
+
+`ProviderProfile.regions` 声明使用区域，例如 TOML 中 `regions = ["china_mainland"]`；两区共享时填写 `["china_mainland", "international"]`。自定义及旧配置缺省为两区可用，显式 `[]` 则两区均不可用。模型继承所属 profile 的区域，`ProviderListing` 和 `ModelListing` 都返回 `regions`。
+
+`providers()` 和 `models()` 先按区域过滤，再应用各自现有的隐藏状态和模型白名单规则。模型解析、限定 profile/group 的调用、普通与流式请求、搜索及备用链都受区域限制；其他区域的同名模型不参与歧义判断。区域内的隐藏备用账号仍可用于故障切换。区域声明不保证网络可达性，不根据 IP、语言或 URL 自动推断，也不会改写 API 地址。
+
+`provider()`、`profiles()` 是完整配置管理视图；CRUD、同步、账号 usage 和独立文件管理仍可操作其他区域账号。过滤不删除配置或模型，当前 client 的区域不写入共享 `providers.json`。旧配置未声明 `regions` 时继续两区可用，包括旧配置覆盖的内置 profile；恢复内置配置会恢复其显式地区声明。
+
+内置国内 profile：`qwen`、`qwen-search`、`minimax`、`kimi`、`kimi-search`、`glm`、`glm-coding`。`deepseek`、`deepseek-search`、`kimi-code` 两区共享；其他内置 profile 属于国际区域，包括 Qwen 香港、新加坡、美国及对应搜索连接。
+
+
 ## 目录
 
 - [接入与生命周期](#接入与生命周期)
@@ -55,7 +68,9 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
             }
         }]
     }))?;
-    let client = LlmClientBuilder::new(&[profile])?.build()?;
+    let client = LlmClientBuilder::new(&[profile])?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
     let request = CompletionRequest {
         model: "my-model".into(),
         web_search: None,
@@ -90,6 +105,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | --- | --- | --- |
 | `new(&[ProviderProfile])` | `Result<Self, LlmError>` | 创建内置 HTTP 传输和系统时钟，注册全部内置 codec、目录解析器，以及 `ApiKey` / `Bearer` 认证器 |
 | `with_transport(Arc<dyn Transport>, &[ProviderProfile])` | `Self` | 使用自定义传输与内置系统时钟，注册全部内置 codec、目录解析器及 `ApiKey` / `Bearer` 认证器 |
+| `with_region(Region)` | `Self` | 消费并返回 builder，设置必选的使用区域 |
 | `with_clock(Arc<dyn Clock>)` | `&mut Self` | 覆盖构建器的时钟，适用于固定时间的测试 |
 | `register_codec(Arc<dyn WireCodec>)` | `&mut Self` | 按协议族添加或替换 codec |
 | `register_directory(Arc<dyn ModelDirectory>)` | `&mut Self` | 按目录协议形状添加或替换解析器 |
@@ -100,7 +116,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `codec_families()` | `Vec<ProtocolFamily>` | 查询已注册的协议族 |
 | `build(self)` | `Result<LlmClient, BuildError>` | 消费构建器并验证配置 |
 
-`BuildError` 包括 `DuplicateProfile { profile_name }`、`MissingCodec { profile_name, family }`、`MissingAuthenticator { profile_name, strategy }` 和 `InvalidPeakSchedule { profile_name, reason }`。`AuthStrategy::None` 不需要认证器；缺少目录解析器不阻止构建。构建时会拒绝无效或空的峰值价格时间窗；构建成功不代表凭证有效、地址可达或 provider 支持所有请求参数。
+`BuildError` 包括 `MissingRegion`、 `DuplicateProfile { profile_name }`、`MissingCodec { profile_name, family }`、`MissingAuthenticator { profile_name, strategy }` 和 `InvalidPeakSchedule { profile_name, reason }`。`AuthStrategy::None` 不需要认证器；缺少目录解析器不阻止构建。构建时会拒绝无效或空的峰值价格时间窗；构建成功不代表凭证有效、地址可达或 provider 支持所有请求参数。
 
 ### `LlmClient`
 
@@ -116,8 +132,9 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `web_search_stream_in(&str, &CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 在指定 profile 或连接组上流式搜索 |
 | `resolve(&str)` | `Result<ResolvedRoute, ResolveError>` | 在配置中解析模型及故障转移链 |
 | `resolve_in(&str, Option<&str>)` | 同上 | 显式限制起始连接或连接组 |
-| `models()` | `Vec<ModelListing>` | 返回当前有效配置中的模型（包括已同步的目录模型），跳过 `connection.hidden` 连接 |
-| `providers()` | `Vec<ProviderListing>` | 返回所有连接，包括隐藏连接和没有凭证的连接 |
+| `region()` | `Region` | 返回构建时选择的使用区域 |
+| `models()` | `Vec<ModelListing>` | 返回当前区域有效配置中的模型（包括已同步的目录模型），跳过 `connection.hidden` 连接 |
+| `providers()` | `Vec<ProviderListing>` | 返回当前区域的连接，包括隐藏连接和没有凭证的连接 |
 | `account_usage(&str, &AccountQuery).await` | `Result<AccountSnapshot, AccountUsageError>` | 查询一个连接的账户额度与用量 |
 | `accounts_usage(&BTreeMap<String, AccountQuery>).await` | `Vec<(String, Result<AccountSnapshot, AccountUsageError>)>` | 逐连接查询，保留独立结果 |
 | `register_profile_account_source(&str, AccountIdentity, Arc<dyn AccountUsageSource>)` | `Result<(), ProviderStoreError>` | 配置变更后为连接重新绑定登录会话 |
@@ -197,7 +214,9 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
     let profiles = builtin_providers()?;
-    let client = LlmClientBuilder::new(&profiles)?.build()?;
+    let client = LlmClientBuilder::new(&profiles)?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
     let request: CompletionRequest = serde_json::from_value(serde_json::json!({
         "model": "glm/glm-4.7",
         "messages": [{"role": "user", "content": [{"type": "text", "text": "查找 Rust 最新版本，给出来源"}]}]
@@ -265,6 +284,7 @@ Qwen Responses profile 可在请求上设置单个知识库 ID 和其 Model Stud
 use lingxi_llm_client::protocol::{CompletionRequest, FileSearchConfig, Secret};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
+// client 必须使用 Region::ChinaMainland；国际连接请改用对应区域的 profile 和凭证。
 async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
         "model": "qwen3.8-max",
@@ -465,7 +485,9 @@ use lingxi_llm_client::protocol::{ProviderProfile, Secret};
 use lingxi_llm_client::LlmClientBuilder;
 
 # async fn example(primary: ProviderProfile, spare: ProviderProfile) -> Result<(), Box<dyn std::error::Error>> {
-let mut client = LlmClientBuilder::new(&[])?.build()?;
+let mut client = LlmClientBuilder::new(&[])?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
 client.set_config_dir("./config")?;
 client.set_tracked_models("acme", ["model-id".to_owned()])?;
 client.add_provider(primary)?;

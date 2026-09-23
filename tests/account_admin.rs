@@ -68,6 +68,7 @@ fn profile(id: &str) -> ProviderProfile {
 
 fn client(profile: ProviderProfile, http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
     LlmClientBuilder::with_transport(http, &[profile])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap()
 }

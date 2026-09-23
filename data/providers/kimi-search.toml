@@ -1,5 +1,6 @@
 # Kimi's server-managed web search uses Responses, currently with Kimi K3.
 # Kept separate from Moonshot Chat and the Kimi Code subscription endpoint.
+regions = ["china_mainland"]
 provider_id = "kimi"
 base_url = "https://api.moonshot.cn/v1"
 protocol = "open_ai_responses"

@@ -4,7 +4,7 @@
 use crate::protocol::ids::{ProviderId, ResponseId, ToolUseId};
 use crate::protocol::message::ConversationMessage;
 use crate::protocol::provider::{
-    AuthStrategy, BillingMode, ProtocolFamily, ProviderInfo, TokenPricing,
+    AuthStrategy, BillingMode, ProtocolFamily, ProviderInfo, Region, TokenPricing,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -581,12 +581,15 @@ impl ModelCapabilities {
 
 /// One configured provider, as the client lists it.
 ///
-/// Every profile is listed, whether or not a credential exists for it — that is
+/// Every profile in the selected region is listed, whether or not a credential exists — that is
 /// the point of `info.api_key_url`. This crate holds no credentials (gate 64),
 /// so it reports the variable one is conventionally read from and leaves
 /// "is it actually set" to the host, which is the only side that can know.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderListing {
+    /// Usage regions declared by this connection.
+    #[serde(default = "Region::all")]
+    pub regions: Vec<Region>,
     pub provider_id: ProviderId,
     /// The connection's identity, and the half of a `profile/model` ref.
     pub profile_name: String,
@@ -609,6 +612,9 @@ pub struct ProviderListing {
 /// One model as the client lists it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelListing {
+    /// Usage regions declared by this connection.
+    #[serde(default = "Region::all")]
+    pub regions: Vec<Region>,
     pub id: String,
     /// What to show a user in place of the id. A name, not a sentence.
     pub display_name: String,

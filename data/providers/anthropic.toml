@@ -1,5 +1,6 @@
 # First-party Anthropic. Wire IDs are checked against the Claude API;
 # catalog metadata and prices retain their aggregator provenance.
+regions = ["international"]
 provider_id = "anthropic"
 base_url = "https://api.anthropic.com"
 protocol = "anthropic_messages"

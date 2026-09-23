@@ -86,6 +86,7 @@ impl Transport for RedirectFollowingHttp {
 async fn account_credentials_require_explicit_no_redirect_transport_support() {
     let client =
         LlmClientBuilder::with_transport(Arc::new(RedirectFollowingHttp), &[profile("deepseek")])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     let result = client
@@ -110,6 +111,7 @@ fn profile(name: &str) -> ProviderProfile {
 
 fn client(http: Arc<ScriptedHttp>, profile: ProviderProfile) -> lingxi_llm_client::LlmClient {
     LlmClientBuilder::with_transport(http, &[profile])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap()
 }

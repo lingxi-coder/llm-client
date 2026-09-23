@@ -91,7 +91,11 @@ fn rate_limit_failover_client(primary: &str, backup: &str) -> lingxi_llm_client:
     };
     let profiles: Vec<ProviderProfile> =
         vec![profile("primary", primary, 0), profile("backup", backup, 1)];
-    LlmClientBuilder::new(&profiles).unwrap().build().unwrap()
+    LlmClientBuilder::new(&profiles)
+        .unwrap()
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap()
 }
 
 fn request(url: String) -> HttpRequest {
@@ -572,7 +576,11 @@ async fn builtin_builder_completes_and_streams_with_api_key_and_bearer_authentic
             };
             let (url, task) = server(response("200 OK", content_type, body)).await;
             let profile: ProviderProfile = serde_json::from_value(json!({ "provider_id": "local", "profile_name": "local", "base_url": url, "protocol": "open_ai_chat", "auth": auth, "models": [{"display_model":"test-model", "request_model":"wire-model", "billing_model":"wire-model"}] })).unwrap();
-            let client = LlmClientBuilder::new(&[profile]).unwrap().build().unwrap();
+            let client = LlmClientBuilder::new(&[profile])
+                .unwrap()
+                .with_region(lingxi_agent_api::protocol::Region::International)
+                .build()
+                .unwrap();
             let opts = RequestOptions {
                 credential: Some(Secret::new("test-key".to_owned())),
                 ..Default::default()

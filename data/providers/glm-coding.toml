@@ -2,6 +2,7 @@
 # OpenAI-compatible one, so the two connections of this group speak different
 # wires. Neither is "the compatible one", and the catalog's advisory `api` field
 # describes the other — which is why routing stays hand-authored.
+regions = ["china_mainland"]
 provider_id = "zhipu"
 base_url = "https://open.bigmodel.cn/api/anthropic"
 protocol = "anthropic_messages"

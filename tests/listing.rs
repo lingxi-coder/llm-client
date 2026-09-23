@@ -24,7 +24,9 @@ fn client_of(profiles: &[ProviderProfile]) -> LlmClient {
     for strategy in AuthStrategy::ALL {
         b.register_authenticator(strategy, Arc::new(support::NoAuth));
     }
-    b.build().expect("every protocol has a codec")
+    b.with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .expect("every protocol has a codec")
 }
 
 fn profile(models: serde_json::Value) -> ProviderProfile {
@@ -192,7 +194,13 @@ fn a_listed_model_round_trips_back_through_resolve() {
 fn every_provider_is_listed_including_the_spares() {
     let profiles = builtin_providers().unwrap();
     let listed = client_of(&profiles).providers();
-    assert_eq!(listed.len(), profiles.len());
+    assert_eq!(
+        listed.len(),
+        profiles
+            .iter()
+            .filter(|p| p.supports_region(lingxi_agent_api::protocol::Region::International))
+            .count()
+    );
     assert!(
         listed.iter().any(|p| p.hidden),
         "the spares are listed too, flagged rather than dropped"
@@ -275,7 +283,7 @@ fn a_connection_qualified_ref_means_that_connection_not_its_group() {
     // group-qualified ref relies on.
     let group_only = profiles
         .iter()
-        .find(|p| p.group() != p.profile_name)
+        .find(|p| p.supports_region(c.region()) && p.group() != p.profile_name)
         .expect("some connection belongs to a group named otherwise");
     let group = group_only.group().to_owned();
     let model = group_only.models[0].display_model.clone();

@@ -1,5 +1,6 @@
 # The international endpoint. A separate env var from its sibling: they are
 # separate accounts, and cross-wiring the keys silently bills the wrong one.
+regions = ["international"]
 provider_id = "zhipu"
 base_url = "https://api.z.ai/api/paas/v4"
 protocol = "open_ai_chat"

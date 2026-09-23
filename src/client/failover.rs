@@ -380,11 +380,15 @@ impl LlmClient {
         ),
         LlmError,
     > {
-        let profile =
-            self.profile(&attempt.profile_name)
-                .ok_or_else(|| LlmError::ModelUnavailable {
-                    message: format!("profile {:?} vanished", attempt.profile_name),
-                })?;
+        let profile = self
+            .profile(&attempt.profile_name)
+            .filter(|profile| profile.supports_region(self.region))
+            .ok_or_else(|| LlmError::ModelUnavailable {
+                message: format!(
+                    "profile {:?} is unavailable in the selected region",
+                    attempt.profile_name
+                ),
+            })?;
         if req.request.previous_response_id.is_some()
             && profile.protocol != ProtocolFamily::OpenAiResponses
         {

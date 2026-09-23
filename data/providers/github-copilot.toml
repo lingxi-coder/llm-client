@@ -1,4 +1,5 @@
 # Reached with a subscription token rather than an API key.
+regions = ["international"]
 provider_id = "github-copilot"
 base_url = "https://api.githubcopilot.com"
 protocol = "open_ai_chat"

@@ -744,8 +744,28 @@ pub struct ProviderInfo {
     pub credential_hint: Option<String>,
 }
 
+/// Product usage region, independent of an endpoint's deployment or signing region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Region {
+    ChinaMainland,
+    International,
+}
+
+impl Region {
+    pub const ALL: [Self; 2] = [Self::ChinaMainland, Self::International];
+
+    /// Legacy and custom profiles without an explicit declaration work in both regions.
+    pub fn all() -> Vec<Self> {
+        Self::ALL.to_vec()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ProviderProfile {
+    /// Allowed usage regions. Missing means both; an empty list disables execution.
+    #[serde(default = "Region::all")]
+    pub regions: Vec<Region>,
     /// Explicit provider identity used after route resolution. An open string
     /// (§7.2), so a new OpenAI-compatible provider is a settings entry and not
     /// a code change (gate 30).
@@ -800,6 +820,12 @@ pub struct ProviderProfile {
 }
 
 impl ProviderProfile {
+    /// Whether this connection may be offered and used in the selected region.
+    #[must_use]
+    pub fn supports_region(&self, region: Region) -> bool {
+        self.regions.contains(&region)
+    }
+
     /// The provider group this profile belongs to. Falls back to
     /// `profile_name`, so a standalone profile is a group of one and no caller
     /// has to special-case it.

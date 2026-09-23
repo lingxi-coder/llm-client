@@ -250,6 +250,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         std::sync::Arc::new(QueueHttp::default()),
         std::slice::from_ref(&p),
     )
+    .with_region(lingxi_agent_api::protocol::Region::International)
     .build()
     .unwrap();
     let route = client.resolve("MiniMax-M3").unwrap();

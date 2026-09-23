@@ -1,5 +1,6 @@
 # The open platform, pay as you go. Grouped with the membership service so the
 # two are connections of one provider rather than two providers.
+regions = ["china_mainland"]
 provider_id = "kimi"
 base_url = "https://api.moonshot.cn/v1"
 protocol = "open_ai_chat"

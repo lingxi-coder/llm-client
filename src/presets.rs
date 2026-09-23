@@ -37,7 +37,7 @@
 use lingxi_agent_api::protocol::{
     AuthStrategy, BillingMode, CapabilitySupport, ConnectionSpec, CredentialConfig, DirectoryRoute,
     ModelCapabilities, ModelCapabilitySupport, ModelMetadata, ModelProfile, PeakSchedule,
-    PricingConfig, ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, TokenPricing,
+    PricingConfig, ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, Region, TokenPricing,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -49,6 +49,8 @@ include!(concat!(env!("OUT_DIR"), "/presets.rs"));
 /// One preset file: the route, then the models.
 #[derive(Debug, Deserialize)]
 struct Preset {
+    #[serde(default = "Region::all")]
+    regions: Vec<Region>,
     provider_id: ProviderId,
     base_url: String,
     protocol: ProtocolFamily,
@@ -188,6 +190,7 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
         ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
     );
     Ok(ProviderProfile {
+        regions: p.regions,
         provider_id: p.provider_id,
         profile_name: profile_name.to_owned(),
         base_url: p.base_url,

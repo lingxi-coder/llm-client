@@ -1,5 +1,6 @@
 # xAI's Responses endpoint exposes documented file_id inputs for document
 # search. Keep this profile separate from the existing Chat Completions route.
+regions = ["international"]
 provider_id = "xai"
 base_url = "https://api.x.ai/v1"
 protocol = "open_ai_responses"

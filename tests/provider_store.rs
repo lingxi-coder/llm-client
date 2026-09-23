@@ -161,6 +161,7 @@ async fn accounts_sync_independently_and_visibility_survives_restart() {
     let dir = temp_dir();
     let http = Arc::new(AccountDirectory);
     let mut client = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -221,7 +222,10 @@ async fn accounts_sync_independently_and_visibility_survives_restart() {
     assert!(!text.contains("primary-key"));
     assert!(!text.contains("spare-key"));
     assert!(!text.contains("untracked"));
-    let mut restored = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut restored = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     restored.set_config_dir(&dir).unwrap();
     assert!(restored
         .tracked_models("acme")
@@ -255,6 +259,7 @@ async fn accounts_sync_independently_and_visibility_survives_restart() {
 async fn failed_sync_and_static_secret_leave_saved_profiles_unchanged() {
     let dir = temp_dir();
     let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -286,6 +291,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
     let stale_profile = gemini_profile("gemini");
     let mut client =
         LlmClientBuilder::with_transport(http.clone(), std::slice::from_ref(&stale_profile))
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -334,6 +340,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
 
     let mut restored =
         LlmClientBuilder::with_transport(http.clone(), std::slice::from_ref(&stale_profile))
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -354,6 +361,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
         .any(|model| model.request_model == "gemini-embedding-001"));
 
     let mut after_generation_support = LlmClientBuilder::with_transport(http, &[stale_profile])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     after_generation_support.set_config_dir(&dir).unwrap();
@@ -378,6 +386,7 @@ async fn malformed_gemini_page_token_fails_sync_without_committing_partial_model
     })));
     let profile = gemini_profile("gemini-malformed-token");
     let mut client = LlmClientBuilder::with_transport(http.clone(), &[profile])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -414,6 +423,7 @@ async fn replacing_a_gemini_profile_clears_saved_incompatible_model_ids() {
     let http = Arc::new(MutableDirectory::new(gemini_page(&["embedContent"])));
     let stale_profile = gemini_profile("gemini-replaced");
     let mut client = LlmClientBuilder::with_transport(http, std::slice::from_ref(&stale_profile))
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -449,6 +459,7 @@ fn provider_crud_and_model_untracking_survive_restart() {
     let base = profile("primary", 0, false);
     let http = Arc::new(AccountDirectory);
     let mut client = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -473,7 +484,10 @@ fn provider_crud_and_model_untracking_survive_restart() {
 
     client.remove_provider("primary").unwrap();
     assert!(client.provider("primary").is_none());
-    let mut restored = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut restored = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     restored.set_config_dir(&dir).unwrap();
     assert!(restored.provider("primary").is_none());
     assert!(restored.tracked_models("acme").unwrap().is_empty());
@@ -487,6 +501,7 @@ fn provider_crud_and_model_untracking_survive_restart() {
 fn provider_add_and_update_cannot_persist_credential_bearing_extra_headers() {
     let dir = temp_dir();
     let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -556,6 +571,7 @@ fn built_in_profile_is_soft_deleted_and_can_be_restored() {
         .unwrap();
     let http = Arc::new(AccountDirectory);
     let mut client = LlmClientBuilder::with_transport(http.clone(), std::slice::from_ref(&builtin))
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -564,6 +580,7 @@ fn built_in_profile_is_soft_deleted_and_can_be_restored() {
     assert!(client.deleted_builtin_profiles().contains("openai"));
 
     let mut restored = LlmClientBuilder::with_transport(http, &[builtin])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -580,9 +597,11 @@ fn clients_sharing_a_directory_preserve_each_others_changes() {
     let dir = temp_dir();
     let http = Arc::new(AccountDirectory);
     let mut first = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     let mut second = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     first.set_config_dir(&dir).unwrap();
@@ -597,7 +616,10 @@ fn clients_sharing_a_directory_preserve_each_others_changes() {
         .set_model_visibility("primary", "shared", false)
         .unwrap();
 
-    let mut restored = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut restored = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     restored.set_config_dir(&dir).unwrap();
     assert_eq!(restored.profiles().len(), 2);
     assert!(restored.provider("primary").unwrap().models[0].hidden);
@@ -611,6 +633,7 @@ fn changing_config_directory_discards_previous_directory_state() {
     let second_dir = temp_dir();
     let http = Arc::new(AccountDirectory);
     let mut client = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&first_dir).unwrap();
@@ -620,12 +643,16 @@ fn changing_config_directory_discards_previous_directory_state() {
     client.add_provider(profile("spare", 1, true)).unwrap();
 
     let mut first = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     first.set_config_dir(&first_dir).unwrap();
     assert!(first.provider("primary").is_some());
     assert!(first.provider("spare").is_none());
-    let mut second = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut second = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     second.set_config_dir(&second_dir).unwrap();
     assert!(second.provider("primary").is_none());
     assert!(second.provider("spare").is_some());
@@ -639,6 +666,7 @@ fn relative_config_dir_remains_fixed_after_cwd_change() {
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         let root = PathBuf::from(root);
         let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
         client.set_config_dir("first").unwrap();
@@ -673,6 +701,7 @@ fn removing_builder_supplied_custom_profile_stays_removed_during_session() {
         Arc::new(AccountDirectory),
         std::slice::from_ref(&supplied),
     )
+    .with_region(lingxi_agent_api::protocol::Region::International)
     .build()
     .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -694,6 +723,7 @@ fn concurrent_clients_keep_both_accounts() {
             let barrier = barrier.clone();
             scope.spawn(move || {
                 let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+                    .with_region(lingxi_agent_api::protocol::Region::International)
                     .build()
                     .unwrap();
                 client.set_config_dir(&dir).unwrap();
@@ -706,6 +736,7 @@ fn concurrent_clients_keep_both_accounts() {
     });
 
     let mut restored = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -718,6 +749,7 @@ fn concurrent_clients_keep_both_accounts() {
 fn tracking_a_model_after_adding_a_profile_restores_its_model() {
     let dir = temp_dir();
     let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -734,6 +766,7 @@ fn tracking_a_model_after_adding_a_profile_restores_its_model() {
         .unwrap();
 
     let mut restored = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -754,6 +787,7 @@ fn expanding_tracking_keeps_builder_models_after_visibility_change() {
         Arc::new(AccountDirectory),
         std::slice::from_ref(&supplied),
     )
+    .with_region(lingxi_agent_api::protocol::Region::International)
     .build()
     .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -764,6 +798,7 @@ fn expanding_tracking_keeps_builder_models_after_visibility_change() {
         .set_model_visibility("primary", "shared", false)
         .unwrap();
     let mut restored = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[supplied])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -784,6 +819,7 @@ fn expanding_tracking_keeps_builder_models_after_visibility_change() {
 fn restoring_a_builtin_without_builder_preset_survives_another_write() {
     let dir = temp_dir();
     let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -794,6 +830,7 @@ fn restoring_a_builtin_without_builder_preset_survives_another_write() {
     assert!(client.provider("openai").is_some());
 
     let mut restored = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -855,7 +892,10 @@ async fn prepared_provider_syncs_fetch_concurrently_for_one_client() {
     let http = Arc::new(ConcurrentDirectory {
         both_started: Arc::new(tokio::sync::Barrier::new(2)),
     });
-    let mut client = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut client = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     client.set_config_dir(&dir).unwrap();
     client
         .set_tracked_models("acme", ["primary-only".to_owned(), "spare-only".to_owned()])
@@ -897,7 +937,10 @@ async fn prepared_sync_rejects_a_profile_changed_during_fetch() {
         started: started.clone(),
         release: release.clone(),
     });
-    let mut client = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut client = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     client.set_config_dir(&dir).unwrap();
     client
         .set_tracked_models("acme", ["primary-only".to_owned()])
@@ -945,7 +988,10 @@ async fn prepared_sync_cannot_write_into_a_new_config_directory() {
         started: started.clone(),
         release: release.clone(),
     });
-    let mut client = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut client = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     client.set_config_dir(&first_dir).unwrap();
     client
         .set_tracked_models("acme", ["primary-only".to_owned()])
@@ -976,7 +1022,10 @@ async fn prepared_sync_rejects_a_config_directory_round_trip() {
     let first_dir = temp_dir();
     let second_dir = temp_dir();
     let http = Arc::new(AccountDirectory);
-    let mut client = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut client = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     client.set_config_dir(&first_dir).unwrap();
     client
         .set_tracked_models("acme", ["primary-only".to_owned()])
@@ -1012,13 +1061,17 @@ async fn sync_rejects_a_connection_changed_during_the_request() {
         started: started.clone(),
         release: release.clone(),
     });
-    let mut syncing = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut syncing = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     syncing.set_config_dir(&dir).unwrap();
     syncing
         .set_tracked_models("acme", ["primary-only".to_owned()])
         .unwrap();
     syncing.add_provider(profile("primary", 0, false)).unwrap();
     let mut editing = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     editing.set_config_dir(&dir).unwrap();
@@ -1039,6 +1092,7 @@ async fn sync_rejects_a_connection_changed_during_the_request() {
     ));
 
     let mut restored = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -1059,6 +1113,7 @@ async fn sync_rejects_a_connection_changed_during_the_request() {
 async fn sync_provider_does_not_block_runtime_while_waiting_for_store_lock() {
     let dir = temp_dir();
     let mut client = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -1107,6 +1162,7 @@ fn whitelist_update_does_not_restore_another_clients_removed_model() {
     let dir = temp_dir();
     let http = Arc::new(AccountDirectory);
     let mut first = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     first.set_config_dir(&dir).unwrap();
@@ -1122,6 +1178,7 @@ fn whitelist_update_does_not_restore_another_clients_removed_model() {
     first.add_provider(both).unwrap();
 
     let mut second = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     second.set_config_dir(&dir).unwrap();
@@ -1136,7 +1193,10 @@ fn whitelist_update_does_not_restore_another_clients_removed_model() {
         .set_tracked_models("acme", ["shared".to_owned(), "another".to_owned()])
         .unwrap();
 
-    let mut restored = LlmClientBuilder::with_transport(http, &[]).build().unwrap();
+    let mut restored = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     restored.set_config_dir(&dir).unwrap();
     assert!(restored
         .provider("primary")
@@ -1159,6 +1219,7 @@ fn restoring_builtin_overrides_a_same_named_builder_profile() {
     custom.base_url = "https://custom.example/v1".into();
     let http = Arc::new(AccountDirectory);
     let mut client = LlmClientBuilder::with_transport(http.clone(), std::slice::from_ref(&custom))
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
@@ -1171,6 +1232,7 @@ fn restoring_builtin_overrides_a_same_named_builder_profile() {
     assert_eq!(client.provider("openai").unwrap().base_url, preset.base_url);
 
     let mut restored = LlmClientBuilder::with_transport(http, &[custom])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     restored.set_config_dir(&dir).unwrap();
@@ -1178,5 +1240,165 @@ fn restoring_builtin_overrides_a_same_named_builder_profile() {
         restored.provider("openai").unwrap().base_url,
         preset.base_url
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn region_filtering_preserves_other_accounts_across_sync_updates_and_restart() {
+    use lingxi_agent_api::protocol::Region;
+    let dir = temp_dir();
+    let http = Arc::new(AccountDirectory);
+    let mut primary = profile("primary", 0, false);
+    primary.regions = vec![Region::ChinaMainland];
+    let mut spare = profile("spare", 1, true);
+    spare.regions = vec![Region::International];
+    let mut cn = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(Region::ChinaMainland)
+        .build()
+        .unwrap();
+    cn.set_config_dir(&dir).unwrap();
+    cn.add_provider(primary).unwrap();
+    cn.set_tracked_models(
+        "acme",
+        ["shared", "primary-only", "spare-only"].map(str::to_owned),
+    )
+    .unwrap();
+    cn.add_provider(spare).unwrap();
+    for (name, key) in [("primary", "primary-key"), ("spare", "spare-key")] {
+        cn.sync_provider(name, Some(&Secret::new(key.into())))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        cn.provider("primary").unwrap().regions,
+        vec![Region::ChinaMainland]
+    );
+    assert_eq!(
+        cn.provider("spare").unwrap().regions,
+        vec![Region::International]
+    );
+    assert_eq!(cn.providers().len(), 1);
+    assert!(cn
+        .models()
+        .iter()
+        .all(|m| m.profile_name == "primary" && m.request_model != "untracked"));
+    assert!(cn.resolve_in("spare-only", Some("spare")).is_err());
+    cn.set_model_visibility("primary", "primary-only", false)
+        .unwrap();
+    assert!(!cn
+        .models()
+        .iter()
+        .any(|m| m.request_model == "primary-only"));
+    let mut intl = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    intl.set_config_dir(&dir).unwrap();
+    assert_eq!(intl.profiles().len(), 2);
+    assert_eq!(intl.providers().len(), 1);
+    assert!(
+        intl.models().is_empty(),
+        "hidden regional spare remains hidden"
+    );
+    let mut spare = intl.provider("spare").unwrap().clone();
+    spare.connection.hidden = false;
+    intl.add_provider(spare).unwrap();
+    assert!(intl
+        .models()
+        .iter()
+        .any(|m| m.request_model == "spare-only"));
+    assert!(intl.models().iter().all(|m| m.profile_name == "spare"
+        && m.request_model != "primary-only"
+        && m.request_model != "untracked"));
+    let mut restarted = LlmClientBuilder::with_transport(http, &[])
+        .with_region(Region::ChinaMainland)
+        .build()
+        .unwrap();
+    restarted.set_config_dir(&dir).unwrap();
+    assert_eq!(restarted.profiles().len(), 2);
+    assert_eq!(restarted.providers()[0].profile_name, "primary");
+    assert!(!restarted
+        .models()
+        .iter()
+        .any(|m| m.request_model == "primary-only"));
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("providers.json")).unwrap()).unwrap();
+    assert!(
+        saved.get("region").is_none(),
+        "the client region must not become shared state"
+    );
+    assert_eq!(saved["providers"].as_array().unwrap().len(), 2);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn legacy_saved_profiles_default_to_both_regions_and_restored_presets_use_declared_regions() {
+    use lingxi_agent_api::protocol::Region;
+    let dir = temp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut legacy = serde_json::to_value(profile("legacy", 0, false)).unwrap();
+    legacy.as_object_mut().unwrap().remove("regions");
+    std::fs::write(
+        dir.join("providers.json"),
+        serde_json::to_vec(&json!({
+            "version":1,"providers":[legacy],"tracked_models":{"acme":["shared"]}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    for region in Region::ALL {
+        let mut c = LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
+            .with_region(region)
+            .build()
+            .unwrap();
+        c.set_config_dir(&dir).unwrap();
+        assert_eq!(c.providers()[0].regions, Region::all());
+        assert_eq!(c.models()[0].regions, Region::all());
+        c.restore_builtin("qwen").unwrap();
+        assert_eq!(
+            c.provider("qwen").unwrap().regions,
+            vec![Region::ChinaMainland]
+        );
+        assert_eq!(
+            c.providers().iter().any(|p| p.profile_name == "qwen"),
+            region == Region::ChinaMainland
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn regional_changes_in_another_client_invalidate_pending_sync() {
+    use lingxi_agent_api::protocol::Region;
+    let dir = temp_dir();
+    let http = Arc::new(MutableDirectory::new(json!({"data":[{"id":"shared"}]})));
+    let mut c = LlmClientBuilder::with_transport(http.clone(), &[])
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    c.set_config_dir(&dir).unwrap();
+    c.add_provider(profile("primary", 0, false)).unwrap();
+    c.set_tracked_models("acme", ["shared".to_owned()]).unwrap();
+    let fetched = c
+        .prepare_provider_sync("primary", Some(&Secret::new("key".into())))
+        .unwrap()
+        .fetch()
+        .await
+        .unwrap();
+    let mut other = LlmClientBuilder::with_transport(http, &[])
+        .with_region(Region::ChinaMainland)
+        .build()
+        .unwrap();
+    other.set_config_dir(&dir).unwrap();
+    let mut p = other.provider("primary").unwrap().clone();
+    p.regions = vec![Region::ChinaMainland];
+    other.add_provider(p).unwrap();
+    assert!(matches!(
+        c.apply_provider_sync(fetched).await,
+        Err(ProviderStoreError::ProfileChanged(_))
+    ));
+    c.set_config_dir(&dir).unwrap();
+    assert!(c.providers().is_empty());
+    assert!(c.resolve("shared").is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }

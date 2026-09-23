@@ -1,4 +1,5 @@
 # Native search uses Anthropic compatibility; Responses ignores web_search.
+regions = ["china_mainland", "international"]
 provider_id = "deepseek"
 base_url = "https://api.deepseek.com/anthropic"
 protocol = "anthropic_messages"

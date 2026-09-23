@@ -346,7 +346,10 @@ async fn one_copilot_source_can_query_distinct_users_with_their_tokens() {
         AccountIdentity::AuthUser,
         Arc::new(CopilotAccountSource::new(Arc::new(UserQuotaRpc))),
     );
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     for (profile_name, token, expected) in [
         ("copilot-alice", "alice-token", 10),
         ("copilot-bob", "bob-token", 20),

@@ -21,6 +21,7 @@
 #
 # What this does not model: the free tier carries its own request-rate caps,
 # which the catalog does not publish.
+regions = ["international"]
 provider_id = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
 protocol = "open_ai_chat"

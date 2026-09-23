@@ -21,6 +21,7 @@ fn metered_glm_never_inherits_subscription_zero_prices() {
         .unwrap();
     assert_eq!(profile.pricing.billing_mode, BillingMode::PerToken);
     let client = LlmClientBuilder::with_transport(Arc::new(support::NoHttp), &[profile])
+        .with_region(lingxi_agent_api::protocol::Region::ChinaMainland)
         .build()
         .unwrap();
     let route = client.resolve("glm/glm-4.7").unwrap();
@@ -355,11 +356,13 @@ fn a_model_resolves_through_the_client_built_from_the_presets() {
         .expect("there is at least one preset")
         .clone();
     oauth_profile.auth = lingxi_agent_api::protocol::AuthStrategy::OAuthBearer;
-    let missing =
-        match LlmClientBuilder::with_transport(http.clone(), &[oauth_profile.clone()]).build() {
-            Err(e) => e,
-            Ok(_) => panic!("OAuth requires a host authenticator"),
-        };
+    let missing = match LlmClientBuilder::with_transport(http.clone(), &[oauth_profile.clone()])
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+    {
+        Err(e) => e,
+        Ok(_) => panic!("OAuth requires a host authenticator"),
+    };
     assert!(
         format!("{missing}").contains(&oauth_profile.profile_name),
         "the error names the profile a user has to fix: {missing}"
@@ -370,7 +373,10 @@ fn a_model_resolves_through_the_client_built_from_the_presets() {
     for strategy in lingxi_agent_api::protocol::AuthStrategy::ALL {
         b.register_authenticator(strategy, std::sync::Arc::new(support::NoAuth));
     }
-    let client = b.build().expect("every preset's wire has a codec");
+    let client = b
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .expect("every preset's wire has a codec");
 
     let listed = client.models();
     assert!(
@@ -881,7 +887,7 @@ fn provider_metadata_survives_a_catalog_regeneration() {
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
         let text = std::fs::read_to_string(&path).expect("readable");
         let head = text.split("\n[[model]]").next().expect("a route header");
-        for key in ["display_name", "api_key_url"] {
+        for key in ["regions", "display_name", "api_key_url"] {
             assert!(
                 head.contains(&format!("{key} = ")),
                 "{name}: {key} is below the first [[model]] and a refresh would drop it"
@@ -900,6 +906,7 @@ fn first_party_anthropic_ids_use_official_names_and_keep_legacy_selectors() {
         .unwrap();
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(&profile))
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     for (old, official) in [

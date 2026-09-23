@@ -85,6 +85,7 @@ fn body(http: &lingxi_llm_client::HttpRequest) -> Value {
 fn every_protocol_family_has_a_codec() {
     let http = std::sync::Arc::new(NoHttp);
     let families: Vec<ProtocolFamily> = LlmClientBuilder::with_transport(http, &[])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap()
         .codec_families();

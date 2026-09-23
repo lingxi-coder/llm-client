@@ -1,5 +1,6 @@
 # This vendor also speaks both wires behind one key, so its second entry is a
 # connection rather than a provider.
+regions = ["international"]
 provider_id = "xai"
 base_url = "https://api.x.ai/v1"
 protocol = "open_ai_chat"

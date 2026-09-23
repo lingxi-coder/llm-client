@@ -33,6 +33,7 @@ fn request() -> CompletionRequest {
 fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     let route = client.resolve("m").unwrap();
@@ -359,6 +360,7 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
     p.extra["file_search"] = json!("qwen");
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(&p))
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     let route = client.resolve("qwen3.8-max").unwrap();

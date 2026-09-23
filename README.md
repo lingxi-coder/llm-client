@@ -39,6 +39,8 @@
 
 Remote 设备间共享图片、附件引用和 provider 文件生命周期的说明见[文件附件指南](docs/file-attachments.zh.md)。
 
+构建 client 时必须通过 `with_region(Region::ChinaMainland)` 或 `with_region(Region::International)` 选择使用区域。provider/model 列表、模型解析和故障切换均按区域过滤；完整配置仍保留。自定义 profile 可通过 `regions` 声明可用区域，未声明时两区可用。详见[区域过滤](docs/api.md#region-区域过滤)。
+
 ## Getting Started
 
 需要 Rust 1.94.0 或更高版本，以及可访问目标模型的 API key。下面使用内置 `openai` 连接完成第一次请求。
@@ -72,7 +74,9 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let profiles = builtin_providers()?;
-    let client = LlmClientBuilder::new(&profiles)?.build()?;
+    let client = LlmClientBuilder::new(&profiles)?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
     let options = RequestOptions {
         credential: Some(Secret::new(std::env::var("OPENAI_API_KEY")?)),
         ..RequestOptions::default()

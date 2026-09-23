@@ -1,5 +1,6 @@
 # First-party OpenAI speaks the Responses API; the Chat Completions wire is what
 # the compatible providers use, not this one.
+regions = ["international"]
 provider_id = "openai"
 base_url = "https://api.openai.com/v1"
 protocol = "open_ai_responses"

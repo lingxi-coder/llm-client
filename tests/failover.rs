@@ -491,7 +491,9 @@ fn client(
 ) -> lingxi_llm_client::LlmClient {
     let mut b = LlmClientBuilder::with_transport(http, profiles);
     b.register_codec(Arc::new(FakeCodec));
-    b.build().expect("every profile's protocol has a codec")
+    b.with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .expect("every profile's protocol has a codec")
 }
 
 fn failover_pair_with_transport(http: Arc<dyn Transport>) -> lingxi_llm_client::LlmClient {
@@ -516,6 +518,7 @@ fn failover_pair_with_transport(http: Arc<dyn Transport>) -> lingxi_llm_client::
         ),
     ];
     LlmClientBuilder::with_transport(http, &profiles)
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .expect("built-in OpenAI chat codec is registered")
 }
@@ -538,7 +541,12 @@ fn openai_openrouter_client(
         .protocol = ProtocolFamily::OpenAiChat;
     let mut b = LlmClientBuilder::with_transport(http, &profiles);
     b.register_codec(Arc::new(FakeCodec));
-    (b.build().expect("built-in profiles have codecs"), profiles)
+    (
+        b.with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .expect("built-in profiles have codecs"),
+        profiles,
+    )
 }
 
 fn request(model: &str) -> CompletionRequest {
@@ -628,6 +636,7 @@ fn file_upload_is_repeated_for_the_fallback_profile_and_uses_its_credential() {
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &profiles);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
     let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .expect("built-in Responses codec and API-key auth are available");
     let mut options = RequestOptions {
@@ -666,7 +675,10 @@ fn cached_file_404_invalidates_and_reuploads_once_on_the_same_profile() {
     let profile = openai_file_profile("openai", 0, false);
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let options = RequestOptions {
         credential: Some(lingxi_agent_api::protocol::Secret::new(
             "openai-secret".to_owned(),
@@ -693,7 +705,10 @@ fn concurrent_requests_share_one_upload_for_the_same_scoped_attachment() {
     let profile = openai_file_profile("openai", 0, false);
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let request = request_with_app_document();
     let options = RequestOptions {
         credential: Some(lingxi_agent_api::protocol::Secret::new(
@@ -740,7 +755,10 @@ fn small_images_stay_inline_without_provider_uploads() {
     let profile = openai_file_profile("openai", 0, false);
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"png"))));
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let mut request = request("gpt-test");
     request.messages[0].content.push(ContentBlock::Image {
         source: ImageSource::Attachment {
@@ -778,7 +796,10 @@ fn provider_upload_cache_is_partitioned_by_account_scope() {
     let profile = openai_file_profile("openai", 0, false);
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let request = request_with_app_document();
     let options = |scope: &str| RequestOptions {
         credential: Some(lingxi_agent_api::protocol::Secret::new(
@@ -1345,7 +1366,9 @@ fn stateful_pair(http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
     ];
     let mut b = LlmClientBuilder::with_transport(http, &profiles);
     b.register_codec(Arc::new(FakeStatefulCodec));
-    b.build().expect("every profile's protocol has a codec")
+    b.with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .expect("every profile's protocol has a codec")
 }
 
 fn continuing(model: &str) -> CompletionRequest {
@@ -1728,7 +1751,10 @@ mod credentials_come_from_the_caller {
             lingxi_agent_api::protocol::AuthStrategy::ApiKey,
             Arc::new(Recording(seen.clone())),
         );
-        let c = b.build().expect("the profile's protocol has a codec");
+        let c = b
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .expect("the profile's protocol has a codec");
 
         block_on(async {
             c.complete(
@@ -1764,7 +1790,10 @@ mod credentials_come_from_the_caller {
             lingxi_agent_api::protocol::AuthStrategy::ApiKey,
             Arc::new(Recording(seen.clone())),
         );
-        let c = b.build().unwrap();
+        let c = b
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .unwrap();
 
         block_on(async {
             c.complete(&request("m-1"), &RequestOptions::default())
@@ -1926,6 +1955,7 @@ mod raw_http_streams {
         }
         (
             LlmClientBuilder::with_transport(http.clone(), &profiles)
+                .with_region(lingxi_agent_api::protocol::Region::International)
                 .build()
                 .unwrap(),
             http,
@@ -2108,7 +2138,10 @@ fn client_methods_determine_wire_mode() {
             &[solo("acme", "https://x.test", model("m", "m"))],
         );
         builder.register_codec(Arc::new(ModeCheckingCodec(streaming)));
-        let client = builder.build().unwrap();
+        let client = builder
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .unwrap();
         let opts = RequestOptions {
             stream: !streaming,
             ..Default::default()
@@ -2158,6 +2191,7 @@ fn complete_cannot_be_changed_to_streaming_by_profile_body_extras() {
     profile.extra = json!({"body": {"stream": true}});
     let http = Arc::new(BodyRecorder::default());
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
 
@@ -2375,7 +2409,10 @@ async fn total_timeout_expires_during_authentication_before_a_request_is_sent() 
         let http = ScriptedTransport::new(vec![("https://one.test", Ok(200))]);
         let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
         builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(SlowAuthenticator));
-        let client = builder.build().unwrap();
+        let client = builder
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .unwrap();
         let options = RequestOptions {
             total_timeout: Some(Duration::from_millis(10)),
             ..Default::default()

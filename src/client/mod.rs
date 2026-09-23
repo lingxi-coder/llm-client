@@ -37,7 +37,7 @@ use bytes::Bytes;
 use futures::{stream::iter, StreamExt};
 use lingxi_agent_api::protocol::{
     AttachmentRef, AuthStrategy, CompletionRequest, ContentBlock, CredentialConfig, DocumentSource,
-    ImageSource, LlmError, ModelListing, ProtocolFamily, ProviderListing, ProviderProfile,
+    ImageSource, LlmError, ModelListing, ProtocolFamily, ProviderListing, ProviderProfile, Region,
     Submission, Usage, VideoSource,
 };
 use route::ResolvedRoute;
@@ -64,6 +64,8 @@ pub trait AttachmentResolver: Send + Sync + 'static {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuildError {
+    #[error("a usage region must be explicitly selected with with_region")]
+    MissingRegion,
     #[error(
         "provider profile {profile_name:?} uses protocol {family:?} but no codec for it is registered"
     )]
@@ -93,6 +95,7 @@ pub enum BuildError {
 }
 
 pub struct LlmClientBuilder {
+    region: Option<Region>,
     http: Arc<dyn Transport>,
     clock: Arc<dyn Clock>,
     codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
@@ -130,6 +133,7 @@ impl LlmClientBuilder {
             directories.insert(directory.shape(), directory);
         }
         let mut builder = Self {
+            region: None,
             http,
             clock: Arc::new(SystemClock),
             codecs,
@@ -143,6 +147,13 @@ impl LlmClientBuilder {
         builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(crate::ApiKeyAuthenticator));
         builder.register_authenticator(AuthStrategy::Bearer, Arc::new(crate::BearerAuthenticator));
         builder
+    }
+
+    /// Choose the required usage region. Build a new client to change regions.
+    #[must_use]
+    pub fn with_region(mut self, region: Region) -> Self {
+        self.region = Some(region);
+        self
     }
 
     /// Replace the default system clock, for example to test price schedules.
@@ -220,11 +231,13 @@ impl LlmClientBuilder {
 
     /// Every profile's protocol must have a codec and its auth strategy an
     /// authenticator (`AuthStrategy::None` needs none). Fails before the first
-    /// request, naming the profile (gate 33).
+    /// request, naming the profile (gate 33). A region must be selected first.
     pub fn build(self) -> Result<LlmClient, BuildError> {
+        let region = self.region.ok_or(BuildError::MissingRegion)?;
         validate_profiles(&self.profiles, &self.codecs, &self.authenticators)?;
         let store = store::ProviderStore::new(self.profiles.clone());
         Ok(LlmClient {
+            region,
             http: self.http,
             clock: self.clock,
             codecs: self.codecs,
@@ -295,6 +308,7 @@ fn validate_profiles(
 /// The provider-neutral client. Holds every registered codec and profile;
 /// routing and requests are M1.
 pub struct LlmClient {
+    region: Region,
     http: Arc<dyn Transport>,
     clock: Arc<dyn Clock>,
     codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
@@ -1287,7 +1301,7 @@ impl LlmClient {
         .await
     }
 
-    /// Every model a picker may offer. A hidden connection is skipped: those
+    /// Every model a picker may offer in the selected region. A hidden connection is skipped: those
     /// exist only to be failed over onto, so offering them would let a user
     /// pick the spare key directly.
     ///
@@ -1296,12 +1310,13 @@ impl LlmClient {
     pub fn models(&self) -> Vec<ModelListing> {
         self.profiles
             .iter()
-            .filter(|p| !p.connection.hidden)
+            .filter(|p| p.supports_region(self.region) && !p.connection.hidden)
             .flat_map(|p| {
                 p.models
                     .iter()
                     .filter(|m| !m.hidden && self.tracks(p, m))
                     .map(move |m| ModelListing {
+                        regions: p.regions.clone(),
                         id: m.display_model.clone(),
                         profile_name: p.profile_name.clone(),
                         request_model: m.request_model.clone(),
@@ -1321,16 +1336,18 @@ impl LlmClient {
             .collect()
     }
 
-    /// Every configured provider, including the ones with no credential and the
+    /// Every provider in the selected region, including those with no credential and the
     /// spare connections a picker should not offer.
     ///
-    /// Unfiltered on purpose, which is the opposite of `models()`: an app needs
+    /// Within the region, visibility is unfiltered: an app needs
     /// the unconfigured ones to offer "set this up", and it needs to see the
     /// spares to explain a group. `hidden` says which is which.
     pub fn providers(&self) -> Vec<ProviderListing> {
         self.profiles
             .iter()
+            .filter(|p| p.supports_region(self.region))
             .map(|p| ProviderListing {
+                regions: p.regions.clone(),
                 provider_id: p.provider_id.clone(),
                 profile_name: p.profile_name.clone(),
                 group: p.group().to_owned(),
@@ -1348,6 +1365,13 @@ impl LlmClient {
             .collect()
     }
 
+    /// Selected usage region. Configuration management retains every region.
+    #[must_use]
+    pub fn region(&self) -> Region {
+        self.region
+    }
+
+    /// All configured profiles, including those unavailable in the selected region.
     pub fn profiles(&self) -> &[ProviderProfile] {
         &self.profiles
     }
@@ -1585,7 +1609,10 @@ mod tests {
         });
         let mut builder = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[]);
         builder.with_attachment_resolver(resolver.clone());
-        let client = builder.build().unwrap();
+        let client = builder
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .unwrap();
         let original = request_with_attachment_blocks();
 
         let resolved = client.resolve_attachments(&original).await.unwrap();
@@ -1611,6 +1638,7 @@ mod tests {
     #[tokio::test]
     async fn attachment_refs_without_a_resolver_fail_clearly() {
         let client = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
         assert!(matches!(
@@ -1628,7 +1656,10 @@ mod tests {
         });
         let mut builder = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[]);
         builder.with_attachment_resolver(resolver);
-        let client = builder.build().unwrap();
+        let client = builder
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .unwrap();
         assert!(matches!(
             client.resolve_attachments(&request_with_attachment_blocks()).await,
             Err(LlmError::InvalidRequest { message }) if message.contains("expected 3")
@@ -1639,7 +1670,10 @@ mod tests {
     async fn a_missing_remote_attachment_revision_returns_the_resolver_error() {
         let mut builder = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[]);
         builder.with_attachment_resolver(Arc::new(MissingAttachments));
-        let client = builder.build().unwrap();
+        let client = builder
+            .with_region(lingxi_agent_api::protocol::Region::International)
+            .build()
+            .unwrap();
 
         assert!(matches!(
             client.resolve_attachments(&request_with_attachment_blocks()).await,
@@ -1691,7 +1725,8 @@ mod tests {
         );
         b.codecs.remove(&ProtocolFamily::GeminiGenerateContent);
         assert_eq!(
-            b.build()
+            b.with_region(lingxi_agent_api::protocol::Region::International)
+                .build()
                 .err()
                 .expect("a profile with no codec cannot build"),
             BuildError::MissingCodec {
@@ -1706,7 +1741,9 @@ mod tests {
         let b =
             LlmClientBuilder::with_transport(Arc::new(NoHttp), &[profile("p1", "open_ai_chat")]);
         assert!(
-            b.build().is_ok(),
+            b.with_region(lingxi_agent_api::protocol::Region::International)
+                .build()
+                .is_ok(),
             "an OpenAI-compatible provider is a settings entry and nothing else (gate 30)"
         );
     }
@@ -1718,7 +1755,10 @@ mod tests {
             &[profile("p1", "open_ai_chat"), profile("p1", "open_ai_chat")],
         );
         assert_eq!(
-            b.build().err().unwrap(),
+            b.with_region(lingxi_agent_api::protocol::Region::International)
+                .build()
+                .err()
+                .unwrap(),
             BuildError::DuplicateProfile {
                 profile_name: "p1".into()
             }
@@ -1728,6 +1768,7 @@ mod tests {
     #[test]
     fn empty_builder_builds_and_lists_nothing() {
         let c = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
         assert!(c.models().is_empty());
@@ -1745,7 +1786,9 @@ mod tests {
                 off_peak_multiplier: 0.5,
             });
             assert!(matches!(
-                LlmClientBuilder::with_transport(Arc::new(NoHttp), &[profile]).build(),
+                LlmClientBuilder::with_transport(Arc::new(NoHttp), &[profile])
+                    .with_region(lingxi_agent_api::protocol::Region::International)
+                    .build(),
                 Err(BuildError::InvalidPeakSchedule { .. })
             ));
         }
@@ -1776,7 +1819,10 @@ mod tests {
         for (hour, expected) in [(12, 2.0), (20, 1.0)] {
             let mut builder = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[p.clone()]);
             builder.with_clock(Arc::new(FixedClock(hour * 3600)));
-            let client = builder.build().unwrap();
+            let client = builder
+                .with_region(lingxi_agent_api::protocol::Region::International)
+                .build()
+                .unwrap();
             let route = client.resolve("m1").unwrap();
             let cost = client
                 .estimate_cost(
@@ -1824,6 +1870,7 @@ mod tests {
         });
 
         let client = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[p])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
         let route = client.resolve("second").unwrap();
@@ -1865,6 +1912,7 @@ mod tests {
         let mut p = profile("p1", "open_ai_chat");
         p.models = vec![model("first", 2.0), model("second", 7.0)];
         let client = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[p])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
         let route = client.resolve("second").unwrap();
@@ -1911,6 +1959,7 @@ mod tests {
             model("other-second", "other-bill-second", "other-second"),
         ];
         let client = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[primary, sibling])
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
         let route = client.resolve("second").unwrap();

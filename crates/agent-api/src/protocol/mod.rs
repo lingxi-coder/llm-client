@@ -70,7 +70,7 @@ pub use permission::{
 pub use provider::{
     AuthStrategy, AzureConfig, BatchPricing, BillingMode, ConnectionSpec, CredentialConfig,
     DirectoryRoute, FailoverTriggers, ModelMetadata, ModelProfile, PeakSchedule, PricingConfig,
-    ProtocolFamily, ProviderInfo, ProviderProfile, SigningConfig, Submission, TokenPricing,
+    ProtocolFamily, ProviderInfo, ProviderProfile, Region, SigningConfig, Submission, TokenPricing,
 };
 #[cfg(feature = "agent")]
 pub use queue::{Priority, QueuedCommand, QueuedCommandKind};

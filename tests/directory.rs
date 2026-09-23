@@ -19,7 +19,9 @@ fn client_of(profiles: &[ProviderProfile]) -> LlmClient {
     for strategy in AuthStrategy::ALL {
         b.register_authenticator(strategy, Arc::new(support::NoAuth));
     }
-    b.build().expect("every protocol has a codec")
+    b.with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .expect("every protocol has a codec")
 }
 
 fn profile(protocol: &str, base_url: &str, model_list: Option<&str>) -> ProviderProfile {

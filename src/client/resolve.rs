@@ -10,7 +10,7 @@ use thiserror::Error;
 /// change, which is why they are distinct variants rather than one string.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ResolveError {
-    #[error("no profile declares model {model:?}")]
+    #[error("no available profile declares model {model:?}")]
     UnknownModel { model: String },
     #[error(
         "model reference {model:?} is ambiguous across profiles: {} — qualify it, e.g. {}/{model}",
@@ -65,8 +65,11 @@ impl LlmClient {
         // name, so falling straight to the group would answer a connection-
         // qualified ref with the other connection's model. Failover still
         // reaches the rest of the group — scoping picks where to start.
-        let names_a_connection =
-            profile.is_some_and(|scoped| self.profiles.iter().any(|p| p.profile_name == scoped));
+        let names_a_connection = profile.is_some_and(|scoped| {
+            self.profiles
+                .iter()
+                .any(|p| p.supports_region(self.region) && p.profile_name == scoped)
+        });
         let in_scope = |p: &ProviderProfile| match profile {
             // A group name scopes to every connection in that group, so a
             // session that stored the group-qualified ref a picker showed still
@@ -77,7 +80,11 @@ impl LlmClient {
         };
 
         let mut matches: Vec<(&ProviderProfile, &ModelProfile)> = Vec::new();
-        for p in self.profiles.iter().filter(|p| in_scope(p)) {
+        for p in self
+            .profiles
+            .iter()
+            .filter(|p| p.supports_region(self.region) && in_scope(p))
+        {
             for m in &p.models {
                 if m.answers_to(requested) {
                     matches.push((p, m));
@@ -95,8 +102,15 @@ impl LlmClient {
         let mut qualified_matches: Vec<(&ProviderProfile, &ModelProfile)> = Vec::new();
         if let Some((qualifier, bare)) = requested.split_once('/') {
             if profile.is_none_or(|scoped| scoped == qualifier) {
-                let names_a_connection = self.profiles.iter().any(|p| p.profile_name == qualifier);
-                for p in &self.profiles {
+                let names_a_connection = self
+                    .profiles
+                    .iter()
+                    .any(|p| p.supports_region(self.region) && p.profile_name == qualifier);
+                for p in self
+                    .profiles
+                    .iter()
+                    .filter(|p| p.supports_region(self.region))
+                {
                     if if names_a_connection {
                         p.profile_name != qualifier
                     } else {
@@ -212,7 +226,11 @@ impl LlmClient {
         let mut siblings: Vec<(&ProviderProfile, &ModelProfile)> = self
             .profiles
             .iter()
-            .filter(|c| c.group() == group && c.profile_name != provider.profile_name)
+            .filter(|c| {
+                c.supports_region(self.region)
+                    && c.group() == group
+                    && c.profile_name != provider.profile_name
+            })
             .filter_map(|c| {
                 c.models
                     .iter()

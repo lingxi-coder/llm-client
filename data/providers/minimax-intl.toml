@@ -1,3 +1,4 @@
+regions = ["international"]
 provider_id = "minimax"
 base_url = "https://api.minimax.io/anthropic"
 protocol = "anthropic_messages"

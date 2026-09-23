@@ -1,5 +1,6 @@
 # The same account over the other wire. Hidden: a picker offers the default
 # connection, and this one is here to fail over onto.
+regions = ["international"]
 provider_id = "xai"
 base_url = "https://api.x.ai"
 protocol = "anthropic_messages"

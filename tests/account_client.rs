@@ -78,7 +78,10 @@ fn client() -> lingxi_llm_client::LlmClient {
         .collect::<Vec<_>>();
     let mut builder = LlmClientBuilder::new(&profiles).unwrap();
     builder.register_account_source("deepseek", AccountIdentity::AuthUser, Arc::new(FakeSource));
-    builder.build().unwrap()
+    builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap()
 }
 
 #[tokio::test]
@@ -142,7 +145,10 @@ async fn ambiguous_auth_source_requires_profile_binding() {
     second.profile_name = "openai-b".into();
     let mut builder = LlmClientBuilder::new(&[first, second]).unwrap();
     builder.register_account_source("openai", AccountIdentity::AuthUser, Arc::new(FakeSource));
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::AuthUser);
     query.since_unix = Some(100);
     query.until_unix = Some(200);
@@ -166,7 +172,10 @@ async fn ambiguous_auth_source_requires_profile_binding() {
         AccountIdentity::AuthUser,
         Arc::new(FakeSource),
     );
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     assert!(matches!(
         client.account_usage("openai-a", &query).await,
         Ok(AccountSnapshot {
@@ -196,7 +205,10 @@ async fn bulk_queries_progress_concurrently_and_keep_profile_order() {
             Arc::new(BarrierSource(barrier.clone())),
         );
     }
-    let client = builder.build().unwrap();
+    let client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let queries = BTreeMap::from([
         (
             "deepseek".into(),
@@ -238,7 +250,10 @@ async fn replacing_a_profile_invalidates_its_signed_in_account_source() {
         AccountIdentity::AuthUser,
         Arc::new(FakeSource),
     );
-    let mut client = builder.build().unwrap();
+    let mut client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     let dir = account_config_dir();
     client.set_config_dir(&dir).unwrap();
     let mut query = AccountQuery::new(AccountIdentity::AuthUser);
@@ -294,10 +309,14 @@ async fn reloading_a_changed_profile_invalidates_its_signed_in_account_source() 
         AccountIdentity::AuthUser,
         Arc::new(FakeSource),
     );
-    let mut client = builder.build().unwrap();
+    let mut client = builder
+        .with_region(lingxi_agent_api::protocol::Region::International)
+        .build()
+        .unwrap();
     client.set_config_dir(&dir).unwrap();
     let mut other = LlmClientBuilder::new(std::slice::from_ref(&profile))
         .unwrap()
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     other.set_config_dir(&dir).unwrap();

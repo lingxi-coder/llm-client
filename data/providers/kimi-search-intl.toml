@@ -1,3 +1,4 @@
+regions = ["international"]
 provider_id = "kimi"
 base_url = "https://api.moonshot.ai/v1"
 protocol = "open_ai_responses"

@@ -4,6 +4,19 @@
 
 This document covers the Rust API in this repository. `lingxi-llm-client` is a library with a built-in HTTP client. It does not provide an HTTP service with a listening port, a CLI, or a key management service. The core client API can be imported from `lingxi_llm_client`; request, response, and configuration types are available through `lingxi_llm_client::protocol`.
 
+## Region filtering
+
+Every client must explicitly select `.with_region(Region::ChinaMainland)` or `.with_region(Region::International)` before `build()`, otherwise it returns `BuildError::MissingRegion`. Import `Region` from `lingxi_llm_client::protocol`; `client.region()` returns the selection. It is fixed for the client lifetime. To switch regions, build another client and reuse the same configuration directory if desired.
+
+`ProviderProfile.regions` declares usage regions, for example `regions = ["china_mainland"]` in TOML. Shared profiles declare `["china_mainland", "international"]`. Missing declarations in custom and legacy configurations default to both regions; an explicit `[]` permits neither. Models inherit their profile's regions; both `ProviderListing` and `ModelListing` expose `regions`.
+
+`providers()` and `models()` filter by region before applying their existing visibility and model-allowlist rules. Resolution, explicit profile/group references, completions, streams, search and failover chains all honor the region. Excluded models do not cause name ambiguity. Hidden spare accounts remain eligible for failover within the region. This is a product policy, not a network reachability guarantee, IP/language detection or URL rewriting.
+
+`provider()` and `profiles()` retain the complete configuration management view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Legacy saved profiles without `regions` remain available in both regions, including saved overrides of built-ins; restoring a built-in restores its explicit region declaration.
+
+Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, `glm`, `glm-coding`. `deepseek`, `deepseek-search` and `kimi-code` are shared. All remaining built-in profiles are international, including Qwen Hong Kong, Singapore, US and their search counterparts.
+
+
 ## Contents
 
 - [Getting started and lifecycle](#getting-started-and-lifecycle)
@@ -55,7 +68,9 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
             }
         }]
     }))?;
-    let client = LlmClientBuilder::new(&[profile])?.build()?;
+    let client = LlmClientBuilder::new(&[profile])?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
     let request = CompletionRequest {
         model: "my-model".into(),
         web_search: None,
@@ -90,6 +105,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | --- | --- | --- |
 | `new(&[ProviderProfile])` | `Result<Self, LlmError>` | Creates built-in HTTP transport and a system clock; registers all built-in codecs, directory parsers, and `ApiKey` / `Bearer` authenticators |
 | `with_transport(Arc<dyn Transport>, &[ProviderProfile])` | `Self` | Uses custom transport and the built-in system clock; registers all built-in codecs, directory parsers, and `ApiKey` / `Bearer` authenticators |
+| `with_region(Region)` | `Self` | Consumes and returns the builder with the required usage region |
 | `with_clock(Arc<dyn Clock>)` | `&mut Self` | Overrides the builder's clock, useful for tests with a fixed time |
 | `register_codec(Arc<dyn WireCodec>)` | `&mut Self` | Adds or replaces a codec by protocol family |
 | `register_directory(Arc<dyn ModelDirectory>)` | `&mut Self` | Adds or replaces a parser by directory protocol shape |
@@ -100,7 +116,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `codec_families()` | `Vec<ProtocolFamily>` | Lists registered protocol families |
 | `build(self)` | `Result<LlmClient, BuildError>` | Consumes the builder and validates the configuration |
 
-`BuildError` includes `DuplicateProfile { profile_name }`, `MissingCodec { profile_name, family }`, `MissingAuthenticator { profile_name, strategy }`, and `InvalidPeakSchedule { profile_name, reason }`. `AuthStrategy::None` needs no authenticator; a missing directory parser does not prevent the build. The build rejects invalid or empty peak pricing windows. A successful build does not mean the credentials are valid, the address is reachable, or the provider supports every request parameter.
+`BuildError` includes `MissingRegion`, `DuplicateProfile { profile_name }`, `MissingCodec { profile_name, family }`, `MissingAuthenticator { profile_name, strategy }`, and `InvalidPeakSchedule { profile_name, reason }`. `AuthStrategy::None` needs no authenticator; a missing directory parser does not prevent the build. The build rejects invalid or empty peak pricing windows. A successful build does not mean the credentials are valid, the address is reachable, or the provider supports every request parameter.
 
 ### `LlmClient`
 
@@ -116,8 +132,9 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `web_search_stream_in(&str, &CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Streams search on the specified profile or connection group |
 | `resolve(&str)` | `Result<ResolvedRoute, ResolveError>` | Resolves a model and failover chain from the configuration |
 | `resolve_in(&str, Option<&str>)` | Same as above | Explicitly restricts the starting connection or connection group |
+| `region()` | `Region` | Returns the usage region selected at construction |
 | `models()` | `Vec<ModelListing>` | Returns models from the current effective configuration, including directory-synced models, while skipping connections with `connection.hidden` |
-| `providers()` | `Vec<ProviderListing>` | Returns all connections, including hidden connections and those without credentials |
+| `providers()` | `Vec<ProviderListing>` | Returns connections in the selected region, including hidden connections and those without credentials |
 | `account_usage(&str, &AccountQuery).await` | `Result<AccountSnapshot, AccountUsageError>` | Reads one connection's account limits and usage |
 | `accounts_usage(&BTreeMap<String, AccountQuery>).await` | `Vec<(String, Result<AccountSnapshot, AccountUsageError>)>` | Reads every connection with independent results |
 | `register_profile_account_source(&str, AccountIdentity, Arc<dyn AccountUsageSource>)` | `Result<(), ProviderStoreError>` | Rebinds a signed-in session after a connection changes |
@@ -197,7 +214,9 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
     let profiles = builtin_providers()?;
-    let client = LlmClientBuilder::new(&profiles)?.build()?;
+    let client = LlmClientBuilder::new(&profiles)?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
     let request: CompletionRequest = serde_json::from_value(serde_json::json!({
         "model": "glm/glm-4.7",
         "messages": [{"role": "user", "content": [{"type": "text", "text": "查找 Rust 最新版本，给出来源"}]}]
@@ -265,6 +284,7 @@ Qwen Responses profiles accept one knowledge-base ID and the Model Studio worksp
 use lingxi_llm_client::protocol::{CompletionRequest, FileSearchConfig, Secret};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
+// Build client with Region::ChinaMainland; international calls need the corresponding profile and credentials.
 async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
         "model": "qwen3.8-max",
@@ -465,7 +485,9 @@ use lingxi_llm_client::protocol::{ProviderProfile, Secret};
 use lingxi_llm_client::LlmClientBuilder;
 
 # async fn example(primary: ProviderProfile, spare: ProviderProfile) -> Result<(), Box<dyn std::error::Error>> {
-let mut client = LlmClientBuilder::new(&[])?.build()?;
+let mut client = LlmClientBuilder::new(&[])?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
 client.set_config_dir("./config")?;
 client.set_tracked_models("acme", ["model-id".to_owned()])?;
 client.add_provider(primary)?;

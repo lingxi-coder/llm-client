@@ -1,6 +1,7 @@
 # A distinct membership-backed service: its keys, model ids, quotas and endpoint
 # are not interchangeable with the platform it is grouped with, which is why the
 # billing mode differs and the failover chain will not cross between them.
+regions = ["china_mainland", "international"]
 provider_id = "kimi"
 base_url = "https://api.kimi.com/coding/v1"
 protocol = "open_ai_chat"

@@ -34,6 +34,7 @@ fn request() -> CompletionRequest {
 fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
+            .with_region(lingxi_agent_api::protocol::Region::International)
             .build()
             .unwrap();
     let route = client.resolve("m").unwrap();
@@ -417,6 +418,7 @@ fn public_web_search_methods_enable_search_without_mutating_request() {
         transport.clone(),
         &[profile("openai_chat", "open_ai_chat")],
     )
+    .with_region(lingxi_agent_api::protocol::Region::International)
     .build()
     .unwrap();
     let mut req = request();
@@ -457,6 +459,7 @@ fn failover_cannot_silently_drop_requested_search_on_an_unsupported_connection()
     fallback.connection.order = 1;
     fallback.extra = json!({});
     let client = LlmClientBuilder::with_transport(Arc::new(support::NoHttp), &[first, fallback])
+        .with_region(lingxi_agent_api::protocol::Region::International)
         .build()
         .unwrap();
     let route = client.resolve("m").unwrap();

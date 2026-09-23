@@ -1,3 +1,4 @@
+regions = ["china_mainland"]
 provider_id = "minimax"
 base_url = "https://api.minimaxi.com/anthropic"
 protocol = "anthropic_messages"

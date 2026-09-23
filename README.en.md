@@ -39,6 +39,8 @@ Qwen, Kimi, and MiniMax use separate profiles, regional API URLs, and credential
 
 See the [File Attachments Guide](docs/file-attachments.md) for sharing images across remote devices, resolver setup, and provider file lifetimes.
 
+Select a usage region with `with_region(Region::ChinaMainland)` or `with_region(Region::International)` before building a client. Provider/model lists, resolution and failover honor this region while keeping the complete configuration. Custom profiles declare `regions`; missing declarations allow both regions. See [region filtering](docs/api.en.md#region-filtering).
+
 ## Getting Started
 
 You need Rust 1.94.0 or later and an API key with access to the target model. This walkthrough sends a first request using the built-in `openai` connection.
@@ -72,7 +74,9 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let profiles = builtin_providers()?;
-    let client = LlmClientBuilder::new(&profiles)?.build()?;
+    let client = LlmClientBuilder::new(&profiles)?
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()?;
     let options = RequestOptions {
         credential: Some(Secret::new(std::env::var("OPENAI_API_KEY")?)),
         ..RequestOptions::default()
