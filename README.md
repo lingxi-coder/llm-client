@@ -59,4 +59,5 @@ let client = lingxi_llm_client::LlmClientBuilder::new(&profiles)?.build()?;
 以原 Lingxi 工作目录中的 `crates/llm-client` 和 `crates/agent-api` 当前快照建立新历史，
 包含拆分时尚未提交的相关修改。原仓库当时 HEAD 为
 `df36a9b173a43783f944b5bf88c0d23e36dd3739`，不是该快照的完整版本标识。
-保留原包的 `MIT OR Apache-2.0` 许可证声明。
+保留原包的 `MIT OR Apache-2.0` 双许可证声明。使用者可任选其一，详见
+[MIT 许可证](LICENSE-MIT) 和 [Apache License 2.0](LICENSE-APACHE)。
