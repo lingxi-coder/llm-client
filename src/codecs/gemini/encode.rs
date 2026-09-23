@@ -3,6 +3,7 @@
 use crate::client::route::ResolvedRoute;
 use crate::transport::HttpRequest;
 use crate::RequestOptions;
+use base64::Engine;
 use lingxi_agent_api::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
     MessageRole, ProviderProfile, ToolChoice, ToolSpec, ToolUseId,
@@ -90,6 +91,7 @@ pub(crate) fn request_to(
         body.insert("generationConfig".to_owned(), Value::Object(generation));
     }
 
+    crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::extras::merge_body(profile, &mut body);
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::extras::merge_headers(profile, &mut headers);
@@ -156,6 +158,11 @@ fn encode_part(
     names: &BTreeMap<ToolUseId, String>,
 ) -> Result<Option<Value>, LlmError> {
     Ok(match b {
+        ContentBlock::ProviderContent { .. } => {
+            return Err(LlmError::UnsupportedCapability {
+                message: "native content cannot be replayed on Gemini".to_owned(),
+            })
+        }
         ContentBlock::Text { text } => Some(json!({"text": text})),
         // This wire marks reasoning with a flag on an ordinary text part; it
         // carries no signature, so nothing is lost by replaying it as one.
@@ -194,7 +201,8 @@ fn encode_part(
                 json!({"inlineData": {"mimeType": media_type, "data": data}})
             }
             DocumentSource::Text { media_type, data } => {
-                json!({"inlineData": {"mimeType": media_type, "data": data}})
+                let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_bytes());
+                json!({"inlineData": {"mimeType": media_type, "data": encoded}})
             }
             DocumentSource::Url { url } => json!({"fileData": {"fileUri": url}}),
         }),

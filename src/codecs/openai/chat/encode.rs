@@ -52,7 +52,7 @@ pub fn request(
 
     let keep_reasoning = flag(profile, "preserve_reasoning_content");
     for m in &req.messages {
-        messages.extend(encode_message(m, keep_reasoning));
+        messages.extend(encode_message(m, keep_reasoning)?);
     }
 
     let mut body = Map::new();
@@ -113,6 +113,7 @@ pub fn request(
 
     // Whatever else this particular endpoint understands. Additive only, and
     // never a credential — see `wire_extras`.
+    crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::extras::merge_body(profile, &mut body);
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::extras::merge_headers(profile, &mut headers);
@@ -137,7 +138,7 @@ pub fn request(
 /// One conversation message becomes one or more wire messages: a tool result
 /// cannot share a message with text, so any pending text is flushed first and
 /// the result becomes its own `role: "tool"` entry.
-fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Vec<Value> {
+fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<Value>, LlmError> {
     let role = match m.role {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
@@ -151,6 +152,11 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Vec<Value> {
 
     for block in &m.content {
         match block {
+            ContentBlock::ProviderContent { .. } => {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "native content cannot be replayed on Chat Completions".to_owned(),
+                })
+            }
             ContentBlock::Text { text: t } => {
                 if !text.is_empty() {
                     text.push('\n');
@@ -223,7 +229,7 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Vec<Value> {
             out.push(user_message(role, &text, &media));
         }
     }
-    out
+    Ok(out)
 }
 
 /// A hosted URL is sent as-is; base64 becomes a data URI, which is the only

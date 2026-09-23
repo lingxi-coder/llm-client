@@ -5,6 +5,7 @@
 
 use super::decode;
 use crate::client::usage;
+use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::StreamDecoder;
 use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, ToolUseId, Usage};
 use serde_json::Value;
@@ -26,6 +27,7 @@ pub struct GeminiStreamDecoder {
     stop: Option<StopReason>,
     saw_tool_call: bool,
     done: bool,
+    search: SearchStream,
 }
 
 impl StreamDecoder for GeminiStreamDecoder {
@@ -40,6 +42,10 @@ impl StreamDecoder for GeminiStreamDecoder {
         let root: Value = serde_json::from_str(data).map_err(|_| LlmError::InvalidRequest {
             message: "stream frame is not valid JSON".to_owned(),
         })?;
+
+        if root.get("error").is_some_and(|error| !error.is_null()) {
+            return Err(decode::classify_error(500, &root, None));
+        }
 
         let mut out = Vec::new();
         if !self.started {
@@ -57,6 +63,15 @@ impl StreamDecoder for GeminiStreamDecoder {
             self.usage_raw = Some(u.clone());
         }
 
+        if root
+            .get("promptFeedback")
+            .and_then(|feedback| feedback.get("blockReason"))
+            .and_then(Value::as_str)
+            .is_some_and(|reason| !reason.is_empty() && reason != "BLOCK_REASON_UNSPECIFIED")
+        {
+            self.stop = Some(StopReason::Refusal);
+        }
+
         let Some(candidate) = root
             .get("candidates")
             .and_then(Value::as_array)
@@ -64,6 +79,9 @@ impl StreamDecoder for GeminiStreamDecoder {
         else {
             return Ok(out);
         };
+
+        self.search
+            .emit(web_search_decode::gemini(candidate), &mut out);
 
         for part in candidate
             .get("content")
@@ -127,6 +145,11 @@ impl StreamDecoder for GeminiStreamDecoder {
     }
 
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
+        if !self.done && self.stop.is_none() {
+            return Err(LlmError::StreamInterrupted {
+                message: "provider stream ended before a terminal event".to_owned(),
+            });
+        }
         let mut out = Vec::new();
         if !self.done {
             self.done = true;

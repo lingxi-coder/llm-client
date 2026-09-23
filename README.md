@@ -2,7 +2,13 @@
 
 从 Lingxi 拆分的 Rust LLM 客户端，crate 名称保留为 `lingxi-llm-client`。
 支持 provider 配置、模型路由、故障转移、流式响应和费用计算，内置 OpenAI、Anthropic、Gemini 及托管平台的 wire codec。
-HTTP/WebSocket 传输由调用方通过 `Transport` 提供；凭证按请求传入。
+内置 HTTP 客户端和系统时钟，无需外部实现 `Transport`；凭证按请求传入。网络请求使用 Tokio 运行时，暂不支持内置 WebSocket。
+
+## 文档
+
+- [详细 API 接口文档](docs/api.md)：接入示例、请求与流式响应、配置路由、认证传输、模型目录、费用与扩展接口。
+- [Web Search](docs/web-search.md)：`web_search()` / `web_search_stream()` 调用示例、统一搜索选项、provider 配置、引用、流式事件与 Claude 搜索上下文重放。
+- 本地 Rust API 文档：运行 `cargo doc --workspace --no-deps --open`。
 
 ## 项目结构
 
@@ -24,7 +30,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-测试使用模拟传输，不需要真实 LLM API key。
+测试使用模拟传输和本地回环 HTTP 服务，不需要真实 LLM API key。
 客户端接入方式可参考 `tests/support/mod.rs` 和 `tests/failover.rs`。
 内置模型目录与价格是静态快照，需要随 provider 的变更维护。
 
@@ -34,10 +40,19 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 [dependencies]
 lingxi-llm-client = { git = "https://github.com/lingxi-coder/llm-client", branch = "main" }
 lingxi-agent-api = { git = "https://github.com/lingxi-coder/llm-client", branch = "main" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
 共享类型通过 `lingxi_agent_api::protocol` 导入。两个依赖应指向同一 Git revision；
 需要可复现构建时使用固定 `rev`。
+
+使用配置创建客户端：
+
+```rust
+let client = lingxi_llm_client::LlmClientBuilder::new(&profiles)?.build()?;
+```
+
+此入口自动创建 HTTP 客户端和系统时钟，并注册 API key 和 Bearer 认证器。无需直接依赖 `reqwest`；在 Tokio 运行时中调用 `complete()` 或 `stream()`。完整配置和请求示例见 [接入与生命周期](docs/api.md#接入与生命周期)，超时与重定向策略见 [内置 HTTP 客户端](docs/api.md#内置-http-客户端)。自定义传输可通过 `LlmClientBuilder::with_transport()` 注入，固定测试时钟可通过 `with_clock()` 设置。
 
 ## 来源
 

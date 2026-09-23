@@ -16,7 +16,20 @@ impl ModelDirectory for AnthropicMessagesDirectory {
             Some(after) => with_query(&url, &[("limit", PAGE_SIZE), ("after_id", after)]),
             None => with_query(&url, &[("limit", PAGE_SIZE)]),
         };
-        get(url, profile)
+        let mut req = get(url, profile);
+        // The Models API requires the same version header as Messages.
+        req.headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case("anthropic-version"));
+        req.headers.push((
+            "anthropic-version".to_owned(),
+            profile
+                .extra
+                .get("api_version")
+                .and_then(Value::as_str)
+                .unwrap_or(crate::codecs::anthropic::DEFAULT_API_VERSION)
+                .to_owned(),
+        ));
+        req
     }
 
     fn decode_page(&self, resp: &HttpResponse) -> Result<ModelPage, LlmError> {

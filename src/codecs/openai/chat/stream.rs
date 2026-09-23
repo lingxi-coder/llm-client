@@ -7,6 +7,7 @@
 
 use super::decode;
 use crate::client::usage;
+use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::StreamDecoder;
 use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, ToolUseId, Usage};
 use serde_json::Value;
@@ -31,6 +32,7 @@ pub struct OpenAiStreamDecoder {
     usage_raw: Option<Value>,
     stop: Option<StopReason>,
     done: bool,
+    search: SearchStream,
 }
 
 #[derive(Debug)]
@@ -62,6 +64,10 @@ impl StreamDecoder for OpenAiStreamDecoder {
             message: "OpenAI stream frame is not valid JSON".to_owned(),
         })?;
 
+        if root.get("error").is_some_and(|error| !error.is_null()) {
+            return Err(decode::classify_error(500, &root, None));
+        }
+
         if !self.started {
             self.started = true;
             out.push(StreamEvent::Start {
@@ -78,8 +84,14 @@ impl StreamDecoder for OpenAiStreamDecoder {
         // recorded whenever seen rather than read at the end.
         if let Some(u) = root.get("usage").filter(|v| !v.is_null()) {
             self.usage_raw = Some(u.clone());
+            self.search
+                .emit(web_search_decode::with_usage(None, Some(u)), &mut out);
         }
 
+        self.search.emit(
+            web_search_decode::chat_with_search(&Value::Null, &root),
+            &mut out,
+        );
         let Some(choice) = root
             .get("choices")
             .and_then(Value::as_array)
@@ -89,6 +101,7 @@ impl StreamDecoder for OpenAiStreamDecoder {
         };
 
         if let Some(delta) = choice.get("delta") {
+            self.search.emit(web_search_decode::chat(delta), &mut out);
             if let Some(r) = delta.get("reasoning_content").and_then(Value::as_str) {
                 let block = *self.reasoning_block.get_or_insert_with(|| {
                     let b = self.next_block;
@@ -127,6 +140,11 @@ impl StreamDecoder for OpenAiStreamDecoder {
     }
 
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
+        if !self.done && self.stop.is_none() {
+            return Err(LlmError::StreamInterrupted {
+                message: "provider stream ended before a terminal event".to_owned(),
+            });
+        }
         let mut out = Vec::new();
         self.finish_into(&mut out);
         Ok(out)

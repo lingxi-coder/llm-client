@@ -5,6 +5,8 @@ use lingxi_agent_api::protocol::Secret;
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Streaming mode for direct codec calls. `LlmClient::complete` and
+    /// `LlmClient::stream` select their own mode regardless of this field.
     pub stream: bool,
     /// The secret this request authenticates with, if the profile needs one.
     ///

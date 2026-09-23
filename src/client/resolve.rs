@@ -86,8 +86,14 @@ impl LlmClient {
         if matches.is_empty() {
             if let Some((qualifier, bare)) = requested.split_once('/') {
                 if profile.is_none_or(|scoped| scoped == qualifier) {
+                    let names_a_connection =
+                        self.profiles.iter().any(|p| p.profile_name == qualifier);
                     for p in &self.profiles {
-                        if p.profile_name != qualifier && p.group() != qualifier {
+                        if if names_a_connection {
+                            p.profile_name != qualifier
+                        } else {
+                            p.group() != qualifier
+                        } {
                             continue;
                         }
                         for m in &p.models {

@@ -16,13 +16,12 @@ use lingxi_agent_api::protocol::{
     Usage,
 };
 use lingxi_llm_client::{
-    Clock, HttpRequest, HttpResponse, LlmClientBuilder, LlmServices, RequestOptions, ResolveError,
-    ResolvedRoute, StreamDecoder, StreamResponse, Transport, WebSocketSession, WireCodec,
+    HttpRequest, HttpResponse, LlmClientBuilder, RequestOptions, ResolveError, ResolvedRoute,
+    StreamDecoder, StreamResponse, Transport, WebSocketSession, WireCodec,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 // --- fakes -----------------------------------------------------------------
 
@@ -150,6 +149,7 @@ impl WireCodec for FakeCodec {
             });
         }
         Ok(CompletionResponse {
+            web_search: None,
             message: ConversationMessage {
                 role: MessageRole::Assistant,
                 content: vec![ContentBlock::Text {
@@ -229,13 +229,6 @@ impl StreamDecoder for FakeDecoder {
     fn set_provider_metadata(&mut self, _meta: Value) {}
 }
 
-struct Now;
-impl Clock for Now {
-    fn now(&self) -> SystemTime {
-        SystemTime::now()
-    }
-}
-
 // --- fixtures --------------------------------------------------------------
 
 /// A provider entry written the way a user writes settings. No code in this
@@ -294,11 +287,7 @@ fn client(
     profiles: &[ProviderProfile],
     http: Arc<ScriptedTransport>,
 ) -> lingxi_llm_client::LlmClient {
-    let services = LlmServices {
-        http,
-        clock: Arc::new(Now),
-    };
-    let mut b = LlmClientBuilder::new(&services, profiles);
+    let mut b = LlmClientBuilder::with_transport(http, profiles);
     b.register_codec(Arc::new(FakeCodec));
     b.build().expect("every profile's protocol has a codec")
 }
@@ -306,6 +295,7 @@ fn client(
 fn request(model: &str) -> CompletionRequest {
     CompletionRequest {
         model: model.to_owned(),
+        web_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {
@@ -598,11 +588,7 @@ fn stateful_pair(http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
         responses("acme:one", "https://one.test", 0),
         responses("acme:two", "https://two.test", 1),
     ];
-    let services = LlmServices {
-        http,
-        clock: Arc::new(Now),
-    };
-    let mut b = LlmClientBuilder::new(&services, &profiles);
+    let mut b = LlmClientBuilder::with_transport(http, &profiles);
     b.register_codec(Arc::new(FakeStatefulCodec));
     b.build().expect("every profile's protocol has a codec")
 }
@@ -931,11 +917,7 @@ mod credentials_come_from_the_caller {
         let seen = Arc::new(Mutex::new(vec![]));
         let http = ScriptedTransport::new(vec![("https://one.test", Ok(200))]);
         let profiles = [keyed_profile()];
-        let services = LlmServices {
-            http,
-            clock: Arc::new(Now),
-        };
-        let mut b = LlmClientBuilder::new(&services, &profiles);
+        let mut b = LlmClientBuilder::with_transport(http, &profiles);
         b.register_codec(Arc::new(FakeCodec));
         b.register_authenticator(
             lingxi_agent_api::protocol::AuthStrategy::ApiKey,
@@ -971,11 +953,7 @@ mod credentials_come_from_the_caller {
         let seen = Arc::new(Mutex::new(vec![]));
         let http = ScriptedTransport::new(vec![("https://one.test", Ok(200))]);
         let profiles = [keyed_profile()];
-        let services = LlmServices {
-            http,
-            clock: Arc::new(Now),
-        };
-        let mut b = LlmClientBuilder::new(&services, &profiles);
+        let mut b = LlmClientBuilder::with_transport(http, &profiles);
         b.register_codec(Arc::new(FakeCodec));
         b.register_authenticator(
             lingxi_agent_api::protocol::AuthStrategy::ApiKey,
@@ -1141,12 +1119,10 @@ mod raw_http_streams {
                 false,
             ));
         }
-        let services = LlmServices {
-            http: http.clone(),
-            clock: Arc::new(Now),
-        };
         (
-            LlmClientBuilder::new(&services, &profiles).build().unwrap(),
+            LlmClientBuilder::with_transport(http.clone(), &profiles)
+                .build()
+                .unwrap(),
             http,
         )
     }
@@ -1252,5 +1228,91 @@ mod raw_http_streams {
             block_on(client.stream(&request("m-1"), &RequestOptions::default())),
             Err(LlmError::RateLimited { .. })
         ));
+    }
+}
+
+#[test]
+fn qualified_profile_wins_over_its_namesake_group() {
+    let c = client(
+        &[
+            conn(
+                "acme",
+                "https://primary.test",
+                model("m", "primary-model"),
+                Some("acme"),
+                1,
+                "per_token",
+                false,
+            ),
+            conn(
+                "spare",
+                "https://spare.test",
+                model("m", "other-model"),
+                Some("acme"),
+                0,
+                "per_token",
+                false,
+            ),
+        ],
+        ScriptedTransport::new(vec![]),
+    );
+    for scope in [None, Some("acme")] {
+        let route = c.resolve_in("acme/m", scope).unwrap();
+        assert_eq!(route.profile_name, "acme");
+        assert_eq!(route.request_model, "primary-model");
+    }
+}
+
+struct ModeCheckingCodec(bool);
+
+#[async_trait]
+impl WireCodec for ModeCheckingCodec {
+    fn family(&self) -> ProtocolFamily {
+        ProtocolFamily::OpenAiChat
+    }
+    fn encode_request(
+        &self,
+        req: &CompletionRequest,
+        profile: &ProviderProfile,
+        route: &ResolvedRoute,
+        opts: &RequestOptions,
+    ) -> Result<HttpRequest, LlmError> {
+        assert_eq!(
+            opts.stream, self.0,
+            "client method must determine wire mode"
+        );
+        FakeCodec.encode_request(req, profile, route, opts)
+    }
+    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
+        FakeCodec.decode_response(resp)
+    }
+    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
+        FakeCodec.stream_decoder()
+    }
+    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
+        FakeCodec.response_usage(resp)
+    }
+}
+
+#[test]
+fn client_methods_determine_wire_mode() {
+    for streaming in [false, true] {
+        let http = ScriptedTransport::new(vec![("https://x.test", Ok(200))]);
+        let mut builder = LlmClientBuilder::with_transport(
+            http,
+            &[solo("acme", "https://x.test", model("m", "m"))],
+        );
+        builder.register_codec(Arc::new(ModeCheckingCodec(streaming)));
+        let client = builder.build().unwrap();
+        let opts = RequestOptions {
+            stream: !streaming,
+            ..Default::default()
+        };
+        if streaming {
+            assert!(block_on(client.stream(&request("m"), &opts)).is_ok());
+        } else {
+            assert!(block_on(client.complete(&request("m"), &opts)).is_ok());
+        }
+        assert_eq!(opts.stream, !streaming, "caller options stay unchanged");
     }
 }

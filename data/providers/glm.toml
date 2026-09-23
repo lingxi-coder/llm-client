@@ -1,0 +1,35 @@
+# Mainland metered chat API, separate from Coding Plan and Z.AI accounts.
+provider_id = "zhipu"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+protocol = "open_ai_chat"
+auth = "bearer"
+credential_env = "ZHIPU_API_KEY"
+billing_mode = "per_token"
+display_name = "GLM Open Platform"
+description = "GLM with native web search on the mainland BigModel API."
+console_url = "https://bigmodel.cn"
+api_key_url = "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
+docs_url = "https://docs.bigmodel.cn/cn/guide/tools/web-search"
+connection = { group = "glm-api", connection_id = "chat", order = 0 }
+extra = { web_search = "glm", web_search_engine = "search_pro" }
+
+# Model metadata comes from the existing catalog. Coding Plan's zero token
+# rates do not apply to this metered endpoint; leave cost unknown until its
+# USD-equivalent rates are verified.
+[[model]]
+id = "glm-4.7"
+name = "GLM-4.7"
+description = "Flagship GLM model for hybrid reasoning, coding, and agentic engineering"
+family = "glm"
+knowledge_cutoff = "2025-04"
+release_date = "2025-12-22"
+last_updated = "2025-12-22"
+context_window = 204800
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = true
+attachment = false
+open_weights = true

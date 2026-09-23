@@ -138,7 +138,7 @@ impl TaskState {
     }
 }
 
-/// Fine-grained rights carried by an owner-bound [`TaskHandle`].
+/// Fine-grained rights carried by a host's owner-bound `TaskHandle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskCapability {

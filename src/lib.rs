@@ -1,17 +1,24 @@
-//! LLM layer (§7.2): the traits and the provider-neutral client. A protocol
-//! family is a `WireCodec`; a credential scheme is an `Authenticator`; the HTTP
-//! client is the platform's `Transport`. This crate depends on none of them
-//! (gate 28) — `LlmClientBuilder` receives them and refuses to build if a
-//! profile's protocol has no codec (gate 33).
+//! Provider-neutral LLM client with built-in wire codecs and provider presets.
+//!
+//! A protocol family is a [`WireCodec`]; a credential scheme is an
+//! [`Authenticator`]. Use [`LlmClientBuilder::new`] for built-in
+//! HTTP/HTTPS or inject a custom HTTP client through [`Transport`].
+//! [`LlmClientBuilder`] registers the built-in codecs and model directories;
+//! the built-in HTTP constructor also registers API-key and bearer authentication.
 //!
 //! It does not hold, fetch or store credentials. A secret arrives per request
 //! on `RequestOptions::credential`, from whoever owns it; key and token
 //! storage, expiry and refresh all stay outside a crate whose job is HTTP.
 //!
-//! `ProviderProfile` is not here: it is serializable configuration that the
-//! codec capabilities, this crate and `config` all read, so it lives once in
-//! `agent_api::protocol` (review C2).
+//! Shared request, response and provider types live in
+//! [`lingxi_agent_api::protocol`]. See [`api`] for the detailed API guide.
 #![forbid(unsafe_code)]
+
+#[doc = include_str!("../docs/api.md")]
+pub mod api {}
+
+#[doc = include_str!("../docs/web-search.md")]
+pub mod web_search {}
 
 pub mod auth;
 pub mod client;
@@ -40,6 +47,6 @@ pub use directory::{
 pub use framing::sse::SseFrameSplitter;
 pub use presets::{builtin as builtin_providers, merge as merge_providers, PresetError};
 pub use transport::{
-    Clock, HttpRequest, HttpResponse, LlmServices, StreamResponse, Transport, UrlOpener,
-    WebSocketSession, WsMessage,
+    Clock, HttpRequest, HttpResponse, HttpTransport, StreamResponse, SystemClock, Transport,
+    UrlOpener, WebSocketSession, WsMessage,
 };

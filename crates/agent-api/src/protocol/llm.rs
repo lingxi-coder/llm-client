@@ -281,6 +281,11 @@ pub enum StreamEvent {
         name: String,
         arguments_fragment: String,
     },
+    /// Search attribution records received in this frame. These are not
+    /// client-executed tool calls. Native metadata retains citation locations.
+    WebSearch {
+        result: WebSearchResult,
+    },
     End {
         stop_reason: StopReason,
         usage: Usage,
@@ -319,9 +324,45 @@ pub struct ThinkingConfig {
     pub budget_tokens: Option<u32>,
 }
 
+/// Enable provider-hosted web search. The provider decides when to search.
+/// Unsupported controls are rejected instead of silently discarded.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_domains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_domains: Vec<String>,
+    /// Maximum searches per request, currently supported by Anthropic only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<u32>,
+}
+
+/// A cited web source. Native citation spans remain in search metadata because
+/// providers use different block indices and offset units.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebCitation {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// Search attribution, including native annotations, grounding supports,
+/// search suggestions and server-side search errors. Metadata is provider
+/// specific; it must not be treated as executable client tool instructions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WebSearchResult {
+    #[serde(default)]
+    pub citations: Vec<WebCitation>,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
+    /// Absent by default. Requires an explicit search adapter on the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<WebSearchConfig>,
     /// The immediately preceding response to continue on a stateful Responses
     /// endpoint. The caller owns the chain and supplies only the desired new
     /// input in `messages`.
@@ -356,6 +397,8 @@ impl ToolChoice {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionResponse {
     pub message: ConversationMessage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<WebSearchResult>,
     pub stop_reason: StopReason,
     pub usage: Usage,
     pub model: String,
@@ -573,6 +616,7 @@ mod tests {
         let id = ResponseId::new("resp_abc");
         let req = CompletionRequest {
             model: "m".to_owned(),
+            web_search: None,
             previous_response_id: Some(id.clone()),
             system: vec![],
             messages: vec![],

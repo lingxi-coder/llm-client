@@ -8,7 +8,7 @@ use crate::codecs::WireCodec;
 use crate::transport::{HttpRequest, HttpResponse};
 use futures::StreamExt;
 use lingxi_agent_api::protocol::{
-    AuthStrategy, CompletionRequest, CompletionResponse, LlmError, ProtocolFamily,
+    AuthStrategy, CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, WebSearchConfig,
 };
 use std::sync::Arc;
 
@@ -37,6 +37,33 @@ fn attempts(route: &ResolvedRoute, continuation: bool) -> Vec<Attempt> {
 }
 
 impl LlmClient {
+    /// Run a completion with provider-hosted web search enabled. The supplied
+    /// configuration replaces `req.web_search` for this call; `req` is unchanged.
+    /// The selected profile must declare a compatible `extra.web_search` adapter.
+    pub async fn web_search(
+        &self,
+        req: &CompletionRequest,
+        search: WebSearchConfig,
+        opts: &RequestOptions,
+    ) -> Result<CompletionResponse, LlmError> {
+        let mut req = req.clone();
+        req.web_search = Some(search);
+        self.complete(&req, opts).await
+    }
+
+    /// Stream a completion with provider-hosted web search enabled. Search
+    /// metadata arrives as `StreamEvent::WebSearch` alongside text events.
+    pub async fn web_search_stream(
+        &self,
+        req: &CompletionRequest,
+        search: WebSearchConfig,
+        opts: &RequestOptions,
+    ) -> Result<ModelStream, LlmError> {
+        let mut req = req.clone();
+        req.web_search = Some(search);
+        self.stream(&req, opts).await
+    }
+
     /// Encode, authenticate, and hand the request to the transport. One hop.
     async fn prepare(
         &self,
@@ -91,12 +118,16 @@ impl LlmClient {
         req: &CompletionRequest,
         opts: &RequestOptions,
     ) -> Result<CompletionResponse, LlmError> {
+        let opts = RequestOptions {
+            stream: false,
+            ..opts.clone()
+        };
         let route = self.resolve(&req.model)?;
         let mut last = None;
         for attempt in attempts(&route, req.previous_response_id.is_some()) {
             let outcome = async {
-                let (http, codec) = self.prepare(&route, &attempt, req, opts).await?;
-                let resp = self.services.http.execute(http).await?;
+                let (http, codec) = self.prepare(&route, &attempt, req, &opts).await?;
+                let resp = self.http.execute(http).await?;
                 codec.decode_response(&resp)
             }
             .await;
@@ -117,12 +148,16 @@ impl LlmClient {
         req: &CompletionRequest,
         opts: &RequestOptions,
     ) -> Result<ModelStream, LlmError> {
+        let opts = RequestOptions {
+            stream: true,
+            ..opts.clone()
+        };
         let route = self.resolve(&req.model)?;
         let mut last = None;
         for attempt in attempts(&route, req.previous_response_id.is_some()) {
             let outcome = async {
-                let (http, codec) = self.prepare(&route, &attempt, req, opts).await?;
-                let mut resp = self.services.http.open_stream(http).await?;
+                let (http, codec) = self.prepare(&route, &attempt, req, &opts).await?;
+                let mut resp = self.http.open_stream(http).await?;
                 if !(200..300).contains(&resp.status) {
                     // Reuse each codec's status/body classification, including
                     // Retry-After, before deciding whether to try another hop.

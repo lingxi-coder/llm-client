@@ -22,7 +22,7 @@ credential_hint = "sk-"
 # OpenAI stores Responses objects and accepts their ids to continue a chain.
 # This is opt-in because several otherwise Responses-compatible endpoints
 # accept the field but ignore it.
-extra = { supports_previous_response_id = true }
+extra = { supports_previous_response_id = true, web_search = "openai_responses" }
 
 [[model]]
 id = "chatgpt-image-latest"

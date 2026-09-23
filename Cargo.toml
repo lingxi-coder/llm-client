@@ -17,9 +17,11 @@ futures.workspace = true
 bytes.workspace = true
 base64 = "0.22"
 toml.workspace = true
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 
 [dev-dependencies]
 lingxi-agent-api.workspace = true
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "time", "sync"] }
 
 [workspace]
 resolver = "2"

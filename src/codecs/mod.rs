@@ -11,6 +11,8 @@ pub(crate) mod extras;
 pub mod gemini;
 pub mod hosted;
 pub mod openai;
+pub(crate) mod web_search;
+pub(crate) mod web_search_decode;
 
 use crate::client::route::ResolvedRoute;
 use crate::transport::{HttpRequest, HttpResponse};

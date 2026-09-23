@@ -54,6 +54,7 @@ fn route() -> ResolvedRoute {
 fn request(content: Vec<ContentBlock>) -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
+        web_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {
@@ -504,11 +505,22 @@ fn a_counter_the_closing_frame_omits_keeps_what_the_seed_said() {
 fn a_stream_that_never_reported_its_output_is_not_a_complete_report() {
     // Cut off after the seed: the counts are still worth showing, but nothing
     // may be billed or budgeted from them.
-    let (usage, complete) = decode_usage(&[
-        r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#,
-    ]);
-    assert_eq!(usage.input_tokens, 10, "what was seen is still reported");
-    assert!(!complete);
+    let mut decoder = AnthropicMessagesCodec.stream_decoder();
+    decoder
+        .decode_frame(
+            br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#,
+        )
+        .unwrap();
+    assert!(matches!(
+        decoder.finish(),
+        Err(LlmError::StreamInterrupted { .. })
+    ));
+    assert_eq!(
+        decoder.observed_usage().unwrap().input_tokens,
+        10,
+        "what was seen is still reported"
+    );
+    assert!(!decoder.usage_is_complete());
 
     let (_, complete) = decode_usage(&[
         r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#,

@@ -3,9 +3,15 @@
 //! This wire names its own block indices, so unlike the OpenAI decoder there is
 //! nothing to synthesise: `content_block_start` carries the index and every
 //! delta refers back to it.
+//!
+//! WebSearch metadata `events` contains untouched start/delta/stop frames with
+//! native indices. Append these records in order (including identical argument
+//! fragments); combine text deltas and citation deltas by index to reconstruct
+//! native ProviderContent blocks for replay.
 
 use super::decode;
 use crate::client::usage;
+use crate::codecs::web_search_decode;
 use crate::codecs::StreamDecoder;
 use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, ToolUseId, Usage};
 use serde_json::Value;
@@ -24,6 +30,7 @@ pub struct AnthropicStreamDecoder {
     usage_raw: Option<Value>,
     stop: Option<StopReason>,
     done: bool,
+    search_blocks: Vec<usize>,
 }
 
 impl StreamDecoder for AnthropicStreamDecoder {
@@ -45,6 +52,9 @@ impl StreamDecoder for AnthropicStreamDecoder {
                 let message = root.get("message").unwrap_or(&Value::Null);
                 if let Some(u) = message.get("usage") {
                     self.fold_usage(u);
+                    if let Some(result) = web_search_decode::with_usage(None, Some(u)) {
+                        out.push(StreamEvent::WebSearch { result });
+                    }
                 }
                 out.push(StreamEvent::Start {
                     model: message
@@ -57,6 +67,16 @@ impl StreamDecoder for AnthropicStreamDecoder {
             }
             Some("content_block_start") => self.block_start(&root, &mut out),
             Some("content_block_delta") => self.block_delta(&root, &mut out),
+            Some("content_block_stop") => {
+                let index = root["index"].as_u64().unwrap_or_default() as usize;
+                if self.search_blocks.contains(&index) {
+                    if let Some(result) =
+                        web_search_decode::result(serde_json::json!({"events":[root]}))
+                    {
+                        out.push(StreamEvent::WebSearch { result });
+                    }
+                }
+            }
             Some("message_delta") => {
                 if let Some(s) = root
                     .get("delta")
@@ -73,6 +93,9 @@ impl StreamDecoder for AnthropicStreamDecoder {
                 // Counters it does not mention keep what the seed said.
                 if let Some(u) = root.get("usage") {
                     self.fold_usage(u);
+                    if let Some(result) = web_search_decode::with_usage(None, Some(u)) {
+                        out.push(StreamEvent::WebSearch { result });
+                    }
                 }
             }
             Some("message_stop") => self.finish_into(&mut out),
@@ -87,6 +110,11 @@ impl StreamDecoder for AnthropicStreamDecoder {
     }
 
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
+        if !self.done && self.stop.is_none() {
+            return Err(LlmError::StreamInterrupted {
+                message: "provider stream ended before a terminal event".to_owned(),
+            });
+        }
         let mut out = Vec::new();
         self.finish_into(&mut out);
         Ok(out)
@@ -120,6 +148,16 @@ impl AnthropicStreamDecoder {
             .and_then(Value::as_u64)
             .unwrap_or_default() as usize;
         let block = root.get("content_block").unwrap_or(&Value::Null);
+        if web_search_decode::is_anthropic_search_block(block) {
+            self.search_blocks.push(index);
+            if let Some(result) = web_search_decode::result(serde_json::json!({"events":[root]})) {
+                out.push(StreamEvent::WebSearch { result });
+            }
+        } else if web_search_decode::anthropic(&serde_json::json!({"content":[block]})).is_some() {
+            if let Some(result) = web_search_decode::result(serde_json::json!({"events":[root]})) {
+                out.push(StreamEvent::WebSearch { result });
+            }
+        }
         if block.get("type").and_then(Value::as_str) == Some("tool_use") {
             let id = ToolUseId::new(block.get("id").and_then(Value::as_str).unwrap_or_default());
             let name = block
@@ -145,6 +183,14 @@ impl AnthropicStreamDecoder {
             .and_then(Value::as_u64)
             .unwrap_or_default() as usize;
         let delta = root.get("delta").unwrap_or(&Value::Null);
+        if self.search_blocks.contains(&index)
+            || (delta["type"].as_str() == Some("citations_delta")
+                && delta["citation"]["type"].as_str() == Some("web_search_result_location"))
+        {
+            if let Some(result) = web_search_decode::result(serde_json::json!({"events":[root]})) {
+                out.push(StreamEvent::WebSearch { result });
+            }
+        }
         match delta.get("type").and_then(Value::as_str) {
             Some("text_delta") => out.push(StreamEvent::TextDelta {
                 block: index,

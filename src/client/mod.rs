@@ -21,7 +21,7 @@ pub use stream::ModelStream;
 use crate::auth::Authenticator;
 use crate::codecs::WireCodec;
 use crate::directory::ModelDirectory;
-use crate::transport::LlmServices;
+use crate::transport::{Clock, HttpTransport, SystemClock, Transport};
 use lingxi_agent_api::protocol::{
     AuthStrategy, CredentialConfig, LlmError, ModelListing, ProtocolFamily, ProviderListing,
     ProviderProfile, Submission, Usage,
@@ -48,7 +48,8 @@ pub enum BuildError {
 }
 
 pub struct LlmClientBuilder {
-    services: LlmServices,
+    http: Arc<dyn Transport>,
+    clock: Arc<dyn Clock>,
     codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
     authenticators: BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
@@ -56,13 +57,20 @@ pub struct LlmClientBuilder {
 }
 
 impl LlmClientBuilder {
-    /// Seeds the codec table with every protocol family this crate speaks.
-    ///
-    /// A codec is not something a profile turns on: it is how this crate talks
-    /// to a provider, so it ships with the crate. A profile naming an
-    /// OpenAI-compatible provider therefore needs no capability entry — only a
-    /// `ProviderProfile` (gate 30). `register_codec` remains for replacing one.
-    pub fn new(services: &LlmServices, profiles: &[ProviderProfile]) -> Self {
+    /// Use the built-in HTTP/HTTPS transport and system clock, with API-key
+    /// and bearer authentication registered. No custom services are needed.
+    /// Requests require a Tokio runtime with I/O and time enabled.
+    pub fn new(profiles: &[ProviderProfile]) -> Result<Self, LlmError> {
+        Ok(Self::with_transport(
+            Arc::new(HttpTransport::new()?),
+            profiles,
+        ))
+    }
+
+    /// Use a custom transport with the system clock. Registers all built-in
+    /// codecs, model directories, API-key and bearer authenticators, just like
+    /// [`Self::new`]. This constructor does not create a network client.
+    pub fn with_transport(http: Arc<dyn Transport>, profiles: &[ProviderProfile]) -> Self {
         let mut codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>> = BTreeMap::new();
         for codec in crate::codecs::builtin() {
             codecs.insert(codec.family(), codec);
@@ -71,13 +79,23 @@ impl LlmClientBuilder {
         for directory in crate::directory::builtin() {
             directories.insert(directory.shape(), directory);
         }
-        Self {
-            services: services.clone(),
+        let mut builder = Self {
+            http,
+            clock: Arc::new(SystemClock),
             codecs,
             directories,
             authenticators: BTreeMap::new(),
             profiles: profiles.to_vec(),
-        }
+        };
+        builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(crate::ApiKeyAuthenticator));
+        builder.register_authenticator(AuthStrategy::Bearer, Arc::new(crate::BearerAuthenticator));
+        builder
+    }
+
+    /// Replace the default system clock, for example to test price schedules.
+    pub fn with_clock(&mut self, clock: Arc<dyn Clock>) -> &mut Self {
+        self.clock = clock;
+        self
     }
 
     /// Later registrations for the same family replace earlier ones; the
@@ -143,7 +161,8 @@ impl LlmClientBuilder {
         // deliberately NOT an error here. It can run every turn it could run
         // before; all it cannot do is refresh its own list.
         Ok(LlmClient {
-            services: self.services,
+            http: self.http,
+            clock: self.clock,
             codecs: self.codecs,
             directories: self.directories,
             authenticators: self.authenticators,
@@ -155,7 +174,8 @@ impl LlmClientBuilder {
 /// The provider-neutral client. Holds every registered codec and profile;
 /// routing and requests are M1.
 pub struct LlmClient {
-    services: LlmServices,
+    http: Arc<dyn Transport>,
+    clock: Arc<dyn Clock>,
     codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
     authenticators: BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
@@ -279,7 +299,6 @@ impl LlmClient {
             };
         };
         let now = self
-            .services
             .clock
             .now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -300,11 +319,10 @@ impl LlmClient {
 mod tests {
     use super::*;
     use crate::transport::{
-        Clock, HttpRequest, HttpResponse, StreamResponse, Transport, WebSocketSession,
+        HttpRequest, HttpResponse, StreamResponse, Transport, WebSocketSession,
     };
     use async_trait::async_trait;
     use lingxi_agent_api::protocol::LlmError;
-    use std::time::SystemTime;
 
     struct NoHttp;
     #[async_trait]
@@ -328,19 +346,6 @@ mod tests {
             })
         }
     }
-    struct Now;
-    impl Clock for Now {
-        fn now(&self) -> SystemTime {
-            SystemTime::now()
-        }
-    }
-    fn services() -> LlmServices {
-        LlmServices {
-            http: Arc::new(NoHttp),
-            clock: Arc::new(Now),
-        }
-    }
-
     fn profile(name: &str, protocol: &str) -> ProviderProfile {
         serde_json::from_value(serde_json::json!({
             "provider_id": "acme", "profile_name": name, "base_url": "https://x.test",
@@ -356,7 +361,10 @@ mod tests {
     /// the covering invariant that keeps it unreachable in practice.
     #[test]
     fn build_names_the_profile_and_the_family_when_a_codec_is_missing() {
-        let mut b = LlmClientBuilder::new(&services(), &[profile("p1", "gemini_generate_content")]);
+        let mut b = LlmClientBuilder::with_transport(
+            Arc::new(NoHttp),
+            &[profile("p1", "gemini_generate_content")],
+        );
         b.codecs.remove(&ProtocolFamily::GeminiGenerateContent);
         assert_eq!(
             b.build()
@@ -371,7 +379,8 @@ mod tests {
 
     #[test]
     fn a_family_this_crate_speaks_needs_no_capability_entry() {
-        let b = LlmClientBuilder::new(&services(), &[profile("p1", "open_ai_chat")]);
+        let b =
+            LlmClientBuilder::with_transport(Arc::new(NoHttp), &[profile("p1", "open_ai_chat")]);
         assert!(
             b.build().is_ok(),
             "an OpenAI-compatible provider is a settings entry and nothing else (gate 30)"
@@ -380,8 +389,8 @@ mod tests {
 
     #[test]
     fn build_rejects_duplicate_profile_names() {
-        let b = LlmClientBuilder::new(
-            &services(),
+        let b = LlmClientBuilder::with_transport(
+            Arc::new(NoHttp),
             &[profile("p1", "open_ai_chat"), profile("p1", "open_ai_chat")],
         );
         assert_eq!(
@@ -394,7 +403,51 @@ mod tests {
 
     #[test]
     fn empty_builder_builds_and_lists_nothing() {
-        let c = LlmClientBuilder::new(&services(), &[]).build().unwrap();
+        let c = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[])
+            .build()
+            .unwrap();
         assert!(c.models().is_empty());
+    }
+
+    #[test]
+    fn clock_override_controls_time_based_pricing() {
+        use lingxi_agent_api::protocol::{PeakSchedule, TokenPricing};
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        struct FixedClock(u64);
+        impl Clock for FixedClock {
+            fn now(&self) -> SystemTime {
+                UNIX_EPOCH + Duration::from_secs(self.0)
+            }
+        }
+
+        let mut p = profile("p1", "open_ai_chat");
+        p.models[0].pricing = Some(TokenPricing {
+            input_per_million: Some(2.0),
+            ..Default::default()
+        });
+        p.pricing.peak = Some(PeakSchedule {
+            weekdays_only: false,
+            utc_windows: vec!["09:00-17:00".into()],
+            off_peak_multiplier: 0.5,
+        });
+        for (hour, expected) in [(12, 2.0), (20, 1.0)] {
+            let mut builder = LlmClientBuilder::with_transport(Arc::new(NoHttp), &[p.clone()]);
+            builder.with_clock(Arc::new(FixedClock(hour * 3600)));
+            let client = builder.build().unwrap();
+            let route = client.resolve("m1").unwrap();
+            let cost = client
+                .estimate_cost(
+                    &route,
+                    &Usage {
+                        input_tokens: 1_000_000,
+                        ..Default::default()
+                    },
+                    Submission::Interactive,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(cost.total_usd, expected);
+        }
     }
 }

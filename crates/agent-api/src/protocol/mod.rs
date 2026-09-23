@@ -1,7 +1,7 @@
 //! The data model (design §5 layer `wire`, now this module).
 //!
 //! Plain data only: no behaviour traits, no I/O, no dependency on any workspace
-//! crate. Everything a contract ([`crate::capability`]), the frontend
+//! crate. Everything a host's capability contract, the frontend
 //! (`frontend-api`)
 //! and the LLM layer (`llm-client`) exchange lives here, below all three.
 //! `scripts/check-protocol-is-data.sh` is the gate: no `dyn`, `BoxFuture`,
@@ -10,7 +10,7 @@
 //! Layering note against §5's one-line description ("对话数据模型 + Scope +
 //! Origin"): the LLM request/response/error/event types, the permission
 //! request/decision types, `ProviderProfile` and `AgentSettings` also live
-//! here. `Compactor` and `ToolUseContext` (in [`crate::capability`]) and `Frontend`
+//! here. The host's `Compactor`, `ToolUseContext` and `Frontend`
 //! (in `frontend-api`) need them, and neither may depend on `llm-client`; a
 //! provider profile is consumed by the codec capabilities, `llm-client` and
 //! `config` alike, and exists once (review C2). Moving the *data* down keeps
@@ -47,6 +47,7 @@ pub use llm::{
     CompactTrigger, CompletionRequest, CompletionResponse, LlmError, LlmErrorKind,
     ModelCapabilities, ModelListing, ProviderListing, ReportedCost, StopReason, StreamEvent,
     SystemBlock, ThinkingConfig, TokenEstimate, TokenEstimateSource, ToolChoice, ToolSpec, Usage,
+    WebCitation, WebSearchConfig, WebSearchResult,
 };
 pub use message::{ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole};
 pub use origin::{Origin, OriginSource};

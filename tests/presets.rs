@@ -4,10 +4,35 @@
 //! 30 scans `src/` only, because a test reading a shipped data file is not a
 //! code path that adds a provider.
 
-use lingxi_agent_api::protocol::{BillingMode, ProtocolFamily, ProviderProfile, Submission};
+use lingxi_agent_api::protocol::{BillingMode, ProtocolFamily, ProviderProfile, Submission, Usage};
 use lingxi_llm_client::presets::{builtin, merge};
+use lingxi_llm_client::LlmClientBuilder;
+use std::sync::Arc;
 
 mod support;
+
+#[test]
+fn metered_glm_never_inherits_subscription_zero_prices() {
+    let profile = builtin()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "glm")
+        .unwrap();
+    assert_eq!(profile.pricing.billing_mode, BillingMode::PerToken);
+    let client = LlmClientBuilder::with_transport(Arc::new(support::NoHttp), &[profile])
+        .build()
+        .unwrap();
+    let route = client.resolve("glm/glm-4.7").unwrap();
+    let usage = Usage {
+        input_tokens: 1_000,
+        output_tokens: 100,
+        ..Usage::default()
+    };
+    assert!(client
+        .estimate_cost(&route, &usage, Submission::Interactive)
+        .unwrap()
+        .is_none());
+}
 
 #[test]
 fn every_preset_resolves_to_a_vendored_catalog_slice() {
@@ -213,38 +238,29 @@ fn a_user_entry_replaces_the_preset_of_the_same_name() {
 
 #[test]
 fn a_model_resolves_through_the_client_built_from_the_presets() {
-    use lingxi_llm_client::{Clock, LlmClientBuilder, LlmServices};
-    struct Now;
-    impl Clock for Now {
-        fn now(&self) -> std::time::SystemTime {
-            std::time::SystemTime::now()
-        }
-    }
-    let services = LlmServices {
-        http: std::sync::Arc::new(support::NoHttp),
-        clock: std::sync::Arc::new(Now),
-    };
+    use lingxi_llm_client::LlmClientBuilder;
+    let http = std::sync::Arc::new(support::NoHttp);
     let presets = builtin().unwrap();
 
-    // Without an authenticator the build refuses and names what is missing —
-    // the same completeness check gate 33 makes for codecs, on the other axis.
-    let missing = match LlmClientBuilder::new(&services, &presets).build() {
-        Err(e) => e,
-        Ok(_) => panic!("an authenticator is required and none was registered"),
-    };
-    let first = presets
+    // OAuth remains host-specific and must still fail build validation when
+    // no matching authenticator is registered.
+    let mut oauth_profile = presets
         .first()
         .expect("there is at least one preset")
-        .profile_name
         .clone();
+    oauth_profile.auth = lingxi_agent_api::protocol::AuthStrategy::OAuthBearer;
+    let missing =
+        match LlmClientBuilder::with_transport(http.clone(), &[oauth_profile.clone()]).build() {
+            Err(e) => e,
+            Ok(_) => panic!("OAuth requires a host authenticator"),
+        };
     assert!(
-        format!("{missing}").contains(&first),
+        format!("{missing}").contains(&oauth_profile.profile_name),
         "the error names the profile a user has to fix: {missing}"
     );
 
-    // Every strategy a preset names needs an authenticator, and the real ones
-    // are not ported yet; stand in for all of them.
-    let mut b = LlmClientBuilder::new(&services, &presets);
+    // Replace authentication for this offline catalog-only test.
+    let mut b = LlmClientBuilder::with_transport(http, &presets);
     for strategy in lingxi_agent_api::protocol::AuthStrategy::ALL {
         b.register_authenticator(strategy, std::sync::Arc::new(support::NoAuth));
     }
@@ -674,7 +690,7 @@ fn a_model_priced_at_zero_is_not_thereby_free() {
 #[test]
 fn every_shipped_provider_says_what_it_is_called_and_where_to_get_a_key() {
     let presets = builtin().unwrap();
-    assert_eq!(presets.len(), 12);
+    assert_eq!(presets.len(), 15);
     for p in &presets {
         let info = &p.info;
         let name = info
@@ -758,5 +774,5 @@ fn provider_metadata_survives_a_catalog_regeneration() {
             );
         }
     }
-    assert_eq!(seen, 12, "every preset was checked");
+    assert_eq!(seen, 15, "every preset was checked");
 }

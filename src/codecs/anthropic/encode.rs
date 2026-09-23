@@ -55,8 +55,13 @@ pub fn request(
     }
 
     let mut messages = Vec::new();
+    let unsigned_thinking = profile
+        .extra
+        .get("supports_unsigned_thinking")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     for m in &req.messages {
-        messages.push(encode_message(m)?);
+        messages.push(encode_message(m, unsigned_thinking)?);
     }
     body.insert("messages".to_owned(), Value::Array(messages));
 
@@ -126,6 +131,7 @@ pub fn request(
         headers.push(("anthropic-beta".to_owned(), betas.join(",")));
     }
 
+    crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::extras::merge_body(profile, &mut body);
     crate::codecs::extras::merge_headers(profile, &mut headers);
 
@@ -142,7 +148,7 @@ pub fn request(
     })
 }
 
-fn encode_message(m: &ConversationMessage) -> Result<Value, LlmError> {
+fn encode_message(m: &ConversationMessage, unsigned_thinking: bool) -> Result<Value, LlmError> {
     let role = match m.role {
         MessageRole::Assistant => "assistant",
         // This wire has no system role in `messages`; a system block that got
@@ -157,15 +163,26 @@ fn encode_message(m: &ConversationMessage) -> Result<Value, LlmError> {
     };
     let mut blocks = Vec::new();
     for b in &m.content {
-        blocks.push(encode_block(b)?);
+        blocks.push(encode_block(b, unsigned_thinking)?);
     }
     Ok(json!({"role": role, "content": blocks}))
 }
 
-fn encode_block(b: &ContentBlock) -> Result<Value, LlmError> {
+fn encode_block(b: &ContentBlock, unsigned_thinking: bool) -> Result<Value, LlmError> {
     Ok(match b {
+        ContentBlock::ProviderContent { protocol, value } => {
+            if *protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "native content cannot be replayed on a different protocol".to_owned(),
+                });
+            }
+            value.clone()
+        }
         ContentBlock::Text { text } => json!({"type": "text", "text": text}),
         ContentBlock::Thinking { text, signature } => {
+            if signature.is_none() && unsigned_thinking {
+                return Ok(json!({"type": "thinking", "thinking": text}));
+            }
             // Refusing beats sending: the provider rejects an unsigned replay,
             // and a codec that dropped the signature would surface the failure
             // on a later turn with nothing to point at (gate 18).

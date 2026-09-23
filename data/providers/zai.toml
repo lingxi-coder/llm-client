@@ -12,6 +12,7 @@ description = "GLM models over an OpenAI-compatible wire."
 console_url = "https://z.ai"
 api_key_url = "https://z.ai/manage-apikey/apikey-list"
 connection = { group = "zhipu", connection_id = "api", order = 1 }
+extra = { web_search = "glm", web_search_engine = "search-prime" }
 
 [[model]]
 id = "glm-4.5"

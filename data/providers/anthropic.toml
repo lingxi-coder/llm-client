@@ -16,6 +16,8 @@ docs_url = "https://platform.claude.com/docs"
 credential_hint = "sk-ant-"
 # catalog provenance: derived from the aggregator slice by stripping its anthropic/ qualifier; the source project ships no first-party slice, and the prices are the aggregator's
 
+extra = { web_search = "anthropic" }
+
 [[model]]
 id = "claude-3-haiku"
 name = "Claude 3 Haiku"

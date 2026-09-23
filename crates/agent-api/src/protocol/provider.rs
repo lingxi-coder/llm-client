@@ -379,7 +379,8 @@ pub struct PricingConfig {
 /// ignores this is wrong by that factor for most of the week.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PeakSchedule {
-    /// `"HH:MM-HH:MM"` in UTC. A window that wraps midnight is written as two.
+    /// `"HH:MM-HH:MM"` in UTC. A window that wraps midnight is written as two;
+    /// `24:00` is allowed only as a window's end.
     pub utc_windows: Vec<String>,
     /// Peak applies on Monday to Friday only; weekends are entirely off-peak.
     #[serde(default)]
@@ -414,15 +415,19 @@ impl PeakSchedule {
 }
 
 /// `"HH:MM-HH:MM"` to minutes of day. A malformed window matches nothing
-/// rather than matching everything: over-charging is the safer failure.
+/// rather than matching everything. Invalid windows never establish peak time.
 fn parse_window(w: &str) -> Option<(u32, u32)> {
     let (from, to) = w.split_once('-')?;
-    let minutes = |s: &str| -> Option<u32> {
+    let minutes = |s: &str, is_end: bool| -> Option<u32> {
         let (h, m) = s.trim().split_once(':')?;
         let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
-        (h < 24 && m < 60).then_some(h * 60 + m)
+        if (h < 24 && m < 60) || (is_end && h == 24 && m == 0) {
+            Some(h * 60 + m)
+        } else {
+            None
+        }
     };
-    let (from, to) = (minutes(from)?, minutes(to)?);
+    let (from, to) = (minutes(from, false)?, minutes(to, true)?);
     (from < to).then_some((from, to))
 }
 
@@ -726,6 +731,30 @@ mod pricing_tests {
     #[test]
     fn the_gap_between_two_windows_is_off_peak() {
         assert!(!schedule().is_peak(at(0, 5, 0)));
+    }
+
+    #[test]
+    fn a_window_can_end_at_midnight() {
+        let s = PeakSchedule {
+            utc_windows: vec!["23:00-24:00".into(), "00:00-01:00".into()],
+            weekdays_only: false,
+            off_peak_multiplier: 0.5,
+        };
+        assert!(s.is_peak(at(0, 23, 59)));
+        assert!(s.is_peak(at(1, 0, 30)));
+        assert!(!s.is_peak(at(1, 1, 0)));
+    }
+
+    #[test]
+    fn very_large_window_components_are_rejected_without_panicking() {
+        for invalid in [
+            "4294967295:00-01:00",
+            "00:4294967295-01:00",
+            "24:00-24:00",
+            "23:00-24:01",
+        ] {
+            assert_eq!(parse_window(invalid), None);
+        }
     }
 
     #[test]

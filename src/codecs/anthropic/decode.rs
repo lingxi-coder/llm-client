@@ -10,8 +10,13 @@ use std::time::Duration;
 
 pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-    if resp.status >= 400 {
+    if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
+    }
+    if !body.get("content").is_some_and(Value::is_array) {
+        return Err(LlmError::ProviderInternal {
+            message: "provider response has no valid content array".to_owned(),
+        });
     }
     let mut content = Vec::new();
     for b in body
@@ -24,6 +29,10 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         }
     }
     Ok(CompletionResponse {
+        web_search: crate::codecs::web_search_decode::with_usage(
+            crate::codecs::web_search_decode::anthropic(&body),
+            body.get("usage"),
+        ),
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
@@ -42,6 +51,20 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
 /// An unknown block type is dropped, not an error: this provider adds block
 /// types over time and a client is expected to tolerate them.
 pub fn decode_block(v: &Value) -> Option<ContentBlock> {
+    if crate::codecs::web_search_decode::is_anthropic_search_block(v)
+        || v.get("citations")
+            .and_then(Value::as_array)
+            .is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| c["type"].as_str() == Some("web_search_result_location"))
+            })
+    {
+        return Some(ContentBlock::ProviderContent {
+            protocol: lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages,
+            value: v.clone(),
+        });
+    }
+
     match v.get("type").and_then(Value::as_str) {
         Some("text") => Some(ContentBlock::Text {
             text: v.get("text").and_then(Value::as_str)?.to_owned(),

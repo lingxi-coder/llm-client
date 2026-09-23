@@ -11,8 +11,16 @@ use std::time::Duration;
 
 pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-    if resp.status >= 400 {
+    if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
+    }
+    if body.get("status").and_then(Value::as_str) == Some("failed") {
+        return Err(classify_error(500, &body, None));
+    }
+    if !body.get("output").is_some_and(Value::is_array) {
+        return Err(LlmError::ProviderInternal {
+            message: "provider response has no valid output array".to_owned(),
+        });
     }
     let mut content = Vec::new();
     let mut saw_tool_call = false;
@@ -24,6 +32,10 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         decode_item(item, &mut content, &mut saw_tool_call);
     }
     Ok(CompletionResponse {
+        web_search: crate::codecs::web_search_decode::with_usage(
+            crate::codecs::web_search_decode::responses(&body),
+            body.get("usage"),
+        ),
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,

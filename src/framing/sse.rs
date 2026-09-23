@@ -13,6 +13,7 @@
 #[derive(Debug, Default)]
 pub struct SseFrameSplitter {
     buffer: Vec<u8>,
+    skip_lf: bool,
 }
 
 impl SseFrameSplitter {
@@ -26,7 +27,19 @@ impl SseFrameSplitter {
     /// transport that splits mid-event loses nothing. Mixed line endings are
     /// accepted because providers mix them.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
-        self.buffer.extend_from_slice(bytes);
+        // Normalize CR, LF and CRLF while preserving a CRLF pair split
+        // across transport chunks. A CR already terminates its line.
+        for &byte in bytes {
+            if std::mem::take(&mut self.skip_lf) && byte == b'\n' {
+                continue;
+            }
+            if byte == b'\r' {
+                self.buffer.push(b'\n');
+                self.skip_lf = true;
+            } else {
+                self.buffer.push(byte);
+            }
+        }
         let mut frames = Vec::new();
         while let Some((content_len, consumed)) = find_event_boundary(&self.buffer) {
             if let Some(frame) = parse_event(&self.buffer[..content_len]) {
@@ -42,6 +55,7 @@ impl SseFrameSplitter {
     /// Flush a trailing unterminated event at end of stream. A provider that
     /// closes without the final blank line still gets its last event decoded.
     pub fn finish(&mut self) -> Option<Vec<u8>> {
+        self.skip_lf = false;
         let event = std::mem::take(&mut self.buffer);
         parse_event(&event)
     }
@@ -68,7 +82,10 @@ fn parse_event(event: &[u8]) -> Option<Vec<u8>> {
     let mut has_data = false;
     for line in event.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let Some(mut value) = line.strip_prefix(b"data:") else {
+        let Some(mut value) = line
+            .strip_prefix(b"data:")
+            .or_else(|| (line == b"data").then_some(&b""[..]))
+        else {
             continue;
         };
         // One optional space after the colon is part of the framing, not the
@@ -94,6 +111,24 @@ mod tests {
             .into_iter()
             .map(|f| String::from_utf8(f).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn cr_and_mixed_endings_work_at_every_chunk_boundary() {
+        let bytes = b"data: one\r\rdata: two\r\n\r\ndata: three\n\r";
+        for split in 0..=bytes.len() {
+            let mut s = SseFrameSplitter::new();
+            let mut frames = s.push(&bytes[..split]);
+            frames.extend(s.push(&bytes[split..]));
+            assert_eq!(text(frames), vec!["one", "two", "three"], "split {split}");
+            assert!(s.finish().is_none());
+        }
+    }
+
+    #[test]
+    fn a_data_field_without_a_colon_is_an_empty_data_line() {
+        let mut s = SseFrameSplitter::new();
+        assert_eq!(text(s.push(b"data\n\n")), vec![""]);
     }
 
     #[test]

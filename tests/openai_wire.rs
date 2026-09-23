@@ -47,6 +47,7 @@ fn route() -> ResolvedRoute {
 fn request() -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
+        web_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {

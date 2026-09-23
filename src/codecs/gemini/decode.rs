@@ -10,8 +10,15 @@ use std::time::Duration;
 
 pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-    if resp.status >= 400 {
+    if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
+    }
+    if !body.get("candidates").is_some_and(Value::is_array)
+        && !body.get("promptFeedback").is_some_and(Value::is_object)
+    {
+        return Err(LlmError::ProviderInternal {
+            message: "provider response has no valid candidates array".to_owned(),
+        });
     }
     let candidate = body
         .get("candidates")
@@ -34,6 +41,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     }
 
     Ok(CompletionResponse {
+        web_search: crate::codecs::web_search_decode::gemini(&candidate),
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
@@ -168,7 +176,7 @@ pub fn usage(u: &Value) -> Usage {
     let thoughts = n("thoughtsTokenCount");
     Usage {
         input_tokens: prompt.saturating_sub(cached),
-        output_tokens: n("candidatesTokenCount") + thoughts,
+        output_tokens: n("candidatesTokenCount").saturating_add(thoughts),
         cache_read_tokens: cached,
         cache_write_tokens: 0,
         reasoning_tokens: thoughts,

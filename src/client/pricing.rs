@@ -38,6 +38,11 @@ pub fn estimate(
     usage: &Usage,
     pricing_model: &PricingModelRef,
 ) -> Result<CostEstimate, LlmError> {
+    if schedule.is_some_and(|s| !s.off_peak_multiplier.is_finite() || s.off_peak_multiplier < 0.0) {
+        return Err(LlmError::CostUnavailable {
+            message: "off-peak multiplier must be finite and non-negative".to_owned(),
+        });
+    }
     let rates = pricing.at(submission, schedule, unix_seconds);
     let model = pricing_model.billing_model.as_str();
     let input_usd = bucket(usage.input_tokens, rates.input_per_million, "input", model)?;
@@ -65,7 +70,7 @@ pub fn estimate(
                     "output",
                     model,
                 )?,
-                price(reasoning, rate),
+                bucket(reasoning, Some(rate), "reasoning", model)?,
             )
         }
         None => (
@@ -78,6 +83,12 @@ pub fn estimate(
             0.0,
         ),
     };
+    let total_usd = input_usd + output_usd + cache_read_usd + cache_write_usd + reasoning_usd;
+    if !total_usd.is_finite() {
+        return Err(LlmError::CostUnavailable {
+            message: format!("{model:?} cost exceeds the supported numeric range"),
+        });
+    }
     Ok(CostEstimate {
         pricing_model: pricing_model.clone(),
         submission,
@@ -86,7 +97,7 @@ pub fn estimate(
         cache_read_usd,
         cache_write_usd,
         reasoning_usd,
-        total_usd: input_usd + output_usd + cache_read_usd + cache_write_usd + reasoning_usd,
+        total_usd,
         source: rates.source,
     })
 }
@@ -96,7 +107,15 @@ fn bucket(tokens: u64, rate: Option<f64>, name: &str, model: &str) -> Result<f64
         return Ok(0.0);
     }
     match rate {
-        Some(rate) => Ok(price(tokens, rate)),
+        Some(rate) => {
+            let cost = price(tokens, rate);
+            if !rate.is_finite() || rate < 0.0 || !cost.is_finite() {
+                return Err(LlmError::CostUnavailable {
+                    message: format!("{model:?} has an invalid or overflowing {name} rate"),
+                });
+            }
+            Ok(cost)
+        }
         None => Err(LlmError::CostUnavailable {
             message: format!("{model:?} has no {name} rate for {tokens} {name} tokens"),
         }),
@@ -129,6 +148,74 @@ mod tests {
             cache_read_per_million: Some(cache_read),
             ..TokenPricing::default()
         }
+    }
+
+    #[test]
+    fn invalid_rates_never_become_successful_costs() {
+        for rate in [-1.0, f64::NAN, f64::INFINITY, f64::MAX] {
+            let p = rates(rate, 1.0, 0.0);
+            let result = estimate(
+                &p,
+                Submission::Interactive,
+                None,
+                0,
+                &usage(u64::MAX, 0, 0),
+                &model(),
+            );
+            assert!(
+                matches!(result, Err(LlmError::CostUnavailable { .. })),
+                "{rate}: {result:?}"
+            );
+            let p = TokenPricing {
+                reasoning_per_million: Some(rate),
+                ..rates(1.0, 1.0, 0.0)
+            };
+            let u = Usage {
+                output_tokens: u64::MAX,
+                reasoning_tokens: u64::MAX,
+                ..Usage::default()
+            };
+            assert!(matches!(
+                estimate(&p, Submission::Interactive, None, 0, &u, &model()),
+                Err(LlmError::CostUnavailable { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn a_cost_total_must_remain_finite() {
+        let p = rates(f64::MAX, f64::MAX, 0.0);
+        assert!(matches!(
+            estimate(
+                &p,
+                Submission::Interactive,
+                None,
+                0,
+                &usage(1_000_000, 1_000_000, 0),
+                &model()
+            ),
+            Err(LlmError::CostUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn invalid_schedule_cannot_turn_a_negative_rate_into_a_positive_cost() {
+        let schedule = PeakSchedule {
+            utc_windows: vec![],
+            weekdays_only: false,
+            off_peak_multiplier: -1.0,
+        };
+        assert!(matches!(
+            estimate(
+                &rates(-1.0, 1.0, 0.0),
+                Submission::Interactive,
+                Some(&schedule),
+                0,
+                &usage(1_000_000, 0, 0),
+                &model()
+            ),
+            Err(LlmError::CostUnavailable { .. })
+        ));
     }
 
     fn usage(input: u64, output: u64, cache_read: u64) -> Usage {

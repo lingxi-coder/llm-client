@@ -35,6 +35,8 @@ api_key_url = "https://openrouter.ai/settings/keys"
 docs_url = "https://openrouter.ai/docs"
 credential_hint = "sk-or-"
 
+extra = { web_search = "openrouter" }
+
 [[model]]
 id = "aion-labs/aion-2.0"
 name = "AionLabs: Aion-2.0"

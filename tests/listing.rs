@@ -4,25 +4,15 @@
 //! Gate 30 scans `src/` only.
 
 use lingxi_agent_api::protocol::{AuthStrategy, ProviderProfile};
-use lingxi_llm_client::{builtin_providers, Clock, LlmClient, LlmClientBuilder, LlmServices};
+use lingxi_llm_client::{builtin_providers, LlmClient, LlmClientBuilder};
 use serde_json::json;
 use std::sync::Arc;
 
 mod support;
 
-struct Now;
-impl Clock for Now {
-    fn now(&self) -> std::time::SystemTime {
-        std::time::SystemTime::now()
-    }
-}
-
 fn client_of(profiles: &[ProviderProfile]) -> LlmClient {
-    let services = LlmServices {
-        http: Arc::new(support::NoHttp),
-        clock: Arc::new(Now),
-    };
-    let mut b = LlmClientBuilder::new(&services, profiles);
+    let http = Arc::new(support::NoHttp);
+    let mut b = LlmClientBuilder::with_transport(http, profiles);
     b.register_codec(Arc::new(
         lingxi_llm_client::codecs::openai::chat::OpenAiChatCodec,
     ));

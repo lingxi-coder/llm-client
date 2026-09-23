@@ -1,0 +1,41 @@
+# Kimi's server-managed web search uses Responses, currently with Kimi K3.
+# Kept separate from Moonshot Chat and the Kimi Code subscription endpoint.
+provider_id = "kimi"
+base_url = "https://api.moonshot.cn/v1"
+protocol = "open_ai_responses"
+model_list = "open_ai_chat"
+auth = "bearer"
+credential_env = "MOONSHOT_API_KEY"
+billing_mode = "per_token"
+display_name = "Kimi Search"
+description = "Kimi K3 with server-managed web search over Responses."
+console_url = "https://platform.kimi.com"
+api_key_url = "https://platform.kimi.com/console/api-keys"
+docs_url = "https://platform.kimi.com/docs/api/responses"
+connection = { group = "kimi-search", connection_id = "responses", order = 0 }
+extra = { web_search = "kimi" }
+
+# Model and token prices copied from the existing Moonshot catalog snapshot.
+[[model]]
+id = "kimi-k3"
+name = "Kimi K3"
+description = "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+input_per_million = 3
+output_per_million = 15
+cache_read_per_million = 0.3
+source = "models.dev"

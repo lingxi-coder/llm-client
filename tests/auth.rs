@@ -126,3 +126,26 @@ fn applying_twice_replaces_rather_than_appends() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].1, "Bearer fresh");
 }
+
+#[test]
+fn request_debug_redacts_credentials_urls_and_prompts() {
+    for extra in [json!({}), json!({"credential_header": "x-house-key"})] {
+        let mut req = apply(
+            &ApiKeyAuthenticator,
+            &profile("open_ai_chat", extra),
+            Some("private-credential"),
+        );
+        req.url = "https://user:url-password@example.test/messages?key=query-secret".into();
+        req.body = bytes::Bytes::from_static(b"private-prompt");
+        let debug = format!("{req:?}");
+        for secret in [
+            "private-credential",
+            "url-password",
+            "query-secret",
+            "private-prompt",
+        ] {
+            assert!(!debug.contains(secret), "Debug leaked {secret}");
+        }
+        assert!(debug.contains("POST"));
+    }
+}

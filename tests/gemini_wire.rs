@@ -54,6 +54,7 @@ fn route() -> ResolvedRoute {
 fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
+        web_search: None,
         previous_response_id: None,
         system: vec![],
         messages,
@@ -482,4 +483,18 @@ fn foundry_is_the_anthropic_wire_at_a_foundry_endpoint() {
         .headers
         .iter()
         .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"));
+}
+
+#[test]
+fn oversized_usage_counters_do_not_panic_or_wrap() {
+    let mut decoder = GeminiCodec.stream_decoder();
+    let frame = serde_json::to_vec(&json!({"usageMetadata": {
+        "promptTokenCount": 0,
+        "candidatesTokenCount": u64::MAX,
+        "thoughtsTokenCount": 1,
+    }}))
+    .unwrap();
+    decoder.decode_frame(&frame).unwrap();
+    assert_eq!(decoder.observed_usage().unwrap().output_tokens, u64::MAX);
+    assert!(!decoder.usage_is_complete());
 }

@@ -109,6 +109,18 @@ pub(crate) fn is_complete(raw: &Value, shape: &ReportShape) -> bool {
             return false;
         }
     }
+    // Cached reads and writes partition the prompt, so checking each one
+    // against input separately is insufficient when both are present.
+    let cached_input = shape
+        .subsets
+        .iter()
+        .filter(|(_, input)| *input)
+        .try_fold(0_u64, |sum, (path, _)| {
+            sum.checked_add(counter_at(raw, path).unwrap_or(0))
+        });
+    if cached_input.is_none_or(|sum| sum > input) {
+        return false;
+    }
 
     let thoughts = match shape.thoughts {
         Some(key) => {
@@ -120,20 +132,20 @@ pub(crate) fn is_complete(raw: &Value, shape: &ReportShape) -> bool {
         None => 0,
     };
 
+    let Some(mut expected) = input.checked_add(output) else {
+        return false;
+    };
+    if shape.thoughts_are_extra {
+        let Some(sum) = expected.checked_add(thoughts) else {
+            return false;
+        };
+        expected = sum;
+    }
     for key in shape.total {
         let Some(stated) = raw.get(key) else { continue };
         let Some(stated) = stated.as_u64() else {
             return false;
         };
-        let Some(mut expected) = input.checked_add(output) else {
-            return false;
-        };
-        if shape.thoughts_are_extra {
-            let Some(sum) = expected.checked_add(thoughts) else {
-                return false;
-            };
-            expected = sum;
-        }
         if stated != expected {
             return false;
         }
@@ -249,6 +261,30 @@ mod tests {
         ));
         assert!(is_complete(
             &json!({"prompt_tokens": 10, "completion_tokens": 2}),
+            &OPENAI_CHAT
+        ));
+    }
+
+    #[test]
+    fn disjoint_cache_buckets_must_fit_the_prompt_together() {
+        assert!(!is_complete(
+            &json!({
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "prompt_tokens_details": {"cached_tokens": 6, "cache_write_tokens": 6}
+            }),
+            &OPENAI_CHAT
+        ));
+    }
+
+    #[test]
+    fn normalized_totals_must_not_overflow_even_without_a_reported_total() {
+        assert!(!is_complete(
+            &json!({"promptTokenCount": 1, "candidatesTokenCount": u64::MAX, "thoughtsTokenCount": 1}),
+            &GEMINI
+        ));
+        assert!(!is_complete(
+            &json!({"prompt_tokens": u64::MAX, "completion_tokens": 1}),
             &OPENAI_CHAT
         ));
     }

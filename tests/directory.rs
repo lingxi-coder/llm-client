@@ -5,27 +5,17 @@
 
 use lingxi_agent_api::protocol::{AuthStrategy, LlmError, ProtocolFamily, ProviderProfile};
 use lingxi_llm_client::{
-    builtin_providers, AnthropicMessagesDirectory, Clock, GeminiDirectory, HttpResponse, LlmClient,
-    LlmClientBuilder, LlmServices, ModelDirectory, ModelPage, OpenAiChatDirectory,
+    builtin_providers, AnthropicMessagesDirectory, GeminiDirectory, HttpResponse, LlmClient,
+    LlmClientBuilder, ModelDirectory, ModelPage, OpenAiChatDirectory,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 mod support;
 
-struct Now;
-impl Clock for Now {
-    fn now(&self) -> std::time::SystemTime {
-        std::time::SystemTime::now()
-    }
-}
-
 fn client_of(profiles: &[ProviderProfile]) -> LlmClient {
-    let services = LlmServices {
-        http: Arc::new(support::NoHttp),
-        clock: Arc::new(Now),
-    };
-    let mut b = LlmClientBuilder::new(&services, profiles);
+    let http = Arc::new(support::NoHttp);
+    let mut b = LlmClientBuilder::with_transport(http, profiles);
     for strategy in AuthStrategy::ALL {
         b.register_authenticator(strategy, Arc::new(support::NoAuth));
     }
@@ -351,8 +341,8 @@ fn every_preset_either_publishes_a_directory_or_says_it_does_not() {
     }
     assert_eq!(
         declared_none,
-        ["glm-coding"],
-        "the one endpoint whose compatibility shim serves completions and nothing else"
+        ["deepseek-search", "glm-coding"],
+        "compatibility endpoints without a configured model-directory route"
     );
 }
 
@@ -410,5 +400,23 @@ fn every_preset_lists_from_its_own_endpoint() {
             "{} lists from {path}",
             p.profile_name
         );
+    }
+}
+
+#[test]
+fn anthropic_directory_sends_the_selected_api_version() {
+    for version in [None, Some("2024-01-01")] {
+        let mut p = profile("anthropic_messages", "https://x.test", None);
+        if let Some(version) = version {
+            p.extra = json!({"api_version": version});
+        }
+        let req = AnthropicMessagesDirectory.list_request(&p, None);
+        let versions: Vec<_> = req
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case("anthropic-version"))
+            .collect();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].1, version.unwrap_or("2023-06-01"));
     }
 }

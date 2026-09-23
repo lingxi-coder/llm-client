@@ -57,6 +57,10 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     }
 
     Ok(CompletionResponse {
+        web_search: crate::codecs::web_search_decode::with_usage(
+            crate::codecs::web_search_decode::chat_with_search(message, &body),
+            body.get("usage"),
+        ),
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,

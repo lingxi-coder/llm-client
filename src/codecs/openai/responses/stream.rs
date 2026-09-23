@@ -5,6 +5,7 @@
 
 use super::decode;
 use crate::client::usage;
+use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::StreamDecoder;
 use lingxi_agent_api::protocol::{LlmError, ResponseId, StopReason, StreamEvent, ToolUseId, Usage};
 use serde_json::Value;
@@ -25,6 +26,7 @@ pub struct ResponsesStreamDecoder {
     stop: Option<StopReason>,
     saw_tool_call: bool,
     done: bool,
+    search: SearchStream,
 }
 
 impl StreamDecoder for ResponsesStreamDecoder {
@@ -61,6 +63,22 @@ impl StreamDecoder for ResponsesStreamDecoder {
         };
 
         match root.get("type").and_then(Value::as_str) {
+            Some("response.output_text.annotation.added") => {
+                if root["annotation"]["type"].as_str() == Some("url_citation") {
+                    self.search.emit(web_search_decode::result(serde_json::json!({"annotations":[{
+                        "output_index": index(&root), "content_index":root.get("content_index").and_then(Value::as_u64).unwrap_or(0), "annotation":root["annotation"]
+                    }]})), &mut out);
+                }
+            }
+            Some("response.output_item.done") => {
+                let item = &root["item"];
+                if item["type"].as_str() == Some("web_search_call") {
+                    self.search.emit(
+                        web_search_decode::result(serde_json::json!({"web_search_calls":[item]})),
+                        &mut out,
+                    );
+                }
+            }
             Some("response.created") => {
                 if !self.started {
                     self.started = true;
@@ -126,6 +144,13 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
+                self.search.emit(
+                    web_search_decode::with_usage(
+                        web_search_decode::responses(response),
+                        response.get("usage"),
+                    ),
+                    &mut out,
+                );
                 if let Some(u) = response.get("usage") {
                     self.usage_raw = Some(u.clone());
                 }
@@ -134,17 +159,16 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.failed") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
-                return Err(decode::classify_error(
-                    500,
-                    response.get("error").map_or(&Value::Null, |e| {
-                        // The failure payload is the Chat error envelope one
-                        // level down.
-                        e
-                    }),
-                    None,
-                ));
+                return Err(decode::classify_error(500, response, None));
             }
-            Some("error") => return Err(decode::classify_error(500, &root, None)),
+            Some("error") => {
+                let envelope = if root.get("error").is_some() {
+                    root
+                } else {
+                    serde_json::json!({"error": root})
+                };
+                return Err(decode::classify_error(500, &envelope, None));
+            }
             // Unknown types (`response.in_progress`, `…output_text.done`, and
             // whatever is added next) are ignored.
             _ => {}
@@ -153,6 +177,11 @@ impl StreamDecoder for ResponsesStreamDecoder {
     }
 
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
+        if !self.done {
+            return Err(LlmError::StreamInterrupted {
+                message: "provider stream ended before a terminal event".to_owned(),
+            });
+        }
         let mut out = Vec::new();
         self.finish_into(&mut out);
         Ok(out)

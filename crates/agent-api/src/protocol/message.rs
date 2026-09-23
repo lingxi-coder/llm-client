@@ -17,6 +17,13 @@ pub enum MessageRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// Native content required to replay a hosted tool's turn unchanged.
+    /// Kept separate from client tools, which the caller must execute.
+    /// Replaying onto a different protocol is rejected by the built-in codecs.
+    ProviderContent {
+        protocol: crate::protocol::provider::ProtocolFamily,
+        value: Value,
+    },
     /// Plain UTF-8 text.
     Text {
         text: String,
@@ -117,6 +124,9 @@ impl ConversationMessage {
             .iter()
             .filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::ProviderContent { value, .. } => {
+                    value.get("text").and_then(Value::as_str)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()

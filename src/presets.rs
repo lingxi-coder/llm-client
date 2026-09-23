@@ -2,14 +2,12 @@
 //!
 //! One file per provider under `data/providers/`, each carrying the route and
 //! the models together. The file name is the profile name, so adding a provider
-//! is adding a file — no central table, no code, which is what makes "add a
-//! provider" a settings change by construction rather than by convention
-//! (gate 30, enforced by `scripts/check-provider-names.sh`).
+//! is adding a file — no central table or source-code change is needed.
 //!
 //! Everything above the first `[[model]]` is hand-authored and carries the
-//! reasons; the `[[model]]` blocks are generated from an upstream catalog by
-//! `scripts/vendor-catalog.py`, which replaces only that section. Refreshing a
-//! provider is therefore one command, and the comments survive it.
+//! reasons; the `[[model]]` blocks contain a snapshot of an upstream catalog.
+//! The original workspace's catalog-generation script is not included in this
+//! standalone repository. Update these data files when refreshing the catalog.
 //!
 //! The route stays hand-authored on purpose: a catalog's advisory endpoint
 //! field is not authoritative about which wire an endpoint speaks. One vendor
@@ -31,6 +29,8 @@
 //!   unless it is asked for.
 //! - `supports_previous_response_id` — this Responses endpoint persists state
 //!   and honors the typed continuation id instead of accepting and ignoring it.
+//! - `web_search` — an explicit hosted-search adapter, independent of provider
+//!   identity and of whether individual models support search.
 
 use lingxi_agent_api::protocol::{
     AuthStrategy, BillingMode, ConnectionSpec, CredentialConfig, DirectoryRoute, ModelCapabilities,

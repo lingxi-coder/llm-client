@@ -3,6 +3,7 @@
 use crate::client::route::ResolvedRoute;
 use crate::transport::HttpRequest;
 use crate::RequestOptions;
+use base64::Engine;
 use lingxi_agent_api::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
     MessageRole, ProviderProfile, ToolChoice, ToolSpec,
@@ -39,7 +40,7 @@ pub fn request(
 
     let mut input = Vec::new();
     for m in &req.messages {
-        encode_message(m, &mut input);
+        encode_message(m, &mut input)?;
     }
 
     let mut body = Map::new();
@@ -86,6 +87,7 @@ pub fn request(
         body.insert("stream".to_owned(), Value::Bool(true));
     }
 
+    crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::extras::merge_body(profile, &mut body);
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::extras::merge_headers(profile, &mut headers);
@@ -105,7 +107,7 @@ pub fn request(
 
 /// A message becomes one item; a tool call or result becomes its own sibling
 /// item, so any text collected so far is flushed first to keep the order.
-fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) {
+fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) -> Result<(), LlmError> {
     let role = match m.role {
         MessageRole::Assistant => "assistant",
         MessageRole::User => "user",
@@ -121,6 +123,9 @@ fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) {
 
     for b in &m.content {
         match b {
+            ContentBlock::ProviderContent { .. } => return Err(LlmError::UnsupportedCapability {
+                message: "native content cannot be replayed on Responses".to_owned(),
+            }),
             ContentBlock::Text { text } => parts.push(json!({"type": text_part, "text": text})),
             ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
             ContentBlock::Image { source } => parts.push(json!({
@@ -130,17 +135,23 @@ fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) {
                     ImageSource::Url { url } => url.clone(),
                 },
             })),
-            ContentBlock::Document { source, title } => parts.push(json!({
-                "type": "input_file",
-                "filename": title.clone().unwrap_or_else(|| "document".to_owned()),
-                "file_data": match source {
-                    DocumentSource::Base64 { media_type, data }
-                    | DocumentSource::Text { media_type, data } => {
-                        format!("data:{media_type};base64,{data}")
+            ContentBlock::Document { source, title } => {
+                let mut part = json!({"type": "input_file"});
+                match source {
+                    DocumentSource::Url { url } => part["file_url"] = json!(url),
+                    DocumentSource::Base64 { media_type, data } => {
+                        part["file_data"] = json!(format!("data:{media_type};base64,{data}"));
                     }
-                    DocumentSource::Url { url } => url.clone(),
-                },
-            })),
+                    DocumentSource::Text { media_type, data } => {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_bytes());
+                        part["file_data"] = json!(format!("data:{media_type};base64,{encoded}"));
+                    }
+                }
+                if part.get("file_data").is_some() {
+                    part["filename"] = json!(title.as_deref().unwrap_or("document"));
+                }
+                parts.push(part);
+            }
             ContentBlock::ToolUse { id, name, input: args } => {
                 flush(role, &mut parts, input);
                 input.push(json!({
@@ -167,6 +178,7 @@ fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) {
         }
     }
     flush(role, &mut parts, input);
+    Ok(())
 }
 
 fn flush(role: &str, parts: &mut Vec<Value>, input: &mut Vec<Value>) {

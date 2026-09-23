@@ -1,19 +1,42 @@
-//! `Transport` — the platform-provided HTTP/WebSocket client — and `LlmServices`.
+//! Built-in HTTP transport, injectable network interfaces and clocks.
+
+mod http;
+pub use http::HttpTransport;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
 use lingxi_agent_api::protocol::LlmError;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An outgoing request. `Debug` omits the URL, header values and body because
+/// authenticators and callers may put credentials or private content in them.
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Bytes,
     pub timeout: Option<Duration>,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &"<redacted>")
+            .field(
+                "header_names",
+                &self
+                    .headers
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .field("body_bytes", &self.body.len())
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,8 +93,8 @@ pub trait WebSocketSession: Send {
     async fn close(&mut self);
 }
 
-/// The shared transport. One implementation per platform (`LlmServices.http`);
-/// provider crates never pick an HTTP client (gate 15).
+/// The shared transport. Use [`HttpTransport`] for built-in networking or
+/// inject a platform-specific implementation through [`crate::LlmClientBuilder::with_transport`].
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError>;
@@ -97,21 +120,18 @@ pub trait Clock: Send + Sync + 'static {
     fn now(&self) -> SystemTime;
 }
 
-pub trait UrlOpener: Send + Sync + 'static {
-    fn open(&self, url: &str) -> Result<(), String>;
+/// Wall-clock time for price schedules in normal applications.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
-/// What the composition root hands the LLM layer: the two things every provider
-/// needs, and nothing else. Not a service locator — a capability that needs
-/// more takes it as its own constructor argument (review C6).
-///
-/// There is deliberately no credential store here. This crate does not hold or
-/// fetch secrets; a credential arrives per request on `RequestOptions`, from
-/// whoever owns it.
-#[derive(Clone)]
-pub struct LlmServices {
-    pub http: Arc<dyn Transport>,
-    pub clock: Arc<dyn Clock>,
+pub trait UrlOpener: Send + Sync + 'static {
+    fn open(&self, url: &str) -> Result<(), String>;
 }
 
 // Gate 3.
