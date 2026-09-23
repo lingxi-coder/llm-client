@@ -31,7 +31,8 @@ pub mod transport;
 pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator};
 pub use client::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 pub use client::{
-    BuildError, LlmClient, LlmClientBuilder, ModelStream, RequestOptions, ResolveError,
+    BuildError, LlmClient, LlmClientBuilder, ModelStream, ProviderStoreError, RequestOptions,
+    ResolveError,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;

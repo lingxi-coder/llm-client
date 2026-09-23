@@ -59,6 +59,11 @@ pub enum DirectoryRoute {
 }
 
 impl DirectoryRoute {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::SameAsProtocol
+    }
+
     /// Which shape to decode a directory page with, given what this endpoint
     /// speaks otherwise. `None` when it publishes no directory at all.
     #[must_use]
@@ -74,6 +79,9 @@ impl DirectoryRoute {
 impl<'de> Deserialize<'de> for DirectoryRoute {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
+        if raw == "same_as_protocol" {
+            return Ok(Self::SameAsProtocol);
+        }
         if raw == "none" {
             return Ok(Self::NotPublished);
         }
@@ -84,6 +92,36 @@ impl<'de> Deserialize<'de> for DirectoryRoute {
                     "{e}, or \"none\" when the endpoint publishes no model directory"
                 ))
             })
+    }
+}
+
+impl Serialize for DirectoryRoute {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::SameAsProtocol => serializer.serialize_str("same_as_protocol"),
+            Self::NotPublished => serializer.serialize_str("none"),
+            Self::Shape(family) => family.serialize(serializer),
+        }
+    }
+}
+
+#[cfg(test)]
+mod directory_route_tests {
+    use super::{DirectoryRoute, ProtocolFamily};
+
+    #[test]
+    fn serialized_routes_round_trip() {
+        for route in [
+            DirectoryRoute::SameAsProtocol,
+            DirectoryRoute::NotPublished,
+            DirectoryRoute::Shape(ProtocolFamily::OpenAiChat),
+        ] {
+            let json = serde_json::to_string(&route).unwrap();
+            assert_eq!(
+                serde_json::from_str::<DirectoryRoute>(&json).unwrap(),
+                route
+            );
+        }
     }
 }
 
@@ -131,6 +169,34 @@ pub enum CredentialConfig {
     },
     #[default]
     None,
+}
+
+impl Serialize for CredentialConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self {
+            Self::Static { .. } => Err(serde::ser::Error::custom(
+                "static credentials cannot be persisted",
+            )),
+            Self::Env { var } => {
+                let mut value = serializer.serialize_struct("CredentialConfig", 2)?;
+                value.serialize_field("source", "env")?;
+                value.serialize_field("var", var)?;
+                value.end()
+            }
+            Self::HostManaged { key } => {
+                let mut value = serializer.serialize_struct("CredentialConfig", 2)?;
+                value.serialize_field("source", "host_managed")?;
+                value.serialize_field("key", key)?;
+                value.end()
+            }
+            Self::None => {
+                let mut value = serializer.serialize_struct("CredentialConfig", 1)?;
+                value.serialize_field("source", "none")?;
+                value.end()
+            }
+        }
+    }
 }
 
 /// Whether a route charges per token, is covered by a plan, or is free.
@@ -305,6 +371,9 @@ pub struct ModelProfile {
     /// Model id used by pricing lookup. Often equal to `request_model`, but a
     /// provider may bill a family under one id and serve several wire ids.
     pub billing_model: String,
+    /// Exclude this model from picker listings while keeping it addressable.
+    #[serde(default)]
+    pub hidden: bool,
     /// Alternate names route resolution accepts.
     #[serde(default)]
     pub aliases: Vec<String>,
@@ -629,7 +698,7 @@ pub struct ProviderInfo {
     pub credential_hint: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ProviderProfile {
     /// Explicit provider identity used after route resolution. An open string
     /// (§7.2), so a new OpenAI-compatible provider is a settings entry and not
@@ -649,7 +718,7 @@ pub struct ProviderProfile {
     /// Which shape this connection's model directory speaks. Defaults to
     /// `protocol`, which is right for most connections and wrong for the two
     /// this key exists for.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "DirectoryRoute::is_default")]
     pub model_list: DirectoryRoute,
     pub auth: AuthStrategy,
     #[serde(default)]

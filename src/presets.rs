@@ -159,6 +159,10 @@ pub fn builtin() -> Result<Vec<ProviderProfile>, PresetError> {
         .collect()
 }
 
+pub(crate) fn is_builtin_profile(profile_name: &str) -> bool {
+    PRESETS.iter().any(|(name, _)| *name == profile_name)
+}
+
 fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError> {
     let p: Preset = ::toml::from_str(text).map_err(|e| PresetError::Invalid {
         profile_name: profile_name.to_owned(),
@@ -245,6 +249,7 @@ fn disambiguate(mut models: Vec<ModelProfile>) -> Vec<ModelProfile> {
 fn model_profile(m: &CatalogModel) -> ModelProfile {
     let accepts = |what: &str| m.input_modalities.iter().any(|i| i == what);
     ModelProfile {
+        hidden: false,
         display_model: m.name.clone().unwrap_or_else(|| m.id.clone()),
         request_model: m.id.clone(),
         billing_model: m.id.clone(),

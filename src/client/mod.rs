@@ -11,11 +11,13 @@ pub mod options;
 pub mod pricing;
 mod resolve;
 pub mod route;
+mod store;
 mod stream;
 pub(crate) mod usage;
 
 pub use options::RequestOptions;
 pub use resolve::ResolveError;
+pub use store::ProviderStoreError;
 pub use stream::ModelStream;
 
 use crate::auth::Authenticator;
@@ -45,6 +47,11 @@ pub enum BuildError {
     },
     #[error("provider profile name {profile_name:?} is declared twice")]
     DuplicateProfile { profile_name: String },
+    #[error("connection id {connection_id:?} is declared twice in group {group:?}")]
+    DuplicateConnectionId {
+        group: String,
+        connection_id: String,
+    },
     #[error("provider profile {profile_name:?} has an invalid peak price schedule: {reason}")]
     InvalidPeakSchedule {
         profile_name: String,
@@ -140,38 +147,8 @@ impl LlmClientBuilder {
     /// authenticator (`AuthStrategy::None` needs none). Fails before the first
     /// request, naming the profile (gate 33).
     pub fn build(self) -> Result<LlmClient, BuildError> {
-        let mut seen = std::collections::BTreeSet::new();
-        for p in &self.profiles {
-            if !seen.insert(p.profile_name.clone()) {
-                return Err(BuildError::DuplicateProfile {
-                    profile_name: p.profile_name.clone(),
-                });
-            }
-        }
-        for p in &self.profiles {
-            if let Some(peak) = &p.pricing.peak {
-                peak.validate()
-                    .map_err(|reason| BuildError::InvalidPeakSchedule {
-                        profile_name: p.profile_name.clone(),
-                        reason,
-                    })?;
-            }
-            if !self.codecs.contains_key(&p.protocol) {
-                return Err(BuildError::MissingCodec {
-                    profile_name: p.profile_name.clone(),
-                    family: p.protocol,
-                });
-            }
-            if p.auth != AuthStrategy::None && !self.authenticators.contains_key(&p.auth) {
-                return Err(BuildError::MissingAuthenticator {
-                    profile_name: p.profile_name.clone(),
-                    strategy: p.auth,
-                });
-            }
-        }
-        // A profile whose `model_list` names a shape with no directory is
-        // deliberately NOT an error here. It can run every turn it could run
-        // before; all it cannot do is refresh its own list.
+        validate_profiles(&self.profiles, &self.codecs, &self.authenticators)?;
+        let base_profiles = self.profiles.clone();
         Ok(LlmClient {
             http: self.http,
             clock: self.clock,
@@ -179,8 +156,66 @@ impl LlmClientBuilder {
             directories: self.directories,
             authenticators: self.authenticators,
             profiles: self.profiles,
+            base_profiles,
+            locally_removed_profiles: std::collections::BTreeSet::new(),
+            model_sources: BTreeMap::new(),
+            invalidated_model_sources: std::collections::BTreeSet::new(),
+            persisted_profiles: Vec::new(),
+            config_dir: None,
+            deleted_profiles: std::collections::BTreeSet::new(),
+            tracked_models: BTreeMap::new(),
         })
     }
+}
+
+fn validate_profiles(
+    profiles: &[ProviderProfile],
+    codecs: &BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
+    authenticators: &BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
+) -> Result<(), BuildError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut connections = std::collections::BTreeSet::new();
+    for p in profiles {
+        if !seen.insert(p.profile_name.clone()) {
+            return Err(BuildError::DuplicateProfile {
+                profile_name: p.profile_name.clone(),
+            });
+        }
+        if let Some(connection_id) = &p.connection.connection_id {
+            let identity = (p.group().to_owned(), connection_id.clone());
+            if !connections.insert(identity.clone()) {
+                return Err(BuildError::DuplicateConnectionId {
+                    group: identity.0,
+                    connection_id: identity.1,
+                });
+            }
+        }
+    }
+    for p in profiles {
+        if let Some(peak) = &p.pricing.peak {
+            peak.validate()
+                .map_err(|reason| BuildError::InvalidPeakSchedule {
+                    profile_name: p.profile_name.clone(),
+                    reason,
+                })?;
+        }
+        if !codecs.contains_key(&p.protocol) {
+            return Err(BuildError::MissingCodec {
+                profile_name: p.profile_name.clone(),
+                family: p.protocol,
+            });
+        }
+        if p.auth != AuthStrategy::None && !authenticators.contains_key(&p.auth) {
+            return Err(BuildError::MissingAuthenticator {
+                profile_name: p.profile_name.clone(),
+                strategy: p.auth,
+            });
+        }
+    }
+    // A profile whose `model_list` names a shape with no directory is
+    // deliberately NOT an error here. It can run every turn it could run
+    // before; all it cannot do is refresh its own list.
+    Ok(())
 }
 
 /// The provider-neutral client. Holds every registered codec and profile;
@@ -192,6 +227,14 @@ pub struct LlmClient {
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
     authenticators: BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
     profiles: Vec<ProviderProfile>,
+    base_profiles: Vec<ProviderProfile>,
+    locally_removed_profiles: std::collections::BTreeSet<String>,
+    model_sources: BTreeMap<String, ProviderProfile>,
+    invalidated_model_sources: std::collections::BTreeSet<String>,
+    persisted_profiles: Vec<ProviderProfile>,
+    config_dir: Option<std::path::PathBuf>,
+    deleted_profiles: std::collections::BTreeSet<String>,
+    tracked_models: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
 impl LlmClient {
@@ -206,22 +249,25 @@ impl LlmClient {
             .iter()
             .filter(|p| !p.connection.hidden)
             .flat_map(|p| {
-                p.models.iter().map(move |m| ModelListing {
-                    id: m.display_model.clone(),
-                    profile_name: p.profile_name.clone(),
-                    request_model: m.request_model.clone(),
-                    billing_mode: m.billing_mode_on(&p.pricing),
-                    pricing: m.pricing.clone(),
-                    // The catalog's display name, not its description: the
-                    // latter is a paragraph of vendor prose and was never a
-                    // name. It keeps its own field below.
-                    display_name: m.display_model.clone(),
-                    description: m.description.clone(),
-                    provider_id: p.provider_id.clone(),
-                    context_window: m.metadata.context_window_tokens,
-                    max_output_tokens: m.metadata.max_output_tokens,
-                    capabilities: m.capabilities,
-                })
+                p.models
+                    .iter()
+                    .filter(|m| !m.hidden && self.tracks(p, m))
+                    .map(move |m| ModelListing {
+                        id: m.display_model.clone(),
+                        profile_name: p.profile_name.clone(),
+                        request_model: m.request_model.clone(),
+                        billing_mode: m.billing_mode_on(&p.pricing),
+                        pricing: m.pricing.clone(),
+                        // The catalog's display name, not its description: the
+                        // latter is a paragraph of vendor prose and was never a
+                        // name. It keeps its own field below.
+                        display_name: m.display_model.clone(),
+                        description: m.description.clone(),
+                        provider_id: p.provider_id.clone(),
+                        context_window: m.metadata.context_window_tokens,
+                        max_output_tokens: m.metadata.max_output_tokens,
+                        capabilities: m.capabilities,
+                    })
             })
             .collect()
     }
@@ -247,7 +293,7 @@ impl LlmClient {
                     _ => None,
                 },
                 billing_mode: p.pricing.billing_mode,
-                model_count: p.models.len(),
+                model_count: p.models.iter().filter(|m| self.tracks(p, m)).count(),
                 hidden: p.connection.hidden,
             })
             .collect()
@@ -255,6 +301,18 @@ impl LlmClient {
 
     pub fn profiles(&self) -> &[ProviderProfile] {
         &self.profiles
+    }
+
+    fn tracks(
+        &self,
+        profile: &ProviderProfile,
+        model: &lingxi_agent_api::protocol::ModelProfile,
+    ) -> bool {
+        self.config_dir.is_none()
+            || self
+                .tracked_models
+                .get(profile.provider_id.as_str())
+                .is_some_and(|ids| ids.contains(&model.request_model))
     }
 
     pub fn codec_families(&self) -> Vec<ProtocolFamily> {

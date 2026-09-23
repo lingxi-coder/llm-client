@@ -2,6 +2,7 @@
 
 从 Lingxi 拆分的 Rust LLM 客户端，crate 名称保留为 `lingxi-llm-client`。
 支持 provider 配置、模型路由、故障转移、流式响应和费用计算，内置 OpenAI、Anthropic、Gemini 及托管平台的 wire codec。
+可在客户端创建后设置本地配置目录，通过 `add_provider`、`provider`、`remove_provider` 管理连接；内置项删除后可用 `restore_builtin` 恢复。`set_tracked_models` 配置 provider 级模型白名单，`sync_provider` 逐账号同步模型，`set_model_visibility` 控制已跟踪模型的列表可见性。配置保存为目录内的 `providers.json`；密钥仍由调用方按请求提供。
 内置 HTTP 客户端和系统时钟，无需外部实现 `Transport`；凭证按请求传入。网络请求使用 Tokio 运行时，暂不支持内置 WebSocket。
 
 ## 文档

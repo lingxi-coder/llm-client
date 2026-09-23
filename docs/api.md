@@ -307,6 +307,8 @@ async fn read_stream(
 
 `ModelProfile` 必须指定 `display_model`、`request_model`、`billing_model`；可添加 `aliases`、`description`、`metadata`、`capabilities`、`pricing` 和模型级 `billing_mode`。三种模型名分别用于显示/匹配、请求协议和价格归属。`metadata` 保存上下文窗口、输出上限、模态等目录数据。
 
+`ModelProfile.hidden` 默认为 `false`。设置为 `true` 后，`models()` 不再列出该模型，但它仍可通过模型名或 `resolve_in()` 显式调用。运行时可用 `set_model_visibility(profile_name, request_model, visible)` 修改并保存该设置。
+
 ### 协议与 URL
 
 下表说明本库编码器实际追加的路径，不代表服务的在线可用性。`base_url` 不应已包含表中“追加路径”。
@@ -358,6 +360,44 @@ Azure 必须配置 `azure.api_version`；`azure.deployment` 省略时使用 `req
 ### 内置配置与扩展参数
 
 `builtin_providers() -> Result<Vec<ProviderProfile>, PresetError>` 返回编译进库的静态目录。`merge_providers(user)` 保留用户条目，并追加未被同名用户条目覆盖的预设；这是整条 profile 覆盖，不是字段合并。用户输入中的重复名称仍由 builder 拒绝。`PresetError` 分为解析失败 `Invalid` 和空模型列表 `NoModels`。
+
+### 本地保存与多账号
+
+`LlmClient` 创建后可调用 `set_config_dir(path)`。库在该目录管理 `providers.json`，立即加载其中的 profile，并将目录固定为绝对路径，后续工作目录变化不会改变保存位置；同名本地配置覆盖 builder 的初始配置。再次设置目录时会清除上一个目录加载的配置。多个客户端写入同一目录时，库使用 `.providers.json.lock` 协调写入，并在锁内读取最新配置后应用本次修改；直接修改 JSON 的外部程序也需要遵守这个锁。`sync_provider(profile_name, credential).await` 使用该连接自己的凭证读取模型目录，按 `request_model` 更新现有模型、加入新模型，再保存配置。目录缺失、请求失败或写盘失败时，旧文件与内存配置保持不变。同步不会删除目录未返回的旧模型，也不会改变已有模型的 `hidden`、价格、能力或别名。
+
+| 操作 | API | 保存行为 |
+| --- | --- | --- |
+| 新增 / 修改 | `add_provider(profile)` | 按 `profile_name` 新增或整条替换并写盘；也可用于多账号中的单个账号 |
+| 查询 | `provider(profile_name)`、`profiles()`、`providers()`、`deleted_builtin_profiles()` | 读取配置、列表摘要及已软删除内置项的名称 |
+| 删除 | `remove_provider(profile_name)` | 自定义 profile 从文件删除；内置 profile 记录软删除，重启后仍停用 |
+| 恢复内置项 | `restore_builtin(profile_name)` | 清除软删除标记并保存库内预设；即使 builder 有同名自定义覆盖也以预设为准 |
+
+删除的是单个连接账号，不会连带删除同组的其他账号；如需停用整个 provider，逐个删除其 profile。重加一个已软删除的同名配置也会清除软删除标记。自定义 profile 若由宿主在每次启动时再次传给 builder，宿主还须从自己的输入中移除它。
+
+`set_tracked_models(provider_id, request_model_ids)` 为同一家 provider 的所有账号设置全局模型白名单，并保存在 `providers.json`。未配置白名单的 provider 不显示或保存任何模型；目录同步只合并白名单中的模型，保存时也只写入白名单中的模型。先调用 `add_provider` 再设置白名单也能使用本次会话提供的模型；重启后若要扩大白名单，需要由 builder 再次提供这些模型或重新同步目录。如果其他客户端修改了同名 profile 的模型列表，本客户端不会再用旧缓存补回被删除的模型。`tracked_models(provider_id)` 可读取当前名单；`untrack_model(provider_id, request_model)` 从名单删除单个模型，再次同步也不会重新加入。白名单决定是否跟踪、保存和显示；模型级 `hidden` 只决定已跟踪模型是否出现在 `models()` 中。
+
+同一家 provider 的每个账号使用独立的 `profile_name` 和 `connection.connection_id`，并设置相同的 `connection.group`。主账号设置 `hidden: false`，备用账号设置 `hidden: true`，按 `order` 排序。`sync_provider` 逐账号执行，模型目录不在账号间复制。故障转移需要在 `RequestOptions.fallback_credentials` 中按备用 `profile_name` 提供其密钥；配置文件仅保存 `env` 或 `host_managed` 等凭证来源，不保存明文密钥。`CredentialConfig::Static` 会被保存接口拒绝。
+
+```rust,no_run
+use lingxi_agent_api::protocol::{ProviderProfile, Secret};
+use lingxi_llm_client::LlmClientBuilder;
+
+# async fn example(primary: ProviderProfile, spare: ProviderProfile) -> Result<(), Box<dyn std::error::Error>> {
+let mut client = LlmClientBuilder::new(&[])?.build()?;
+client.set_config_dir("./config")?;
+client.set_tracked_models("acme", ["model-id".to_owned()])?;
+client.add_provider(primary)?;
+client.add_provider(spare)?;
+client.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
+client.set_model_visibility("primary", "model-id", false)?;
+assert!(client.provider("primary").is_some());
+client.untrack_model("acme", "model-id")?;
+client.remove_provider("primary")?;
+# Ok(())
+# }
+```
+
+`ProviderStoreError` 区分文件、JSON、配置验证、目录请求和分页错误。同步最多读取 100 页，并拒绝重复 cursor；若请求期间连接配置被其他客户端修改，同步返回 `ProfileChanged` 且不写入旧连接的模型。启动后如需使用已保存的 provider，须再次调用 `set_config_dir`；本库不自动读取环境变量中的凭证。
 
 `extra.body` 用于补充协议未写入的 JSON 字段，不能覆盖已写字段、模型身份或续接 ID；`extra.headers` 用于非凭证附加头，不能覆盖 codec 已写头。认证头应交由认证器。
 
