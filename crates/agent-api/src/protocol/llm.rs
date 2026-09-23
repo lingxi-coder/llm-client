@@ -174,6 +174,7 @@ pub enum StopReason {
 /// already folded into a larger one — so each codec subtracts until these four
 /// partition the total. Without that, `total()` counts the same token twice on
 /// the wires that fold (see `Usage::total`).
+/// The one-hour cache-write count below is a subset of `cache_write_tokens`.
 ///
 /// `reasoning_tokens` is the exception and is **not** billable on its own: it is
 /// a breakdown *of* `output_tokens`, carried because providers price thinking
@@ -186,6 +187,11 @@ pub struct Usage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
+    /// One-hour cache-write tokens, already included in `cache_write_tokens`.
+    /// Separate for pricing because this TTL has a different rate from the
+    /// ordinary cache-write rate. `total()` must not add this subset again.
+    #[serde(default)]
+    pub cache_write_1h_tokens: u64,
     /// How many of `output_tokens` were reasoning. A subset, never an addend.
     #[serde(default)]
     pub reasoning_tokens: u64,
@@ -198,6 +204,18 @@ pub struct Usage {
     /// number the provider did not send is a guess, and a guess is not a bill.
     #[serde(default)]
     pub cost: Option<ReportedCost>,
+    /// Provider-reported hosted tool calls. These are kept separate from
+    /// token totals because providers bill and count them independently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tool_usage: Option<ServerToolUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerToolUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_search_requests: Option<u64>,
 }
 
 /// A cost a provider reported, in nano-USD.
@@ -245,8 +263,13 @@ impl Usage {
     ///
     /// `reasoning_tokens` is deliberately absent: it is already inside
     /// `output_tokens`, and adding it would over-count every thinking turn.
+    /// If a provider reports counters whose sum exceeds `u64::MAX`, the result
+    /// saturates rather than panicking in debug builds or wrapping in release.
     pub fn total(&self) -> u64 {
-        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
     }
 }
 
@@ -289,6 +312,11 @@ pub enum StreamEvent {
     /// client-executed tool calls. Native metadata retains citation locations.
     WebSearch {
         result: WebSearchResult,
+    },
+    /// Provider-hosted knowledge-base retrieval. This is attribution data,
+    /// not a client tool invocation.
+    FileSearch {
+        result: FileSearchResult,
     },
     End {
         stop_reason: StopReason,
@@ -361,12 +389,46 @@ pub struct WebSearchResult {
     pub metadata: Value,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FileSearchResult {
+    #[serde(default)]
+    pub queries: Vec<String>,
+    #[serde(default)]
+    pub hits: Vec<FileSearchHit>,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileSearchHit {
+    pub file_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSearchConfig {
+    /// One Qwen Model Studio knowledge base ID. The service currently accepts
+    /// a single ID per request.
+    pub knowledge_base_id: String,
+    /// Model Studio workspace used to construct the regional dedicated API
+    /// host required by the knowledge retrieval endpoint.
+    pub workspace_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
     /// Absent by default. Requires an explicit search adapter on the profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<WebSearchConfig>,
+    /// Enable Qwen hosted knowledge-base retrieval on a Responses profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_search: Option<FileSearchConfig>,
     /// The immediately preceding response to continue on a stateful Responses
     /// endpoint. The caller owns the chain and supplies only the desired new
     /// input in `messages`.
@@ -403,6 +465,8 @@ pub struct CompletionResponse {
     pub message: ConversationMessage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<WebSearchResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_search: Option<FileSearchResult>,
     pub stop_reason: StopReason,
     pub usage: Usage,
     pub model: String,
@@ -427,6 +491,84 @@ pub struct ModelCapabilities {
     pub signed_reasoning: bool,
     pub streaming: bool,
     pub structured_output: bool,
+}
+
+/// Whether the available model metadata establishes a capability.
+///
+/// `Unknown` is deliberately distinct from `Unsupported`: directory listings
+/// often omit capability facts entirely. A caller may use `Unsupported` as an
+/// advisory preflight result, but absence of a fact must not be treated as a
+/// rejection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilitySupport {
+    /// No authoritative fact is available.
+    #[default]
+    Unknown,
+    /// The provider or explicit configuration says the capability is present.
+    Supported,
+    /// The provider or explicit configuration says the capability is absent.
+    Unsupported,
+}
+
+impl CapabilitySupport {
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
+
+/// A selector for one of the capability facts represented by
+/// [`ModelCapabilities`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapability {
+    Vision,
+    Documents,
+    Tools,
+    Reasoning,
+    SignedReasoning,
+    Streaming,
+    StructuredOutput,
+}
+
+/// Explicit capability facts alongside the legacy boolean view.
+///
+/// Missing fields default to [`CapabilitySupport::Unknown`] and are omitted
+/// when serialized. This lets a partial provider listing state one fact
+/// without turning every omitted fact into a negative one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ModelCapabilitySupport {
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub vision: CapabilitySupport,
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub documents: CapabilitySupport,
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub tools: CapabilitySupport,
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub reasoning: CapabilitySupport,
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub signed_reasoning: CapabilitySupport,
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub streaming: CapabilitySupport,
+    #[serde(default, skip_serializing_if = "CapabilitySupport::is_unknown")]
+    pub structured_output: CapabilitySupport,
+}
+
+impl ModelCapabilitySupport {
+    #[must_use]
+    pub const fn get(&self, capability: ModelCapability) -> CapabilitySupport {
+        match capability {
+            ModelCapability::Vision => self.vision,
+            ModelCapability::Documents => self.documents,
+            ModelCapability::Tools => self.tools,
+            ModelCapability::Reasoning => self.reasoning,
+            ModelCapability::SignedReasoning => self.signed_reasoning,
+            ModelCapability::Streaming => self.streaming,
+            ModelCapability::StructuredOutput => self.structured_output,
+        }
+    }
 }
 
 impl ModelCapabilities {
@@ -641,6 +783,7 @@ mod tests {
         let req = CompletionRequest {
             model: "m".to_owned(),
             web_search: None,
+            file_search: None,
             previous_response_id: Some(id.clone()),
             system: vec![],
             messages: vec![],
@@ -671,8 +814,10 @@ mod tests {
             output_tokens: 100,
             cache_read_tokens: 5,
             cache_write_tokens: 2,
+            cache_write_1h_tokens: 1,
             reasoning_tokens: 80,
             cost: None,
+            server_tool_usage: None,
         };
         assert_eq!(u.total(), 117, "80 reasoning tokens are inside the 100");
         let without = Usage {
@@ -716,13 +861,24 @@ mod tests {
 
     #[test]
     fn an_older_usage_without_the_reasoning_field_still_parses() {
-        // The field is `#[serde(default)]` because transcripts written before it
+        // New usage fields default because transcripts written before they
         // existed must keep loading; a hard error there would strand sessions.
         let u: Usage = serde_json::from_str(
             r#"{"input_tokens":1,"output_tokens":2,"cache_read_tokens":3,"cache_write_tokens":4}"#,
         )
         .expect("a usage record without the newer field must still load");
         assert_eq!(u.reasoning_tokens, 0);
+        assert_eq!(u.cache_write_1h_tokens, 0);
         assert_eq!(u.total(), 10);
+    }
+
+    #[test]
+    fn total_saturates_when_provider_token_counters_overflow() {
+        let usage = Usage {
+            input_tokens: u64::MAX,
+            output_tokens: 1,
+            ..Usage::default()
+        };
+        assert_eq!(usage.total(), u64::MAX);
     }
 }

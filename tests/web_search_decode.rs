@@ -239,6 +239,7 @@ fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
     let req = CompletionRequest {
         model: "m".into(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![decoded.message],

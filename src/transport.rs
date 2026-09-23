@@ -4,10 +4,33 @@ mod http;
 pub use http::HttpTransport;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::stream::BoxStream;
+use bytes::{Bytes, BytesMut};
+use futures::{stream::BoxStream, Stream, StreamExt};
 use lingxi_agent_api::protocol::LlmError;
 use std::time::{Duration, SystemTime};
+
+pub(crate) const MAX_ERROR_BODY_SIZE: usize = 64 * 1024;
+
+/// Collect the useful prefix of an HTTP error body without letting a broken
+/// connection erase an already-received status and headers.
+pub(crate) async fn collect_error_body<S, E>(stream: S) -> Bytes
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+{
+    let mut stream = stream;
+    let mut body = BytesMut::with_capacity(MAX_ERROR_BODY_SIZE);
+    while body.len() < MAX_ERROR_BODY_SIZE {
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                let take = chunk.len().min(MAX_ERROR_BODY_SIZE - body.len());
+                body.extend_from_slice(&chunk[..take]);
+            }
+            Some(Err(_)) => break,
+            None => break,
+        }
+    }
+    body.freeze()
+}
 
 /// An outgoing request. `Debug` omits the URL, header values and body because
 /// authenticators and callers may put credentials or private content in them.
@@ -99,16 +122,40 @@ pub trait WebSocketSession: Send {
 pub trait Transport: Send + Sync + 'static {
     async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError>;
 
-    /// `execute`, but a redirect comes back as the 3xx it is, `location`
-    /// header and all, instead of being followed. A caller that must judge
-    /// a redirect before going there (a fetch that stays on the host it was
-    /// given) needs this; the default is for transports that cannot switch
-    /// it off, and follows.
-    async fn execute_no_follow(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute(req).await
+    /// Return redirects as 3xx responses without following them. Custom
+    /// transports must opt in explicitly before receiving account credentials.
+    async fn execute_no_follow(&self, _req: HttpRequest) -> Result<HttpResponse, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "transport does not implement no-redirect requests".into(),
+        })
+    }
+
+    /// No-redirect request with a maximum successful response-body size.
+    /// The built-in transport enforces this while reading; custom transports
+    /// should do the same rather than relying on this post-read fallback.
+    async fn execute_no_follow_bounded(
+        &self,
+        req: HttpRequest,
+        max_body_size: usize,
+    ) -> Result<HttpResponse, LlmError> {
+        let response = self.execute_no_follow(req).await?;
+        if response.body.len() > max_body_size {
+            return Err(LlmError::Transport {
+                message: "HTTP response body exceeds account limit".into(),
+            });
+        }
+        Ok(response)
     }
 
     async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
+
+    /// Open a streaming request without following redirects. Custom transports
+    /// must opt in explicitly before sending credentialed requests.
+    async fn open_stream_no_follow(&self, _req: HttpRequest) -> Result<StreamResponse, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "transport does not implement no-redirect streaming requests".into(),
+        })
+    }
 
     async fn open_responses_websocket_session(
         &self,

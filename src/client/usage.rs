@@ -63,7 +63,8 @@ pub(crate) fn fold(seed: &mut Value, delta: &Value) {
 
 /// Which counters a wire names, so one validator can serve every wire.
 ///
-/// `total` is checked against `input + output` when the provider sends one.
+/// `total` is checked against the normalized bucket sum when the provider sends
+/// one, including independent counters and extra thoughts where applicable.
 /// `thoughts_are_extra` distinguishes the two conventions: on one wire the
 /// thinking count sits outside the output count and has to be added before the
 /// total will reconcile; on the others it is already inside.
@@ -73,6 +74,10 @@ pub(crate) struct ReportShape {
     pub total: &'static [&'static str],
     /// `(path, whether it is bounded by input rather than output)`
     pub subsets: &'static [(&'static str, bool)],
+    /// Counters in independent billable buckets, rather than subsets of input
+    /// or output. Present counters are validated and added to the normalized
+    /// total, but are not bounded by either required counter.
+    pub independent_counters: &'static [&'static str],
     pub thoughts: Option<&'static str>,
     pub thoughts_are_extra: bool,
     /// The nested object splitting cache writes by TTL, if the wire has one:
@@ -100,6 +105,11 @@ pub(crate) fn is_complete(raw: &Value, shape: &ReportShape) -> bool {
     // absent counter.
     for (path, _) in shape.subsets {
         if raw.pointer(path).is_some_and(|v| v.as_u64().is_none()) {
+            return false;
+        }
+    }
+    for key in shape.independent_counters {
+        if raw.get(key).is_some_and(|v| v.as_u64().is_none()) {
             return false;
         }
     }
@@ -141,6 +151,12 @@ pub(crate) fn is_complete(raw: &Value, shape: &ReportShape) -> bool {
         };
         expected = sum;
     }
+    for key in shape.independent_counters {
+        let Some(sum) = expected.checked_add(counter(raw, key).unwrap_or(0)) else {
+            return false;
+        };
+        expected = sum;
+    }
     for key in shape.total {
         let Some(stated) = raw.get(key) else { continue };
         let Some(stated) = stated.as_u64() else {
@@ -153,38 +169,47 @@ pub(crate) fn is_complete(raw: &Value, shape: &ReportShape) -> bool {
 
     if let Some((group, total_key, parts)) = shape.cache_creation {
         if let Some(creation) = raw.get(group) {
-            if !creation.is_object() {
-                return false;
-            }
-            let Some(total) = counter(raw, total_key) else {
-                return false;
-            };
-            let mut split = 0_u64;
-            for key in parts {
-                let Some(value) = creation.get(*key) else {
-                    continue;
-                };
-                let Some(n) = value.as_u64() else {
+            if creation.is_null() {
+                // Anthropic sends null for an empty TTL breakdown on some
+                // responses. It is consistent only when the aggregate says
+                // there were no cache writes to apportion.
+                if counter(raw, total_key) != Some(0) {
+                    return false;
+                }
+            } else {
+                if !creation.is_object() {
+                    return false;
+                }
+                let Some(total) = counter(raw, total_key) else {
                     return false;
                 };
-                let Some(sum) = split.checked_add(n) else {
+                let mut split = 0_u64;
+                for key in parts {
+                    let Some(value) = creation.get(*key) else {
+                        continue;
+                    };
+                    let Some(n) = value.as_u64() else {
+                        return false;
+                    };
+                    let Some(sum) = split.checked_add(n) else {
+                        return false;
+                    };
+                    split = sum;
+                }
+                // A split that overshoots its own total is malformed either way.
+                //
+                // Otherwise the parts must account for the total exactly — with one
+                // exception, and it is not symmetric. The first part is the
+                // derivable one: given the total and every other part, it is their
+                // difference. So a report that omits only that part is still
+                // complete. A report that states it and stops is not, because what
+                // is left over cannot be attributed to any particular one of the
+                // remaining tariffs, and they are priced differently.
+                let derivable_missing = creation.get(parts[0]).is_none();
+                let others_stated = parts[1..].iter().any(|k| creation.get(*k).is_some());
+                if split > total || (!(derivable_missing && others_stated) && split != total) {
                     return false;
-                };
-                split = sum;
-            }
-            // A split that overshoots its own total is malformed either way.
-            //
-            // Otherwise the parts must account for the total exactly — with one
-            // exception, and it is not symmetric. The first part is the
-            // derivable one: given the total and every other part, it is their
-            // difference. So a report that omits only that part is still
-            // complete. A report that states it and stops is not, because what
-            // is left over cannot be attributed to any particular one of the
-            // remaining tariffs, and they are priced differently.
-            let derivable_missing = creation.get(parts[0]).is_none();
-            let others_stated = parts[1..].iter().any(|k| creation.get(*k).is_some());
-            if split > total || (!(derivable_missing && others_stated) && split != total) {
-                return false;
+                }
             }
         }
     }
@@ -197,6 +222,7 @@ pub(crate) const ANTHROPIC: ReportShape = ReportShape {
     output: "output_tokens",
     total: &[],
     subsets: &[],
+    independent_counters: &["cache_read_input_tokens", "cache_creation_input_tokens"],
     thoughts: None,
     thoughts_are_extra: false,
     cache_creation: Some((
@@ -215,6 +241,7 @@ pub(crate) const OPENAI_CHAT: ReportShape = ReportShape {
         ("/prompt_tokens_details/cache_write_tokens", true),
         ("/completion_tokens_details/reasoning_tokens", false),
     ],
+    independent_counters: &[],
     thoughts: None,
     thoughts_are_extra: false,
     cache_creation: None,
@@ -228,6 +255,7 @@ pub(crate) const OPENAI_RESPONSES: ReportShape = ReportShape {
         ("/input_tokens_details/cached_tokens", true),
         ("/output_tokens_details/reasoning_tokens", false),
     ],
+    independent_counters: &[],
     thoughts: None,
     thoughts_are_extra: false,
     cache_creation: None,
@@ -238,6 +266,9 @@ pub(crate) const GEMINI: ReportShape = ReportShape {
     output: "candidatesTokenCount",
     total: &["totalTokenCount"],
     subsets: &[("/cachedContentTokenCount", true)],
+    // Tool execution results are an additional input bucket included in
+    // Gemini's total alongside prompt, candidate, and thought tokens.
+    independent_counters: &["toolUsePromptTokenCount"],
     thoughts: Some("thoughtsTokenCount"),
     // This wire counts thinking outside the candidate tokens, so a stated total
     // only reconciles once they are added back.

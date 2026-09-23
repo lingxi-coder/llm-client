@@ -33,6 +33,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             crate::codecs::web_search_decode::anthropic(&body),
             body.get("usage"),
         ),
+        file_search: None,
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
@@ -226,13 +227,28 @@ pub fn stop_reason(s: Option<&str>) -> StopReason {
 /// stays zero rather than guessing.
 pub fn usage(u: &Value) -> Usage {
     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let web_search_requests = u
+        .pointer("/server_tool_use/web_search_requests")
+        .and_then(Value::as_u64);
+    let file_search_requests = u
+        .pointer("/server_tool_use/file_search_requests")
+        .and_then(Value::as_u64);
     Usage {
         input_tokens: n("input_tokens"),
         output_tokens: n("output_tokens"),
         cache_read_tokens: n("cache_read_input_tokens"),
         cache_write_tokens: n("cache_creation_input_tokens"),
+        cache_write_1h_tokens: u
+            .pointer("/cache_creation/ephemeral_1h_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         reasoning_tokens: 0,
         cost: None,
+        server_tool_usage: (web_search_requests.is_some() || file_search_requests.is_some())
+            .then_some(lingxi_agent_api::protocol::ServerToolUsage {
+                web_search_requests,
+                file_search_requests,
+            }),
     }
 }
 

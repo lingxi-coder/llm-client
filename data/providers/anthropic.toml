@@ -1,6 +1,5 @@
-# First-party Anthropic. The source project ships no preset for it, so the
-# catalog below is derived from an aggregator's view of the same models; the
-# route itself is the published API.
+# First-party Anthropic. Wire IDs are checked against the Claude API;
+# catalog metadata and prices retain their aggregator provenance.
 provider_id = "anthropic"
 base_url = "https://api.anthropic.com"
 protocol = "anthropic_messages"
@@ -14,31 +13,12 @@ console_url = "https://console.anthropic.com"
 api_key_url = "https://console.anthropic.com/settings/keys"
 docs_url = "https://platform.claude.com/docs"
 credential_hint = "sk-ant-"
-# catalog provenance: derived from the aggregator slice by stripping its anthropic/ qualifier; the source project ships no first-party slice, and the prices are the aggregator's
+# IDs/lifecycle checked 2026-09-23:
+# https://platform.claude.com/docs/en/about-claude/model-deprecations
+# Prices and descriptive metadata: models.dev via aggregator.
+# Old aggregator IDs are local aliases, never sent to the first-party endpoint.
 
 extra = { web_search = "anthropic" }
-
-[[model]]
-id = "claude-3-haiku"
-name = "Claude 3 Haiku"
-description = "Claude 3 Haiku is Anthropic's fastest and most compact model for\nnear-instant responsiveness. Quick and accurate targeted performance.\n\nSee the launch announcement and benchmark results [here](https://www.anthropic.com/news/claude-3-haiku)\n\n#multimodal"
-release_date = "2024-03-13"
-context_window = 200000
-max_output = 4096
-input_modalities = ["text", "image"]
-output_modalities = ["text"]
-tool_call = true
-reasoning = false
-structured_output = false
-temperature = true
-attachment = true
-
-[model.pricing]
-input_per_million = 0.25
-output_per_million = 1.25
-cache_read_per_million = 0.03
-cache_write_per_million = 0.3
-source = "models.dev via aggregator"
 
 [[model]]
 id = "claude-fable-5"
@@ -69,7 +49,8 @@ cache_read_per_million = 0.5
 cache_write_per_million = 6.25
 
 [[model]]
-id = "claude-fable-5.1"
+id = "claude-fable-5-1"
+aliases = ["claude-fable-5.1"]
 name = "Claude Fable 5.1"
 description = "Claude Fable 5.1 improves on Claude Fable 5 across the board, with the biggest gains in agentic coding, long-running agentic workflows, and knowledge work: long code refactors, front-end and visual..."
 release_date = "2026-09-01"
@@ -97,7 +78,8 @@ cache_read_per_million = 0.125
 cache_write_per_million = 6.25
 
 [[model]]
-id = "claude-haiku-4.5"
+id = "claude-haiku-4-5-20251001"
+aliases = ["claude-haiku-4.5", "claude-haiku-4-5"]
 name = "Claude Haiku 4.5"
 description = "Claude Haiku 4.5 is Anthropic’s fastest and most efficient model, delivering near-frontier intelligence at a fraction of the cost and latency of larger Claude models. Matching Claude Sonnet 4’s performance..."
 release_date = "2025-10-15"
@@ -125,57 +107,8 @@ cache_read_per_million = 0.049999999999999996
 cache_write_per_million = 0.625
 
 [[model]]
-id = "claude-opus-4"
-name = "Claude Opus 4"
-description = "Claude Opus 4 is benchmarked as the world’s best coding model, at time of release, bringing sustained performance on complex, long-running tasks and agent workflows. It sets new benchmarks in..."
-release_date = "2025-05-22"
-context_window = 200000
-max_output = 32000
-input_modalities = ["image", "text", "file"]
-output_modalities = ["text"]
-tool_call = true
-reasoning = true
-structured_output = false
-temperature = true
-attachment = true
-
-[model.pricing]
-input_per_million = 15
-output_per_million = 75
-cache_read_per_million = 1.5
-cache_write_per_million = 18.75
-source = "models.dev via aggregator"
-
-[[model]]
-id = "claude-opus-4.1"
-name = "Claude Opus 4.1"
-description = "Claude Opus 4.1 is an updated version of Anthropic’s flagship model, offering improved performance in coding, reasoning, and agentic tasks. It achieves 74.5% on SWE-bench Verified and shows notable gains..."
-release_date = "2025-08-05"
-context_window = 200000
-max_output = 32000
-input_modalities = ["image", "text", "file"]
-output_modalities = ["text"]
-tool_call = true
-reasoning = true
-structured_output = false
-temperature = true
-attachment = true
-
-[model.pricing]
-input_per_million = 15
-output_per_million = 75
-cache_read_per_million = 1.5
-cache_write_per_million = 18.75
-source = "models.dev via aggregator"
-
-[model.pricing.batch]
-input_per_million = 7.5
-output_per_million = 37.5
-cache_read_per_million = 0.75
-cache_write_per_million = 9.375
-
-[[model]]
-id = "claude-opus-4.5"
+id = "claude-opus-4-5-20251101"
+aliases = ["claude-opus-4.5", "claude-opus-4-5"]
 name = "Claude Opus 4.5"
 description = "Claude Opus 4.5 is Anthropic’s frontier reasoning model optimized for complex software engineering, agentic workflows, and long-horizon computer use. It offers strong multimodal capabilities, competitive performance across real-world coding and..."
 release_date = "2025-11-24"
@@ -203,7 +136,8 @@ cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
 [[model]]
-id = "claude-opus-4.6"
+id = "claude-opus-4-6"
+aliases = ["claude-opus-4.6"]
 name = "Claude Opus 4.6"
 description = "Opus 4.6 is Anthropic’s strongest model for coding and long-running professional tasks. It is built for agents that operate across entire workflows rather than single prompts, making it especially effective..."
 release_date = "2026-02-04"
@@ -231,7 +165,8 @@ cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
 [[model]]
-id = "claude-opus-4.7"
+id = "claude-opus-4-7"
+aliases = ["claude-opus-4.7"]
 name = "Claude Opus 4.7"
 description = "Opus 4.7 is the next generation of Anthropic's Opus family, built for long-running, asynchronous agents. Building on the coding and agentic strengths of Opus 4.6, it delivers stronger performance on..."
 release_date = "2026-04-16"
@@ -259,7 +194,8 @@ cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
 [[model]]
-id = "claude-opus-4.8"
+id = "claude-opus-4-8"
+aliases = ["claude-opus-4.8"]
 name = "Claude Opus 4.8"
 description = "Claude Opus 4.8 is Anthropic's most capable generally available model in the Opus family. It supports text, image, and file inputs with text output, with reasoning support and a 1M-token..."
 release_date = "2026-05-27"
@@ -315,29 +251,8 @@ cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
 [[model]]
-id = "claude-sonnet-4"
-name = "Claude Sonnet 4"
-description = "Claude Sonnet 4 significantly enhances the capabilities of its predecessor, Sonnet 3.7, excelling in both coding and reasoning tasks with improved precision and controllability. Achieving state-of-the-art performance on SWE-bench (72.7%),..."
-release_date = "2025-05-22"
-context_window = 1000000
-max_output = 64000
-input_modalities = ["image", "text", "file"]
-output_modalities = ["text"]
-tool_call = true
-reasoning = true
-structured_output = false
-temperature = true
-attachment = true
-
-[model.pricing]
-input_per_million = 3
-output_per_million = 15
-cache_read_per_million = 0.3
-cache_write_per_million = 3.75
-source = "models.dev via aggregator"
-
-[[model]]
-id = "claude-sonnet-4.5"
+id = "claude-sonnet-4-5-20250929"
+aliases = ["claude-sonnet-4.5", "claude-sonnet-4-5"]
 name = "Claude Sonnet 4.5"
 description = "Claude Sonnet 4.5 is Anthropic’s most advanced Sonnet model to date, optimized for real-world agents and coding workflows. It delivers state-of-the-art performance on coding benchmarks such as SWE-bench Verified, with..."
 release_date = "2025-09-29"
@@ -365,7 +280,8 @@ cache_read_per_million = 0.15
 cache_write_per_million = 1.875
 
 [[model]]
-id = "claude-sonnet-4.6"
+id = "claude-sonnet-4-6"
+aliases = ["claude-sonnet-4.6"]
 name = "Claude Sonnet 4.6"
 description = "Sonnet 4.6 is Anthropic's most capable Sonnet-class model yet, with frontier performance across coding, agents, and professional work. It excels at iterative development, complex codebase navigation, end-to-end project management with..."
 release_date = "2026-02-17"

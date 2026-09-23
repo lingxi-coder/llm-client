@@ -55,6 +55,7 @@ fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages,
@@ -345,12 +346,75 @@ fn cached_tokens_are_subtracted_from_the_prompt_count() {
             output_tokens: 57,
             cache_read_tokens: 400,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             reasoning_tokens: 7,
             cost: None,
+            server_tool_usage: None,
         }),
         "this wire reports cached tokens as a subset of the prompt count; not \
          subtracting them bills the same tokens twice"
     );
+}
+
+#[test]
+fn tool_use_prompt_tokens_are_added_to_input_and_validated_in_totals() {
+    let u = json!({
+        "promptTokenCount": 1000,
+        "cachedContentTokenCount": 400,
+        "candidatesTokenCount": 50,
+        "thoughtsTokenCount": 7,
+        "toolUsePromptTokenCount": 123,
+        "totalTokenCount": 1180
+    });
+    let response = lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({"candidates": [], "usageMetadata": u}))
+            .unwrap()
+            .into(),
+    };
+    assert_eq!(
+        GeminiCodec.response_usage(&response),
+        Some(Usage {
+            input_tokens: 723,
+            output_tokens: 57,
+            cache_read_tokens: 400,
+            cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
+            reasoning_tokens: 7,
+            cost: None,
+            server_tool_usage: None,
+        })
+    );
+
+    let mut decoder = GeminiCodec.stream_decoder();
+    decoder
+        .decode_frame(
+            br#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":400,"candidatesTokenCount":50,"thoughtsTokenCount":7,"toolUsePromptTokenCount":123,"totalTokenCount":1180}}"#,
+        )
+        .unwrap();
+    assert!(decoder.usage_is_complete());
+
+    let mut mismatched_total = GeminiCodec.stream_decoder();
+    mismatched_total
+        .decode_frame(
+            br#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":400,"candidatesTokenCount":50,"thoughtsTokenCount":7,"toolUsePromptTokenCount":123,"totalTokenCount":1057}}"#,
+        )
+        .unwrap();
+    assert!(!mismatched_total.usage_is_complete());
+}
+
+#[test]
+fn malformed_tool_use_prompt_count_makes_gemini_usage_incomplete() {
+    for malformed in [br#""123""#.as_slice(), b"-1", b"null", b"1.5"] {
+        let mut decoder = GeminiCodec.stream_decoder();
+        let frame = format!(
+            r#"{{"candidates":[{{"content":{{"parts":[]}},"finishReason":"STOP"}}],"usageMetadata":{{"promptTokenCount":10,"candidatesTokenCount":2,"toolUsePromptTokenCount":{}}}}}"#,
+            std::str::from_utf8(malformed).unwrap()
+        );
+        decoder.decode_frame(frame.as_bytes()).unwrap();
+        assert!(!decoder.usage_is_complete(), "{frame}");
+    }
 }
 
 #[test]
@@ -451,7 +515,7 @@ fn vertex_claude_moves_the_version_from_the_header_into_the_body() {
         "Vertex reads the version from the body and rejects the request as \
          missing it when it stays in the header"
     );
-    assert_eq!(b["anthropic_version"], "2023-06-01");
+    assert_eq!(b["anthropic_version"], "vertex-2023-10-16");
     assert!(b.get("model").is_none(), "the model is in the URL");
 }
 

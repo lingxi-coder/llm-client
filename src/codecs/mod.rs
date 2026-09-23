@@ -8,6 +8,7 @@
 
 pub mod anthropic;
 pub(crate) mod extras;
+pub(crate) mod file_search_decode;
 pub mod gemini;
 pub mod hosted;
 pub mod openai;
@@ -20,8 +21,8 @@ use crate::RequestOptions;
 use async_trait::async_trait;
 use bytes::Bytes;
 use lingxi_agent_api::protocol::{
-    CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, ProviderProfile, StreamEvent,
-    Usage,
+    CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, ProviderFileSource,
+    ProviderProfile, StreamEvent, Usage,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -38,6 +39,56 @@ pub(crate) fn reject_responses_continuation(
         });
     }
     Ok(())
+}
+
+/// Validate that a provider-owned input reference belongs to the exact
+/// connection and caller-supplied account scope used for this request.
+pub(crate) fn validate_provider_file<'a>(
+    file: &'a ProviderFileSource,
+    profile: &ProviderProfile,
+    opts: &RequestOptions,
+) -> Result<&'a ProviderFileSource, LlmError> {
+    let Some(active_account_scope) = opts
+        .file_account_scope
+        .as_deref()
+        .filter(|scope| !scope.trim().is_empty())
+    else {
+        return Err(LlmError::UnsupportedCapability {
+            message: "provider file inputs require an explicit account scope".into(),
+        });
+    };
+    if file.protocol != profile.protocol
+        || file.provider_id != profile.provider_id
+        || file.profile_name != profile.profile_name
+        || file.endpoint_fingerprint
+            != crate::client::files::provider_file_endpoint_fingerprint(&profile.base_url)
+        || file.account_scope.as_deref() != Some(active_account_scope)
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: "provider file reference belongs to a different connection, endpoint, or account scope".into(),
+        });
+    }
+    if file.file_id.trim().is_empty()
+        || file.uri.as_deref().is_some_and(str::is_empty)
+        || file.media_type.as_deref().is_some_and(str::is_empty)
+    {
+        return Err(LlmError::InvalidRequest {
+            message: "provider file reference is missing a required identifier".into(),
+        });
+    }
+    Ok(file)
+}
+
+pub(crate) fn unresolved_attachment_error() -> LlmError {
+    LlmError::UnsupportedCapability {
+        message: "app attachment reached a wire codec before resolution".into(),
+    }
+}
+
+pub(crate) fn provider_file_protocol_error() -> LlmError {
+    LlmError::UnsupportedCapability {
+        message: "provider file reference does not match the active protocol".into(),
+    }
 }
 
 // One `WireCodec` per protocol family. The codec owns request encoding,

@@ -5,6 +5,7 @@
 
 use super::decode;
 use crate::client::usage;
+use crate::codecs::file_search_decode::FileSearchStream;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::StreamDecoder;
 use lingxi_agent_api::protocol::{LlmError, ResponseId, StopReason, StreamEvent, ToolUseId, Usage};
@@ -25,8 +26,10 @@ pub struct ResponsesStreamDecoder {
     usage_raw: Option<Value>,
     stop: Option<StopReason>,
     saw_tool_call: bool,
+    saw_refusal: bool,
     done: bool,
     search: SearchStream,
+    file_search: FileSearchStream,
 }
 
 impl StreamDecoder for ResponsesStreamDecoder {
@@ -72,6 +75,11 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.output_item.done") => {
                 let item = &root["item"];
+                self.saw_refusal |= decode::has_refusal(item);
+                if item.get("type").and_then(Value::as_str) == Some("file_search_call") {
+                    self.file_search
+                        .emit(&serde_json::json!({"output":[item]}), &mut out);
+                }
                 if item["type"].as_str() == Some("web_search_call") {
                     self.search.emit(
                         web_search_decode::result(serde_json::json!({"web_search_calls":[item]})),
@@ -99,6 +107,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.output_item.added") => {
                 let item = root.get("item").unwrap_or(&Value::Null);
+                self.saw_refusal |= decode::has_refusal(item);
                 if item.get("type").and_then(Value::as_str) == Some("function_call") {
                     self.saw_tool_call = true;
                     let id = ToolUseId::new(
@@ -127,6 +136,12 @@ impl StreamDecoder for ResponsesStreamDecoder {
                 block: index(&root),
                 text: delta(&root),
             }),
+            Some("response.refusal.delta" | "response.refusal.done") => {
+                self.saw_refusal = true;
+            }
+            Some("response.content_part.added" | "response.content_part.done") => {
+                self.saw_refusal |= decode::has_refusal(root.get("part").unwrap_or(&Value::Null));
+            }
             Some("response.reasoning_text.delta" | "response.reasoning_summary_text.delta") => out
                 .push(StreamEvent::ReasoningDelta {
                     block: index(&root),
@@ -146,6 +161,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
+                self.file_search.emit(response, &mut out);
                 self.search.emit(
                     web_search_decode::with_usage(
                         web_search_decode::responses(response),
@@ -156,6 +172,10 @@ impl StreamDecoder for ResponsesStreamDecoder {
                 if let Some(u) = response.get("usage") {
                     self.usage_raw = Some(u.clone());
                 }
+                self.saw_refusal |= response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| items.iter().any(decode::has_refusal));
                 self.stop = Some(decode::stop_reason(response));
                 self.finish_into(&mut out);
             }
@@ -217,6 +237,8 @@ impl ResponsesStreamDecoder {
                 self.stop.clone().unwrap()
             } else if self.saw_tool_call {
                 StopReason::ToolUse
+            } else if self.saw_refusal {
+                StopReason::Refusal
             } else {
                 self.stop.clone().unwrap_or(StopReason::EndTurn)
             },

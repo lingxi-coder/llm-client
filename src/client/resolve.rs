@@ -18,6 +18,15 @@ pub enum ResolveError {
     )]
     AmbiguousAcrossGroups { model: String, groups: Vec<String> },
     #[error(
+        "ambiguous model reference {model:?} matches a native model id on profiles {native_profiles:?} \
+         and a qualified profile reference on profiles {qualified_profiles:?}; specify a profile scope"
+    )]
+    AmbiguousNativeAndQualified {
+        model: String,
+        native_profiles: Vec<String>,
+        qualified_profiles: Vec<String>,
+    },
+    #[error(
         "model reference {model:?} matches more than one model on profile {profile_name:?} \
          — rename or remove the duplicate alias"
     )]
@@ -78,32 +87,67 @@ impl LlmClient {
 
         // Structured clients expose `profile/model` refs so two providers
         // serving the same model stay distinguishable, but a provider's protocol
-        // accepts only its native model. Prefer the exact match above — it
-        // matters for legitimate slash-bearing wire ids like OpenRouter's
-        // `openrouter/auto` — then repair a provider-qualified ref here, at the
-        // last routing boundary. The qualifier may name one connection
-        // (`deepseek:cn`) or a whole group (`deepseek`).
-        if matches.is_empty() {
-            if let Some((qualifier, bare)) = requested.split_once('/') {
-                if profile.is_none_or(|scoped| scoped == qualifier) {
-                    let names_a_connection =
-                        self.profiles.iter().any(|p| p.profile_name == qualifier);
-                    for p in &self.profiles {
-                        if if names_a_connection {
-                            p.profile_name != qualifier
-                        } else {
-                            p.group() != qualifier
-                        } {
-                            continue;
-                        }
-                        for m in &p.models {
-                            if m.answers_to(bare) {
-                                matches.push((p, m));
-                            }
+        // accepts only its native model. A slash-bearing string can also be a
+        // provider's native wire id, so collect both interpretations before
+        // selecting one. If they identify different route heads, an unscoped
+        // call cannot safely guess which credential and endpoint the caller
+        // intended.
+        let mut qualified_matches: Vec<(&ProviderProfile, &ModelProfile)> = Vec::new();
+        if let Some((qualifier, bare)) = requested.split_once('/') {
+            if profile.is_none_or(|scoped| scoped == qualifier) {
+                let names_a_connection = self.profiles.iter().any(|p| p.profile_name == qualifier);
+                for p in &self.profiles {
+                    if if names_a_connection {
+                        p.profile_name != qualifier
+                    } else {
+                        p.group() != qualifier
+                    } {
+                        continue;
+                    }
+                    for m in &p.models {
+                        if m.answers_to(bare) {
+                            qualified_matches.push((p, m));
                         }
                     }
                 }
             }
+        }
+
+        if profile.is_none() && !matches.is_empty() && !qualified_matches.is_empty() {
+            let mut native_route = matches.clone();
+            let mut qualified_route = qualified_matches.clone();
+            sort_matches(&mut native_route, true);
+            sort_matches(&mut qualified_route, true);
+            let same_target = match (native_route.first(), qualified_route.first()) {
+                (
+                    Some((native_provider, native_model)),
+                    Some((qualified_provider, qualified_model)),
+                ) => {
+                    std::ptr::eq(*native_provider, *qualified_provider)
+                        && std::ptr::eq(*native_model, *qualified_model)
+                }
+                _ => false,
+            };
+            if !same_target {
+                let profile_names = |candidates: &[(&ProviderProfile, &ModelProfile)]| {
+                    let mut names: Vec<_> = candidates
+                        .iter()
+                        .map(|(provider, _)| provider.profile_name.clone())
+                        .collect();
+                    names.sort();
+                    names.dedup();
+                    names
+                };
+                return Err(ResolveError::AmbiguousNativeAndQualified {
+                    model: requested.to_owned(),
+                    native_profiles: profile_names(&matches),
+                    qualified_profiles: profile_names(&qualified_matches),
+                });
+            }
+        }
+
+        if matches.is_empty() {
+            matches = qualified_matches;
         }
 
         if matches.is_empty() {
@@ -142,14 +186,7 @@ impl LlmClient {
 
         // A bare model reference starts on a connection the picker can show.
         // An explicitly scoped profile remains addressable even when hidden.
-        matches.sort_by(|(a, _), (b, _)| {
-            let visibility = if profile.is_none() {
-                a.connection.hidden.cmp(&b.connection.hidden)
-            } else {
-                std::cmp::Ordering::Equal
-            };
-            visibility.then_with(|| a.connection_sort_key().cmp(&b.connection_sort_key()))
-        });
+        sort_matches(&mut matches, profile.is_none());
         let (provider, model) = matches[0];
 
         // Siblings come from the head's GROUP, not from whatever was in scope.
@@ -208,4 +245,15 @@ impl LlmClient {
             failover: provider.connection.failover,
         })
     }
+}
+
+fn sort_matches(matches: &mut [(&ProviderProfile, &ModelProfile)], prefer_visible: bool) {
+    matches.sort_by(|(a, _), (b, _)| {
+        let visibility = if prefer_visible {
+            a.connection.hidden.cmp(&b.connection.hidden)
+        } else {
+            std::cmp::Ordering::Equal
+        };
+        visibility.then_with(|| a.connection_sort_key().cmp(&b.connection_sort_key()))
+    });
 }

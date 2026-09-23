@@ -1,16 +1,18 @@
 //! Local provider overrides and account-specific model directory refresh.
 
 use super::{validate_profiles, BuildError, LlmClient};
-use crate::directory::LiveModel;
+use crate::auth::Authenticator;
+use crate::directory::{LiveModel, ModelDirectory};
 use crate::presets::PresetError;
+use crate::transport::Transport;
 use lingxi_agent_api::protocol::{
     AuthStrategy, CredentialConfig, LlmError, ModelProfile, ProviderProfile, Secret,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
@@ -36,12 +38,16 @@ pub enum ProviderStoreError {
     NoDirectory(String),
     #[error("provider profile {0:?} contains a static credential that cannot be saved")]
     StaticCredential(String),
+    #[error("provider profile {0:?} has a credential-bearing header in extra.headers")]
+    CredentialHeader(String),
     #[error("provider profile {0:?} is duplicated in the saved configuration")]
     DuplicateProfile(String),
     #[error("unsupported provider configuration version {0}")]
     UnsupportedVersion(u32),
     #[error("model directory pagination exceeded {MAX_PAGES} pages or repeated a cursor")]
     InvalidPagination,
+    #[error("provider configuration worker failed: {0}")]
+    Worker(String),
     #[error("provider configuration I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("provider configuration JSON is invalid: {0}")]
@@ -59,9 +65,74 @@ struct SavedProviders {
     version: u32,
     #[serde(default)]
     tracked_models: BTreeMap<String, BTreeSet<String>>,
+    /// Negative availability is separate from the whitelist: a provider may
+    /// explicitly list a model that this client's completion protocol cannot
+    /// call, and that fact must survive a later whitelist expansion.
+    #[serde(default)]
+    incompatible_models: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
     deleted_profiles: BTreeSet<String>,
     providers: Vec<ProviderProfile>,
+}
+
+/// Persistence overlays and caches kept separately from the execution snapshot.
+pub(super) struct ProviderStore {
+    base_profiles: Vec<ProviderProfile>,
+    locally_removed_profiles: BTreeSet<String>,
+    model_sources: BTreeMap<String, ProviderProfile>,
+    invalidated_model_sources: BTreeSet<String>,
+    persisted_profiles: Vec<ProviderProfile>,
+    config_dir: Option<PathBuf>,
+    config_generation: u64,
+    deleted_profiles: BTreeSet<String>,
+    tracked_models: BTreeMap<String, BTreeSet<String>>,
+}
+
+/// An owned provider-directory fetch prepared from one client snapshot.
+///
+/// It contains no reference to `LlmClient`, so callers can drop any client
+/// borrow before awaiting [`Self::fetch`].
+pub struct ProviderSyncOperation {
+    directory_path: PathBuf,
+    config_generation: u64,
+    profile_name: String,
+    source_profile: ProviderProfile,
+    base_profiles: Vec<ProviderProfile>,
+    locally_removed_profiles: BTreeSet<String>,
+    directory: std::sync::Arc<dyn ModelDirectory>,
+    authenticator: Option<std::sync::Arc<dyn Authenticator>>,
+    http: std::sync::Arc<dyn Transport>,
+    credential: Option<Secret<String>>,
+}
+
+/// Results fetched by [`ProviderSyncOperation`], ready for a short commit.
+///
+/// Results are tied to the profile and configuration-directory generation
+/// from which they were prepared. Applying an obsolete result returns
+/// [`ProviderStoreError::ProfileChanged`].
+pub struct ProviderSyncResult {
+    directory_path: PathBuf,
+    config_generation: u64,
+    profile_name: String,
+    source_profile: ProviderProfile,
+    live: Vec<LiveModel>,
+    incompatible_models: Vec<String>,
+    explicitly_compatible_models: Vec<String>,
+}
+
+struct SyncCommit {
+    saved: SavedProviders,
+    profiles: Vec<ProviderProfile>,
+    changed_profiles: Vec<String>,
+    count: usize,
+}
+
+struct CancelCommitOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for CancelCommitOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 fn reject_static(profiles: &[ProviderProfile]) -> Result<(), ProviderStoreError> {
@@ -72,6 +143,27 @@ fn reject_static(profiles: &[ProviderProfile]) -> Result<(), ProviderStoreError>
         return Err(ProviderStoreError::StaticCredential(
             profile.profile_name.clone(),
         ));
+    }
+    Ok(())
+}
+
+fn reject_credential_headers(profiles: &[ProviderProfile]) -> Result<(), ProviderStoreError> {
+    for profile in profiles {
+        let Some(headers) = profile
+            .extra
+            .get("headers")
+            .and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        if headers
+            .keys()
+            .any(|name| crate::codecs::extras::is_credential_header(profile, name))
+        {
+            return Err(ProviderStoreError::CredentialHeader(
+                profile.profile_name.clone(),
+            ));
+        }
     }
     Ok(())
 }
@@ -114,6 +206,7 @@ fn read(dir: &Path) -> Result<SavedProviders, ProviderStoreError> {
             return Ok(SavedProviders {
                 version: 1,
                 tracked_models: BTreeMap::new(),
+                incompatible_models: BTreeMap::new(),
                 deleted_profiles: BTreeSet::new(),
                 providers: Vec::new(),
             });
@@ -126,25 +219,94 @@ fn read(dir: &Path) -> Result<SavedProviders, ProviderStoreError> {
     }
     validate_unique(&saved.providers)?;
     reject_static(&saved.providers)?;
+    reject_credential_headers(&saved.providers)?;
     Ok(saved)
+}
+
+fn store_lock(dir: &Path) -> Result<File, ProviderStoreError> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(".providers.json.lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn read_locked(dir: &Path) -> Result<SavedProviders, ProviderStoreError> {
+    let _lock = store_lock(dir)?;
+    read(dir)
 }
 
 fn filtered_profiles(saved: &SavedProviders) -> Vec<ProviderProfile> {
     let mut filtered = saved.providers.clone();
     for profile in &mut filtered {
         let tracked = saved.tracked_models.get(profile.provider_id.as_str());
-        profile
-            .models
-            .retain(|model| tracked.is_some_and(|ids| ids.contains(&model.request_model)));
+        let incompatible = saved.incompatible_models.get(&profile.profile_name);
+        profile.models.retain(|model| {
+            tracked.is_some_and(|ids| ids.contains(&model.request_model))
+                && !incompatible.is_some_and(|ids| ids.contains(&model.request_model))
+        });
     }
     filtered
 }
 
+fn profiles_from_saved(
+    base_profiles: &[ProviderProfile],
+    saved: &SavedProviders,
+    locally_removed: &BTreeSet<String>,
+) -> Vec<ProviderProfile> {
+    let mut profiles: Vec<_> = base_profiles
+        .iter()
+        .filter(|profile| !locally_removed.contains(&profile.profile_name))
+        .cloned()
+        .collect();
+    for profile in &saved.providers {
+        replace(&mut profiles, profile.clone());
+    }
+    profiles.retain(|profile| !saved.deleted_profiles.contains(&profile.profile_name));
+    for profile in &mut profiles {
+        if let Some(incompatible) = saved.incompatible_models.get(&profile.profile_name) {
+            profile
+                .models
+                .retain(|model| !incompatible.contains(&model.request_model));
+        }
+    }
+    profiles
+}
+
+fn changed_profile_names(
+    persisted_profiles: &[ProviderProfile],
+    saved: &SavedProviders,
+) -> Vec<String> {
+    let names: BTreeSet<_> = persisted_profiles
+        .iter()
+        .chain(saved.providers.iter())
+        .map(|profile| profile.profile_name.as_str())
+        .collect();
+    names
+        .into_iter()
+        .filter(|name| {
+            persisted_profiles
+                .iter()
+                .find(|profile| profile.profile_name == *name)
+                != saved
+                    .providers
+                    .iter()
+                    .find(|profile| profile.profile_name == *name)
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 fn write(dir: &Path, saved: &SavedProviders) -> Result<(), ProviderStoreError> {
     reject_static(&saved.providers)?;
+    reject_credential_headers(&saved.providers)?;
     let bytes = serde_json::to_vec_pretty(&SavedProviders {
         version: 1,
         tracked_models: saved.tracked_models.clone(),
+        incompatible_models: saved.incompatible_models.clone(),
         deleted_profiles: saved.deleted_profiles.clone(),
         providers: filtered_profiles(saved),
     })?;
@@ -194,6 +356,7 @@ fn merge_model(profile: &mut ProviderProfile, live: LiveModel) {
             description: live.description.or(live.display_name),
             metadata: Default::default(),
             capabilities: Default::default(),
+            capability_support: None,
             pricing: None,
             billing_mode: None,
         };
@@ -203,7 +366,105 @@ fn merge_model(profile: &mut ProviderProfile, live: LiveModel) {
     }
 }
 
-impl LlmClient {
+fn worker_error(error: tokio::task::JoinError) -> ProviderStoreError {
+    ProviderStoreError::Worker(error.to_string())
+}
+
+impl ProviderSyncOperation {
+    /// Fetch every page from the provider using only owned state.
+    ///
+    /// Filesystem reads needed to validate the snapshot run on Tokio's blocking
+    /// pool. This future owns all inputs and does not borrow the client.
+    pub async fn fetch(self) -> Result<ProviderSyncResult, ProviderStoreError> {
+        let directory_path = self.directory_path.clone();
+        let base_profiles = self.base_profiles.clone();
+        let locally_removed_profiles = self.locally_removed_profiles.clone();
+        let profile_name = self.profile_name.clone();
+        let source_profile = self.source_profile.clone();
+        let current_profile = tokio::task::spawn_blocking(move || {
+            let saved = read_locked(&directory_path)?;
+            let profile = profiles_from_saved(&base_profiles, &saved, &locally_removed_profiles)
+                .into_iter()
+                .find(|profile| profile.profile_name == profile_name)
+                .ok_or_else(|| ProviderStoreError::UnknownProfile(profile_name.clone()))?;
+            if !same_profile_config(&profile, &source_profile) {
+                return Err(ProviderStoreError::ProfileChanged(profile_name));
+            }
+            Ok(profile)
+        })
+        .await
+        .map_err(worker_error)??;
+
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        let mut live = Vec::new();
+        let mut incompatible_models = BTreeSet::new();
+        let mut explicitly_compatible_models = BTreeSet::new();
+        for _ in 0..MAX_PAGES {
+            let mut request = self
+                .directory
+                .list_request(&current_profile, cursor.as_deref());
+            if current_profile.auth != AuthStrategy::None {
+                let authenticator = self.authenticator.as_ref().ok_or_else(|| {
+                    ProviderStoreError::Build(BuildError::MissingAuthenticator {
+                        profile_name: self.profile_name.clone(),
+                        strategy: current_profile.auth,
+                    })
+                })?;
+                authenticator
+                    .apply(&mut request, &current_profile, self.credential.as_ref())
+                    .await?;
+            }
+            let response = self.http.execute(request).await?;
+            let decoded = self.directory.decode_page_with_exclusions(&response)?;
+            live.extend(decoded.page.models);
+            incompatible_models.extend(decoded.incompatible_model_ids);
+            explicitly_compatible_models.extend(decoded.explicitly_compatible_model_ids);
+            match decoded.page.next_cursor {
+                None => {
+                    return Ok(ProviderSyncResult {
+                        directory_path: self.directory_path,
+                        config_generation: self.config_generation,
+                        profile_name: self.profile_name,
+                        source_profile: self.source_profile,
+                        live,
+                        incompatible_models: incompatible_models.into_iter().collect(),
+                        explicitly_compatible_models: explicitly_compatible_models
+                            .into_iter()
+                            .collect(),
+                    });
+                }
+                Some(next) if seen.insert(next.clone()) => cursor = Some(next),
+                Some(_) => return Err(ProviderStoreError::InvalidPagination),
+            }
+        }
+        Err(ProviderStoreError::InvalidPagination)
+    }
+}
+
+impl ProviderStore {
+    pub(super) fn new(base_profiles: Vec<ProviderProfile>) -> Self {
+        Self {
+            base_profiles,
+            locally_removed_profiles: BTreeSet::new(),
+            model_sources: BTreeMap::new(),
+            invalidated_model_sources: BTreeSet::new(),
+            persisted_profiles: Vec::new(),
+            config_dir: None,
+            config_generation: 0,
+            deleted_profiles: BTreeSet::new(),
+            tracked_models: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn tracks(&self, profile: &ProviderProfile, model: &ModelProfile) -> bool {
+        self.config_dir.is_none()
+            || self
+                .tracked_models
+                .get(profile.provider_id.as_str())
+                .is_some_and(|ids| ids.contains(&model.request_model))
+    }
+
     fn remember_models(&mut self, profile: ProviderProfile) {
         if self.invalidated_model_sources.remove(&profile.profile_name) {
             self.model_sources
@@ -238,27 +499,18 @@ impl LlmClient {
             .insert(profile.profile_name.clone(), profile);
     }
 
-    fn profiles_from_saved(
-        &self,
-        saved: &SavedProviders,
-        locally_removed: &BTreeSet<String>,
-    ) -> Vec<ProviderProfile> {
-        let mut profiles: Vec<_> = self
-            .base_profiles
-            .iter()
-            .filter(|p| !locally_removed.contains(&p.profile_name))
-            .cloned()
-            .collect();
-        for profile in &saved.providers {
-            replace(&mut profiles, profile.clone());
-        }
-        profiles.retain(|p| !saved.deleted_profiles.contains(&p.profile_name));
-        profiles
+    fn profiles_from_saved(&self, saved: &SavedProviders) -> Vec<ProviderProfile> {
+        profiles_from_saved(&self.base_profiles, saved, &self.locally_removed_profiles)
     }
 
-    fn install_saved(&mut self, saved: SavedProviders, profiles: Vec<ProviderProfile>) {
+    fn install_saved(
+        &mut self,
+        execution_profiles: &mut Vec<ProviderProfile>,
+        saved: SavedProviders,
+        profiles: Vec<ProviderProfile>,
+    ) {
         self.persisted_profiles = filtered_profiles(&saved);
-        self.profiles = profiles;
+        *execution_profiles = profiles;
         self.deleted_profiles = saved.deleted_profiles;
         self.tracked_models = saved.tracked_models;
     }
@@ -266,6 +518,12 @@ impl LlmClient {
     /// Apply one change to the latest on-disk state while other clients wait.
     fn update_saved<T>(
         &mut self,
+        execution_profiles: &mut Vec<ProviderProfile>,
+        codecs: &BTreeMap<
+            lingxi_agent_api::protocol::ProtocolFamily,
+            std::sync::Arc<dyn crate::codecs::WireCodec>,
+        >,
+        authenticators: &BTreeMap<AuthStrategy, std::sync::Arc<dyn Authenticator>>,
         change: impl FnOnce(
             &mut SavedProviders,
             &mut Vec<ProviderProfile>,
@@ -275,40 +533,58 @@ impl LlmClient {
             .config_dir
             .as_ref()
             .ok_or(ProviderStoreError::NotConfigured)?;
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(dir.join(".providers.json.lock"))?;
-        lock.lock()?;
+        let _lock = store_lock(dir)?;
         let mut saved = read(dir)?;
-        let names: BTreeSet<_> = self
-            .persisted_profiles
-            .iter()
-            .chain(saved.providers.iter())
-            .map(|profile| profile.profile_name.as_str())
-            .collect();
-        let changed_profiles: Vec<_> = names
-            .into_iter()
-            .filter(|name| {
-                self.persisted_profiles
-                    .iter()
-                    .find(|p| p.profile_name == *name)
-                    != saved.providers.iter().find(|p| p.profile_name == *name)
-            })
-            .map(str::to_owned)
-            .collect();
-        let mut profiles = self.profiles_from_saved(&saved, &self.locally_removed_profiles);
+        let changed_profiles = changed_profile_names(&self.persisted_profiles, &saved);
+        let mut profiles = self.profiles_from_saved(&saved);
         let result = change(&mut saved, &mut profiles)?;
-        validate_profiles(&profiles, &self.codecs, &self.authenticators)?;
+        validate_profiles(&profiles, codecs, authenticators)?;
         write(dir, &saved)?;
         for name in changed_profiles {
             self.model_sources.remove(&name);
             self.invalidated_model_sources.insert(name);
         }
-        self.install_saved(saved, profiles);
+        self.install_saved(execution_profiles, saved, profiles);
         Ok(result)
+    }
+}
+
+impl LlmClient {
+    fn retain_account_sources_for_unchanged_profiles(&mut self, previous: &[ProviderProfile]) {
+        let unchanged: BTreeSet<_> = self
+            .profiles
+            .iter()
+            .filter(|profile| {
+                previous.iter().any(|old| {
+                    old.profile_name == profile.profile_name && same_profile_config(old, profile)
+                })
+            })
+            .map(|profile| profile.profile_name.as_str())
+            .collect();
+        self.profile_account_sources
+            .retain(|(name, _), _| unchanged.contains(name.as_str()));
+    }
+
+    fn update_saved<T>(
+        &mut self,
+        change: impl FnOnce(
+            &mut SavedProviders,
+            &mut Vec<ProviderProfile>,
+        ) -> Result<T, ProviderStoreError>,
+    ) -> Result<T, ProviderStoreError> {
+        let previous = self.profiles.clone();
+        let result = self.store.update_saved(
+            &mut self.profiles,
+            &self.codecs,
+            &self.authenticators,
+            change,
+        )?;
+        self.retain_account_sources_for_unchanged_profiles(&previous);
+        Ok(result)
+    }
+
+    fn remember_models(&mut self, profile: ProviderProfile) {
+        self.store.remember_models(profile);
     }
 
     /// Set the local configuration directory and load its saved profiles.
@@ -318,13 +594,26 @@ impl LlmClient {
         fs::create_dir_all(dir)?;
         let dir = dir.canonicalize()?;
         let saved = read(&dir)?;
-        let candidate = self.profiles_from_saved(&saved, &BTreeSet::new());
+        let candidate = profiles_from_saved(&self.store.base_profiles, &saved, &BTreeSet::new());
         validate_profiles(&candidate, &self.codecs, &self.authenticators)?;
-        self.install_saved(saved, candidate);
-        self.locally_removed_profiles.clear();
-        self.model_sources.clear();
-        self.invalidated_model_sources.clear();
-        self.config_dir = Some(dir);
+        let previous = self.profiles.clone();
+        let switched_directory = self
+            .store
+            .config_dir
+            .as_ref()
+            .is_some_and(|current| current != &dir);
+        self.store
+            .install_saved(&mut self.profiles, saved, candidate);
+        if switched_directory {
+            self.profile_account_sources.clear();
+        } else {
+            self.retain_account_sources_for_unchanged_profiles(&previous);
+        }
+        self.store.locally_removed_profiles.clear();
+        self.store.model_sources.clear();
+        self.store.invalidated_model_sources.clear();
+        self.store.config_dir = Some(dir);
+        self.store.config_generation = self.store.config_generation.wrapping_add(1);
         Ok(())
     }
 
@@ -333,14 +622,17 @@ impl LlmClient {
         let name = profile.profile_name.clone();
         let source = profile.clone();
         self.update_saved(|saved, profiles| {
+            saved.incompatible_models.remove(&name);
             replace(profiles, profile.clone());
             replace(&mut saved.providers, profile);
             saved.deleted_profiles.remove(&name);
             Ok(())
         })?;
-        self.locally_removed_profiles.remove(&name);
-        self.invalidated_model_sources.remove(&name);
-        self.model_sources.insert(name, source);
+        self.store.locally_removed_profiles.remove(&name);
+        self.store.invalidated_model_sources.remove(&name);
+        self.profile_account_sources
+            .retain(|(profile_name, _), _| profile_name != &name);
+        self.store.model_sources.insert(name, source);
         Ok(())
     }
 
@@ -351,9 +643,25 @@ impl LlmClient {
             .find(|p| p.profile_name == profile_name)
     }
 
+    /// Bind a signed-in account source after a profile was replaced or loaded.
+    /// A changed profile drops its old binding to prevent account mix-ups.
+    pub fn register_profile_account_source(
+        &mut self,
+        profile_name: &str,
+        identity: super::account::AccountIdentity,
+        source: std::sync::Arc<dyn super::account::AccountUsageSource>,
+    ) -> Result<(), ProviderStoreError> {
+        if self.provider(profile_name).is_none() {
+            return Err(ProviderStoreError::UnknownProfile(profile_name.to_owned()));
+        }
+        self.profile_account_sources
+            .insert((profile_name.to_owned(), identity), source);
+        Ok(())
+    }
+
     /// Names of built-in profiles currently soft-deleted in this directory.
     pub fn deleted_builtin_profiles(&self) -> &BTreeSet<String> {
-        &self.deleted_profiles
+        &self.store.deleted_profiles
     }
 
     /// Remove one account profile. Built-ins are soft-deleted so they do not
@@ -363,6 +671,7 @@ impl LlmClient {
             if !profiles.iter().any(|p| p.profile_name == profile_name) {
                 return Err(ProviderStoreError::UnknownProfile(profile_name.to_owned()));
             }
+            saved.incompatible_models.remove(profile_name);
             profiles.retain(|p| p.profile_name != profile_name);
             saved.providers.retain(|p| p.profile_name != profile_name);
             if crate::presets::is_builtin_profile(profile_name) {
@@ -373,15 +682,19 @@ impl LlmClient {
             Ok(())
         })?;
         if self
+            .store
             .base_profiles
             .iter()
             .any(|p| p.profile_name == profile_name)
         {
-            self.locally_removed_profiles
+            self.store
+                .locally_removed_profiles
                 .insert(profile_name.to_owned());
         }
-        self.model_sources.remove(profile_name);
-        self.invalidated_model_sources.remove(profile_name);
+        self.store.model_sources.remove(profile_name);
+        self.store.invalidated_model_sources.remove(profile_name);
+        self.profile_account_sources
+            .retain(|(name, _), _| name != profile_name);
         Ok(())
     }
 
@@ -396,14 +709,19 @@ impl LlmClient {
             .ok_or_else(|| ProviderStoreError::UnknownProfile(profile_name.to_owned()))?;
         let source = preset.clone();
         self.update_saved(|saved, profiles| {
+            saved.incompatible_models.remove(profile_name);
             replace(profiles, preset.clone());
             replace(&mut saved.providers, preset);
             saved.deleted_profiles.remove(profile_name);
             Ok(())
         })?;
-        self.locally_removed_profiles.remove(profile_name);
-        self.invalidated_model_sources.remove(profile_name);
-        self.model_sources.insert(profile_name.to_owned(), source);
+        self.store.locally_removed_profiles.remove(profile_name);
+        self.store.invalidated_model_sources.remove(profile_name);
+        self.profile_account_sources
+            .retain(|(name, _), _| name != profile_name);
+        self.store
+            .model_sources
+            .insert(profile_name.to_owned(), source);
         Ok(())
     }
 
@@ -415,14 +733,16 @@ impl LlmClient {
         request_models: impl IntoIterator<Item = String>,
     ) -> Result<(), ProviderStoreError> {
         let models: BTreeSet<String> = request_models.into_iter().collect();
-        let expected_profiles = self.persisted_profiles.clone();
+        let expected_profiles = self.store.persisted_profiles.clone();
         let sources: BTreeMap<_, _> = self
+            .store
             .base_profiles
             .iter()
-            .chain(self.model_sources.values())
+            .chain(self.store.model_sources.values())
             .filter(|profile| {
                 profile.provider_id.as_str() == provider_id
                     && !self
+                        .store
                         .invalidated_model_sources
                         .contains(&profile.profile_name)
             })
@@ -454,8 +774,10 @@ impl LlmClient {
                 if !same_profile_config(profile, source) {
                     continue;
                 }
+                let incompatible = saved.incompatible_models.get(&profile.profile_name);
                 for model in &source.models {
                     if newly_tracked.contains(&model.request_model)
+                        && !incompatible.is_some_and(|ids| ids.contains(&model.request_model))
                         && !profile
                             .models
                             .iter()
@@ -501,7 +823,7 @@ impl LlmClient {
 
     /// Request-model IDs currently tracked for a provider.
     pub fn tracked_models(&self, provider_id: &str) -> Option<&BTreeSet<String>> {
-        self.tracked_models.get(provider_id)
+        self.store.tracked_models.get(provider_id)
     }
 
     /// Change whether one account's model appears in `models()` listings.
@@ -535,81 +857,185 @@ impl LlmClient {
         Ok(())
     }
 
+    /// Prepare an owned directory fetch from the current profile snapshot.
+    ///
+    /// This method performs no filesystem access and returns no borrow of the
+    /// client. The resulting operation validates the snapshot on Tokio's
+    /// blocking pool before its first network request.
+    pub fn prepare_provider_sync(
+        &self,
+        profile_name: &str,
+        credential: Option<&Secret<String>>,
+    ) -> Result<ProviderSyncOperation, ProviderStoreError> {
+        let directory_path = self
+            .store
+            .config_dir
+            .clone()
+            .ok_or(ProviderStoreError::NotConfigured)?;
+        let profile = self
+            .provider(profile_name)
+            .cloned()
+            .ok_or_else(|| ProviderStoreError::UnknownProfile(profile_name.to_owned()))?;
+        let directory = self
+            .directory_for(&profile)
+            .ok_or_else(|| ProviderStoreError::NoDirectory(profile_name.to_owned()))?;
+        let authenticator = if profile.auth == AuthStrategy::None {
+            None
+        } else {
+            Some(
+                self.authenticators
+                    .get(&profile.auth)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ProviderStoreError::Build(BuildError::MissingAuthenticator {
+                            profile_name: profile_name.to_owned(),
+                            strategy: profile.auth,
+                        })
+                    })?,
+            )
+        };
+        Ok(ProviderSyncOperation {
+            directory_path,
+            config_generation: self.store.config_generation,
+            profile_name: profile_name.to_owned(),
+            source_profile: profile,
+            base_profiles: self.store.base_profiles.clone(),
+            locally_removed_profiles: self.store.locally_removed_profiles.clone(),
+            directory,
+            authenticator,
+            http: self.http.clone(),
+            credential: credential.cloned(),
+        })
+    }
+
+    /// Apply a fetched directory after checking it against current client and
+    /// locked on-disk state. Filesystem work runs on Tokio's blocking pool.
+    ///
+    /// The worker never mutates this client. A cancellation flag is checked
+    /// before the file-write phase begins. If this future is dropped after
+    /// that phase starts, the blocking worker may finish its atomic rename,
+    /// leaving the durable file updated while this in-memory snapshot remains
+    /// unchanged. Call [`Self::set_config_dir`] again or rebuild the client to
+    /// reload that state.
+    pub async fn apply_provider_sync(
+        &mut self,
+        result: ProviderSyncResult,
+    ) -> Result<usize, ProviderStoreError> {
+        let profile_name = result.profile_name.clone();
+        let current_dir = self
+            .store
+            .config_dir
+            .as_ref()
+            .ok_or_else(|| ProviderStoreError::ProfileChanged(profile_name.clone()))?;
+        if current_dir != &result.directory_path
+            || self.store.config_generation != result.config_generation
+            || self
+                .provider(&profile_name)
+                .is_none_or(|profile| !same_profile_config(profile, &result.source_profile))
+        {
+            return Err(ProviderStoreError::ProfileChanged(profile_name));
+        }
+
+        let directory_path = result.directory_path;
+        let worker_profile_name = profile_name.clone();
+        let source_profile = result.source_profile;
+        let live = result.live;
+        let incompatible_models = result.incompatible_models;
+        let explicitly_compatible_models = result.explicitly_compatible_models;
+        let base_profiles = self.store.base_profiles.clone();
+        let locally_removed_profiles = self.store.locally_removed_profiles.clone();
+        let persisted_profiles = self.store.persisted_profiles.clone();
+        let codecs = self.codecs.clone();
+        let authenticators = self.authenticators.clone();
+        let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _cancel_on_drop = CancelCommitOnDrop(cancellation.clone());
+
+        let commit = tokio::task::spawn_blocking(move || {
+            let _lock = store_lock(&directory_path)?;
+            if cancellation.load(Ordering::Acquire) {
+                return Err(ProviderStoreError::Worker(
+                    "provider sync was cancelled before commit".to_owned(),
+                ));
+            }
+            let mut saved = read(&directory_path)?;
+            let changed_profiles = changed_profile_names(&persisted_profiles, &saved);
+            let mut profiles =
+                profiles_from_saved(&base_profiles, &saved, &locally_removed_profiles);
+            let profile = profiles
+                .iter_mut()
+                .find(|profile| profile.profile_name == worker_profile_name)
+                .ok_or_else(|| ProviderStoreError::UnknownProfile(worker_profile_name.clone()))?;
+            if !same_profile_config(profile, &source_profile) {
+                return Err(ProviderStoreError::ProfileChanged(worker_profile_name));
+            }
+            let incompatible = saved
+                .incompatible_models
+                .entry(worker_profile_name.clone())
+                .or_default();
+            incompatible.extend(incompatible_models);
+            incompatible.retain(|model| !explicitly_compatible_models.contains(model));
+            let incompatible = incompatible.clone();
+            if incompatible.is_empty() {
+                saved.incompatible_models.remove(&worker_profile_name);
+            }
+            profile
+                .models
+                .retain(|model| !incompatible.contains(&model.request_model));
+            let tracked = saved.tracked_models.get(profile.provider_id.as_str());
+            let mut count = 0;
+            for model in live {
+                if tracked.is_some_and(|ids| ids.contains(&model.request_model))
+                    && !incompatible.contains(&model.request_model)
+                {
+                    merge_model(profile, model);
+                    count += 1;
+                }
+            }
+            replace(&mut saved.providers, profile.clone());
+            validate_profiles(&profiles, &codecs, &authenticators)?;
+            if cancellation.load(Ordering::Acquire) {
+                return Err(ProviderStoreError::Worker(
+                    "provider sync was cancelled before commit".to_owned(),
+                ));
+            }
+            write(&directory_path, &saved)?;
+            Ok(SyncCommit {
+                saved,
+                profiles,
+                changed_profiles,
+                count,
+            })
+        })
+        .await
+        .map_err(worker_error)??;
+
+        for changed in commit.changed_profiles {
+            self.store.model_sources.remove(&changed);
+            self.store.invalidated_model_sources.insert(changed);
+        }
+        let previous = self.profiles.clone();
+        self.store
+            .install_saved(&mut self.profiles, commit.saved, commit.profiles);
+        self.retain_account_sources_for_unchanged_profiles(&previous);
+        if let Some(profile) = self.provider(&profile_name).cloned() {
+            self.remember_models(profile);
+        }
+        Ok(commit.count)
+    }
+
     /// Refresh one account's model list with that account's own credential.
     /// Other accounts in the same connection group are untouched.
+    ///
+    /// For concurrent fetches or client mutations during network I/O, use
+    /// [`Self::prepare_provider_sync`], await [`ProviderSyncOperation::fetch`],
+    /// then call [`Self::apply_provider_sync`].
     pub async fn sync_provider(
         &mut self,
         profile_name: &str,
         credential: Option<&Secret<String>>,
     ) -> Result<usize, ProviderStoreError> {
-        if self.config_dir.is_none() {
-            return Err(ProviderStoreError::NotConfigured);
-        }
-        let dir = self
-            .config_dir
-            .as_ref()
-            .ok_or(ProviderStoreError::NotConfigured)?;
-        let current = read(dir)?;
-        let profile = self
-            .profiles_from_saved(&current, &self.locally_removed_profiles)
-            .into_iter()
-            .find(|p| p.profile_name == profile_name)
-            .ok_or_else(|| ProviderStoreError::UnknownProfile(profile_name.to_owned()))?;
-        let source_profile = profile.clone();
-        let directory = self
-            .directory_for(&profile)
-            .ok_or_else(|| ProviderStoreError::NoDirectory(profile_name.to_owned()))?;
-        let mut cursor = None;
-        let mut seen = BTreeSet::new();
-        let mut live = Vec::new();
-        for _ in 0..MAX_PAGES {
-            let mut request = directory.list_request(&profile, cursor.as_deref());
-            if profile.auth != AuthStrategy::None {
-                let auth = self.authenticators.get(&profile.auth).ok_or_else(|| {
-                    ProviderStoreError::Build(BuildError::MissingAuthenticator {
-                        profile_name: profile_name.to_owned(),
-                        strategy: profile.auth,
-                    })
-                })?;
-                auth.apply(&mut request, &profile, credential).await?;
-            }
-            let response = self.http.execute(request).await?;
-            let page = directory.decode_page(&response)?;
-            live.extend(page.models);
-            match page.next_cursor {
-                None => {
-                    let count = self.update_saved(|saved, profiles| {
-                        let profile = profiles
-                            .iter_mut()
-                            .find(|p| p.profile_name == profile_name)
-                            .ok_or_else(|| {
-                                ProviderStoreError::UnknownProfile(profile_name.to_owned())
-                            })?;
-                        if !same_profile_config(profile, &source_profile) {
-                            return Err(ProviderStoreError::ProfileChanged(
-                                profile_name.to_owned(),
-                            ));
-                        }
-                        let tracked = saved.tracked_models.get(profile.provider_id.as_str());
-                        let mut count = 0;
-                        for model in live {
-                            if tracked.is_some_and(|ids| ids.contains(&model.request_model)) {
-                                merge_model(profile, model);
-                                count += 1;
-                            }
-                        }
-                        replace(&mut saved.providers, profile.clone());
-                        Ok(count)
-                    })?;
-                    if let Some(profile) = self.provider(profile_name).cloned() {
-                        self.remember_models(profile);
-                    }
-                    return Ok(count);
-                }
-                Some(next) if seen.insert(next.clone()) => cursor = Some(next),
-                Some(_) => return Err(ProviderStoreError::InvalidPagination),
-            }
-        }
-        Err(ProviderStoreError::InvalidPagination)
+        let operation = self.prepare_provider_sync(profile_name, credential)?;
+        let result = operation.fetch().await?;
+        self.apply_provider_sync(result).await
     }
 }

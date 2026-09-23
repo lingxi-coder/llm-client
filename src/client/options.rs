@@ -24,6 +24,11 @@ pub struct RequestOptions {
     /// Credentials for named failover profiles. The primary credential is
     /// never sent to another connection unless supplied here for that profile.
     pub fallback_credentials: BTreeMap<String, Secret<String>>,
+    /// Stable, non-secret identity of the account used for provider file
+    /// caching. Supply the same value only for the same provider account; when
+    /// absent, uploaded files are scoped to the current request and are not
+    /// reused across calls.
+    pub file_account_scope: Option<String>,
     /// Total request deadline, including response body reads. `complete()`
     /// defaults to 120 seconds when omitted; `stream()` has no default total
     /// deadline and relies on the transport's idle-read timeout.

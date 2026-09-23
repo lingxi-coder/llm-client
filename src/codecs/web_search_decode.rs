@@ -214,14 +214,51 @@ pub(crate) fn with_usage(
     let mut metadata = search.map(|s| s.metadata).unwrap_or_else(|| json!({}));
     let mut counters = serde_json::Map::new();
     if let Some(usage) = usage {
-        for key in ["server_tool_use", "server_side_tool_usage"] {
-            if let Some(value) = usage.get(key).filter(|v| !v.is_null()) {
-                counters.insert(key.to_owned(), value.clone());
-            }
+        if let Some(value) = usage.pointer("/server_tool_use").filter(|value| {
+            value
+                .get("web_search_requests")
+                .is_some_and(|count| count.as_u64().is_some())
+        }) {
+            // Preserve all provider counters (for example web_fetch_requests)
+            // while only exposing this metadata when an actual web search ran.
+            counters.insert("server_tool_use".into(), value.clone());
+        }
+        if let Some(value) = usage.get("server_side_tool_usage").filter(|value| {
+            value.get("web_search").is_some_and(|v| !v.is_null())
+                || value
+                    .get("web_search_requests")
+                    .is_some_and(|v| v.as_u64().is_some())
+                || value
+                    .get("web_search_calls")
+                    .is_some_and(|v| v.as_u64().is_some())
+        }) {
+            counters.insert("server_side_tool_usage".into(), value.clone());
+        }
+        if let Some(value) = usage
+            .pointer("/x_tools/web_search")
+            .filter(|value| !value.is_null())
+        {
+            counters.insert("x_tools".into(), json!({"web_search":value}));
         }
     }
     if !counters.is_empty() {
         metadata["usage"] = counters.into();
     }
     result(metadata)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_search_usage_does_not_claim_that_web_search_occurred() {
+        assert!(with_usage(
+            None,
+            Some(&json!({
+                "x_tools":{"file_search":{"count":1}}
+            }))
+        )
+        .is_none());
+    }
 }

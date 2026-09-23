@@ -40,6 +40,7 @@ macro_rules! string_id {
     };
 }
 
+#[cfg(feature = "agent")]
 macro_rules! u64_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
@@ -69,37 +70,47 @@ string_id! {
     ResponseId
 }
 string_id! {
-    /// A (sub)agent. `None` in an event means the main agent.
-    AgentId
-}
-string_id! { SessionId }
-string_id! { PluginId }
-string_id! {
     /// Open string: any `ProviderProfile` may declare a new one (§7.2).
     ProviderId
 }
+
+#[cfg(feature = "agent")]
+string_id! {
+    /// A (sub)agent. `None` in an event means the main agent.
+    AgentId
+}
+#[cfg(feature = "agent")]
+string_id! { SessionId }
+#[cfg(feature = "agent")]
+string_id! { PluginId }
+#[cfg(feature = "agent")]
 string_id! {
     /// A work mode name (`chat`, `code`, `work`, `plan`, or user-defined).
     ModeName
 }
 
+#[cfg(feature = "agent")]
 u64_id! {
     /// One turn of the loop. Completion events carry the turn they answer;
     /// a mismatch is a late result and is dropped (§13 rule 1).
     TurnId
 }
+#[cfg(feature = "agent")]
 u64_id! {
     /// One issued effect. Every completion event names the effect it answers.
     EffectId
 }
+#[cfg(feature = "agent")]
 u64_id! {
     /// One tool batch inside the executor.
     BatchId
 }
+#[cfg(feature = "agent")]
 u64_id! {
     /// One permission question put to the frontend. At most one is in flight.
     AskId
 }
+#[cfg(feature = "agent")]
 u64_id! {
     /// One compaction.
     CompId

@@ -16,6 +16,8 @@ extra = { web_search = "gemini" }
 
 [[model]]
 id = "deep-research-max-preview-04-2026"
+# Deep Research agents use the Interactions API, not generateContent.
+supported_generation_methods = []
 name = "Deep Research Max Preview (Apr-21-2026)"
 description = "Maximum-comprehensiveness agentic researcher for multi-step investigation, synthesis, and cited reports"
 family = "gemini-pro"
@@ -40,6 +42,7 @@ source = "models.dev"
 
 [[model]]
 id = "deep-research-preview-04-2026"
+supported_generation_methods = []
 name = "Deep Research Preview (Apr-21-2026)"
 description = "Agentic model for autonomous multi-step research, synthesis, and cited reports"
 family = "gemini-pro"
@@ -423,6 +426,7 @@ source = "models.dev"
 
 [[model]]
 id = "gemini-3.1-flash-live-preview"
+supported_generation_methods = []
 name = "Gemini 3.1 Flash Live Preview"
 description = "High-quality, low-latency Live API model for real-time dialogue and voice-first AI applications"
 family = "gemini-flash"
@@ -570,6 +574,7 @@ source = "models.dev"
 
 [[model]]
 id = "gemini-3.5-live-translate-preview"
+supported_generation_methods = []
 name = "Gemini 3.5 Live Translate Preview"
 description = "Low-latency audio-to-audio model for real-time speech translation across 70+ languages"
 family = "gemini-pro"
@@ -646,6 +651,7 @@ id = "gemini-embedding-001"
 name = "Gemini Embedding 001"
 description = "Embedding model for semantic search, retrieval, clustering, and ranking pipelines"
 family = "gemini"
+supported_generation_methods = ["embedContent"]
 knowledge_cutoff = "2025-05"
 release_date = "2025-05-20"
 last_updated = "2025-05-20"
@@ -669,6 +675,7 @@ id = "gemini-embedding-2"
 name = "Gemini Embedding 2"
 description = "Multimodal embedding model mapping text, images, video, audio, and PDFs into a unified embedding space"
 family = "gemini"
+supported_generation_methods = ["embedContent"]
 knowledge_cutoff = "2025-11"
 release_date = "2026-04-22"
 last_updated = "2026-04-22"
@@ -797,6 +804,8 @@ open_weights = true
 
 [[model]]
 id = "lyria-3-clip-preview"
+supported_generation_methods = []
+billing_mode = "unknown"
 name = "Lyria 3 Clip Preview"
 description = "Music generation model for short 30-second clips, loops, and previews from text or image prompts"
 family = "lyria"
@@ -813,13 +822,10 @@ temperature = true
 attachment = true
 open_weights = false
 
-[model.pricing]
-input_per_million = 0
-output_per_million = 0
-source = "models.dev"
-
 [[model]]
 id = "lyria-3-pro-preview"
+supported_generation_methods = []
+billing_mode = "unknown"
 name = "Lyria 3 Pro Preview"
 description = "Music generation model for full-length songs from text or images with vocals and structure"
 family = "lyria"
@@ -836,13 +842,9 @@ temperature = true
 attachment = true
 open_weights = false
 
-[model.pricing]
-input_per_million = 0
-output_per_million = 0
-source = "models.dev"
-
 [[model]]
 id = "veo-3.1-fast-generate-preview"
+supported_generation_methods = ["predictLongRunning"]
 name = "Veo 3.1 fast"
 description = "Video model for prompt-guided generation, editing, and motion workflows"
 family = "veo"
@@ -860,6 +862,7 @@ open_weights = false
 
 [[model]]
 id = "veo-3.1-generate-preview"
+supported_generation_methods = ["predictLongRunning"]
 name = "Veo 3.1"
 description = "Video model for prompt-guided generation, editing, and motion workflows"
 family = "veo"
@@ -877,6 +880,7 @@ open_weights = false
 
 [[model]]
 id = "veo-3.1-lite-generate-preview"
+supported_generation_methods = ["predictLongRunning"]
 name = "Veo 3.1 lite"
 description = "Video model for prompt-guided generation, editing, and motion workflows"
 family = "veo"

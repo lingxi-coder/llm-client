@@ -49,8 +49,17 @@ impl ModelDirectory for AnthropicMessagesDirectory {
         // `has_more` is what ends the walk; `last_id` alone is sent on the
         // final page too, so following it would loop forever.
         let next_cursor = match body.get("has_more").and_then(Value::as_bool) {
-            Some(true) => cursor(&body, "last_id"),
-            _ => None,
+            Some(true) => Some(cursor(&body, "last_id").ok_or_else(|| {
+                LlmError::ProviderInternal {
+                    message: "the Anthropic model directory says there is more data but has no usable \"last_id\" cursor".to_owned(),
+                }
+            })?),
+            Some(false) => None,
+            None => {
+                return Err(LlmError::ProviderInternal {
+                    message: "the Anthropic model directory page has no boolean \"has_more\" value".to_owned(),
+                });
+            }
         };
         Ok(ModelPage {
             models,

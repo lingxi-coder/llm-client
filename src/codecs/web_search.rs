@@ -30,10 +30,10 @@ pub(crate) fn apply(
         .ok_or_else(|| unsupported("no extra.web_search adapter declared"))?;
     use ProtocolFamily::*;
     let compatible = match adapter {
-        "openai_responses" | "xai" | "kimi" => profile.protocol == OpenAiResponses,
+        "openai_responses" | "xai" | "kimi" | "qwen" => profile.protocol == OpenAiResponses,
         "deepseek" => profile.protocol == AnthropicMessages,
         "openai_chat" | "openrouter" | "glm" => profile.protocol == OpenAiChat,
-        "anthropic" => matches!(
+        "anthropic" | "minimax" => matches!(
             profile.protocol,
             AnthropicMessages | FoundryClaude | VertexClaude
         ),
@@ -67,12 +67,20 @@ pub(crate) fn apply(
             "max_uses is supported only by the anthropic adapter",
         ));
     }
+    if adapter == "minimax"
+        && (!search.allowed_domains.is_empty() || !search.blocked_domains.is_empty())
+    {
+        return Err(unsupported(
+            "MiniMax web search does not support domain filters",
+        ));
+    }
     if matches!(adapter, "gemini" | "openai_chat" | "deepseek")
         && (!search.allowed_domains.is_empty() || !search.blocked_domains.is_empty())
     {
         return Err(unsupported("this adapter does not support domain filters"));
     }
-    if matches!(adapter, "openai_responses" | "kimi") && !search.blocked_domains.is_empty() {
+    if matches!(adapter, "openai_responses" | "kimi" | "qwen") && !search.blocked_domains.is_empty()
+    {
         return Err(unsupported("this adapter supports allowed_domains only"));
     }
     if adapter == "glm" && (!search.blocked_domains.is_empty() || search.allowed_domains.len() > 1)
@@ -92,7 +100,8 @@ pub(crate) fn apply(
             "xAI web search accepts at most five domain filters",
         ));
     }
-    if matches!(adapter, "openai_responses" | "kimi") && search.allowed_domains.len() > 100 {
+    if matches!(adapter, "openai_responses" | "kimi" | "qwen") && search.allowed_domains.len() > 100
+    {
         return Err(invalid(
             "this web search adapter accepts at most 100 allowed domains",
         ));
@@ -101,22 +110,24 @@ pub(crate) fn apply(
     // Chat search models always search. Do not claim to honor 'none' there.
     if matches!(
         adapter,
-        "gemini" | "openai_chat" | "glm" | "kimi" | "deepseek"
+        "gemini" | "openai_chat" | "glm" | "kimi" | "qwen" | "deepseek"
     ) && !matches!(req.tool_choice, ToolChoice::Auto)
     {
         return Err(unsupported(
             "search requires automatic tool choice on this adapter",
         ));
     }
-    if matches!(adapter, "anthropic" | "openrouter" | "glm" | "deepseek")
-        && req.tools.iter().any(|tool| tool.name == "web_search")
+    if matches!(
+        adapter,
+        "anthropic" | "minimax" | "openrouter" | "glm" | "deepseek"
+    ) && req.tools.iter().any(|tool| tool.name == "web_search")
     {
         return Err(invalid(
             "a client tool named web_search conflicts with hosted search",
         ));
     }
     let tool = match adapter {
-        "openai_responses" | "xai" | "kimi" => {
+        "openai_responses" | "xai" | "kimi" | "qwen" => {
             if adapter == "kimi" {
                 if req.temperature.is_some() || req.thinking.is_some() {
                     return Err(unsupported("Kimi Responses search does not support temperature or a thinking token budget"));
@@ -132,7 +143,14 @@ pub(crate) fn apply(
             }
             tool
         }
-        "anthropic" | "deepseek" => {
+        "anthropic" | "deepseek" | "minimax" => {
+            if adapter == "minimax"
+                && !matches!(req.tool_choice, ToolChoice::Auto | ToolChoice::None)
+            {
+                return Err(unsupported(
+                    "MiniMax server search supports only automatic or disabled tool choice",
+                ));
+            }
             let mut tool = json!({"type": "web_search_20250305", "name": "web_search"});
             if let Some(max) = search.max_uses {
                 tool["max_uses"] = json!(max);
@@ -184,7 +202,7 @@ pub(crate) fn apply(
     // The encoders normally emit tool_choice only when client tools exist.
     // Hosted tools also need it, including explicit None to disable execution.
     if adapter != "gemini" && !body.contains_key("tool_choice") {
-        let choice = if matches!(adapter, "anthropic" | "deepseek") {
+        let choice = if matches!(adapter, "anthropic" | "deepseek" | "minimax") {
             match &req.tool_choice {
                 ToolChoice::Auto => json!({"type": "auto"}),
                 ToolChoice::None => json!({"type": "none"}),

@@ -23,6 +23,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             message: "OpenAI response has no choices".to_owned(),
         })?;
     let message = choice.get("message").unwrap_or(&Value::Null);
+    let refusal = message.get("refusal").and_then(Value::as_str);
 
     let mut content = Vec::new();
     if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
@@ -40,6 +41,12 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
                 thought_signature: None,
             });
         }
+    }
+    if let Some(text) = refusal.filter(|text| !text.is_empty()) {
+        content.push(ContentBlock::Text {
+            text: text.to_owned(),
+            thought_signature: None,
+        });
     }
     for call in message
         .get("tool_calls")
@@ -72,11 +79,15 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             crate::codecs::web_search_decode::chat_with_search(message, &body),
             body.get("usage"),
         ),
+        file_search: None,
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
         },
-        stop_reason: stop_reason(choice.get("finish_reason").and_then(Value::as_str)),
+        stop_reason: with_refusal_stop_reason(
+            stop_reason(choice.get("finish_reason").and_then(Value::as_str)),
+            refusal.is_some(),
+        ),
         usage: body.get("usage").map(usage).unwrap_or_default(),
         model: body
             .get("model")
@@ -195,6 +206,16 @@ pub fn stop_reason(finish: Option<&str>) -> StopReason {
     }
 }
 
+/// Refusal replaces an ordinary completed turn, while a more specific finish
+/// reason such as token exhaustion or a tool call remains authoritative.
+pub(super) fn with_refusal_stop_reason(stop: StopReason, saw_refusal: bool) -> StopReason {
+    if stop == StopReason::EndTurn && saw_refusal {
+        StopReason::Refusal
+    } else {
+        stop
+    }
+}
+
 /// OpenAI counts prompt/completion; cached reads live under
 /// `prompt_tokens_details`. A provider that omits them reports zero rather than
 /// failing: usage is telemetry, not correctness.
@@ -218,6 +239,7 @@ pub fn usage(u: &Value) -> Usage {
         output_tokens: n(u.get("completion_tokens")),
         cache_read_tokens: cache_read,
         cache_write_tokens: cache_write,
+        cache_write_1h_tokens: 0,
         reasoning_tokens: detail("completion_tokens_details", "reasoning_tokens"),
         // Only an aggregator knows what a call actually cost, because only it
         // knows which upstream served it. OpenAI itself sends no such field, so
@@ -227,6 +249,7 @@ pub fn usage(u: &Value) -> Usage {
             .get("cost")
             .and_then(Value::as_f64)
             .and_then(ReportedCost::from_usd),
+        server_tool_usage: None,
     }
 }
 

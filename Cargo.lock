@@ -499,6 +499,7 @@ dependencies = [
  "futures",
  "lingxi-agent-api",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "thiserror",

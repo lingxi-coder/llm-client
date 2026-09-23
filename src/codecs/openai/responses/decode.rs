@@ -24,11 +24,13 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     }
     let mut content = Vec::new();
     let mut saw_tool_call = false;
+    let mut saw_refusal = false;
     for item in body
         .get("output")
         .and_then(Value::as_array)
         .unwrap_or(&Vec::new())
     {
+        saw_refusal |= has_refusal(item);
         decode_item(item, &mut content, &mut saw_tool_call);
     }
     Ok(CompletionResponse {
@@ -36,6 +38,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             crate::codecs::web_search_decode::responses(&body),
             body.get("usage"),
         ),
+        file_search: crate::codecs::file_search_decode::responses(&body),
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
@@ -44,6 +47,8 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             stop_reason(&body)
         } else if saw_tool_call {
             StopReason::ToolUse
+        } else if saw_refusal {
+            StopReason::Refusal
         } else {
             stop_reason(&body)
         },
@@ -102,20 +107,35 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
             });
         }
         Some("reasoning") => {
-            if let Some(text) = item
-                .get("summary")
-                .and_then(Value::as_array)
-                .and_then(|s| s.first())
-                .and_then(|s| s.get("text"))
-                .and_then(Value::as_str)
-            {
-                out.push(ContentBlock::Thinking {
-                    text: text.to_owned(),
-                    signature: None,
-                });
+            if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+                for part in summary {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        out.push(ContentBlock::Thinking {
+                            text: text.to_owned(),
+                            signature: None,
+                        });
+                    }
+                }
             }
         }
         _ => {}
+    }
+}
+
+/// Refusal text remains excluded from answer content, but it still determines
+/// the result of a completed response.
+pub(super) fn has_refusal(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("refusal") => true,
+        Some("message") => item
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                parts
+                    .iter()
+                    .any(|part| part.get("type").and_then(Value::as_str) == Some("refusal"))
+            }),
+        _ => false,
     }
 }
 
@@ -160,9 +180,26 @@ pub fn usage(u: &Value) -> Usage {
         output_tokens: n("output_tokens"),
         cache_read_tokens: cache_read,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         reasoning_tokens: detail("output_tokens_details", "reasoning_tokens"),
         cost: None,
+        server_tool_usage: server_tool_usage(u),
     }
+}
+
+fn server_tool_usage(u: &Value) -> Option<lingxi_agent_api::protocol::ServerToolUsage> {
+    let web_search_requests = u
+        .pointer("/x_tools/web_search/count")
+        .and_then(Value::as_u64);
+    let file_search_requests = u
+        .pointer("/x_tools/file_search/count")
+        .and_then(Value::as_u64);
+    (web_search_requests.is_some() || file_search_requests.is_some()).then_some(
+        lingxi_agent_api::protocol::ServerToolUsage {
+            web_search_requests,
+            file_search_requests,
+        },
+    )
 }
 
 fn retry_after(resp: &HttpResponse) -> Option<Duration> {

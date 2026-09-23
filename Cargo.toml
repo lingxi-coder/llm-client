@@ -7,9 +7,10 @@ license.workspace = true
 description = "Provider-neutral LLM client with wire codecs, provider profiles, route resolution and failover."
 repository = "https://github.com/lingxi-coder/llm-client"
 readme = "README.md"
+exclude = [".omx/**"]
 
 [dependencies]
-lingxi-agent-api.workspace = true
+lingxi-agent-api = { workspace = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -17,6 +18,7 @@ async-trait.workspace = true
 futures.workspace = true
 bytes.workspace = true
 base64 = "0.22"
+ring = "0.17.14"
 toml.workspace = true
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 tokio = { version = "1", features = ["rt", "time"] }
@@ -37,7 +39,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/lingxi-coder/llm-client"
 
 [workspace.dependencies]
-lingxi-agent-api = { version = "0.1.0", path = "crates/agent-api" }
+lingxi-agent-api = { version = "0.1.0", path = "crates/agent-api", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"

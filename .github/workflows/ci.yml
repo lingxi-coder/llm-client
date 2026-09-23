@@ -16,6 +16,13 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt clippy
       - name: Test
         run: cargo test --workspace --locked
+      - name: Compile documentation examples as downstream consumer
+        run: cargo test --manifest-path tests/downstream-docs/Cargo.toml --doc --locked --offline --target-dir target
+      - name: Verify protocol-only feature surface
+        run: |
+          cargo check -p lingxi-agent-api --no-default-features --locked
+          cargo test -p lingxi-agent-api --no-default-features --locked
+          cargo check -p lingxi-llm-client --locked
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint

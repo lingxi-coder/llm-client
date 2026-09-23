@@ -31,6 +31,9 @@ pub struct OpenAiStreamDecoder {
     /// frames and needs a field-by-field fold.
     usage_raw: Option<Value>,
     stop: Option<StopReason>,
+    /// A refusal delta is text the caller needs to display and an outcome that
+    /// refines an otherwise ordinary `finish_reason: "stop"`.
+    saw_refusal: bool,
     done: bool,
     search: SearchStream,
 }
@@ -126,6 +129,20 @@ impl StreamDecoder for OpenAiStreamDecoder {
                     });
                 }
             }
+            if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+                self.saw_refusal = true;
+                if !refusal.is_empty() {
+                    let block = *self.text_block.get_or_insert_with(|| {
+                        let b = self.next_block;
+                        self.next_block += 1;
+                        b
+                    });
+                    out.push(StreamEvent::TextDelta {
+                        block,
+                        text: refusal.to_owned(),
+                    });
+                }
+            }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     self.tool_fragment(call, &mut out);
@@ -216,7 +233,10 @@ impl OpenAiStreamDecoder {
         }
         self.done = true;
         out.push(StreamEvent::End {
-            stop_reason: self.stop.clone().unwrap_or(StopReason::EndTurn),
+            stop_reason: decode::with_refusal_stop_reason(
+                self.stop.clone().unwrap_or(StopReason::EndTurn),
+                self.saw_refusal,
+            ),
             usage: self
                 .usage_raw
                 .as_ref()

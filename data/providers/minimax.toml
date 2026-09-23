@@ -1,0 +1,35 @@
+provider_id = "minimax"
+base_url = "https://api.minimaxi.com/anthropic"
+protocol = "anthropic_messages"
+model_list = "none"
+auth = "bearer"
+credential_env = "MINIMAX_CN_API_KEY"
+billing_mode = "per_token"
+display_name = "MiniMax China"
+description = "MiniMax Anthropic-compatible Messages API in China."
+console_url = "https://platform.minimaxi.com"
+api_key_url = "https://platform.minimaxi.com/user-center/basic-information/interface-key"
+docs_url = "https://platform.minimaxi.com/docs"
+connection = { group = "minimax-cn", connection_id = "messages", order = 0 }
+extra = { web_search = "minimax" }
+
+[[model]]
+id = "MiniMax-M2.7"
+name = "MiniMax M2.7"
+context_window = 1000000
+max_output = 204800
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+
+[[model]]
+id = "MiniMax-M3"
+name = "MiniMax M3"
+context_window = 1048576
+max_output = 524288
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true

@@ -1,0 +1,32 @@
+provider_id = "qwen"
+base_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+protocol = "open_ai_chat"
+auth = "bearer"
+credential_env = "DASHSCOPE_US_API_KEY"
+billing_mode = "per_token"
+display_name = "Qwen US Virginia"
+description = "Qwen models in the US (Virginia) region."
+console_url = "https://bailian.console.aliyun.com/"
+api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
+connection = { group = "qwen-us", connection_id = "chat", order = 0 }
+
+[[model]]
+id = "qwen3.8-flash"
+name = "Qwen3.8 Flash"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
+[[model]]
+id = "qwen3.8-max"
+name = "Qwen3.8 Max"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true

@@ -3,7 +3,10 @@
 //! difference is that `provider_id` is an open string (§7.2), so a new
 //! OpenAI-compatible provider is a settings entry, not a code change (gate 30).
 
-use crate::protocol::{ModelCapabilities, ProviderId, Secret};
+use crate::protocol::{
+    CapabilitySupport, ModelCapabilities, ModelCapability, ModelCapabilitySupport, ProviderId,
+    Secret,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -383,9 +386,20 @@ pub struct ModelProfile {
     /// Provider-published display metadata. Never participates in routing.
     #[serde(default)]
     pub metadata: ModelMetadata,
-    /// Capabilities used for preflight validation.
+    /// Legacy capability booleans exposed for caller-side preflight.
+    ///
+    /// These are advisory: codecs validate whether a request can be represented
+    /// by a wire protocol, while provider support is reported separately by
+    /// [`capability_support_for`](Self::capability_support_for). A `false`
+    /// value alone is not evidence that the provider rejects a capability.
     #[serde(default)]
     pub capabilities: ModelCapabilities,
+    /// Facts known about each capability. Absent metadata preserves the legacy
+    /// interpretation: `true` booleans are known supported, while `false`
+    /// booleans are unknown because older profiles did not distinguish an
+    /// omitted fact from an explicit negative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_support: Option<ModelCapabilitySupport>,
     /// Published prices for this model. Absent means unpriced, which is not
     /// the same as free: a cost estimate has to say it does not know.
     #[serde(default)]
@@ -406,6 +420,38 @@ pub struct ModelProfile {
 }
 
 impl ModelProfile {
+    /// Returns the best available support fact for one capability.
+    ///
+    /// Explicit `Supported` and `Unsupported` facts take precedence. An
+    /// unknown or omitted fact falls back to legacy booleans only for a
+    /// positive `true` value; a legacy `false` remains unknown. This method is
+    /// advisory metadata and does not itself reject a request.
+    #[must_use]
+    pub fn capability_support_for(&self, capability: ModelCapability) -> CapabilitySupport {
+        let explicit = self
+            .capability_support
+            .map(|support| support.get(capability))
+            .unwrap_or_default();
+        if explicit != CapabilitySupport::Unknown {
+            return explicit;
+        }
+
+        let legacy_supports = match capability {
+            ModelCapability::Vision => self.capabilities.vision,
+            ModelCapability::Documents => self.capabilities.documents,
+            ModelCapability::Tools => self.capabilities.tools,
+            ModelCapability::Reasoning => self.capabilities.reasoning,
+            ModelCapability::SignedReasoning => self.capabilities.signed_reasoning,
+            ModelCapability::Streaming => self.capabilities.streaming,
+            ModelCapability::StructuredOutput => self.capabilities.structured_output,
+        };
+        if legacy_supports {
+            CapabilitySupport::Supported
+        } else {
+            CapabilitySupport::Unknown
+        }
+    }
+
     /// How this model is billed on the given connection.
     #[must_use]
     pub fn billing_mode_on(&self, connection: &PricingConfig) -> BillingMode {

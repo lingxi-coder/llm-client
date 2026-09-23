@@ -65,12 +65,7 @@ impl StreamDecoder for GeminiStreamDecoder {
             self.usage_raw = Some(u.clone());
         }
 
-        if root
-            .get("promptFeedback")
-            .and_then(|feedback| feedback.get("blockReason"))
-            .and_then(Value::as_str)
-            .is_some_and(|reason| !reason.is_empty() && reason != "BLOCK_REASON_UNSPECIFIED")
-        {
+        if decode::prompt_feedback_is_blocking(&root) {
             self.stop = Some(StopReason::Refusal);
         }
 

@@ -10,7 +10,7 @@ use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAi
 use lingxi_llm_client::framing::eventstream::crc32;
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, GeminiCodec, LlmClientBuilder, PricingModelRef,
-    RequestOptions, ResolvedRoute, WireCodec,
+    RequestOptions, ResolvedRoute, VertexClaudeCodec, WireCodec,
 };
 use serde_json::{json, Value};
 
@@ -51,6 +51,7 @@ fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages,
@@ -332,6 +333,57 @@ fn a_function_call_is_named_once_and_its_arguments_stream_after() {
 }
 
 #[test]
+fn buffered_and_streamed_responses_preserve_all_reasoning_summary_parts() {
+    let summary = json!([
+        {"type": "summary_text", "text": "first"},
+        {"type": "summary_text", "text": "second"},
+    ]);
+    let response = lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "model": "wire-m",
+            "status": "completed",
+            "output": [{"type": "reasoning", "summary": summary}],
+        }))
+        .unwrap()
+        .into(),
+    };
+    let buffered = OpenAiResponsesCodec.decode_response(&response).unwrap();
+    let buffered_summary = buffered
+        .message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Thinking { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut events = Vec::new();
+    for frame in [
+        r#"{"type":"response.created","response":{"model":"wire-m"}}"#,
+        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"first"}"#,
+        r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"second"}"#,
+        r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}]}}"#,
+    ] {
+        events.extend(decoder.decode_frame(frame.as_bytes()).unwrap());
+    }
+    events.extend(decoder.finish().unwrap());
+    let streamed_summary = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::ReasoningDelta { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(buffered_summary, vec!["first", "second"]);
+    assert_eq!(buffered_summary, streamed_summary);
+}
+
+#[test]
 fn an_incomplete_function_call_retains_its_truncation_reason() {
     let response = lingxi_llm_client::HttpResponse {
         status: 200,
@@ -390,15 +442,116 @@ fn a_refusal_part_is_not_reported_as_the_answer() {
         .into(),
     };
     let decoded = OpenAiResponsesCodec.decode_response(&resp).unwrap();
-    assert_eq!(
-        decoded.message.content.len(),
-        1,
-        "only output_text parts carry model text"
+    assert!(
+        matches!(
+            decoded.message.content.as_slice(),
+            [ContentBlock::Text { text, .. }] if text == "here is what I can do"
+        ),
+        "only output_text parts carry model text: {:?}",
+        decoded.message.content
     );
     assert_eq!(
         decoded.response_id.as_ref().map(ResponseId::as_str),
         Some("resp_complete")
     );
+    assert_eq!(
+        decoded.stop_reason,
+        StopReason::Refusal,
+        "a refusal part determines the turn result while output_text policy stays unchanged"
+    );
+}
+
+#[test]
+fn a_completed_refusal_only_response_has_no_answer_text_but_keeps_refusal_status() {
+    let response = lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "model": "wire-m",
+            "status": "completed",
+            "output": [{"type": "message", "content": [
+                {"type": "refusal", "refusal": "I can't help with that"}
+            ]}],
+        }))
+        .unwrap()
+        .into(),
+    };
+    let decoded = OpenAiResponsesCodec.decode_response(&response).unwrap();
+    assert!(decoded.message.content.is_empty());
+    assert_eq!(decoded.stop_reason, StopReason::Refusal);
+}
+
+#[test]
+fn responses_streamed_refusal_keeps_its_stop_reason() {
+    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut events = Vec::new();
+    for frame in [
+        r#"{"type":"response.created","response":{"model":"wire-m"}}"#,
+        r#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can't help with that"}"#,
+        r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"I can't help with that"}]}]}}"#,
+    ] {
+        events.extend(decoder.decode_frame(frame.as_bytes()).unwrap());
+    }
+    events.extend(decoder.finish().unwrap());
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::End {
+            stop_reason: StopReason::Refusal,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn responses_refusal_does_not_replace_truncation_or_provider_errors() {
+    let truncated = lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "message", "content": [
+                {"type": "refusal", "refusal": "partial refusal"}
+            ]}],
+        }))
+        .unwrap()
+        .into(),
+    };
+    let decoded = OpenAiResponsesCodec.decode_response(&truncated).unwrap();
+    assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
+
+    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    decoder
+        .decode_frame(
+            br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"partial refusal"}"#,
+        )
+        .unwrap();
+    let events = decoder
+        .decode_frame(
+            br#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
+        )
+        .unwrap();
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::End {
+            stop_reason: StopReason::MaxTokens,
+            ..
+        })
+    ));
+
+    let mut failed = OpenAiResponsesCodec.stream_decoder();
+    failed
+        .decode_frame(
+            br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"refusal"}"#,
+        )
+        .unwrap();
+    assert!(matches!(
+        failed.decode_frame(
+            br#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"generation failed"}}}"#,
+        ),
+        Err(LlmError::ProviderInternal { .. })
+    ));
 }
 
 // --- Bedrock ---------------------------------------------------------------
@@ -459,9 +612,103 @@ fn bedrock_puts_the_model_in_the_url_and_its_own_version_in_the_body() {
     );
     assert!(b.get("model").is_none());
     assert!(
+        b.get("stream").is_none(),
+        "Bedrock selects streaming through the invoke URL, not the Anthropic body field"
+    );
+    assert!(
         !http.headers.iter().any(|(k, _)| k == "anthropic-version"),
         "the header is rejected here"
     );
+}
+
+#[test]
+fn bedrock_uses_one_path_segment_for_model_ids_and_omits_the_stream_body_field() {
+    let base = "https://bedrock-runtime.us-east-1.amazonaws.com";
+    let cases = [
+        (
+            "wire-m",
+            false,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/wire-m/invoke",
+        ),
+        (
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-20250514-v1:0",
+            true,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/arn:aws:bedrock:us-east-1:123456789012:inference-profile%2Fus.anthropic.claude-sonnet-4-20250514-v1:0/invoke-with-response-stream",
+        ),
+    ];
+
+    for (model_id, stream, expected_url) in cases {
+        let mut selected = route();
+        selected.request_model = model_id.to_owned();
+        let http = BedrockClaudeCodec
+            .encode_request(
+                &request(vec![user("hi")]),
+                &profile("bedrock_claude", base),
+                &selected,
+                &RequestOptions {
+                    stream,
+                    ..RequestOptions::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(http.url, expected_url);
+        assert!(
+            body(&http).get("stream").is_none(),
+            "stream mode is selected by the URL for model ID {model_id}"
+        );
+    }
+}
+
+#[test]
+fn vertex_claude_uses_its_platform_version_in_both_request_modes() {
+    let p = profile(
+        "vertex_claude",
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
+    );
+
+    for stream in [false, true] {
+        let http = VertexClaudeCodec
+            .encode_request(
+                &request(vec![user("hi")]),
+                &p,
+                &route(),
+                &RequestOptions {
+                    stream,
+                    ..RequestOptions::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(body(&http)["anthropic_version"], "vertex-2023-10-16");
+        assert!(
+            !http
+                .headers
+                .iter()
+                .any(|(name, _)| name == "anthropic-version"),
+            "Vertex receives anthropic_version in the body"
+        );
+    }
+}
+
+#[test]
+fn vertex_claude_preserves_an_explicit_profile_api_version_override() {
+    let mut p = profile(
+        "vertex_claude",
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
+    );
+    p.extra = json!({"api_version": "vertex-custom-version"});
+
+    let http = VertexClaudeCodec
+        .encode_request(
+            &request(vec![user("hi")]),
+            &p,
+            &route(),
+            &RequestOptions::default(),
+        )
+        .unwrap();
+
+    assert_eq!(body(&http)["anthropic_version"], "vertex-custom-version");
 }
 
 #[test]
@@ -493,8 +740,10 @@ fn bedrock_unwraps_event_stream_frames_into_the_anthropic_decoder() {
                     output_tokens: 2,
                     cache_read_tokens: 0,
                     cache_write_tokens: 0,
+                    cache_write_1h_tokens: 0,
                     reasoning_tokens: 0,
                     cost: None,
+                    server_tool_usage: None,
                 }
             );
         }
@@ -531,8 +780,10 @@ fn every_wire_decodes_the_same_turn_to_the_same_usage() {
         output_tokens: 57,
         cache_read_tokens: 400,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         reasoning_tokens: 7,
         cost: None,
+        server_tool_usage: None,
     };
 
     let openai = OpenAiChatCodec.response_usage(&json_response(&json!({
@@ -838,9 +1089,24 @@ fn terminal_evidence_allows_clean_eof() {
 
 #[test]
 fn gemini_explicit_prompt_block_is_a_refusal_not_truncation() {
+    let blocked = json!({
+        "promptFeedback": {"blockReason": "SAFETY"},
+        "candidates": [],
+    });
+    let response = lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&blocked).unwrap().into(),
+    };
+    assert_eq!(
+        GeminiCodec.decode_response(&response).unwrap().stop_reason,
+        StopReason::Refusal,
+        "prompt-level safety blocks are refusals in buffered responses too"
+    );
+
     let mut decoder = GeminiCodec.stream_decoder();
     decoder
-        .decode_frame(br#"{"promptFeedback":{"blockReason":"SAFETY"}}"#)
+        .decode_frame(&serde_json::to_vec(&blocked).unwrap())
         .unwrap();
     assert!(matches!(
         decoder.finish().unwrap().as_slice(),
@@ -849,6 +1115,38 @@ fn gemini_explicit_prompt_block_is_a_refusal_not_truncation() {
             ..
         }]
     ));
+
+    for feedback in [
+        json!({}),
+        json!({"blockReason": "BLOCK_REASON_UNSPECIFIED"}),
+    ] {
+        let body = json!({
+            "promptFeedback": feedback,
+            "candidates": [{"finishReason": "STOP"}],
+        });
+        let response = lingxi_llm_client::HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: serde_json::to_vec(&body).unwrap().into(),
+        };
+        assert_eq!(
+            GeminiCodec.decode_response(&response).unwrap().stop_reason,
+            StopReason::EndTurn,
+            "empty and unspecified prompt feedback must not be interpreted as a block"
+        );
+
+        let mut decoder = GeminiCodec.stream_decoder();
+        decoder
+            .decode_frame(&serde_json::to_vec(&body).unwrap())
+            .unwrap();
+        assert!(matches!(
+            decoder.finish().unwrap().as_slice(),
+            [StreamEvent::End {
+                stop_reason: StopReason::EndTurn,
+                ..
+            }]
+        ));
+    }
 }
 
 #[test]

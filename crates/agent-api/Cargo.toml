@@ -8,6 +8,10 @@ description = "What an agent's parts exchange on the wire: messages, ids, scope,
 repository.workspace = true
 readme = "README.md"
 
+[features]
+default = ["agent"]
+agent = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

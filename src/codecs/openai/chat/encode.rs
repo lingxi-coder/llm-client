@@ -35,7 +35,15 @@ pub fn request(
         req,
         lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat,
     )?;
+    if req.file_search.is_some() {
+        return Err(LlmError::UnsupportedCapability {
+            message: "hosted file search is supported only on Qwen Responses profiles".into(),
+        });
+    }
+    let max_tokens_field = max_tokens_field(profile)?;
     let mut messages = Vec::new();
+    let qwen_long = profile.provider_id.as_str() == "qwen"
+        && route.request_model.eq_ignore_ascii_case("qwen-long");
 
     // Several system blocks become one system message: the wire has one slot,
     // and the cacheable/non-cacheable split is a prefix-caching concern that
@@ -50,9 +58,42 @@ pub fn request(
         messages.push(json!({"role": "system", "content": text}));
     }
 
+    if qwen_long {
+        let mut file_ids = Vec::new();
+        for block in req.messages.iter().flat_map(|message| &message.content) {
+            if let ContentBlock::Document {
+                source: DocumentSource::ProviderFile { file },
+                ..
+            } = block
+            {
+                let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat
+                    || file.purpose.as_deref() != Some("file-extract")
+                {
+                    return Err(crate::codecs::provider_file_protocol_error());
+                }
+                file_ids.push(format!("fileid://{}", file.file_id));
+            }
+        }
+        if !file_ids.is_empty() {
+            messages.push(json!({"role": "system", "content": file_ids.join("\n")}));
+        }
+    }
+
     let keep_reasoning = flag(profile, "preserve_reasoning_content");
+    let pdf_only_files = flag(profile, "chat_pdf_only")
+        || reqwest::Url::parse(&profile.base_url)
+            .ok()
+            .is_some_and(|url| url.host_str() == Some("api.openai.com"));
     for m in &req.messages {
-        messages.extend(encode_message(m, keep_reasoning)?);
+        messages.extend(encode_message(
+            m,
+            keep_reasoning,
+            pdf_only_files,
+            qwen_long,
+            profile,
+            opts,
+        )?);
     }
 
     let mut body = Map::new();
@@ -72,7 +113,7 @@ pub fn request(
         }
     }
     if let Some(max) = req.max_tokens {
-        body.insert("max_tokens".to_owned(), Value::from(max));
+        body.insert(max_tokens_field.to_owned(), Value::from(max));
     }
     if let Some(t) = req.temperature {
         body.insert("temperature".to_owned(), Value::from(t));
@@ -115,6 +156,16 @@ pub fn request(
     // never a credential — see `wire_extras`.
     crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::extras::merge_body(profile, &mut body);
+    if req.max_tokens.is_some() {
+        // The selected typed field is authoritative. A profile body extra must
+        // not add the other spelling and send conflicting output limits.
+        let alternate = if max_tokens_field == "max_tokens" {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
+        body.remove(alternate);
+    }
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::extras::merge_headers(profile, &mut headers);
 
@@ -138,7 +189,14 @@ pub fn request(
 /// One conversation message becomes one or more wire messages: a tool result
 /// cannot share a message with text, so any pending text is flushed first and
 /// the result becomes its own `role: "tool"` entry.
-fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<Value>, LlmError> {
+fn encode_message(
+    m: &ConversationMessage,
+    keep_reasoning: bool,
+    pdf_only_files: bool,
+    qwen_long: bool,
+    profile: &ProviderProfile,
+    opts: &RequestOptions,
+) -> Result<Vec<Value>, LlmError> {
     let role = match m.role {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
@@ -168,22 +226,59 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<V
                     reasoning.push_str(t);
                 }
             }
-            ContentBlock::Image { source } => {
-                media.push(json!({
+            ContentBlock::Image { source } => match source {
+                ImageSource::ProviderFile { .. } => {
+                    return Err(LlmError::UnsupportedCapability {
+                        message: "Chat Completions image input does not support provider file ids"
+                            .into(),
+                    });
+                }
+                ImageSource::Attachment { .. } => {
+                    return Err(crate::codecs::unresolved_attachment_error());
+                }
+                _ => media.push(json!({
                     "type": "image_url",
-                    "image_url": { "url": image_url(source) },
-                }));
-            }
+                    "image_url": { "url": image_url(source)? },
+                })),
+            },
             ContentBlock::Document { source, .. } => {
+                if let DocumentSource::ProviderFile { file } = source {
+                    let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                    if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat {
+                        return Err(crate::codecs::provider_file_protocol_error());
+                    }
+                    if qwen_long
+                        && profile.provider_id.as_str() == "qwen"
+                        && file.purpose.as_deref() == Some("file-extract")
+                    {
+                        continue;
+                    }
+                    if !pdf_only_files || file.media_type.as_deref() != Some("application/pdf") {
+                        return Err(LlmError::UnsupportedCapability {
+                            message: "Chat Completions provider file references are supported only for PDF input".into(),
+                        });
+                    }
+                    media.push(json!({
+                        "type": "file",
+                        "file": { "file_id": file.file_id },
+                    }));
+                    continue;
+                }
+                let file_data = document_url(source, pdf_only_files)?;
                 media.push(json!({
                     "type": "file",
-                    "file": { "file_data": document_url(source) },
+                    "file": { "file_data": file_data },
                 }));
             }
             // Signed reasoning round-trips only on providers that sign it
             // (gate 18); this wire has no slot, so a replayed block is dropped
             // rather than sent somewhere it would be rejected.
             ContentBlock::RedactedThinking { .. } => {}
+            ContentBlock::Video { .. } => {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "Chat Completions does not support video content blocks".into(),
+                });
+            }
             ContentBlock::ToolUse {
                 id, name, input, ..
             } => tool_calls.push(json!({
@@ -235,24 +330,71 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<V
     Ok(out)
 }
 
-/// A hosted URL is sent as-is; base64 becomes a data URI, which is the only
-/// inline form this wire accepts.
-fn image_url(source: &ImageSource) -> String {
-    match source {
-        ImageSource::Url { url } => url.clone(),
-        ImageSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
+/// Select the request field used for the output token limit. A profile can opt
+/// a direct OpenAI Chat Completions endpoint into the field required by newer
+/// model families while compatible endpoints retain the historical default.
+fn max_tokens_field(profile: &ProviderProfile) -> Result<&'static str, LlmError> {
+    match profile.extra.get("max_tokens_field") {
+        None => Ok("max_tokens"),
+        Some(Value::String(field)) if field == "max_tokens" => Ok("max_tokens"),
+        Some(Value::String(field)) if field == "max_completion_tokens" => {
+            Ok("max_completion_tokens")
+        }
+        Some(_) => Err(LlmError::InvalidRequest {
+            message:
+                "profile extra.max_tokens_field must be \"max_tokens\" or \"max_completion_tokens\""
+                    .to_owned(),
+        }),
     }
 }
 
-fn document_url(source: &DocumentSource) -> String {
+/// Hosted images are sent as-is; base64 images become data URIs.
+fn image_url(source: &ImageSource) -> Result<String, LlmError> {
     match source {
-        DocumentSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
+        ImageSource::Url { url } => Ok(url.clone()),
+        ImageSource::Base64 { media_type, data } => Ok(format!("data:{media_type};base64,{data}")),
+        ImageSource::Attachment { .. } => Err(crate::codecs::unresolved_attachment_error()),
+        ImageSource::ProviderFile { .. } => Err(LlmError::UnsupportedCapability {
+            message: "Chat Completions image input does not support provider file ids".into(),
+        }),
+    }
+}
+
+/// Base64 and text documents become data URIs. This Chat Completions form
+/// expects inline file data, so a hosted URL cannot be represented safely.
+fn document_url(source: &DocumentSource, pdf_only_files: bool) -> Result<String, LlmError> {
+    match source {
+        DocumentSource::Base64 { media_type, data } => {
+            if pdf_only_files && media_type != "application/pdf" {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "OpenAI Chat Completions accepts only PDF file input".into(),
+                });
+            }
+            Ok(format!("data:{media_type};base64,{data}"))
+        }
         // Plain text is still sent as a data URI: the field is a file payload,
         // not a content part.
         DocumentSource::Text { media_type, data } => {
-            format!("data:{media_type};base64,{}", base64_of(data.as_bytes()))
+            if pdf_only_files {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "OpenAI Chat Completions accepts only PDF file input".into(),
+                });
+            }
+            Ok(format!(
+                "data:{media_type};base64,{}",
+                base64_of(data.as_bytes())
+            ))
         }
-        DocumentSource::Url { url } => url.clone(),
+        DocumentSource::Url { .. } => Err(LlmError::UnsupportedCapability {
+            message:
+                "Chat Completions does not support document URLs; provide inline document data"
+                    .to_owned(),
+        }),
+        DocumentSource::Attachment { .. } => Err(crate::codecs::unresolved_attachment_error()),
+        DocumentSource::ProviderFile { .. } => Err(LlmError::UnsupportedCapability {
+            message: "Chat Completions provider file references must be prepared as PDF input"
+                .into(),
+        }),
     }
 }
 

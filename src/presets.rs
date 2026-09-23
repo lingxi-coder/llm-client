@@ -25,6 +25,8 @@
 //!   rejects a later turn that omits that turn's reasoning;
 //! - `thinking_rejects_forced_tool_choice` — with thinking on, a forced tool
 //!   choice comes back 400, while `none`, `auto` and the tools are accepted;
+//! - `max_tokens_field` — Chat output cap spelling (`max_tokens` by default,
+//!   or `max_completion_tokens` for endpoints that require it).
 //! - `stream_usage_opt_in` — the terminal usage object is omitted from SSE
 //!   unless it is asked for.
 //! - `supports_previous_response_id` — this Responses endpoint persists state
@@ -33,9 +35,9 @@
 //!   identity and of whether individual models support search.
 
 use lingxi_agent_api::protocol::{
-    AuthStrategy, BillingMode, ConnectionSpec, CredentialConfig, DirectoryRoute, ModelCapabilities,
-    ModelMetadata, ModelProfile, PeakSchedule, PricingConfig, ProtocolFamily, ProviderId,
-    ProviderInfo, ProviderProfile, TokenPricing,
+    AuthStrategy, BillingMode, CapabilitySupport, ConnectionSpec, CredentialConfig, DirectoryRoute,
+    ModelCapabilities, ModelCapabilitySupport, ModelMetadata, ModelProfile, PeakSchedule,
+    PricingConfig, ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, TokenPricing,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -97,6 +99,9 @@ struct RoutePricing {
 #[derive(Debug, Deserialize)]
 struct CatalogModel {
     id: String,
+    /// Local selectors retained when a catalog wire ID is corrected.
+    #[serde(default)]
+    aliases: Vec<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -119,12 +124,17 @@ struct CatalogModel {
     input_modalities: Vec<String>,
     #[serde(default)]
     output_modalities: Vec<String>,
+    /// An optional authoritative operation list for static catalogs that carry
+    /// it. Missing metadata stays compatible; an explicit list without
+    /// `generateContent` cannot be routed by this client's Gemini codec.
     #[serde(default)]
-    tool_call: bool,
+    supported_generation_methods: Option<Vec<String>>,
     #[serde(default)]
-    reasoning: bool,
+    tool_call: Option<bool>,
     #[serde(default)]
-    structured_output: bool,
+    reasoning: Option<bool>,
+    #[serde(default)]
+    structured_output: Option<bool>,
     #[serde(default)]
     temperature: Option<bool>,
     #[serde(default)]
@@ -173,6 +183,10 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
             profile_name: profile_name.to_owned(),
         });
     }
+    let uses_gemini_completion = matches!(
+        p.protocol,
+        ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
+    );
     Ok(ProviderProfile {
         provider_id: p.provider_id,
         profile_name: profile_name.to_owned(),
@@ -183,7 +197,19 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
         credential: CredentialConfig::Env {
             var: p.credential_env,
         },
-        models: disambiguate(p.model.iter().map(model_profile).collect()),
+        models: disambiguate(
+            p.model
+                .iter()
+                .filter(|model| {
+                    !uses_gemini_completion
+                        || model
+                            .supported_generation_methods
+                            .as_ref()
+                            .is_none_or(|methods| methods.iter().any(|m| m == "generateContent"))
+                })
+                .map(model_profile)
+                .collect(),
+        ),
         pricing: PricingConfig {
             billing_mode: p.billing_mode,
             peak: p.pricing.peak.clone(),
@@ -248,12 +274,31 @@ fn disambiguate(mut models: Vec<ModelProfile>) -> Vec<ModelProfile> {
 
 fn model_profile(m: &CatalogModel) -> ModelProfile {
     let accepts = |what: &str| m.input_modalities.iter().any(|i| i == what);
+    let vision = accepts("image");
+    let documents = accepts("pdf") || accepts("file");
+    let support = ModelCapabilitySupport {
+        vision: if vision {
+            CapabilitySupport::Supported
+        } else {
+            CapabilitySupport::Unknown
+        },
+        documents: if documents {
+            CapabilitySupport::Supported
+        } else {
+            CapabilitySupport::Unknown
+        },
+        tools: catalog_support(m.tool_call),
+        reasoning: catalog_support(m.reasoning),
+        structured_output: catalog_support(m.structured_output),
+        ..ModelCapabilitySupport::default()
+    };
+    let capability_support = (support != ModelCapabilitySupport::default()).then_some(support);
     ModelProfile {
         hidden: false,
         display_model: m.name.clone().unwrap_or_else(|| m.id.clone()),
         request_model: m.id.clone(),
         billing_model: m.id.clone(),
-        aliases: Vec::new(),
+        aliases: m.aliases.clone(),
         description: m.description.clone(),
         metadata: ModelMetadata {
             family: m.family.clone(),
@@ -274,12 +319,21 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
         billing_mode: m.billing_mode,
         capabilities: ModelCapabilities {
             streaming: true,
-            tools: m.tool_call,
-            vision: accepts("image"),
-            documents: accepts("pdf") || accepts("file"),
-            reasoning: m.reasoning,
-            structured_output: m.structured_output,
+            tools: m.tool_call.unwrap_or(false),
+            vision,
+            documents,
+            reasoning: m.reasoning.unwrap_or(false),
+            structured_output: m.structured_output.unwrap_or(false),
             signed_reasoning: false,
         },
+        capability_support,
+    }
+}
+
+fn catalog_support(value: Option<bool>) -> CapabilitySupport {
+    match value {
+        Some(true) => CapabilitySupport::Supported,
+        Some(false) => CapabilitySupport::Unsupported,
+        None => CapabilitySupport::Unknown,
     }
 }

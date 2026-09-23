@@ -11,13 +11,13 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use futures::stream;
 use lingxi_agent_api::protocol::{
-    CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage, LlmError,
-    MessageRole, ProtocolFamily, ProviderProfile, ResponseId, StopReason, StreamEvent, ToolChoice,
-    Usage,
+    AttachmentRef, CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage,
+    DocumentSource, ImageSource, LlmError, MessageRole, ProtocolFamily, ProviderProfile,
+    ResponseId, StopReason, StreamEvent, ToolChoice, Usage, WebSearchConfig,
 };
 use lingxi_llm_client::{
-    HttpRequest, HttpResponse, LlmClientBuilder, RequestOptions, ResolveError, ResolvedRoute,
-    StreamDecoder, StreamResponse, Transport, WebSocketSession, WireCodec,
+    builtin_providers, HttpRequest, HttpResponse, LlmClientBuilder, RequestOptions, ResolveError,
+    ResolvedRoute, StreamDecoder, StreamResponse, Transport, WebSocketSession, WireCodec,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,6 +33,7 @@ struct ScriptedTransport {
     seen: Mutex<Vec<String>>,
     calls: AtomicUsize,
     seen_auth: Mutex<Vec<Option<String>>>,
+    seen_bodies: Mutex<Vec<Vec<u8>>>,
     seen_timeouts: Mutex<Vec<Option<std::time::Duration>>>,
 }
 
@@ -45,6 +46,13 @@ impl ScriptedTransport {
                     .map(|(u, r)| (u.to_owned(), r))
                     .collect(),
             ),
+            ..Default::default()
+        })
+    }
+
+    fn from_owned(answers: Vec<(String, Result<u16, LlmError>)>) -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(answers),
             ..Default::default()
         })
     }
@@ -87,6 +95,10 @@ impl ScriptedTransport {
         self.seen_auth.lock().unwrap().clone()
     }
 
+    fn bodies(&self) -> Vec<Vec<u8>> {
+        self.seen_bodies.lock().unwrap().clone()
+    }
+
     fn timeouts(&self) -> Vec<Option<std::time::Duration>> {
         self.seen_timeouts.lock().unwrap().clone()
     }
@@ -98,6 +110,7 @@ impl ScriptedTransport {
                 .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
                 .map(|(_, value)| value.clone()),
         );
+        self.seen_bodies.lock().unwrap().push(req.body.to_vec());
         self.seen_timeouts.lock().unwrap().push(req.timeout);
     }
 }
@@ -131,6 +144,170 @@ impl Transport for ScriptedTransport {
     }
 }
 
+struct InterruptedErrorBodyTransport {
+    seen: Mutex<Vec<String>>,
+    backup_succeeds: bool,
+}
+
+impl InterruptedErrorBodyTransport {
+    fn new(backup_succeeds: bool) -> Arc<Self> {
+        Arc::new(Self {
+            seen: Mutex::new(Vec::new()),
+            backup_succeeds,
+        })
+    }
+
+    fn hops(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Transport for InterruptedErrorBodyTransport {
+    async fn execute(&self, _req: HttpRequest) -> Result<HttpResponse, LlmError> {
+        unreachable!("these regressions exercise the streaming path")
+    }
+
+    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.seen.lock().unwrap().push(req.url.clone());
+        let backup = req.url.starts_with("https://two.test");
+        let succeeds = backup && self.backup_succeeds;
+        let body: Vec<Result<Bytes, LlmError>> = if succeeds {
+            Vec::new()
+        } else {
+            vec![
+                Ok(Bytes::from_static(
+                    br#"{"error":{"message":"quota exceeded"}}"#,
+                )),
+                Err(LlmError::StreamInterrupted {
+                    message: "error body connection reset".to_owned(),
+                }),
+            ]
+        };
+        Ok(StreamResponse {
+            status: if succeeds { 200 } else { 429 },
+            headers: vec![("Retry-After".to_owned(), "7".to_owned())],
+            body: Box::pin(stream::iter(body)),
+        })
+    }
+
+    async fn open_responses_websocket_session(
+        &self,
+        _req: HttpRequest,
+    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "no websockets in this fake".to_owned(),
+        })
+    }
+}
+
+type RecordedFileRequest = (String, String, Option<String>, Vec<u8>);
+
+struct FileFailoverTransport {
+    fail_first_completion: bool,
+    missing_first_file: bool,
+    uploads: AtomicUsize,
+    completions: AtomicUsize,
+    requests: Mutex<Vec<RecordedFileRequest>>,
+}
+
+impl FileFailoverTransport {
+    fn new(fail_first_completion: bool) -> Arc<Self> {
+        Arc::new(Self {
+            fail_first_completion,
+            missing_first_file: false,
+            uploads: AtomicUsize::new(0),
+            completions: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn missing_first_file() -> Arc<Self> {
+        Arc::new(Self {
+            fail_first_completion: false,
+            missing_first_file: true,
+            uploads: AtomicUsize::new(0),
+            completions: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for FileFailoverTransport {
+    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
+        let authorization = req
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.clone());
+        self.requests.lock().unwrap().push((
+            req.method.clone(),
+            req.url.clone(),
+            authorization,
+            req.body.to_vec(),
+        ));
+        if req.url.ends_with("/files") {
+            let id = self.uploads.fetch_add(1, Ordering::SeqCst) + 1;
+            return Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: Bytes::from(format!(r#"{{"id":"file-{id}"}}"#)),
+            });
+        }
+        if req.url.ends_with("/responses") {
+            let attempt = self.completions.fetch_add(1, Ordering::SeqCst);
+            return if self.fail_first_completion && attempt == 0 {
+                Ok(HttpResponse {
+                    status: 429,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: Bytes::from_static(
+                        br#"{"error":{"type":"rate_limit_error","message":"try backup"}}"#,
+                    ),
+                })
+            } else if self.missing_first_file && attempt == 0 {
+                Ok(HttpResponse {
+                    status: 404,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: Bytes::from_static(
+                        br#"{"error":{"message":"File file-1 not found","type":"invalid_request_error"}}"#,
+                    ),
+                })
+            } else {
+                Ok(HttpResponse {
+                    status: 200,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: Bytes::from_static(
+                        br#"{"status":"completed","model":"gpt-test","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}"#,
+                    ),
+                })
+            };
+        }
+        Err(LlmError::Transport {
+            message: format!("unexpected test URL: {}", req.url),
+        })
+    }
+
+    async fn execute_no_follow(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
+        self.execute(req).await
+    }
+
+    async fn open_stream(&self, _req: HttpRequest) -> Result<StreamResponse, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "stream not used by file failover test".into(),
+        })
+    }
+
+    async fn open_responses_websocket_session(
+        &self,
+        _req: HttpRequest,
+    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "websocket not used by file failover test".into(),
+        })
+    }
+}
+
 /// Encodes to `<base_url>/chat`, decodes 200 to one text block. One frame
 /// decodes to one `TextDelta`, so a test can count frames as events.
 struct FakeCodec;
@@ -157,7 +334,7 @@ impl WireCodec for FakeCodec {
             headers: vec![],
             body: Bytes::from(
                 serde_json::to_vec(
-                    &json!({ "model": route.request_model, "n": req.messages.len() }),
+                    &json!({ "model": route.request_model, "n": req.messages.len(), "web_search": req.web_search }),
                 )
                 .unwrap(),
             ),
@@ -172,6 +349,7 @@ impl WireCodec for FakeCodec {
         }
         Ok(CompletionResponse {
             web_search: None,
+            file_search: None,
             message: ConversationMessage {
                 role: MessageRole::Assistant,
                 content: vec![ContentBlock::Text {
@@ -316,10 +494,58 @@ fn client(
     b.build().expect("every profile's protocol has a codec")
 }
 
+fn failover_pair_with_transport(http: Arc<dyn Transport>) -> lingxi_llm_client::LlmClient {
+    let profiles = [
+        conn(
+            "acme:one",
+            "https://one.test",
+            model("m-1", "m-1"),
+            Some("acme"),
+            0,
+            "per_token",
+            false,
+        ),
+        conn(
+            "acme:two",
+            "https://two.test",
+            model("m-1", "m-1"),
+            Some("acme"),
+            1,
+            "per_token",
+            false,
+        ),
+    ];
+    LlmClientBuilder::with_transport(http, &profiles)
+        .build()
+        .expect("built-in OpenAI chat codec is registered")
+}
+
+fn openai_openrouter_client(
+    http: Arc<ScriptedTransport>,
+) -> (lingxi_llm_client::LlmClient, Vec<ProviderProfile>) {
+    let mut profiles: Vec<_> = builtin_providers()
+        .expect("built-in provider presets parse")
+        .into_iter()
+        .filter(|p| matches!(p.profile_name.as_str(), "openai" | "openrouter"))
+        .collect();
+    // The scripted codec models the common chat surface for the test. OpenAI's
+    // built-in profile normally uses Responses, while its model names and auth
+    // strategy remain the real built-in definitions.
+    profiles
+        .iter_mut()
+        .find(|p| p.profile_name == "openai")
+        .expect("the OpenAI preset is present")
+        .protocol = ProtocolFamily::OpenAiChat;
+    let mut b = LlmClientBuilder::with_transport(http, &profiles);
+    b.register_codec(Arc::new(FakeCodec));
+    (b.build().expect("built-in profiles have codecs"), profiles)
+}
+
 fn request(model: &str) -> CompletionRequest {
     CompletionRequest {
         model: model.to_owned(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {
@@ -337,6 +563,285 @@ fn request(model: &str) -> CompletionRequest {
         stop_sequences: vec![],
         metadata: Value::Null,
     }
+}
+
+fn openai_file_profile(profile_name: &str, order: u32, grouped: bool) -> ProviderProfile {
+    serde_json::from_value(json!({
+        "provider_id": "openai",
+        "profile_name": profile_name,
+        "base_url": "https://api.openai.com/v1",
+        "protocol": "open_ai_responses",
+        "auth": "api_key",
+        "models": [{
+            "display_model": "gpt-test",
+            "request_model": "gpt-test",
+            "billing_model": "gpt-test",
+            "metadata": {"input_modalities": ["text", "image", "file"]},
+            "capabilities": {
+                "vision": true,
+                "documents": true,
+                "tools": false,
+                "reasoning": false,
+                "signed_reasoning": false,
+                "streaming": false,
+                "structured_output": false
+            }
+        }],
+        "connection": if grouped {
+            json!({
+                "group": "openai-file-failover",
+                "connection_id": profile_name,
+                "order": order,
+                "failover": {"rateLimit": true, "overloaded": true, "serverError": true, "network": true, "auth": true}
+            })
+        } else {
+            json!({})
+        }
+    }))
+    .expect("OpenAI file profile parses")
+}
+
+fn request_with_app_document() -> CompletionRequest {
+    let mut request = request("gpt-test");
+    request.messages[0].content.push(ContentBlock::Document {
+        source: DocumentSource::Attachment {
+            attachment: AttachmentRef {
+                attachment_id: "attachment-1".into(),
+                revision: "revision-1".into(),
+                filename: "guide.pdf".into(),
+                media_type: "application/pdf".into(),
+                size_bytes: 3,
+            },
+        },
+        title: None,
+    });
+    request
+}
+
+#[test]
+fn file_upload_is_repeated_for_the_fallback_profile_and_uses_its_credential() {
+    let http = FileFailoverTransport::new(true);
+    let profiles = [
+        openai_file_profile("primary", 0, true),
+        openai_file_profile("backup", 1, true),
+    ];
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &profiles);
+    builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
+    let client = builder
+        .build()
+        .expect("built-in Responses codec and API-key auth are available");
+    let mut options = RequestOptions {
+        credential: Some(lingxi_agent_api::protocol::Secret::new(
+            "primary-secret".to_owned(),
+        )),
+        ..RequestOptions::default()
+    };
+    options.fallback_credentials.insert(
+        "backup".into(),
+        lingxi_agent_api::protocol::Secret::new("backup-secret".to_owned()),
+    );
+    let original = request_with_app_document();
+
+    let response = block_on(client.complete(&original, &options)).unwrap();
+
+    assert_eq!(response.executed_profile.as_deref(), Some("backup"));
+    assert_eq!(http.uploads.load(Ordering::SeqCst), 2);
+    assert_eq!(http.completions.load(Ordering::SeqCst), 2);
+    let requests = http.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0].2.as_deref(), Some("Bearer primary-secret"));
+    assert_eq!(requests[1].2.as_deref(), Some("Bearer primary-secret"));
+    assert_eq!(requests[2].2.as_deref(), Some("Bearer backup-secret"));
+    assert_eq!(requests[3].2.as_deref(), Some("Bearer backup-secret"));
+    let primary_body: Value = serde_json::from_slice(&requests[1].3).unwrap();
+    let fallback_body: Value = serde_json::from_slice(&requests[3].3).unwrap();
+    assert_eq!(primary_body["input"][0]["content"][1]["file_id"], "file-1");
+    assert_eq!(fallback_body["input"][0]["content"][1]["file_id"], "file-2");
+    assert_eq!(original, request_with_app_document());
+}
+
+#[test]
+fn cached_file_404_invalidates_and_reuploads_once_on_the_same_profile() {
+    let http = FileFailoverTransport::missing_first_file();
+    let profile = openai_file_profile("openai", 0, false);
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+    builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
+    let client = builder.build().unwrap();
+    let options = RequestOptions {
+        credential: Some(lingxi_agent_api::protocol::Secret::new(
+            "openai-secret".to_owned(),
+        )),
+        file_account_scope: Some("account-1".into()),
+        ..RequestOptions::default()
+    };
+
+    let response = block_on(client.complete(&request_with_app_document(), &options)).unwrap();
+
+    assert_eq!(response.executed_profile.as_deref(), Some("openai"));
+    assert_eq!(http.uploads.load(Ordering::SeqCst), 2);
+    assert_eq!(http.completions.load(Ordering::SeqCst), 2);
+    let requests = http.requests.lock().unwrap();
+    let first: Value = serde_json::from_slice(&requests[1].3).unwrap();
+    let retried: Value = serde_json::from_slice(&requests[3].3).unwrap();
+    assert_eq!(first["input"][0]["content"][1]["file_id"], "file-1");
+    assert_eq!(retried["input"][0]["content"][1]["file_id"], "file-2");
+}
+
+#[test]
+fn concurrent_requests_share_one_upload_for_the_same_scoped_attachment() {
+    let http = FileFailoverTransport::new(false);
+    let profile = openai_file_profile("openai", 0, false);
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+    builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
+    let client = builder.build().unwrap();
+    let request = request_with_app_document();
+    let options = RequestOptions {
+        credential: Some(lingxi_agent_api::protocol::Secret::new(
+            "openai-secret".to_owned(),
+        )),
+        file_account_scope: Some("account-1".into()),
+        ..RequestOptions::default()
+    };
+
+    let (first, second) = block_on(async {
+        futures::join!(
+            client.complete(&request, &options),
+            client.complete(&request, &options)
+        )
+    });
+
+    assert!(first.is_ok());
+    assert!(second.is_ok());
+    assert_eq!(http.uploads.load(Ordering::SeqCst), 1);
+    assert_eq!(http.completions.load(Ordering::SeqCst), 2);
+    let requests = http.requests.lock().unwrap();
+    let completion_bodies = requests
+        .iter()
+        .filter(|(_, url, _, _)| url.ends_with("/responses"))
+        .map(|(_, _, _, body)| serde_json::from_slice::<Value>(body).unwrap())
+        .collect::<Vec<_>>();
+    assert!(completion_bodies
+        .iter()
+        .all(|body| body["input"][0]["content"][1]["file_id"] == "file-1"));
+}
+
+struct TestAttachmentResolver(Bytes);
+
+#[async_trait]
+impl lingxi_llm_client::AttachmentResolver for TestAttachmentResolver {
+    async fn resolve(&self, _attachment: &AttachmentRef) -> Result<Bytes, LlmError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn small_images_stay_inline_without_provider_uploads() {
+    let http = FileFailoverTransport::new(false);
+    let profile = openai_file_profile("openai", 0, false);
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+    builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"png"))));
+    let client = builder.build().unwrap();
+    let mut request = request("gpt-test");
+    request.messages[0].content.push(ContentBlock::Image {
+        source: ImageSource::Attachment {
+            attachment: AttachmentRef {
+                attachment_id: "image-1".into(),
+                revision: "revision-1".into(),
+                filename: "small.png".into(),
+                media_type: "image/png".into(),
+                size_bytes: 3,
+            },
+        },
+    });
+    let options = RequestOptions {
+        credential: Some(lingxi_agent_api::protocol::Secret::new(
+            "openai-secret".to_owned(),
+        )),
+        ..RequestOptions::default()
+    };
+
+    block_on(client.complete(&request, &options)).unwrap();
+
+    assert_eq!(http.uploads.load(Ordering::SeqCst), 0);
+    let requests = http.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].3).unwrap();
+    assert_eq!(
+        body["input"][0]["content"][1]["image_url"],
+        "data:image/png;base64,cG5n"
+    );
+}
+
+#[test]
+fn provider_upload_cache_is_partitioned_by_account_scope() {
+    let http = FileFailoverTransport::new(false);
+    let profile = openai_file_profile("openai", 0, false);
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+    builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
+    let client = builder.build().unwrap();
+    let request = request_with_app_document();
+    let options = |scope: &str| RequestOptions {
+        credential: Some(lingxi_agent_api::protocol::Secret::new(
+            "openai-secret".to_owned(),
+        )),
+        file_account_scope: Some(scope.to_owned()),
+        ..RequestOptions::default()
+    };
+
+    block_on(async {
+        client
+            .complete(&request, &options("account-a"))
+            .await
+            .unwrap();
+        client
+            .complete(&request, &options("account-b"))
+            .await
+            .unwrap();
+    });
+
+    assert_eq!(http.uploads.load(Ordering::SeqCst), 2);
+    let requests = http.requests.lock().unwrap();
+    let file_ids = requests
+        .iter()
+        .filter(|(_, url, _, _)| url.ends_with("/responses"))
+        .map(|(_, _, _, body)| {
+            serde_json::from_slice::<Value>(body).unwrap()["input"][0]["content"][1]["file_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(file_ids, vec!["file-1", "file-2"]);
+}
+
+#[test]
+fn grok_responses_profile_exposes_document_file_refs_without_changing_chat_profile() {
+    let profiles = builtin_providers().unwrap();
+    let chat = profiles
+        .iter()
+        .find(|profile| profile.profile_name == "grok")
+        .unwrap();
+    let responses = profiles
+        .iter()
+        .find(|profile| profile.profile_name == "grok-responses")
+        .expect("the xAI Responses profile is built in");
+
+    assert_eq!(chat.protocol, ProtocolFamily::OpenAiChat);
+    assert_eq!(responses.protocol, ProtocolFamily::OpenAiResponses);
+    assert_eq!(
+        responses.model_list.shape(responses.protocol),
+        Some(ProtocolFamily::OpenAiChat)
+    );
+    assert_eq!(
+        lingxi_llm_client::client::files::capabilities(chat, "grok-4.20", "application/pdf")
+            .model_input,
+        lingxi_llm_client::client::files::ModelFileReference::Unsupported
+    );
+    assert_eq!(
+        lingxi_llm_client::client::files::capabilities(responses, "grok-4.20", "application/pdf")
+            .model_input,
+        lingxi_llm_client::client::files::ModelFileReference::FileId
+    );
 }
 
 // --- resolve ---------------------------------------------------------------
@@ -550,6 +1055,231 @@ fn matching_across_two_groups_is_a_real_ambiguity() {
     // The qualified form a picker shows routes.
     let route = c.resolve("azure/gpt").unwrap();
     assert_eq!(route.profile_name, "azure");
+}
+
+#[test]
+fn native_slash_ids_and_qualified_refs_require_scope_when_both_match() {
+    let http = ScriptedTransport::new(vec![]);
+    let (c, _) = openai_openrouter_client(http);
+
+    let err = c
+        .resolve("openai/gpt-4o")
+        .expect_err("the OpenRouter native id collides with OpenAI/gpt-4o");
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "the caller should be told to scope the conflicting reference: {err}"
+    );
+
+    let openai = c
+        .resolve_in("openai/gpt-4o", Some("openai"))
+        .expect("a connection scope selects the qualified OpenAI model");
+    assert_eq!(openai.profile_name, "openai");
+    assert_eq!(openai.request_model, "gpt-4o");
+
+    let openrouter = c
+        .resolve_in("openai/gpt-4o", Some("openrouter"))
+        .expect("a connection scope selects OpenRouter's native slash id");
+    assert_eq!(openrouter.profile_name, "openrouter");
+    assert_eq!(openrouter.request_model, "openai/gpt-4o");
+
+    let unambiguous_native = c
+        .resolve("openrouter/auto")
+        .expect("a slash-bearing native id with no qualified collision stays valid");
+    assert_eq!(unambiguous_native.profile_name, "openrouter");
+    assert_eq!(unambiguous_native.request_model, "openrouter/auto");
+}
+
+#[test]
+fn native_qualified_collision_detection_compares_the_resolved_head() {
+    let same_model = solo(
+        "foo",
+        "https://same.test",
+        json!([{
+            "display_model": "foo/bar",
+            "request_model": "foo/bar",
+            "billing_model": "foo/bar",
+            "aliases": ["bar"],
+        }]),
+    );
+    let same_target = client(&[same_model], ScriptedTransport::new(vec![]));
+    assert_eq!(
+        same_target.resolve("foo/bar").unwrap().request_model,
+        "foo/bar",
+        "both interpretations reaching the same model entry are unambiguous"
+    );
+
+    let one_profile = solo(
+        "foo",
+        "https://same.test",
+        json!([
+            {"display_model": "foo/bar", "request_model": "foo/bar", "billing_model": "foo/bar"},
+            {"display_model": "bar", "request_model": "wire-bar", "billing_model": "wire-bar"},
+        ]),
+    );
+    let different_model = client(&[one_profile], ScriptedTransport::new(vec![]));
+    assert!(matches!(
+        different_model.resolve("foo/bar"),
+        Err(ResolveError::AmbiguousNativeAndQualified { .. })
+    ));
+
+    let mut native = conn(
+        "foo:one",
+        "https://one.test",
+        json!([{"display_model": "foo/bar", "request_model": "foo/bar", "billing_model": "foo/bar"}]),
+        Some("foo"),
+        0,
+        "per_token",
+        false,
+    );
+    native.provider_id = lingxi_agent_api::protocol::ProviderId::new("foo");
+    let mut qualified = conn(
+        "foo:two",
+        "https://two.test",
+        json!([{"display_model": "bar", "request_model": "wire-bar", "billing_model": "wire-bar"}]),
+        Some("foo"),
+        1,
+        "per_token",
+        false,
+    );
+    qualified.provider_id = lingxi_agent_api::protocol::ProviderId::new("foo");
+    let different_connection = client(&[native, qualified], ScriptedTransport::new(vec![]));
+    assert!(matches!(
+        different_connection.resolve("foo/bar"),
+        Err(ResolveError::AmbiguousNativeAndQualified { .. })
+    ));
+}
+
+#[test]
+fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
+    let profiles = builtin_providers()
+        .expect("built-in provider presets parse")
+        .into_iter()
+        .filter(|p| matches!(p.profile_name.as_str(), "openai" | "openrouter"))
+        .collect::<Vec<_>>();
+    let openai_base = profiles
+        .iter()
+        .find(|p| p.profile_name == "openai")
+        .unwrap()
+        .base_url
+        .clone();
+    let openrouter_base = profiles
+        .iter()
+        .find(|p| p.profile_name == "openrouter")
+        .unwrap()
+        .base_url
+        .clone();
+    let http = ScriptedTransport::from_owned(vec![
+        (openai_base.clone(), Ok(200)),
+        (openrouter_base.clone(), Ok(200)),
+    ]);
+    let (c, _) = openai_openrouter_client(http.clone());
+    let req = request("openai/gpt-4o");
+    let with_credential = |secret: &str| RequestOptions {
+        credential: Some(lingxi_agent_api::protocol::Secret::new(secret.to_owned())),
+        ..RequestOptions::default()
+    };
+
+    let (complete, stream, searched, searched_stream) = block_on(async {
+        let complete = c
+            .complete_in("openai", &req, &with_credential("openai-secret"))
+            .await
+            .unwrap();
+        let stream = c
+            .stream_in("openrouter", &req, &with_credential("openrouter-secret"))
+            .await
+            .unwrap();
+        let searched = c
+            .web_search_in(
+                "openai",
+                &req,
+                WebSearchConfig {
+                    allowed_domains: vec!["example.com".to_owned()],
+                    ..Default::default()
+                },
+                &with_credential("openai-secret"),
+            )
+            .await
+            .unwrap();
+        let searched_stream = c
+            .web_search_stream_in(
+                "openrouter",
+                &req,
+                WebSearchConfig {
+                    blocked_domains: vec!["blocked.example".to_owned()],
+                    ..Default::default()
+                },
+                &with_credential("openrouter-secret"),
+            )
+            .await
+            .unwrap();
+        (complete, stream, searched, searched_stream)
+    });
+
+    assert_eq!(complete.executed_profile.as_deref(), Some("openai"));
+    assert_eq!(stream.executed_profile(), "openrouter");
+    assert_eq!(searched.executed_profile.as_deref(), Some("openai"));
+    assert_eq!(searched_stream.executed_profile(), "openrouter");
+    assert_eq!(
+        http.hops(),
+        vec![
+            format!("{}/chat", openai_base.trim_end_matches('/')),
+            format!("{}/chat", openrouter_base.trim_end_matches('/')),
+            format!("{}/chat", openai_base.trim_end_matches('/')),
+            format!("{}/chat", openrouter_base.trim_end_matches('/')),
+        ],
+        "each scoped helper must use the endpoint selected by its profile"
+    );
+    assert_eq!(
+        http.auth_headers(),
+        vec![
+            Some("Bearer openai-secret".to_owned()),
+            Some("Bearer openrouter-secret".to_owned()),
+            Some("Bearer openai-secret".to_owned()),
+            Some("Bearer openrouter-secret".to_owned()),
+        ],
+        "a key must never follow a qualified-looking model string to another provider"
+    );
+    let bodies = http
+        .bodies()
+        .into_iter()
+        .map(|body| serde_json::from_slice::<Value>(&body).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(bodies[0]["model"], "gpt-4o");
+    assert_eq!(bodies[1]["model"], "openai/gpt-4o");
+    assert_eq!(bodies[2]["web_search"]["allowed_domains"][0], "example.com");
+    assert_eq!(
+        bodies[3]["web_search"]["blocked_domains"][0],
+        "blocked.example"
+    );
+}
+
+#[test]
+fn unscoped_collision_fails_before_authentication_or_http() {
+    let http = ScriptedTransport::new(vec![]);
+    let (c, _) = openai_openrouter_client(http.clone());
+    let err = block_on(c.complete(
+        &request("openai/gpt-4o"),
+        &RequestOptions {
+            credential: Some(lingxi_agent_api::protocol::Secret::new(
+                "primary-secret".to_owned(),
+            )),
+            ..RequestOptions::default()
+        },
+    ))
+    .unwrap_err();
+
+    assert!(
+        matches!(err, LlmError::ModelUnavailable { ref message } if message.contains("ambiguous")),
+        "an unsafe unscoped reference should fail as model resolution: {err}"
+    );
+    assert!(
+        http.hops().is_empty(),
+        "no provider should receive the request"
+    );
+    assert!(
+        http.auth_headers().is_empty(),
+        "no credential should be applied"
+    );
 }
 
 #[test]
@@ -836,6 +1566,56 @@ fn streaming_walks_the_same_connections_and_decodes_through_the_codec() {
     );
     assert!(matches!(events[0], StreamEvent::TextDelta { block: 0, .. }));
     assert!(matches!(events[2], StreamEvent::End { .. }));
+}
+
+#[test]
+fn an_interrupted_http_error_body_keeps_the_known_status_and_fails_over() {
+    let http = InterruptedErrorBodyTransport::new(true);
+    let c = failover_pair_with_transport(http.clone());
+
+    let stream = block_on(c.stream(
+        &request("m-1"),
+        &RequestOptions {
+            stream: true,
+            ..RequestOptions::default()
+        },
+    ))
+    .expect("a known 429 remains eligible for failover when its body is interrupted");
+
+    assert_eq!(stream.status(), 200);
+    assert_eq!(
+        http.hops(),
+        vec![
+            "https://one.test/chat/completions",
+            "https://two.test/chat/completions"
+        ]
+    );
+}
+
+#[test]
+fn an_exhausted_interrupted_http_error_body_keeps_429_retry_after_and_body() {
+    let http = InterruptedErrorBodyTransport::new(false);
+    let c = failover_pair_with_transport(http.clone());
+
+    let result = block_on(c.stream(
+        &request("m-1"),
+        &RequestOptions {
+            stream: true,
+            ..RequestOptions::default()
+        },
+    ));
+    let err = match result {
+        Ok(_) => panic!("both 429 responses should remain failures"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(err, LlmError::RateLimited { ref message, retry_after: Some(duration) }
+            if duration == std::time::Duration::from_secs(7)
+                && message.contains("quota exceeded")),
+        "the final classified error retains the status, collected body, and Retry-After: {err}"
+    );
+    assert_eq!(http.hops().len(), 2);
 }
 
 #[test]
@@ -1340,6 +2120,59 @@ fn client_methods_determine_wire_mode() {
         }
         assert_eq!(opts.stream, !streaming, "caller options stay unchanged");
     }
+}
+
+#[derive(Default)]
+struct BodyRecorder {
+    bodies: Mutex<Vec<Vec<u8>>>,
+}
+
+#[async_trait]
+impl Transport for BodyRecorder {
+    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+        self.bodies.lock().unwrap().push(request.body.to_vec());
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: Bytes::from_static(
+                br#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"m"}"#,
+            ),
+        })
+    }
+
+    async fn open_stream(&self, _request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        unreachable!("this regression exercises completion mode")
+    }
+
+    async fn open_responses_websocket_session(
+        &self,
+        _request: HttpRequest,
+    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
+        unreachable!("this regression exercises completion mode")
+    }
+}
+
+#[test]
+fn complete_cannot_be_changed_to_streaming_by_profile_body_extras() {
+    let mut profile = solo("acme", "https://a.test", model("m", "m"));
+    profile.extra = json!({"body": {"stream": true}});
+    let http = Arc::new(BodyRecorder::default());
+    let client = LlmClientBuilder::with_transport(http.clone(), &[profile])
+        .build()
+        .unwrap();
+
+    block_on(client.complete(
+        &request("m"),
+        &RequestOptions {
+            stream: true,
+            ..RequestOptions::default()
+        },
+    ))
+    .expect("the completion response should decode normally");
+
+    let bodies = http.bodies.lock().unwrap();
+    let body: Value = serde_json::from_slice(&bodies[0]).unwrap();
+    assert_eq!(body.get("stream"), None);
 }
 
 #[test]

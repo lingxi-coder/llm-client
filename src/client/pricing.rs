@@ -38,6 +38,11 @@ pub fn estimate(
     usage: &Usage,
     pricing_model: &PricingModelRef,
 ) -> Result<CostEstimate, LlmError> {
+    if usage.cache_write_1h_tokens != 0 {
+        return Err(LlmError::CostUnavailable {
+            message: "one-hour cache-write tokens have no separate published rate".to_owned(),
+        });
+    }
     if usage.reasoning_tokens > usage.output_tokens {
         return Err(LlmError::CostUnavailable {
             message: "reasoning tokens exceed output tokens".to_owned(),
@@ -325,5 +330,25 @@ mod tests {
             matches!(&err, LlmError::CostUnavailable { message } if message.contains("cache_read")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn one_hour_cache_writes_cannot_use_the_generic_cache_write_rate() {
+        let p = TokenPricing {
+            input_per_million: Some(1.0),
+            output_per_million: Some(1.0),
+            cache_write_per_million: Some(4.0),
+            ..TokenPricing::default()
+        };
+        let u = Usage {
+            cache_write_tokens: 10,
+            cache_write_1h_tokens: 10,
+            ..Usage::default()
+        };
+
+        assert!(matches!(
+            estimate(&p, Submission::Interactive, None, 0, &u, &model()),
+            Err(LlmError::CostUnavailable { message }) if message.contains("one-hour")
+        ));
     }
 }

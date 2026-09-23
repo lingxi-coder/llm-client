@@ -1,0 +1,26 @@
+provider_id = "kimi"
+base_url = "https://api.moonshot.ai/v1"
+protocol = "open_ai_responses"
+model_list = "open_ai_chat"
+auth = "bearer"
+credential_env = "MOONSHOT_INTL_API_KEY"
+billing_mode = "per_token"
+display_name = "Kimi Search International"
+description = "Kimi server-managed web search on the international API."
+console_url = "https://platform.kimi.ai"
+api_key_url = "https://platform.kimi.ai/console/api-keys"
+docs_url = "https://platform.kimi.ai/docs/api/responses"
+connection = { group = "kimi-search-intl", connection_id = "responses", order = 0 }
+extra = { web_search = "kimi" }
+
+[[model]]
+id = "kimi-k3"
+name = "Kimi K3"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+attachment = true

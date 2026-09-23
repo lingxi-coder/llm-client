@@ -48,13 +48,16 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
 
     Ok(CompletionResponse {
         web_search: crate::codecs::web_search_decode::gemini(&candidate),
+        file_search: None,
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
         },
         // A candidate that produced a function call is a tool turn whatever
         // `finishReason` says: this wire reports STOP for both.
-        stop_reason: if saw_tool_call {
+        stop_reason: if prompt_feedback_is_blocking(&body) {
+            StopReason::Refusal
+        } else if saw_tool_call {
             StopReason::ToolUse
         } else {
             stop_reason(candidate.get("finishReason").and_then(Value::as_str))
@@ -208,6 +211,15 @@ pub fn stop_reason(s: Option<&str>) -> StopReason {
     }
 }
 
+/// Prompt-level blocking applies even when the provider returns no candidate.
+/// Keep the buffered and streaming decoders on the same interpretation.
+pub(super) fn prompt_feedback_is_blocking(body: &Value) -> bool {
+    body.get("promptFeedback")
+        .and_then(|feedback| feedback.get("blockReason"))
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty() && reason != "BLOCK_REASON_UNSPECIFIED")
+}
+
 /// Cached tokens are reported as a *subset* of the prompt count here, so they
 /// are subtracted out: every bucket has to be independently billable or the
 /// same tokens are paid for twice.
@@ -221,12 +233,16 @@ pub fn usage(u: &Value) -> Usage {
     let cached = n("cachedContentTokenCount");
     let thoughts = n("thoughtsTokenCount");
     Usage {
-        input_tokens: prompt.saturating_sub(cached),
+        input_tokens: prompt
+            .saturating_sub(cached)
+            .saturating_add(n("toolUsePromptTokenCount")),
         output_tokens: n("candidatesTokenCount").saturating_add(thoughts),
         cache_read_tokens: cached,
         cache_write_tokens: 0,
+        cache_write_1h_tokens: 0,
         reasoning_tokens: thoughts,
         cost: None,
+        server_tool_usage: None,
     }
 }
 

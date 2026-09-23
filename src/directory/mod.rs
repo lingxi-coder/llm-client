@@ -66,6 +66,19 @@ pub struct ModelPage {
     pub next_cursor: Option<String>,
 }
 
+/// One decoded page with any operation support the directory states explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedModelPage {
+    /// Models the directory can identify as usable or legacy-compatible.
+    pub page: ModelPage,
+    /// Model ids explicitly known to be incompatible with this directory's
+    /// protocol family.
+    pub incompatible_model_ids: Vec<String>,
+    /// Model ids explicitly known to support this directory's protocol family.
+    /// Rows with absent operation metadata are deliberately omitted.
+    pub explicitly_compatible_model_ids: Vec<String>,
+}
+
 /// How to ask one shape of endpoint what it serves, and how to read the answer.
 ///
 /// Registered per `ProtocolFamily` like a codec, but looked up through
@@ -83,6 +96,24 @@ pub trait ModelDirectory: Send + Sync + 'static {
     fn list_request(&self, profile: &ProviderProfile, cursor: Option<&str>) -> HttpRequest;
 
     fn decode_page(&self, resp: &HttpResponse) -> Result<ModelPage, LlmError>;
+
+    /// Decode a page and identify model ids explicitly known to be incompatible
+    /// with this directory's protocol family.
+    ///
+    /// The default preserves the original directory contract and reports no
+    /// explicit operation support. Implementations that can distinguish
+    /// listed-but-unusable models or known-compatible models can return those
+    /// ids so provider sync updates stale copies safely.
+    fn decode_page_with_exclusions(
+        &self,
+        resp: &HttpResponse,
+    ) -> Result<DecodedModelPage, LlmError> {
+        self.decode_page(resp).map(|page| DecodedModelPage {
+            page,
+            incompatible_model_ids: Vec::new(),
+            explicitly_compatible_model_ids: Vec::new(),
+        })
+    }
 }
 
 // Gate 3.

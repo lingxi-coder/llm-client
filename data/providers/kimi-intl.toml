@@ -1,0 +1,34 @@
+provider_id = "kimi"
+base_url = "https://api.moonshot.ai/v1"
+protocol = "open_ai_chat"
+auth = "api_key"
+credential_env = "MOONSHOT_INTL_API_KEY"
+billing_mode = "per_token"
+display_name = "Kimi International"
+description = "Kimi models on Moonshot's international API."
+console_url = "https://platform.kimi.ai"
+api_key_url = "https://platform.kimi.ai/console/api-keys"
+connection = { group = "kimi-intl", connection_id = "chat", order = 0 }
+extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
+
+[[model]]
+id = "kimi-k2.5"
+name = "Kimi K2.5"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
+
+[[model]]
+id = "kimi-k2.6"
+name = "Kimi K2.6"
+context_window = 262144
+max_output = 262144
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true

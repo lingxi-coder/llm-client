@@ -93,6 +93,10 @@ fn generate_content_page(next: Option<&str>) -> Value {
     body
 }
 
+fn gemini_page_with_models(models: Value) -> Value {
+    json!({"models": models})
+}
+
 fn page_of(d: &dyn ModelDirectory, body: Value) -> Result<ModelPage, LlmError> {
     d.decode_page(&ok(body))
 }
@@ -124,6 +128,59 @@ fn each_shape_reads_the_page_its_own_wire_sends() {
     );
     assert_eq!(page.models[0].context_window, Some(1_048_576));
     assert_eq!(page.models[0].max_output_tokens, Some(65_536));
+}
+
+#[test]
+fn gemini_directory_keeps_generation_models_and_skips_known_other_operations() {
+    let page = page_of(
+        &GeminiDirectory,
+        gemini_page_with_models(json!([
+            {
+                "name": "models/gemini-2.5-pro",
+                "supportedGenerationMethods": ["countTokens", "generateContent"]
+            },
+            {
+                "name": "models/gemini-embedding-001",
+                "supportedGenerationMethods": ["embedContent"]
+            },
+            {
+                "name": "models/empty-method-list",
+                "supportedGenerationMethods": []
+            },
+            {"name": "models/legacy-compatible", "displayName": "Older directory row"}
+        ])),
+    )
+    .expect("valid generation and legacy rows decode");
+
+    let ids: Vec<_> = page
+        .models
+        .iter()
+        .map(|model| model.request_model.as_str())
+        .collect();
+    assert_eq!(ids, ["gemini-2.5-pro", "legacy-compatible"]);
+}
+
+#[test]
+fn gemini_directory_rejects_malformed_supported_generation_methods() {
+    for (label, methods) in [
+        ("null", Value::Null),
+        ("number", json!(42)),
+        ("object", json!({"method": "generateContent"})),
+        ("non-string member", json!(["generateContent", 42])),
+    ] {
+        let err = page_of(
+            &GeminiDirectory,
+            gemini_page_with_models(json!([{
+                "name": "models/gemini-model",
+                "supportedGenerationMethods": methods
+            }])),
+        )
+        .expect_err("present method metadata must match Google's string-array schema");
+        assert!(
+            matches!(err, LlmError::ProviderInternal { .. }),
+            "{label}: {err}"
+        );
+    }
 }
 
 /// Where a shape publishes more than the bare id, it is read; a vendor that
@@ -229,6 +286,119 @@ fn a_cursor_is_produced_only_while_the_provider_says_there_is_more() {
     assert_eq!(
         blank.next_cursor, None,
         "an empty token is how this wire spells 'no more', not a page to ask for"
+    );
+}
+
+#[test]
+fn gemini_next_page_token_accepts_protocol_end_markers_and_rejects_other_types() {
+    for (label, token) in [
+        ("null", Some(Value::Null)),
+        ("empty string", Some(json!(""))),
+        ("missing", None),
+    ] {
+        let mut body = generate_content_page(None);
+        if let Some(token) = token {
+            body["nextPageToken"] = token;
+        }
+        assert_eq!(
+            page_of(&GeminiDirectory, body)
+                .unwrap_or_else(|error| panic!("{label}: {error}"))
+                .next_cursor,
+            None,
+            "{label} ends pagination"
+        );
+    }
+
+    for (label, token) in [
+        ("number", json!(42)),
+        ("boolean", json!(true)),
+        ("array", json!(["token"])),
+        ("object", json!({"token": "next"})),
+    ] {
+        let mut body = generate_content_page(None);
+        body["nextPageToken"] = token;
+        let err = page_of(&GeminiDirectory, body)
+            .expect_err("a malformed nextPageToken must not masquerade as the last page");
+        assert!(
+            matches!(err, LlmError::ProviderInternal { .. }),
+            "{label}: {err}"
+        );
+    }
+}
+
+#[test]
+fn anthropic_pages_that_claim_more_require_a_usable_last_id() {
+    let malformed = [
+        ("missing", None),
+        ("empty", Some(json!(""))),
+        ("null", Some(Value::Null)),
+        ("number", Some(json!(42))),
+        ("object", Some(json!({"id": "next"}))),
+        ("boolean", Some(json!(true))),
+    ];
+
+    for (label, last_id) in malformed {
+        let mut body = messages_page(true);
+        if let Some(last_id) = last_id {
+            body["last_id"] = last_id;
+        } else {
+            body.as_object_mut().unwrap().remove("last_id");
+        }
+        let err = page_of(&AnthropicMessagesDirectory, body)
+            .expect_err("has_more=true without a usable cursor contradicts the page");
+        assert!(
+            matches!(err, LlmError::ProviderInternal { .. }),
+            "{label}: {err}"
+        );
+    }
+
+    let mut final_page = messages_page(false);
+    final_page.as_object_mut().unwrap().remove("last_id");
+    assert!(
+        page_of(&AnthropicMessagesDirectory, final_page).is_ok(),
+        "a final page does not need a cursor"
+    );
+}
+
+#[test]
+fn anthropic_pages_require_boolean_has_more_metadata() {
+    let malformed = [
+        ("missing", None),
+        ("null", Some(Value::Null)),
+        ("string", Some(json!("false"))),
+        ("number", Some(json!(0))),
+        ("object", Some(json!({"has_more": false}))),
+    ];
+
+    for (label, has_more) in malformed {
+        let mut body = messages_page(true);
+        if let Some(has_more) = has_more {
+            body["has_more"] = has_more;
+        } else {
+            body.as_object_mut().unwrap().remove("has_more");
+        }
+        let err = page_of(&AnthropicMessagesDirectory, body)
+            .expect_err("pagination metadata must explicitly say whether another page exists");
+        assert!(
+            matches!(err, LlmError::ProviderInternal { .. }),
+            "{label}: {err}"
+        );
+    }
+
+    let mut final_page = messages_page(false);
+    final_page.as_object_mut().unwrap().remove("last_id");
+    assert_eq!(
+        page_of(&AnthropicMessagesDirectory, final_page)
+            .expect("has_more=false is a valid final page")
+            .next_cursor,
+        None
+    );
+    assert_eq!(
+        page_of(&AnthropicMessagesDirectory, messages_page(true))
+            .expect("has_more=true with last_id is a valid continuation")
+            .next_cursor
+            .as_deref(),
+        Some("claude-sonnet-4-5-20250929")
     );
 }
 
@@ -341,7 +511,13 @@ fn every_preset_either_publishes_a_directory_or_says_it_does_not() {
     }
     assert_eq!(
         declared_none,
-        ["deepseek-search", "glm-coding"],
+        [
+            "deepseek-search",
+            "glm-coding",
+            "minimax",
+            "minimax-intl",
+            "zai-coding",
+        ],
         "compatibility endpoints without a configured model-directory route"
     );
 }

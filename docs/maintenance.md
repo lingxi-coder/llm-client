@@ -1,13 +1,17 @@
 # 目录维护与发布
 
+[English](maintenance.en.md)
+
 ## 更新静态目录
 
 `data/providers/*.toml` 是随 crate 打包的静态快照，`build.rs` 只负责从目录生成文件列表。本仓库没有原工作区的 `scripts/vendor-catalog.py`，模型和价格更新需直接编辑这些 TOML 文件。
 
 1. 从 provider 官方模型目录和价格文档核对模型 ID、能力、上下文窗口、发布日期、token 费率与生效时间。记录所依据的链接和核对日期，不能确认的价格保持缺失，不要推测。
 2. 保留第一个 `[[model]]` 之前手工维护的连接地址、协议、认证、计费与 provider 展示信息；在其后更新模型块。TOML 中表头之后的裸键会绑定到当前表，新增路由字段必须放在第一个表头之前。
-3. 检查模型别名、搜索适配器、峰值时段和 region 专用连接。不要把实时目录返回的模型自动合并到静态快照；宿主需要自行合并并重建客户端。
-4. 运行 `cargo test --workspace --locked`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 与 `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked`。价格变化另用实际 provider 文档人工核对，测试不能证明线上费率仍然有效。
+3. 检查模型别名、搜索适配器、峰值时段和 region 专用连接。实时目录同步只更新宿主的本地配置，不改写仓库静态快照；维护静态目录仍需核对上游资料。缺失的能力字段保留未知，明确的 `false` 才写为不支持。
+4. 运行 `cargo test --workspace --locked`、`cargo test -p lingxi-agent-api --no-default-features --locked`、`cargo check -p lingxi-llm-client --locked`、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 与 `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked`。独立检查最小 feature 集，避免工作区默认 feature 的合并掩盖 LLM-only 构建问题。价格变化另用实际 provider 文档人工核对，测试不能证明线上费率仍然有效。
+
+第一方 Anthropic 预设的 `id` 使用官方 wire ID；旧聚合平台名称只保存在 `aliases` 中用于本地解析。更新时核对[官方 ID 规则](https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions)和[退役表](https://platform.claude.com/docs/en/about-claude/model-deprecations)，不要把聚合平台 ID 去掉前缀后直接发送到官方端点。2026-09-23 已移除第一方退役的 Haiku 3、Opus 4/4.1 和 Sonnet 4；聚合平台自己的条目保持不变。
 
 ## 发布 0.1.0
 

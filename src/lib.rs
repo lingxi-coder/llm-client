@@ -28,11 +28,29 @@ pub mod framing;
 pub mod presets;
 pub mod transport;
 
+/// Shared wire protocol types re-exported for callers that do not need to
+/// depend on `lingxi-agent-api` directly.
+pub use lingxi_agent_api::protocol;
+
 pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator};
+pub use client::account::{
+    AccountRpc, CodexAccountSource, CopilotAccountSource, KimiCodeAccountSource,
+};
+pub use client::files::{
+    capabilities as provider_file_capabilities,
+    capabilities_for_purpose as provider_file_capabilities_for_purpose, DownloadSupport,
+    FileCapabilities, FileOperation, FilePurpose, FileService, ModelFileReference,
+    ProviderFileContent, ProviderFileMetadata, ProviderFilePage, ProviderFileRef, UploadFile,
+    MAX_PROVIDER_FILE_DOWNLOAD_BYTES,
+};
 pub use client::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 pub use client::{
-    BuildError, LlmClient, LlmClientBuilder, ModelStream, ProviderStoreError, RequestOptions,
-    ResolveError,
+    AccountBalance, AccountCostBucket, AccountCostUsage, AccountFailure, AccountIdentity,
+    AccountMetric, AccountQuery, AccountQuotaWindow, AccountScope, AccountScopeKind,
+    AccountSelector, AccountSnapshot, AccountSubscription, AccountTokenBucket, AccountTokenUsage,
+    AccountUsageError, AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError,
+    LlmClient, LlmClientBuilder, ModelStream, ProviderStoreError, ProviderSyncOperation,
+    ProviderSyncResult, RequestOptions, ResolveError, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;
@@ -42,8 +60,8 @@ pub use codecs::hosted::{
 pub use codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 pub use codecs::{FrameStream, StreamDecoder, WireCodec};
 pub use directory::{
-    AnthropicMessagesDirectory, GeminiDirectory, LiveModel, ModelDirectory, ModelPage,
-    OpenAiChatDirectory,
+    AnthropicMessagesDirectory, DecodedModelPage, GeminiDirectory, LiveModel, ModelDirectory,
+    ModelPage, OpenAiChatDirectory,
 };
 pub use framing::sse::SseFrameSplitter;
 pub use presets::{builtin as builtin_providers, merge as merge_providers, PresetError};

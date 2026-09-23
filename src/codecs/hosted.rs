@@ -122,6 +122,10 @@ impl WireCodec for FoundryClaudeCodec {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VertexClaudeCodec;
 
+/// Vertex Claude expects this platform-specific version in the body when a
+/// profile has not pinned its own `api_version`.
+const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
+
 impl WireCodec for VertexClaudeCodec {
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::VertexClaude
@@ -145,8 +149,12 @@ impl WireCodec for VertexClaudeCodec {
             profile.base_url.trim_end_matches('/'),
             route.request_model
         );
-        let version = header_value(&http, "anthropic-version")
-            .unwrap_or_else(|| crate::codecs::anthropic::DEFAULT_API_VERSION.to_owned());
+        let version = profile
+            .extra
+            .get("api_version")
+            .and_then(Value::as_str)
+            .unwrap_or(VERTEX_ANTHROPIC_VERSION)
+            .to_owned();
         http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
@@ -192,7 +200,7 @@ impl WireCodec for VertexGeminiCodec {
             &route.request_model,
             opts.stream,
         );
-        gemini::encode::request_to(req, profile, &url)
+        gemini::encode::request_to(req, profile, &url, opts)
     }
 
     fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
@@ -239,20 +247,14 @@ fn strip_body_key(http: &mut HttpRequest, key: &str) -> Result<(), LlmError> {
     })
 }
 
-fn header_value(http: &HttpRequest, name: &str) -> Option<String> {
-    http.headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.clone())
-}
-
 /// The Anthropic Messages body on Amazon Bedrock: signed with SigV4 and
 /// streamed as AWS event-stream frames rather than SSE.
 ///
 /// Four differences from the first-party wire, each load-bearing:
 /// the model is in the URL path; `model` leaves the body; `anthropic_version`
 /// moves into the body as Bedrock's own constant; and the `anthropic-version`
-/// header is removed, because Bedrock rejects it.
+/// header is removed, because Bedrock rejects it. The endpoint action chooses
+/// streaming, so the first-party `stream` body field is removed too.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BedrockClaudeCodec;
 
@@ -278,16 +280,14 @@ impl WireCodec for BedrockClaudeCodec {
         } else {
             "invoke"
         };
-        // A Bedrock model id contains a colon; it goes in the path raw, and
-        // SigV4 canonicalisation handles the escaping.
-        http.url = format!(
-            "{}/model/{}/{action}",
-            profile.base_url.trim_end_matches('/'),
-            route.request_model
-        );
+        http.url = bedrock_model_url(&profile.base_url, &route.request_model, action)?;
         http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
+            // Bedrock selects streaming through the invoke-with-response-stream
+            // endpoint; Anthropic's first-party `stream` field is not part of
+            // the Bedrock request body.
+            body.remove("stream");
             body.insert(
                 "anthropic_version".to_owned(),
                 Value::String(BEDROCK_ANTHROPIC_VERSION.to_owned()),
@@ -307,6 +307,31 @@ impl WireCodec for BedrockClaudeCodec {
     fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
         AnthropicMessagesCodec.response_usage(resp)
     }
+}
+
+/// Construct Bedrock's model endpoint while keeping the model ID in one URL
+/// path segment. ARNs use `/` inside their resource component, which must be
+/// escaped so it cannot become another path separator; `Url` leaves the ARN's
+/// colons intact.
+fn bedrock_model_url(base_url: &str, model_id: &str, action: &str) -> Result<String, LlmError> {
+    let mut url = reqwest::Url::parse(base_url.trim_end_matches('/')).map_err(|e| {
+        LlmError::InvalidRequest {
+            message: format!("Bedrock base URL is invalid: {e}"),
+        }
+    })?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| LlmError::InvalidRequest {
+                message: "Bedrock base URL cannot accept path segments".to_owned(),
+            })?;
+        segments
+            .pop_if_empty()
+            .push("model")
+            .push(model_id)
+            .push(action);
+    }
+    Ok(url.into())
 }
 
 /// Unwraps AWS event-stream frames and feeds what is inside to the Anthropic

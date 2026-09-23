@@ -1,23 +1,25 @@
 # LLM Web Search
 
+[English](web-search.en.md)
+
 `LlmClient::web_search()` 和 `web_search_stream()` 为单次请求启用 provider 托管的搜索，不需要实现搜索函数或注册客户端 `ToolSpec`。也可设置 `CompletionRequest.web_search` 后调用 `complete()` / `stream()`；默认 `None`，保持原请求行为。服务端决定是否搜索；启用不保证每次都会搜索。
 
 ## 快速使用
 
-内置 `openai`、`anthropic`、`gemini`、`openrouter`、`zai`、`glm`、`kimi-search` 和 `deepseek-search` profile 已声明搜索适配器。使用支持搜索的模型，在已有请求上设置：
+内置 `openai`、`anthropic`、`gemini`、`openrouter`、`zai`、`glm`、`kimi-search`、`kimi-search-intl`、Qwen Search 和 MiniMax profile 已声明搜索适配器。使用支持搜索的模型，在已有请求上设置：
 
 ```rust
-use lingxi_agent_api::protocol::WebSearchConfig;
-# let mut request: lingxi_agent_api::protocol::CompletionRequest = serde_json::from_value(serde_json::json!({"model": "openai/gpt-4.1", "messages": []})).unwrap();
+use lingxi_llm_client::protocol::WebSearchConfig;
+# let mut request: lingxi_llm_client::protocol::CompletionRequest = serde_json::from_value(serde_json::json!({"model": "gpt-4.1", "messages": []})).unwrap();
 request.web_search = Some(WebSearchConfig::default());
 ```
 
-可通过 `client.complete(&request, &options)` 发送，也可将配置作为独立参数传入 `client.web_search(&request, WebSearchConfig::default(), &options)`；流式对应 `web_search_stream()`。后两者不会修改 `request`，并覆盖其中已有的 `web_search` 配置。搜索功能是否对具体模型、账户和部署开放由 provider 校验；profile 声明仅表示该连接使用哪种搜索接口，不代表其目录中的全部模型都支持搜索。
+已知凭证所属连接时，推荐通过 `client.complete_in("openai", &request, &options)` 发送，也可将配置作为独立参数传入 `client.web_search_in("openai", &request, WebSearchConfig::default(), &options)`；流式对应 `web_search_stream_in()`。`request.model` 可直接使用该连接的原生模型 ID。搜索方法不会修改 `request`，并覆盖其中已有的 `web_search` 配置。未限定连接的 `complete()`、`web_search()` 和 `web_search_stream()` 仍可使用，但原生模型 ID 与 `profile/model` 有不同解释时会返回歧义错误。搜索功能是否对具体模型、账户和部署开放由 provider 校验；profile 声明仅表示该连接使用哪种搜索接口，不代表其目录中的全部模型都支持搜索。
 
 限定来源或搜索次数：
 
 ```rust
-use lingxi_agent_api::protocol::WebSearchConfig;
+use lingxi_llm_client::protocol::WebSearchConfig;
 let search = WebSearchConfig {
     allowed_domains: vec!["rust-lang.org".into()],
     ..WebSearchConfig::default()
@@ -29,8 +31,10 @@ let search = WebSearchConfig {
 | `extra.web_search` | 协议 | 编码 | 支持的附加选项 |
 | --- | --- | --- | --- |
 | `openai_responses` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains`，最多 100 个 |
+| `qwen` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains`，最多 100 个；不支持 `blocked_domains` |
 | `openai_chat` | `open_ai_chat` | `web_search_options: {}` | 无；需要专用搜索模型 |
 | `anthropic` | `anthropic_messages`、`foundry_claude`、`vertex_claude` | `web_search_20250305` | `allowed_domains` 或 `blocked_domains`；正数 `max_uses` |
+| `minimax` | `anthropic_messages` | `web_search_20250305` | 不支持域名过滤或 `max_uses`；`ToolChoice` 仅 `Auto` / `None` |
 | `gemini` | `gemini_generate_content`、`vertex_gemini` | `tools: [{googleSearch: {}}]` | 无 |
 | `openrouter` | `open_ai_chat` | `tools: [{type: "openrouter:web_search"}]` | `allowed_domains` 或 `blocked_domains` |
 | `glm` | `open_ai_chat` | `tools: [{type: "web_search", web_search: {...}}]` | 一个 `allowed_domains` 域名；引擎由 profile 指定 |
@@ -40,14 +44,14 @@ let search = WebSearchConfig {
 
 内置 profile 的示例模型、连接地址和凭证来源见下文。对自定义 profile，`extra.web_search` 必须与其协议匹配。`WebSearchConfig` 序列化后也是 JSON 接口的一部分，例如 `{"model":"glm/glm-4.7","messages":[...],"web_search":{"allowed_domains":["example.com"]}}`。域名参数只能写域名，不含 scheme、路径或空格。空配置 `{}` 等价于 `WebSearchConfig::default()`。
 
-统一选项仅接受不含协议前缀和路径的域名；允许列表和禁止列表不能同时设置。不支持的选项返回 `UnsupportedCapability`，格式错误返回 `InvalidRequest`。普通工具与搜索工具会合并，已有工具不会被覆盖。Gemini、Chat 搜索、GLM、Kimi 和 DeepSeek 搜索适配器要求 `ToolChoice::Auto`；其他接口会保留 `None`、`Any` 等选择。`None` 表示禁止本次工具执行。
+统一选项仅接受不含协议前缀和路径的域名；允许列表和禁止列表不能同时设置。不支持的选项返回 `UnsupportedCapability`，格式错误返回 `InvalidRequest`。普通工具与搜索工具会合并，已有工具不会被覆盖。Gemini、Chat 搜索、GLM、Kimi、Qwen 和 DeepSeek 搜索适配器要求 `ToolChoice::Auto`；MiniMax 只接受 `Auto` / `None`。其他接口会保留 `None`、`Any` 等选择。`None` 表示禁止本次工具执行。
 
 自定义连接必须显式声明 `profile.extra["web_search"]`。未声明、适配器未知、协议不匹配或 Bedrock 请求搜索时，会在发送网络请求前报错。故障转移的每条连接也会重新校验，不会自动删除搜索要求。
 
 xAI 原有 `grok` 预设使用 Chat Completions，保留此默认路由。要使用 Grok 搜索，可从它克隆一个单独的连接：
 
 ```rust
-use lingxi_agent_api::protocol::{DirectoryRoute, ProtocolFamily};
+use lingxi_llm_client::protocol::{DirectoryRoute, ProtocolFamily};
 # let profiles = lingxi_llm_client::builtin_providers().unwrap();
 let mut profile = profiles.iter()
     .find(|p| p.profile_name == "grok").unwrap().clone();
@@ -71,7 +75,7 @@ profile.extra["web_search"] = serde_json::json!("xai");
 | `kimi-search/kimi-k3` | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` | Responses API，当前官方仅列 K3 |
 
 ```rust
-use lingxi_agent_api::protocol::{CompletionRequest, ConversationMessage, WebSearchConfig};
+use lingxi_llm_client::protocol::{CompletionRequest, ConversationMessage, WebSearchConfig};
 let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
     "model": "kimi-search/kimi-k3",
     "messages": []
@@ -81,6 +85,22 @@ request.web_search = Some(WebSearchConfig::default());
 ```
 
 DeepSeek 官方 [Claude Code 接入文档](https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/claude_code/) 声明其 Anthropic 端点支持原生搜索，而 [Responses 兼容表](https://api-docs.deepseek.com/guides/responses_api/) 明确将 `web_search` 列为忽略。故此处只在单独的 Anthropic 连接接入。发送 `web_search_20250305` 是依据 Claude 工具兼容性的推断：DeepSeek 未在文档中单独给出工具版本或高级选项，也尚未用真实凭证验证。原有 `deepseek` Chat 连接继续拒绝统一搜索选项。DeepSeek 搜索连接允许重放无签名 thinking 块，其他 Anthropic 连接仍要求原有签名。
+
+## 中国区与国际区 Profile
+
+同一模型服务的各区域使用独立连接和密钥；按 API Key 所属区域选择 profile，不要把一个区域的 Key 配到另一个区域。普通 Chat 和服务端搜索也保留为独立连接：
+
+| 服务与区域 | Chat profile / URL / 凭证变量 | Search profile / URL / 凭证变量 |
+| --- | --- | --- |
+| Qwen 北京 | `qwen` · `https://dashscope.aliyuncs.com/compatible-mode/v1` · `DASHSCOPE_API_KEY` | `qwen-search` · 同域 · `DASHSCOPE_API_KEY` |
+| Qwen 新加坡 | `qwen-intl` · `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` · `DASHSCOPE_INTL_API_KEY` | `qwen-search-intl` · 同域 · `DASHSCOPE_INTL_API_KEY` |
+| Qwen 美国弗吉尼亚 | `qwen-us` · `https://dashscope-us.aliyuncs.com/compatible-mode/v1` · `DASHSCOPE_US_API_KEY` | `qwen-search-us` · 同域 · `DASHSCOPE_US_API_KEY` |
+| Qwen 香港 | `qwen-hk` · `https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1` · `DASHSCOPE_HK_API_KEY` | `qwen-search-hk` · 同域 · `DASHSCOPE_HK_API_KEY` |
+| MiniMax 中国 | `minimax` · `https://api.minimaxi.com/anthropic` · `MINIMAX_CN_API_KEY` | `minimax` · 同域 · `MINIMAX_CN_API_KEY` |
+| MiniMax 国际 | `minimax-intl` · `https://api.minimax.io/anthropic` · `MINIMAX_API_KEY` | `minimax-intl` · 同域 · `MINIMAX_API_KEY` |
+| Kimi 国际 | `kimi-intl` · `https://api.moonshot.ai/v1` · `MOONSHOT_INTL_API_KEY` | `kimi-search-intl` · 同域 · `MOONSHOT_INTL_API_KEY` |
+
+`qwen-search` 与 `qwen-search-intl` 也声明 Qwen Responses 知识库检索；该请求另需 `FileSearchConfig { knowledge_base_id, workspace_id }`。Qwen 文件知识库接口会将工作区 ID 放进对应区域的专属 Model Studio 域名。其他区域的 Qwen Search profile 只声明 Web Search。
 
 GLM 使用 `enable: true`、`search_result: true`，国内默认引擎 `search_pro`，Z.AI 默认 `search-prime`。自定义连接可用 `extra.web_search_engine` 指定其账户可用的引擎。返回的 `web_search` 原始条目保存在 metadata，`link/title` 转为来源列表，`refer`、摘要及发布日期均保留；流式的无 choices 搜索帧也会保留。`glm-coding` 未声明该能力，因为 Coding Plan 的 MCP 搜索不是同一个聊天 API。
 

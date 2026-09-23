@@ -1,0 +1,22 @@
+provider_id = "zhipu"
+base_url = "https://api.z.ai/api/anthropic"
+protocol = "anthropic_messages"
+model_list = "none"
+auth = "api_key"
+credential_env = "ZAI_CODING_API_KEY"
+billing_mode = "subscription"
+display_name = "GLM Coding Plan International"
+description = "GLM Coding Plan on Z.AI's international Anthropic-compatible API."
+console_url = "https://z.ai"
+api_key_url = "https://z.ai/manage-apikey/apikey-list"
+connection = { group = "zhipu-coding-intl", connection_id = "anthropic", order = 0 }
+
+[[model]]
+id = "glm-4.7"
+name = "GLM-4.7"
+context_window = 204800
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true

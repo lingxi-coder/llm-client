@@ -5,9 +5,9 @@
 //! compaction forever or reports the wrong thing to the user.
 
 use lingxi_agent_api::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
-    ModelCapabilities, ProviderId, ProviderProfile, StopReason, StreamEvent, ToolChoice, ToolSpec,
-    Usage,
+    CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, FailoverTriggers,
+    LlmError, MessageRole, ModelCapabilities, ProtocolFamily, ProviderFileSource, ProviderId,
+    ProviderProfile, StopReason, StreamEvent, ToolChoice, ToolSpec, Usage,
 };
 use lingxi_llm_client::codecs::openai::chat::{classify_error, OpenAiChatCodec};
 use lingxi_llm_client::{HttpResponse, PricingModelRef, RequestOptions, ResolvedRoute, WireCodec};
@@ -48,6 +48,7 @@ fn request() -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {
@@ -286,6 +287,189 @@ fn nonstream_reasoning_content_replays_when_profile_requires_it() {
     assert_eq!(messages[1]["content"], "The file exists.");
 }
 
+#[test]
+fn a_chat_refusal_keeps_its_text_and_refusal_stop_reason() {
+    let response = HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "model": "wire-m",
+            "choices": [{"finish_reason": "stop", "message": {
+                "refusal": "I can't help with that request."
+            }}]
+        }))
+        .unwrap()
+        .into(),
+    };
+
+    let decoded = OpenAiChatCodec.decode_response(&response).unwrap();
+    assert_eq!(decoded.stop_reason, StopReason::Refusal);
+    assert!(matches!(
+        decoded.message.content.as_slice(),
+        [ContentBlock::Text { text, .. }] if text == "I can't help with that request."
+    ));
+}
+
+#[test]
+fn chat_refusals_do_not_replace_a_more_specific_finish_reason() {
+    let response = HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "model": "wire-m",
+            "choices": [{"finish_reason": "length", "message": {
+                "refusal": "Partial refusal"
+            }}]
+        }))
+        .unwrap()
+        .into(),
+    };
+
+    let decoded = OpenAiChatCodec.decode_response(&response).unwrap();
+    assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
+    assert!(matches!(
+        decoded.message.content.as_slice(),
+        [ContentBlock::Text { text, .. }] if text == "Partial refusal"
+    ));
+}
+
+#[test]
+fn chat_document_urls_fail_before_the_request_is_sent() {
+    let mut req = request();
+    req.messages[0].content = vec![ContentBlock::Document {
+        source: DocumentSource::Url {
+            url: "https://example.test/document.pdf".to_owned(),
+        },
+        title: None,
+    }];
+
+    let error = OpenAiChatCodec
+        .encode_request(
+            &req,
+            &profile(Value::Null),
+            &route(),
+            &RequestOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(error, LlmError::UnsupportedCapability { .. }));
+}
+
+#[test]
+fn provider_file_ids_without_a_bound_account_scope_are_rejected() {
+    let mut req = request();
+    req.messages[0].content = vec![ContentBlock::Document {
+        source: DocumentSource::ProviderFile {
+            file: ProviderFileSource {
+                protocol: ProtocolFamily::OpenAiChat,
+                provider_id: ProviderId::new("acme"),
+                profile_name: "acme".into(),
+                endpoint_fingerprint: String::new(),
+                account_scope: None,
+                file_id: "file_from_another_login".into(),
+                uri: None,
+                media_type: Some("application/pdf".into()),
+                purpose: None,
+            },
+        },
+        title: None,
+    }];
+
+    let error = OpenAiChatCodec
+        .encode_request(
+            &req,
+            &profile(json!({"chat_pdf_only": true})),
+            &route(),
+            &RequestOptions::default(),
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, LlmError::UnsupportedCapability { .. }));
+}
+
+#[test]
+fn direct_openai_chat_rejects_non_pdf_file_payloads() {
+    let mut req = request();
+    let mut openai = profile(Value::Null);
+    openai.base_url = "https://api.openai.com/v1".into();
+    for source in [
+        DocumentSource::Text {
+            media_type: "text/plain".into(),
+            data: "plain text".into(),
+        },
+        DocumentSource::Base64 {
+            media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .into(),
+            data: "dGVzdA==".into(),
+        },
+    ] {
+        req.messages[0].content = vec![ContentBlock::Document {
+            source,
+            title: None,
+        }];
+        let error = OpenAiChatCodec
+            .encode_request(&req, &openai, &route(), &RequestOptions::default())
+            .unwrap_err();
+        assert!(matches!(error, LlmError::UnsupportedCapability { .. }));
+    }
+
+    req.messages[0].content = vec![ContentBlock::Document {
+        source: DocumentSource::Base64 {
+            media_type: "application/pdf".into(),
+            data: "JVBERi0=".into(),
+        },
+        title: None,
+    }];
+    assert!(OpenAiChatCodec
+        .encode_request(&req, &openai, &route(), &RequestOptions::default())
+        .is_ok());
+}
+
+#[test]
+fn chat_output_limit_field_defaults_to_max_tokens_and_can_be_selected() {
+    let mut req = request();
+    req.max_tokens = Some(73);
+
+    let default = encoded(&req, Value::Null);
+    assert_eq!(default["max_tokens"], 73);
+    assert!(default.get("max_completion_tokens").is_none());
+
+    let explicit_default = encoded(&req, json!({"max_tokens_field": "max_tokens"}));
+    assert_eq!(explicit_default["max_tokens"], 73);
+    assert!(explicit_default.get("max_completion_tokens").is_none());
+
+    let o_series = encoded(
+        &req,
+        json!({
+            "max_tokens_field": "max_completion_tokens",
+            "body": {"max_tokens": 999}
+        }),
+    );
+    assert_eq!(o_series["max_completion_tokens"], 73);
+    assert!(o_series.get("max_tokens").is_none());
+
+    let default_with_extra = encoded(&req, json!({"body": {"max_completion_tokens": 999}}));
+    assert_eq!(default_with_extra["max_tokens"], 73);
+    assert!(default_with_extra.get("max_completion_tokens").is_none());
+}
+
+#[test]
+fn chat_rejects_an_invalid_output_limit_field_setting() {
+    for invalid in [json!("max_output_tokens"), json!(73), Value::Null] {
+        let error = OpenAiChatCodec
+            .encode_request(
+                &request(),
+                &profile(json!({"max_tokens_field": invalid})),
+                &route(),
+                &RequestOptions::default(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, LlmError::InvalidRequest { .. }),
+            "invalid profile setting {invalid} should fail before sending"
+        );
+    }
+}
+
 fn request_with_assistant(assistant: ConversationMessage) -> CompletionRequest {
     let mut req = request();
     req.messages.push(assistant);
@@ -485,14 +669,58 @@ fn usage_arriving_on_its_own_frame_still_reaches_the_end_event() {
                     output_tokens: 5,
                     cache_read_tokens: 7,
                     cache_write_tokens: 0,
+                    cache_write_1h_tokens: 0,
                     reasoning_tokens: 0,
                     cost: None,
+                    server_tool_usage: None,
                 }
             );
             assert_eq!(*stop_reason, StopReason::EndTurn);
         }
         other => panic!("expected a terminal End, got {other:?}"),
     }
+}
+
+#[test]
+fn streamed_chat_refusals_keep_the_text_and_refusal_stop_reason() {
+    let events = decode(&[
+        r#"{"model":"wire-m","choices":[{"delta":{"refusal":"I can't help with that request."}}]}"#,
+        r#"{"choices":[{"finish_reason":"stop"}]}"#,
+        "[DONE]",
+    ]);
+
+    let text = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert_eq!(text, "I can't help with that request.");
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::End {
+            stop_reason: StopReason::Refusal,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn streamed_chat_refusals_preserve_a_more_specific_finish_reason() {
+    let events = decode(&[
+        r#"{"model":"wire-m","choices":[{"delta":{"refusal":"Partial refusal"}}]}"#,
+        r#"{"choices":[{"finish_reason":"length"}]}"#,
+        "[DONE]",
+    ]);
+
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::End {
+            stop_reason: StopReason::MaxTokens,
+            ..
+        })
+    ));
 }
 
 #[test]

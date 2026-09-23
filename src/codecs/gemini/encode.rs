@@ -6,7 +6,7 @@ use crate::RequestOptions;
 use base64::Engine;
 use lingxi_agent_api::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
-    MessageRole, ProviderProfile, ToolChoice, ToolSpec, ToolUseId,
+    MessageRole, ProviderProfile, ToolChoice, ToolSpec, ToolUseId, VideoSource,
 };
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -21,6 +21,7 @@ pub fn request(
         req,
         profile,
         &super::generate_content_url(&profile.base_url, &route.request_model, opts.stream),
+        opts,
     )
 }
 
@@ -31,16 +32,22 @@ pub(crate) fn request_to(
     req: &CompletionRequest,
     profile: &ProviderProfile,
     url: &str,
+    opts: &RequestOptions,
 ) -> Result<HttpRequest, LlmError> {
     crate::codecs::reject_responses_continuation(
         req,
         lingxi_agent_api::protocol::ProtocolFamily::GeminiGenerateContent,
     )?;
+    if req.file_search.is_some() {
+        return Err(LlmError::UnsupportedCapability {
+            message: "hosted file search is supported only on Qwen Responses profiles".into(),
+        });
+    }
     let names = tool_call_names(&req.messages);
     let mut body = Map::new();
     body.insert(
         "contents".to_owned(),
-        Value::Array(contents(&req.messages, &names)?),
+        Value::Array(contents(&req.messages, &names, profile, opts)?),
     );
 
     if !req.system.is_empty() {
@@ -136,6 +143,8 @@ fn tool_call_names(
 fn contents(
     messages: &[ConversationMessage],
     names: &BTreeMap<ToolUseId, (String, Option<String>)>,
+    profile: &ProviderProfile,
+    opts: &RequestOptions,
 ) -> Result<Vec<Value>, LlmError> {
     let mut out = Vec::new();
     for m in messages {
@@ -151,7 +160,7 @@ fn contents(
         };
         let mut parts = Vec::new();
         for b in &m.content {
-            if let Some(part) = encode_part(b, names)? {
+            if let Some(part) = encode_part(b, names, profile, opts)? {
                 parts.push(part);
             }
         }
@@ -165,6 +174,8 @@ fn contents(
 fn encode_part(
     b: &ContentBlock,
     names: &BTreeMap<ToolUseId, (String, Option<String>)>,
+    profile: &ProviderProfile,
+    opts: &RequestOptions,
 ) -> Result<Option<Value>, LlmError> {
     Ok(match b {
         ContentBlock::ProviderContent { .. } => {
@@ -234,6 +245,33 @@ fn encode_part(
             // The API infers the type from the server's Content-Type, so
             // `mimeType` is deliberately omitted for a URL.
             ImageSource::Url { url } => json!({"fileData": {"fileUri": url}}),
+            ImageSource::Attachment { .. } => {
+                return Err(crate::codecs::unresolved_attachment_error())
+            }
+            ImageSource::ProviderFile { file } => {
+                let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                if !matches!(
+                    file.protocol,
+                    lingxi_agent_api::protocol::ProtocolFamily::GeminiGenerateContent
+                        | lingxi_agent_api::protocol::ProtocolFamily::VertexGemini
+                ) {
+                    return Err(crate::codecs::provider_file_protocol_error());
+                }
+                let uri = file
+                    .uri
+                    .as_deref()
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "Gemini provider file reference is missing its file URI".into(),
+                    })?;
+                let mime_type =
+                    file.media_type
+                        .as_deref()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Gemini provider file reference is missing its media type"
+                                .into(),
+                        })?;
+                json!({"fileData": {"mimeType": mime_type, "fileUri": uri}})
+            }
         }),
         ContentBlock::Document { source, .. } => Some(match source {
             DocumentSource::Base64 { media_type, data } => {
@@ -244,7 +282,48 @@ fn encode_part(
                 json!({"inlineData": {"mimeType": media_type, "data": encoded}})
             }
             DocumentSource::Url { url } => json!({"fileData": {"fileUri": url}}),
+            DocumentSource::Attachment { .. } => {
+                return Err(crate::codecs::unresolved_attachment_error())
+            }
+            DocumentSource::ProviderFile { file } => {
+                let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                if !matches!(
+                    file.protocol,
+                    lingxi_agent_api::protocol::ProtocolFamily::GeminiGenerateContent
+                        | lingxi_agent_api::protocol::ProtocolFamily::VertexGemini
+                ) {
+                    return Err(crate::codecs::provider_file_protocol_error());
+                }
+                let uri = file
+                    .uri
+                    .as_deref()
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "Gemini provider file reference is missing its file URI".into(),
+                    })?;
+                let mime_type =
+                    file.media_type
+                        .as_deref()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Gemini provider file reference is missing its media type"
+                                .into(),
+                        })?;
+                json!({"fileData": {"mimeType": mime_type, "fileUri": uri}})
+            }
         }),
+        ContentBlock::Video { source } => {
+            match source {
+                VideoSource::Attachment { .. } => {
+                    return Err(crate::codecs::unresolved_attachment_error())
+                }
+                VideoSource::ProviderFile { file } => {
+                    let _file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                }
+                VideoSource::Base64 { .. } | VideoSource::Url { .. } => {}
+            }
+            return Err(LlmError::UnsupportedCapability {
+                message: "Gemini video content blocks are not supported by this codec".into(),
+            });
+        }
     })
 }
 

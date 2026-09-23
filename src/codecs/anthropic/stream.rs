@@ -13,7 +13,9 @@ use super::decode;
 use crate::client::usage;
 use crate::codecs::web_search_decode;
 use crate::codecs::StreamDecoder;
-use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, ToolUseId, Usage};
+use lingxi_agent_api::protocol::{
+    ContentBlock, LlmError, StopReason, StreamEvent, ToolUseId, Usage,
+};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
@@ -28,6 +30,9 @@ pub struct AnthropicStreamDecoder {
     /// know which fields a frame actually mentioned. Decoding first throws that
     /// away — an omitted counter and one stated as zero both arrive as `0`.
     usage_raw: Option<Value>,
+    /// `message_start` usage is provisional even when it includes an output
+    /// count. Only a numeric output count in a `message_delta` is final usage.
+    final_output_count_reported: bool,
     stop: Option<StopReason>,
     done: bool,
     search_blocks: Vec<usize>,
@@ -92,6 +97,8 @@ impl StreamDecoder for AnthropicStreamDecoder {
                 // seed's non-zero value would bill a write that did not happen.
                 // Counters it does not mention keep what the seed said.
                 if let Some(u) = root.get("usage") {
+                    self.final_output_count_reported |=
+                        usage::counter(u, "output_tokens").is_some();
                     self.fold_usage(u);
                     if let Some(result) = web_search_decode::with_usage(None, Some(u)) {
                         out.push(StreamEvent::WebSearch { result });
@@ -125,9 +132,11 @@ impl StreamDecoder for AnthropicStreamDecoder {
     }
 
     fn usage_is_complete(&self) -> bool {
-        self.usage_raw
-            .as_ref()
-            .is_some_and(|raw| usage::is_complete(raw, &usage::ANTHROPIC))
+        self.final_output_count_reported
+            && self
+                .usage_raw
+                .as_ref()
+                .is_some_and(|raw| usage::is_complete(raw, &usage::ANTHROPIC))
     }
 
     fn set_provider_metadata(&mut self, _meta: Value) {}
@@ -156,6 +165,11 @@ impl AnthropicStreamDecoder {
         } else if web_search_decode::anthropic(&serde_json::json!({"content":[block]})).is_some() {
             if let Some(result) = web_search_decode::result(serde_json::json!({"events":[root]})) {
                 out.push(StreamEvent::WebSearch { result });
+            }
+        }
+        if block.get("type").and_then(Value::as_str) == Some("redacted_thinking") {
+            if let Some(ContentBlock::RedactedThinking { data }) = decode::decode_block(block) {
+                out.push(StreamEvent::RedactedThinking { block: index, data });
             }
         }
         if block.get("type").and_then(Value::as_str) == Some("tool_use") {

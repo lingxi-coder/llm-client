@@ -5,7 +5,7 @@ use crate::transport::HttpRequest;
 use crate::RequestOptions;
 use lingxi_agent_api::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
-    MessageRole, ProviderProfile, ToolChoice, ToolSpec,
+    MessageRole, ProviderProfile, ToolChoice, ToolSpec, VideoSource,
 };
 use serde_json::{json, Map, Value};
 
@@ -23,6 +23,11 @@ pub fn request(
         req,
         lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages,
     )?;
+    if req.file_search.is_some() {
+        return Err(LlmError::UnsupportedCapability {
+            message: "hosted file search is supported only on Qwen Responses profiles".into(),
+        });
+    }
     let mut body = Map::new();
     body.insert(
         "model".to_owned(),
@@ -61,7 +66,13 @@ pub fn request(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     for m in &req.messages {
-        messages.push(encode_message(m, unsigned_thinking)?);
+        messages.push(encode_message(
+            m,
+            unsigned_thinking,
+            &route.request_model,
+            profile,
+            opts,
+        )?);
     }
     body.insert("messages".to_owned(), Value::Array(messages));
 
@@ -148,7 +159,13 @@ pub fn request(
     })
 }
 
-fn encode_message(m: &ConversationMessage, unsigned_thinking: bool) -> Result<Value, LlmError> {
+fn encode_message(
+    m: &ConversationMessage,
+    unsigned_thinking: bool,
+    model: &str,
+    profile: &ProviderProfile,
+    opts: &RequestOptions,
+) -> Result<Value, LlmError> {
     let role = match m.role {
         MessageRole::Assistant => "assistant",
         // This wire has no system role in `messages`; a system block that got
@@ -157,18 +174,24 @@ fn encode_message(m: &ConversationMessage, unsigned_thinking: bool) -> Result<Va
         MessageRole::System => {
             return Err(LlmError::InvalidRequest {
                 message: "the system prompt belongs in `system`, not in `messages`".to_owned(),
-            })
+            });
         }
         MessageRole::User => "user",
     };
     let mut blocks = Vec::new();
     for b in &m.content {
-        blocks.push(encode_block(b, unsigned_thinking)?);
+        blocks.push(encode_block(b, unsigned_thinking, model, profile, opts)?);
     }
     Ok(json!({"role": role, "content": blocks}))
 }
 
-fn encode_block(b: &ContentBlock, unsigned_thinking: bool) -> Result<Value, LlmError> {
+fn encode_block(
+    b: &ContentBlock,
+    unsigned_thinking: bool,
+    model: &str,
+    profile: &ProviderProfile,
+    opts: &RequestOptions,
+) -> Result<Value, LlmError> {
     Ok(match b {
         ContentBlock::ProviderContent { protocol, value } => {
             if *protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages {
@@ -229,8 +252,35 @@ fn encode_block(b: &ContentBlock, unsigned_thinking: bool) -> Result<Value, LlmE
                 "type": "image",
                 "source": {"type": "url", "url": url},
             }),
+            ImageSource::Attachment { .. } => {
+                return Err(crate::codecs::unresolved_attachment_error());
+            }
+            ImageSource::ProviderFile { file } => {
+                let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages {
+                    return Err(crate::codecs::provider_file_protocol_error());
+                }
+                json!({
+                    "type": "image",
+                    "source": {"type": "file", "file_id": file.file_id},
+                })
+            }
         },
         ContentBlock::Document { source, title } => {
+            let media_type = match source {
+                DocumentSource::Base64 { media_type, .. }
+                | DocumentSource::Text { media_type, .. } => Some(media_type.as_str()),
+                DocumentSource::Attachment { attachment } => Some(attachment.media_type.as_str()),
+                DocumentSource::ProviderFile { file } => file.media_type.as_deref(),
+                DocumentSource::Url { .. } => None,
+            };
+            if media_type.is_some_and(|media_type| {
+                media_type.trim().to_ascii_lowercase().starts_with("image/")
+            }) {
+                return Err(LlmError::InvalidRequest {
+                    message: "Anthropic document blocks cannot use an image media type".into(),
+                });
+            }
             let mut v = match source {
                 DocumentSource::Base64 { media_type, data } => json!({
                     "type": "document",
@@ -244,11 +294,47 @@ fn encode_block(b: &ContentBlock, unsigned_thinking: bool) -> Result<Value, LlmE
                     "type": "document",
                     "source": {"type": "url", "url": url},
                 }),
+                DocumentSource::Attachment { .. } => {
+                    return Err(crate::codecs::unresolved_attachment_error());
+                }
+                DocumentSource::ProviderFile { file } => {
+                    let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                    if file.protocol
+                        != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages
+                    {
+                        return Err(crate::codecs::provider_file_protocol_error());
+                    }
+                    json!({
+                        "type": "document",
+                        "source": {"type": "file", "file_id": file.file_id},
+                    })
+                }
             };
             if let Some(title) = title {
                 v["title"] = Value::String(title.clone());
             }
             v
+        }
+        ContentBlock::Video { source } => {
+            let VideoSource::ProviderFile { file } = source else {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "MiniMax video input requires a provider file uploaded for video_understanding".into(),
+                });
+            };
+            let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+            if profile.provider_id.as_str() != "minimax"
+                || !model.eq_ignore_ascii_case("minimax-m3")
+                || file.protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages
+                || file.purpose.as_deref() != Some("video_understanding")
+            {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "video file references are supported only by MiniMax M3".into(),
+                });
+            }
+            json!({
+                "type": "video",
+                "source": {"type": "url", "url": format!("mm_file://{}", file.file_id)},
+            })
         }
     })
 }

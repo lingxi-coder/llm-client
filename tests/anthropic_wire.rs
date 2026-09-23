@@ -55,6 +55,7 @@ fn request(content: Vec<ContentBlock>) -> CompletionRequest {
     CompletionRequest {
         model: "m".to_owned(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {
@@ -185,6 +186,40 @@ fn redacted_thinking_round_trips_untouched() {
         body["messages"][0]["content"][0],
         json!({"type": "redacted_thinking", "data": "opaque"}),
         "the provider reads this back; it is not ours to reshape"
+    );
+}
+
+#[test]
+fn streamed_redacted_thinking_reaches_the_transcript_and_replays_untouched() {
+    let events = decode_stream(&[
+        r#"{"type":"message_start","message":{"model":"m"}}"#,
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque"}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+        r#"{"type":"message_stop"}"#,
+    ]);
+
+    let content = events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::RedactedThinking { data, .. } => {
+                Some(ContentBlock::RedactedThinking { data: data.clone() })
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        content,
+        vec![ContentBlock::RedactedThinking {
+            data: "opaque".to_owned(),
+        }],
+        "redacted provider content has to reach the transcript without decoding it"
+    );
+
+    let body = encode(&request(content), Value::Null).unwrap();
+    assert_eq!(
+        body["messages"][0]["content"][0],
+        json!({"type": "redacted_thinking", "data": "opaque"}),
+        "replaying streamed content must preserve the opaque payload"
     );
 }
 
@@ -403,13 +438,127 @@ fn cache_reads_and_writes_are_counted_separately() {
                 output_tokens: 4,
                 cache_read_tokens: 7,
                 cache_write_tokens: 3,
+                cache_write_1h_tokens: 0,
                 reasoning_tokens: 0,
                 cost: None,
+                server_tool_usage: None,
             },
             "a write costs more than a read; collapsing them misprices the turn"
         ),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn one_hour_cache_writes_are_preserved_as_a_pricing_subset() {
+    let raw_usage = json!({
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cache_creation_input_tokens": 100,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 90,
+            "ephemeral_1h_input_tokens": 10
+        }
+    });
+    let response = HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({"usage": raw_usage}))
+            .unwrap()
+            .into(),
+    };
+    let buffered = AnthropicMessagesCodec.response_usage(&response).unwrap();
+    assert_eq!(buffered.cache_write_tokens, 100);
+    assert_eq!(buffered.cache_write_1h_tokens, 10);
+    assert_eq!(
+        buffered.total(),
+        114,
+        "the one-hour subset is not counted twice"
+    );
+
+    let mut decoder = AnthropicMessagesCodec.stream_decoder();
+    decoder
+        .decode_frame(
+            br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":90,"ephemeral_1h_input_tokens":10}}}}"#,
+        )
+        .unwrap();
+    decoder
+        .decode_frame(
+            br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":90}}}"#,
+        )
+        .unwrap();
+    let streamed = decoder.observed_usage().unwrap();
+    assert!(decoder.usage_is_complete());
+    assert_eq!(streamed.cache_write_tokens, 100);
+    assert_eq!(streamed.cache_write_1h_tokens, 10);
+    assert_eq!(
+        streamed.total(),
+        114,
+        "the nested seed detail survives the delta"
+    );
+}
+
+#[test]
+fn malformed_independent_cache_counters_make_anthropic_usage_incomplete() {
+    let start = r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#;
+    let stop = r#"{"type":"message_stop"}"#;
+    for field in ["cache_read_input_tokens", "cache_creation_input_tokens"] {
+        for malformed in [r#""7""#, "-1", "null", "0.5"] {
+            let delta = format!(
+                r#"{{"type":"message_delta","delta":{{"stop_reason":"end_turn"}},"usage":{{"input_tokens":10,"output_tokens":4,"{field}":{malformed}}}}}"#
+            );
+            let (usage, complete) = decode_usage(&[start, &delta, stop]);
+            assert_eq!(
+                if field == "cache_read_input_tokens" {
+                    usage.cache_read_tokens
+                } else {
+                    usage.cache_write_tokens
+                },
+                0,
+                "the public counter still normalizes malformed input to zero"
+            );
+            assert!(
+                !complete,
+                "present {field}={malformed} must not count as complete usage"
+            );
+        }
+    }
+}
+
+#[test]
+fn independent_cache_counters_may_exceed_input_and_are_optional() {
+    let start = r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#;
+    let (_, missing_caches_complete) = decode_usage(&[
+        start,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4}}"#,
+        r#"{"type":"message_stop"}"#,
+    ]);
+    assert!(
+        missing_caches_complete,
+        "omitted cache counters are optional"
+    );
+
+    let (usage, complete) = decode_usage(&[
+        start,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4,"cache_read_input_tokens":11,"cache_creation_input_tokens":12}}"#,
+        r#"{"type":"message_stop"}"#,
+    ]);
+    assert!(complete, "independent cache buckets are not input subsets");
+    assert_eq!(
+        (usage.cache_read_tokens, usage.cache_write_tokens),
+        (11, 12)
+    );
+}
+
+#[test]
+fn independent_cache_counter_overflow_makes_anthropic_usage_incomplete() {
+    let start = r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#;
+    let delta = format!(
+        r#"{{"type":"message_delta","delta":{{"stop_reason":"end_turn"}},"usage":{{"input_tokens":10,"output_tokens":4,"cache_read_input_tokens":{}}}}}"#,
+        u64::MAX
+    );
+    let (_, complete) = decode_usage(&[start, &delta, r#"{"type":"message_stop"}"#]);
+    assert!(!complete, "the normalized total must fit in u64");
 }
 
 #[test]
@@ -469,7 +618,7 @@ fn decode_usage(frames: &[&str]) -> (Usage, bool) {
 /// seed's figure bills a cache write that did not happen.
 #[test]
 fn a_closing_zero_replaces_the_seed_rather_than_being_ignored() {
-    let (usage, _) = decode_usage(&[
+    let (usage, complete) = decode_usage(&[
         r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10,"cache_creation_input_tokens":500,"cache_read_input_tokens":0}}}"#,
         r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":500}}"#,
         r#"{"type":"message_stop"}"#,
@@ -480,6 +629,10 @@ fn a_closing_zero_replaces_the_seed_rather_than_being_ignored() {
     );
     assert_eq!(usage.cache_read_tokens, 500);
     assert_eq!(usage.output_tokens, 4);
+    assert!(
+        complete,
+        "a final numeric zero is still an explicit counter"
+    );
 }
 
 /// The other half of the same rule: silence is not zero.
@@ -532,6 +685,71 @@ fn a_stream_that_never_reported_its_output_is_not_a_complete_report() {
 }
 
 #[test]
+fn provisional_seed_usage_needs_a_numeric_final_output_counter() {
+    let seed = br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10,"output_tokens":1}}}"#;
+
+    let mut interrupted = AnthropicMessagesCodec.stream_decoder();
+    interrupted.decode_frame(seed).unwrap();
+    assert!(matches!(
+        interrupted.finish(),
+        Err(LlmError::StreamInterrupted { .. })
+    ));
+    assert_eq!(interrupted.observed_usage().unwrap().output_tokens, 1);
+    assert!(
+        !interrupted.usage_is_complete(),
+        "message_start output_tokens is provisional even when both numbers look valid"
+    );
+
+    let mut closed_without_delta = AnthropicMessagesCodec.stream_decoder();
+    closed_without_delta.decode_frame(seed).unwrap();
+    closed_without_delta
+        .decode_frame(br#"{"type":"message_stop"}"#)
+        .unwrap();
+    closed_without_delta.finish().unwrap();
+    assert!(
+        !closed_without_delta.usage_is_complete(),
+        "a close marker alone must not upgrade the seed to final usage"
+    );
+
+    let mut missing_counter = AnthropicMessagesCodec.stream_decoder();
+    missing_counter.decode_frame(seed).unwrap();
+    missing_counter
+        .decode_frame(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10}}"#)
+        .unwrap();
+    missing_counter.finish().unwrap();
+    assert!(
+        !missing_counter.usage_is_complete(),
+        "a final frame without its output counter is still incomplete"
+    );
+
+    let mut malformed_counter = AnthropicMessagesCodec.stream_decoder();
+    malformed_counter.decode_frame(seed).unwrap();
+    malformed_counter
+        .decode_frame(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":"4"}}"#)
+        .unwrap();
+    malformed_counter.finish().unwrap();
+    assert!(
+        !malformed_counter.usage_is_complete(),
+        "a nonnumeric final output counter cannot be treated as a measurement"
+    );
+
+    let mut final_without_close = AnthropicMessagesCodec.stream_decoder();
+    final_without_close.decode_frame(seed).unwrap();
+    final_without_close
+        .decode_frame(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4}}"#)
+        .unwrap();
+    final_without_close.finish().unwrap();
+    assert_eq!(
+        final_without_close.observed_usage().unwrap().output_tokens,
+        4
+    );
+    assert!(
+        final_without_close.usage_is_complete(),
+        "the final report remains usable when message_stop is missing"
+    );
+}
+
+#[test]
 fn a_cache_split_that_does_not_sum_to_its_own_total_is_not_complete() {
     let split = |five: u64, hour: u64, total: u64| {
         format!(
@@ -548,6 +766,29 @@ fn a_cache_split_that_does_not_sum_to_its_own_total_is_not_complete() {
         !complete,
         "the two tariffs are priced differently, so a split that does not \
          account for the total cannot be apportioned"
+    );
+}
+
+#[test]
+fn null_cache_creation_is_valid_when_the_aggregate_is_zero() {
+    let (usage, complete) = decode_usage(&[
+        r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":1}}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_creation":null}}"#,
+        r#"{"type":"message_stop"}"#,
+    ]);
+
+    assert!(complete);
+    assert_eq!(usage.cache_write_tokens, 0);
+    assert_eq!(usage.cache_write_1h_tokens, 0);
+
+    let (_, missing_aggregate_complete) = decode_usage(&[
+        r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":1}}}"#,
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1,"cache_creation":null}}"#,
+        r#"{"type":"message_stop"}"#,
+    ]);
+    assert!(
+        !missing_aggregate_complete,
+        "null without an explicit zero aggregate cannot establish an empty split"
     );
 }
 

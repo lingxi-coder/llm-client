@@ -50,6 +50,58 @@ fn every_preset_resolves_to_a_vendored_catalog_slice() {
 }
 
 #[test]
+fn gemini_generate_content_excludes_deep_research_agents() {
+    let google = builtin()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "gemini")
+        .unwrap();
+    assert!(google
+        .models
+        .iter()
+        .all(|model| !model.request_model.starts_with("deep-research-")));
+}
+
+#[test]
+fn gemini_generate_content_excludes_other_api_only_models() {
+    let gemini = builtin()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "gemini")
+        .unwrap();
+    for id in [
+        "lyria-3-clip-preview",
+        "lyria-3-pro-preview",
+        "veo-3.1-fast-generate-preview",
+        "veo-3.1-generate-preview",
+        "veo-3.1-lite-generate-preview",
+        "gemini-3.1-flash-live-preview",
+        "gemini-3.5-live-translate-preview",
+    ] {
+        assert!(
+            !gemini.models.iter().any(|model| model.request_model == id),
+            "{id} requires a different API"
+        );
+    }
+}
+
+#[test]
+fn per_song_lyria_models_do_not_claim_free_token_pricing() {
+    let catalog: toml::Value = include_str!("../data/providers/gemini.toml")
+        .parse()
+        .unwrap();
+    let models = catalog["model"].as_array().unwrap();
+    for id in ["lyria-3-clip-preview", "lyria-3-pro-preview"] {
+        let model = models
+            .iter()
+            .find(|model| model["id"].as_str() == Some(id))
+            .unwrap();
+        assert_eq!(model["billing_mode"].as_str(), Some("unknown"));
+        assert!(model.get("pricing").is_none(), "{id} is billed per song");
+    }
+}
+
+#[test]
 fn the_catalog_supplies_context_windows_rather_than_this_repo_guessing_them() {
     let presets = builtin().unwrap();
     let with_window = presets
@@ -216,6 +268,59 @@ fn the_quirk_flags_are_set_where_the_wire_cannot_infer_them() {
 }
 
 #[test]
+fn catalog_capability_flags_distinguish_known_negative_from_missing() {
+    use lingxi_agent_api::protocol::{CapabilitySupport, ModelCapability};
+
+    let presets = builtin().unwrap();
+    let model = |profile_name: &str, request_model: &str| {
+        presets
+            .iter()
+            .find(|profile| profile.profile_name == profile_name)
+            .and_then(|profile| {
+                profile
+                    .models
+                    .iter()
+                    .find(|model| model.request_model == request_model)
+            })
+            .unwrap()
+    };
+
+    let known_negative = model("openai", "gpt-3.5-turbo");
+    assert_eq!(
+        known_negative.capability_support_for(ModelCapability::Tools),
+        CapabilitySupport::Unsupported
+    );
+
+    let missing = model("openai", "chatgpt-image-latest");
+    assert_eq!(
+        missing.capability_support_for(ModelCapability::StructuredOutput),
+        CapabilitySupport::Unknown
+    );
+}
+
+#[test]
+fn gemini_presets_exclude_only_models_with_explicitly_incompatible_operations() {
+    let presets = builtin().unwrap();
+    let gemini = presets
+        .iter()
+        .find(|profile| profile.profile_name == "gemini")
+        .unwrap();
+
+    assert!(gemini
+        .models
+        .iter()
+        .any(|model| model.request_model == "gemini-2.5-pro"));
+    assert!(!gemini
+        .models
+        .iter()
+        .any(|model| model.request_model == "gemini-embedding-001"));
+    assert!(!gemini
+        .models
+        .iter()
+        .any(|model| model.request_model == "gemini-embedding-2"));
+}
+
+#[test]
 fn a_user_entry_replaces_the_preset_of_the_same_name() {
     let mine: ProviderProfile = serde_json::from_value(serde_json::json!({
         "provider_id": "mine",
@@ -273,10 +378,11 @@ fn a_model_resolves_through_the_client_built_from_the_presets() {
         "the catalog is the model list now, not a hand-written one: {}",
         listed.len()
     );
-    let one = listed.first().expect("at least one model").id.clone();
+    let one = listed.first().expect("at least one model");
     assert!(
-        client.resolve(&one).is_ok(),
-        "a listed model must resolve: {one}"
+        client.resolve_in(&one.id, Some(&one.profile_name)).is_ok(),
+        "a listed model must resolve within its profile: {}",
+        one.id
     );
 }
 
@@ -597,8 +703,8 @@ fn a_batch_rate_is_carried_as_published_not_assumed_to_be_a_discount() {
         }
     }
     assert_eq!(
-        carried, 78,
-        "the catalog ships 78 batch rate sets; a refresh that changes this \
+        carried, 77,
+        "the catalog ships 77 batch rate sets; a refresh that changes this \
          should change this number deliberately"
     );
 }
@@ -783,4 +889,64 @@ fn provider_metadata_survives_a_catalog_regeneration() {
         }
     }
     assert!(seen > 0, "no preset files were checked");
+}
+
+#[test]
+fn first_party_anthropic_ids_use_official_names_and_keep_legacy_selectors() {
+    let profile = builtin()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "anthropic")
+        .unwrap();
+    let client =
+        LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(&profile))
+            .build()
+            .unwrap();
+    for (old, official) in [
+        ("claude-fable-5.1", "claude-fable-5-1"),
+        ("claude-haiku-4.5", "claude-haiku-4-5-20251001"),
+        ("claude-opus-4.5", "claude-opus-4-5-20251101"),
+        ("claude-opus-4.6", "claude-opus-4-6"),
+        ("claude-opus-4.7", "claude-opus-4-7"),
+        ("claude-opus-4.8", "claude-opus-4-8"),
+        ("claude-sonnet-4.5", "claude-sonnet-4-5-20250929"),
+        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+    ] {
+        assert_eq!(
+            client
+                .resolve_in(old, Some("anthropic"))
+                .unwrap()
+                .request_model,
+            official
+        );
+        assert_eq!(
+            client
+                .resolve_in(official, Some("anthropic"))
+                .unwrap()
+                .request_model,
+            official
+        );
+    }
+    assert!(profile
+        .models
+        .iter()
+        .all(|m| !m.request_model.contains('.')));
+    for retired in [
+        "claude-3-haiku",
+        "claude-opus-4",
+        "claude-opus-4.1",
+        "claude-sonnet-4",
+    ] {
+        assert!(client.resolve_in(retired, Some("anthropic")).is_err());
+    }
+    // First-party corrections must not rewrite the aggregator's own namespace.
+    let presets = builtin().unwrap();
+    let router = presets
+        .iter()
+        .find(|p| p.profile_name == "openrouter")
+        .unwrap();
+    assert!(router
+        .models
+        .iter()
+        .any(|m| m.request_model == "anthropic/claude-haiku-4.5"));
 }

@@ -55,6 +55,45 @@ fn response(status: &str, headers: &str, body: &str) -> String {
     )
 }
 
+fn interrupted_response(status: &str, headers: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
+        body.len() + 32
+    )
+}
+
+fn rate_limit_failover_client(primary: &str, backup: &str) -> lingxi_llm_client::LlmClient {
+    let profile = |name: &str, base_url: &str, order: u32| {
+        serde_json::from_value(json!({
+            "provider_id": "loopback",
+            "profile_name": name,
+            "base_url": base_url,
+            "protocol": "open_ai_chat",
+            "auth": "none",
+            "models": [{
+                "display_model": "test-model",
+                "request_model": "test-model",
+                "billing_model": "test-model"
+            }],
+            "connection": {
+                "group": "loopback",
+                "order": order,
+                "failover": {
+                    "rateLimit": true,
+                    "overloaded": false,
+                    "serverError": false,
+                    "network": false,
+                    "auth": false
+                }
+            }
+        }))
+        .expect("loopback profile fixture parses")
+    };
+    let profiles: Vec<ProviderProfile> =
+        vec![profile("primary", primary, 0), profile("backup", backup, 1)];
+    LlmClientBuilder::new(&profiles).unwrap().build().unwrap()
+}
+
 fn request(url: String) -> HttpRequest {
     HttpRequest {
         method: "POST".into(),
@@ -85,6 +124,226 @@ async fn execute_preserves_request_and_non_success_response() {
     assert!(seen.starts_with("POST /path?q=1 HTTP/1.1\r\n"));
     assert!(seen.to_ascii_lowercase().contains("x-test: value\r\n"));
     assert!(seen.ends_with("\r\n\r\npayload"));
+}
+
+#[tokio::test]
+async fn execute_keeps_status_headers_and_partial_body_for_interrupted_error_responses() {
+    let body = r#"{"error":{"message":"quota unavailable"}}"#;
+    let (url, task) = server(interrupted_response(
+        "429 Too Many Requests",
+        "Retry-After: 11\r\n",
+        body,
+    ))
+    .await;
+
+    let reply = HttpTransport::new()
+        .unwrap()
+        .execute(request(url))
+        .await
+        .expect("a response status already arrived before its body was truncated");
+
+    assert_eq!(reply.status, 429);
+    assert_eq!(reply.header("retry-after"), Some("11"));
+    assert_eq!(reply.body, body);
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn complete_fails_over_on_interrupted_429_when_only_rate_limits_are_enabled() {
+    let error_body = r#"{"error":{"message":"quota unavailable"}}"#;
+    let (primary, primary_task) = server(interrupted_response(
+        "429 Too Many Requests",
+        "Retry-After: 11\r\n",
+        error_body,
+    ))
+    .await;
+    let success_body = r#"{"id":"reply","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+    let (backup, backup_task) = server(response(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        success_body,
+    ))
+    .await;
+    let client = rate_limit_failover_client(&primary, &backup);
+
+    let reply = client
+        .complete(&completion(), &RequestOptions::default())
+        .await
+        .expect("truncated 429 still qualifies for configured rate-limit failover");
+
+    assert_eq!(reply.executed_profile.as_deref(), Some("backup"));
+    assert!(reply
+        .message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text { text, .. } if text == "ok")));
+    assert!(primary_task
+        .await
+        .unwrap()
+        .starts_with("POST /chat/completions HTTP/1.1"));
+    assert!(backup_task
+        .await
+        .unwrap()
+        .starts_with("POST /chat/completions HTTP/1.1"));
+}
+
+#[tokio::test]
+async fn exhausted_interrupted_429_keeps_retry_after() {
+    let error_body = r#"{"error":{"message":"quota unavailable"}}"#;
+    let (primary, primary_task) = server(interrupted_response(
+        "429 Too Many Requests",
+        "Retry-After: 11\r\n",
+        error_body,
+    ))
+    .await;
+    let (backup, backup_task) = server(interrupted_response(
+        "429 Too Many Requests",
+        "Retry-After: 11\r\n",
+        error_body,
+    ))
+    .await;
+    let client = rate_limit_failover_client(&primary, &backup);
+
+    let error = client
+        .complete(&completion(), &RequestOptions::default())
+        .await
+        .expect_err("both interrupted 429 responses should remain rate-limit errors");
+
+    assert!(
+        matches!(error, LlmError::RateLimited { ref message, retry_after: Some(delay) }
+        if message.contains("quota unavailable") && delay == Duration::from_secs(11)),
+        "{error:?}"
+    );
+    assert!(primary_task
+        .await
+        .unwrap()
+        .starts_with("POST /chat/completions HTTP/1.1"));
+    assert!(backup_task
+        .await
+        .unwrap()
+        .starts_with("POST /chat/completions HTTP/1.1"));
+}
+
+#[tokio::test]
+async fn interrupted_429_body_does_not_extend_the_client_deadline_for_failover() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let primary = format!("http://{}", listener.local_addr().unwrap());
+    let (release, wait) = oneshot::channel::<()>();
+    let primary_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 11\r\nContent-Length: 128\r\nConnection: close\r\n\r\n{\"error\":{\"message\":\"quota\"}}",
+            )
+            .await
+            .unwrap();
+        let _ = wait.await;
+        request
+    });
+    let (backup, backup_task) = server(response(
+        "200 OK",
+        "Content-Type: application/json\r\n",
+        r#"{"id":"reply","choices":[{"message":{"role":"assistant","content":"unexpected fallback"},"finish_reason":"stop"}]}"#,
+    ))
+    .await;
+    let client = rate_limit_failover_client(&primary, &backup);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.complete(
+            &completion(),
+            &RequestOptions {
+                total_timeout: Some(Duration::from_millis(250)),
+                ..RequestOptions::default()
+            },
+        ),
+    )
+    .await
+    .expect("the configured request deadline should bound the stalled error body");
+    assert!(
+        matches!(result, Err(LlmError::TransportTimeout { .. })),
+        "{result:?}"
+    );
+    assert!(
+        !backup_task.is_finished(),
+        "the expired deadline must prevent another attempt"
+    );
+    drop(release);
+    assert!(primary_task
+        .await
+        .unwrap()
+        .starts_with("POST /chat/completions HTTP/1.1"));
+    backup_task.abort();
+    let _ = backup_task.await;
+}
+
+#[tokio::test]
+async fn interrupted_401_and_5xx_keep_their_categories_without_rate_limit_failover() {
+    let body = r#"{"error":{"message":"provider unavailable"}}"#;
+    for (status, expected_category) in [
+        ("401 Unauthorized", "authentication"),
+        ("500 Internal Server Error", "provider_internal"),
+        ("529 Overloaded", "overloaded"),
+    ] {
+        let (primary, primary_task) = server(interrupted_response(status, "", body)).await;
+        let (backup, backup_task) = server(response(
+            "200 OK",
+            "Content-Type: application/json\r\n",
+            r#"{"id":"reply","choices":[{"message":{"role":"assistant","content":"unexpected fallback"},"finish_reason":"stop"}]}"#,
+        ))
+        .await;
+        let client = rate_limit_failover_client(&primary, &backup);
+        let error = client
+            .complete(&completion(), &RequestOptions::default())
+            .await
+            .expect_err("only rate-limit failures should trigger the backup");
+
+        match expected_category {
+            "authentication" => assert!(
+                matches!(error, LlmError::Authentication { .. }),
+                "{error:?}"
+            ),
+            "provider_internal" => assert!(
+                matches!(error, LlmError::ProviderInternal { .. }),
+                "{error:?}"
+            ),
+            "overloaded" => assert!(matches!(error, LlmError::Overloaded { .. }), "{error:?}"),
+            _ => unreachable!(),
+        }
+        assert!(primary_task
+            .await
+            .unwrap()
+            .starts_with("POST /chat/completions HTTP/1.1"));
+        assert!(
+            !backup_task.is_finished(),
+            "{status} must not match rate-limit-only failover"
+        );
+        backup_task.abort();
+        let _ = backup_task.await;
+    }
+}
+
+#[tokio::test]
+async fn buffered_error_body_is_bounded_and_successful_body_interruptions_still_error() {
+    let large = "x".repeat(96 * 1024);
+    let (url, task) = server(response("500 Internal Server Error", "", &large)).await;
+    let reply = HttpTransport::new()
+        .unwrap()
+        .execute(request(url))
+        .await
+        .unwrap();
+    assert_eq!(reply.body.len(), 64 * 1024);
+    task.await.unwrap();
+
+    let (url, task) = server(interrupted_response("200 OK", "", "partial success")).await;
+    let error = HttpTransport::new()
+        .unwrap()
+        .execute(request(url))
+        .await
+        .expect_err("a successful response with an interrupted body must still fail");
+    assert!(matches!(error, LlmError::Transport { .. }));
+    task.await.unwrap();
 }
 
 #[tokio::test]
@@ -119,6 +378,18 @@ async fn every_http_entry_point_returns_redirect_without_following() {
         }
         task.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn bounded_account_read_rejects_an_oversized_success_body() {
+    let (url, task) = server(response("200 OK", "", &"x".repeat(8_192))).await;
+    let error = HttpTransport::new()
+        .unwrap()
+        .execute_no_follow_bounded(request(url), 1_024)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LlmError::Transport { .. }));
+    task.await.unwrap();
 }
 
 #[tokio::test]
@@ -265,6 +536,7 @@ fn completion() -> CompletionRequest {
     CompletionRequest {
         model: "test-model".into(),
         web_search: None,
+        file_search: None,
         previous_response_id: None,
         system: vec![],
         messages: vec![ConversationMessage {

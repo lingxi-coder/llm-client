@@ -1,0 +1,34 @@
+provider_id = "qwen"
+base_url = "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1"
+protocol = "open_ai_responses"
+model_list = "open_ai_chat"
+auth = "bearer"
+credential_env = "DASHSCOPE_HK_API_KEY"
+billing_mode = "per_token"
+display_name = "Qwen Search Hong Kong"
+description = "Qwen Responses with hosted web and knowledge-base search."
+console_url = "https://bailian.console.aliyun.com/"
+api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
+connection = { group = "qwen-search-hk", connection_id = "responses", order = 0 }
+extra = { web_search = "qwen", file_search = "qwen" }
+
+[[model]]
+id = "qwen3.8-flash"
+name = "Qwen3.8 Flash"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
+[[model]]
+id = "qwen3.8-max"
+name = "Qwen3.8 Max"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
