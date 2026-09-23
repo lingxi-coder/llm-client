@@ -45,6 +45,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: None,
+        executed_profile: None,
     })
 }
 
@@ -68,6 +69,7 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
     match v.get("type").and_then(Value::as_str) {
         Some("text") => Some(ContentBlock::Text {
             text: v.get("text").and_then(Value::as_str)?.to_owned(),
+            thought_signature: None,
         }),
         Some("thinking") => Some(ContentBlock::Thinking {
             text: v
@@ -89,6 +91,8 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
             id: ToolUseId::new(v.get("id").and_then(Value::as_str)?),
             name: v.get("name").and_then(Value::as_str)?.to_owned(),
             input: v.get("input").cloned().unwrap_or(Value::Null),
+            provider_id: None,
+            thought_signature: None,
         }),
         _ => None,
     }

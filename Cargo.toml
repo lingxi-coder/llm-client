@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Provider-neutral LLM client with wire codecs, provider profiles, route resolution and failover."
 repository = "https://github.com/lingxi-coder/llm-client"
+readme = "README.md"
 
 [dependencies]
 lingxi-agent-api.workspace = true
@@ -18,6 +19,7 @@ bytes.workspace = true
 base64 = "0.22"
 toml.workspace = true
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
 lingxi-agent-api.workspace = true
@@ -28,14 +30,14 @@ resolver = "2"
 members = ["crates/agent-api"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lingxi-coder/llm-client"
 
 [workspace.dependencies]
-lingxi-agent-api = { path = "crates/agent-api" }
+lingxi-agent-api = { version = "0.1.0", path = "crates/agent-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"

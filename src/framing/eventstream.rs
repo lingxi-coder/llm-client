@@ -92,12 +92,17 @@ impl EventStreamSplitter {
     /// Feed a chunk; return every frame it completed. A partial frame is kept
     /// until a later chunk finishes it.
     pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<EventStreamMessage>, LlmError> {
-        self.buf.extend_from_slice(chunk);
         let mut messages = Vec::new();
+        let mut unread = chunk;
 
         loop {
             if self.buf.len() < PRELUDE_BYTES {
-                break;
+                let n = unread.len().min(PRELUDE_BYTES - self.buf.len());
+                self.buf.extend_from_slice(&unread[..n]);
+                unread = &unread[n..];
+                if self.buf.len() < PRELUDE_BYTES {
+                    break;
+                }
             }
             let total_len = u32::from_be_bytes(self.buf[0..4].try_into().unwrap()) as usize;
             let headers_len = u32::from_be_bytes(self.buf[4..8].try_into().unwrap()) as usize;
@@ -122,8 +127,18 @@ impl EventStreamSplitter {
                     "event-stream frame total_len={total_len} exceeds the {MAX_FRAME_BYTES}-byte limit"
                 )));
             }
+            if headers_len > total_len - FRAME_OVERHEAD {
+                return Err(interrupted(format!(
+                    "event-stream headers_len={headers_len} overflows total_len={total_len}"
+                )));
+            }
             if self.buf.len() < total_len {
-                break;
+                let n = unread.len().min(total_len - self.buf.len());
+                self.buf.extend_from_slice(&unread[..n]);
+                unread = &unread[n..];
+                if self.buf.len() < total_len {
+                    break;
+                }
             }
 
             let frame = &self.buf[..total_len];
@@ -136,18 +151,14 @@ impl EventStreamSplitter {
             }
 
             let headers_end = PRELUDE_BYTES + headers_len;
-            if headers_end > total_len - 4 {
-                return Err(interrupted(format!(
-                    "event-stream headers_len={headers_len} overflows total_len={total_len}"
-                )));
-            }
             let headers = decode_headers(&frame[PRELUDE_BYTES..headers_end])?;
             let payload = frame[headers_end..total_len - 4].to_vec();
             messages.push(EventStreamMessage { headers, payload });
 
-            let remaining = self.buf.len() - total_len;
-            self.buf.copy_within(total_len.., 0);
-            self.buf.truncate(remaining);
+            self.buf.clear();
+            if unread.is_empty() {
+                break;
+            }
         }
         Ok(messages)
     }
@@ -320,5 +331,35 @@ mod tests {
         let mut s = EventStreamSplitter::new();
         s.feed(&bytes[..bytes.len() - 3]).unwrap();
         assert!(s.finish().is_err());
+    }
+
+    #[test]
+    fn oversized_frame_is_rejected_before_large_chunk_is_buffered() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((MAX_FRAME_BYTES + 1) as u32).to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&crc32(&bytes).to_be_bytes());
+        bytes.resize(MAX_FRAME_BYTES + 1024, 0);
+        let mut s = EventStreamSplitter::new();
+        let err = s.feed(&bytes).unwrap_err();
+        assert!(
+            matches!(err, LlmError::StreamInterrupted { message } if message.contains("limit"))
+        );
+        assert!(s.buf.len() <= PRELUDE_BYTES);
+    }
+
+    #[test]
+    fn a_large_chunk_of_small_frames_is_processed_incrementally() {
+        let small = frame(&[], &vec![b'x'; 1024]);
+        let count = MAX_FRAME_BYTES / small.len() + 1;
+        let mut bytes = Vec::with_capacity(count * small.len());
+        for _ in 0..count {
+            bytes.extend_from_slice(&small);
+        }
+        let mut s = EventStreamSplitter::new();
+        let messages = s.feed(&bytes).unwrap();
+        assert_eq!(messages.len(), count);
+        assert!(messages.iter().all(|m| m.payload == vec![b'x'; 1024]));
+        assert!(s.buf.is_empty());
     }
 }

@@ -73,6 +73,7 @@ fn user(text: &str) -> ConversationMessage {
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
+            thought_signature: None,
         }],
     }
 }
@@ -110,6 +111,7 @@ fn the_assistants_role_on_this_wire_is_model() {
             role: MessageRole::Assistant,
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
+                thought_signature: None,
             }],
         },
     ]);
@@ -159,6 +161,8 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
                 id: ToolUseId::new("call-1"),
                 name: "read_file".to_owned(),
                 input: json!({"path": "a"}),
+                provider_id: None,
+                thought_signature: None,
             }],
         },
         ConversationMessage {
@@ -497,4 +501,262 @@ fn oversized_usage_counters_do_not_panic_or_wrap() {
     decoder.decode_frame(&frame).unwrap();
     assert_eq!(decoder.observed_usage().unwrap().output_tokens, u64::MAX);
     assert!(!decoder.usage_is_complete());
+}
+
+fn gemini_response(parts: Value) -> lingxi_llm_client::HttpResponse {
+    lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "modelVersion": "wire-m",
+            "candidates": [{"content": {"parts": parts}, "finishReason": "STOP"}]
+        }))
+        .unwrap()
+        .into(),
+    }
+}
+
+#[test]
+fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
+    let decoded = GeminiCodec
+        .decode_response(&gemini_response(json!([
+            {"functionCall": {"id": "call-a", "name": "read", "args": {"path": "a"}}, "thoughtSignature": "sig-a"},
+            {"functionCall": {"id": "call-b", "name": "read", "args": {"path": "b"}}}
+        ])))
+        .unwrap();
+    let calls: Vec<_> = decoded
+        .message
+        .tool_uses()
+        .map(|(id, _, _)| id.clone())
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].as_str(), "call-a");
+    assert_eq!(calls[1].as_str(), "call-b");
+
+    let serialized = serde_json::to_value(&decoded.message).unwrap();
+    assert_eq!(serialized["content"][0]["provider_id"], "call-a");
+    assert_eq!(serialized["content"][0]["thought_signature"], "sig-a");
+
+    let mut req = request(vec![user("read both"), decoded.message]);
+    req.messages.push(ConversationMessage {
+        role: MessageRole::User,
+        content: calls
+            .iter()
+            .map(|id| ContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: "ok".into(),
+                is_error: false,
+                blocks: None,
+            })
+            .collect(),
+    });
+    let b = body(&encode(
+        &GeminiCodec,
+        &req,
+        &profile(
+            "gemini_generate_content",
+            "https://g.test/v1beta",
+            Value::Null,
+        ),
+        false,
+    ));
+    assert_eq!(b["contents"][1]["parts"][0]["thoughtSignature"], "sig-a");
+    assert_eq!(b["contents"][1]["parts"][0]["functionCall"]["id"], "call-a");
+    assert_eq!(b["contents"][1]["parts"][1]["functionCall"]["id"], "call-b");
+    assert_eq!(
+        b["contents"][2]["parts"][0]["functionResponse"]["id"],
+        "call-a"
+    );
+    assert_eq!(
+        b["contents"][2]["parts"][1]["functionResponse"]["id"],
+        "call-b"
+    );
+}
+
+#[test]
+fn calls_without_provider_ids_get_unique_local_handles_without_wire_ids() {
+    let decoded = GeminiCodec
+        .decode_response(&gemini_response(json!([
+            {"functionCall": {"name": "read", "args": {"path": "a"}}},
+            {"functionCall": {"name": "read", "args": {"path": "b"}}}
+        ])))
+        .unwrap();
+    let calls: Vec<_> = decoded.message.tool_uses().collect();
+    assert_eq!(calls.len(), 2);
+    assert_ne!(calls[0].0, calls[1].0);
+    let next_turn = GeminiCodec
+        .decode_response(&gemini_response(json!([
+            {"functionCall": {"name": "write", "args": {"path": "c"}}}
+        ])))
+        .unwrap();
+    let next_id = next_turn.message.tool_uses().next().unwrap().0;
+    assert_ne!(calls[0].0, next_id);
+    assert_ne!(calls[1].0, next_id);
+    let b = body(&encode(
+        &GeminiCodec,
+        &request(vec![decoded.message]),
+        &profile(
+            "gemini_generate_content",
+            "https://g.test/v1beta",
+            Value::Null,
+        ),
+        false,
+    ));
+    assert!(b["contents"][0]["parts"][0]["functionCall"]
+        .get("id")
+        .is_none());
+    assert!(b["contents"][0]["parts"][1]["functionCall"]
+        .get("id")
+        .is_none());
+}
+
+#[test]
+fn text_part_thought_signature_survives_full_response_replay() {
+    let decoded = GeminiCodec
+        .decode_response(&gemini_response(json!([
+            {"text": "answer", "thoughtSignature": "sig-text"}
+        ])))
+        .unwrap();
+    let serialized = serde_json::to_value(&decoded.message).unwrap();
+    assert_eq!(serialized["content"][0]["thought_signature"], "sig-text");
+    let b = body(&encode(
+        &GeminiCodec,
+        &request(vec![decoded.message]),
+        &profile(
+            "gemini_generate_content",
+            "https://g.test/v1beta",
+            Value::Null,
+        ),
+        false,
+    ));
+    assert_eq!(b["contents"][0]["parts"][0]["thoughtSignature"], "sig-text");
+}
+
+#[test]
+fn streaming_calls_have_distinct_ids_and_signatures_at_their_blocks() {
+    let mut d = GeminiCodec.stream_decoder();
+    let events = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"id":"call-a","name":"read","args":{"path":"a"}},"thoughtSignature":"sig-a"},{"functionCall":{"id":"call-b","name":"read","args":{"path":"b"}}},{"text":"done","thoughtSignature":"sig-text"}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ToolCallDelta { block: 0, id, provider_id: Some(provider_id), .. } if id.as_str() == "call-a" && provider_id == "call-a")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ToolCallDelta { block: 1, id, provider_id: Some(provider_id), .. } if id.as_str() == "call-b" && provider_id == "call-b")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 0, signature } if signature == "sig-a")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 2, signature } if signature == "sig-text")));
+}
+
+#[test]
+fn streaming_legacy_calls_have_distinct_local_ids_without_provider_ids() {
+    let mut d = GeminiCodec.stream_decoder();
+    let events = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}}},{"functionCall":{"name":"read","args":{"path":"b"}}}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolCallDelta {
+                id, provider_id, ..
+            } => Some((id, provider_id)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2);
+    assert_ne!(calls[0].0, calls[1].0);
+    assert!(calls.iter().all(|(_, provider_id)| provider_id.is_none()));
+}
+
+#[test]
+fn streaming_signed_text_parts_keep_their_own_signature_blocks() {
+    let mut d = GeminiCodec.stream_decoder();
+    let events = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"first","thoughtSignature":"sig-1"},{"text":"second","thoughtSignature":"sig-2"}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 0, text } if text == "first")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 0, signature } if signature == "sig-1")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 1, text } if text == "second")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 1, signature } if signature == "sig-2")));
+}
+
+#[test]
+fn streaming_unsigned_then_signed_text_parts_do_not_share_a_block() {
+    let mut d = GeminiCodec.stream_decoder();
+    let events = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thoughtSignature":"sig-B"}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 0, text } if text == "A")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 1, text } if text == "B")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 1, signature } if signature == "sig-B")));
+}
+
+#[test]
+fn streaming_unsigned_then_signed_reasoning_parts_do_not_share_a_block() {
+    let mut d = GeminiCodec.stream_decoder();
+    let events = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A","thought":true},{"text":"B","thought":true,"thoughtSignature":"sig-B"}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ReasoningDelta { block: 0, text } if text == "A")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ReasoningDelta { block: 1, text } if text == "B")));
+    assert!(events.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 1, signature } if signature == "sig-B")));
+}
+
+#[test]
+fn streaming_one_text_part_per_frame_keeps_its_open_block_until_signed() {
+    let mut d = GeminiCodec.stream_decoder();
+    let first = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A"}]}}]}"#,
+        )
+        .unwrap();
+    let second = d
+        .decode_frame(
+            br#"{"candidates":[{"content":{"parts":[{"text":"B","thoughtSignature":"sig-AB"}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    assert!(first
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 0, text } if text == "A")));
+    assert!(second
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 0, text } if text == "B")));
+    assert!(second.iter().any(|e| matches!(e, StreamEvent::ThoughtSignature { block: 0, signature } if signature == "sig-AB")));
+}
+
+#[test]
+fn streaming_tool_call_separates_surrounding_text_blocks() {
+    let mut d = GeminiCodec.stream_decoder();
+    let events = d
+        .decode_frame(
+            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"before"},{"functionCall":{"id":"call-a","name":"read","args":{}}},{"text":"after"}]},"finishReason":"STOP"}]}"#,
+        )
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 0, text } if text == "before")));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ToolCallDelta { block: 1, .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::TextDelta { block: 2, text } if text == "after")));
 }

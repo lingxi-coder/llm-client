@@ -1,0 +1,30 @@
+name: Rust CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt clippy
+      - name: Test
+        run: cargo test --workspace --locked
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Check Rustdoc
+        run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+      - name: Check package contents
+        run: |
+          cargo package -p lingxi-agent-api --list --locked
+          cargo package -p lingxi-llm-client --list --locked
+      - name: Verify publishable shared types crate
+        run: cargo package -p lingxi-agent-api --locked

@@ -40,7 +40,9 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             role: MessageRole::Assistant,
             content,
         },
-        stop_reason: if saw_tool_call {
+        stop_reason: if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+            stop_reason(&body)
+        } else if saw_tool_call {
             StopReason::ToolUse
         } else {
             stop_reason(&body)
@@ -52,6 +54,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: body.get("id").and_then(Value::as_str).map(ResponseId::new),
+        executed_profile: None,
     })
 }
 
@@ -70,6 +73,7 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                     if let Some(text) = part.get("text").and_then(Value::as_str) {
                         out.push(ContentBlock::Text {
                             text: text.to_owned(),
+                            thought_signature: None,
                         });
                     }
                 }
@@ -93,6 +97,8 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                     .unwrap_or_default()
                     .to_owned(),
                 input: serde_json::from_str(arguments).unwrap_or(Value::Null),
+                provider_id: None,
+                thought_signature: None,
             });
         }
         Some("reasoning") => {

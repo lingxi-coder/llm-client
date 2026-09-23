@@ -271,6 +271,7 @@ fn the_error_types_land_where_failover_expects_them() {
 fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
     let mut req = request(vec![ContentBlock::Text {
         text: "hi".to_owned(),
+        thought_signature: None,
     }]);
     req.system = vec![
         lingxi_agent_api::protocol::SystemBlock {

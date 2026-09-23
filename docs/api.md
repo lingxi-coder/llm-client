@@ -93,7 +93,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `codec_families()` | `Vec<ProtocolFamily>` | 查询已注册的协议族 |
 | `build(self)` | `Result<LlmClient, BuildError>` | 消费构建器并验证配置 |
 
-`BuildError` 包括 `DuplicateProfile { profile_name }`、`MissingCodec { profile_name, family }` 和 `MissingAuthenticator { profile_name, strategy }`。`AuthStrategy::None` 不需要认证器；缺少目录解析器不阻止构建。构建成功不代表凭证有效、地址可达或 provider 支持所有请求参数。
+`BuildError` 包括 `DuplicateProfile { profile_name }`、`MissingCodec { profile_name, family }`、`MissingAuthenticator { profile_name, strategy }` 和 `InvalidPeakSchedule { profile_name, reason }`。`AuthStrategy::None` 不需要认证器；缺少目录解析器不阻止构建。构建时会拒绝无效或空的峰值价格时间窗；构建成功不代表凭证有效、地址可达或 provider 支持所有请求参数。
 
 ### `LlmClient`
 
@@ -112,6 +112,8 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `directory_shapes()` | `Vec<ProtocolFamily>` | 查询目录解析器支持的协议形状 |
 | `directory_for(&ProviderProfile)` | `Option<Arc<dyn ModelDirectory>>` | 根据 `model_list` 查找目录解析器 |
 | `estimate_cost(&ResolvedRoute, &Usage, Submission)` | `Result<Option<CostEstimate>, LlmError>` | 按配置价格和当前时钟估算费用 |
+| `estimate_actual_cost(&ResolvedRoute, &CompletionResponse, &Usage, Submission)` | 同上 | 根据完整响应的实际成功连接估价 |
+| `estimate_cost_for_profile(&ResolvedRoute, &str, &Usage, Submission)` | 同上 | 根据指定的成功连接估价，适用于流式响应 |
 
 配置在构建时复制。更新模型或连接配置后，应重新构建客户端；读取目录本身不会修改 `models()` 的结果。
 
@@ -122,6 +124,8 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | 字段 | 类型 / 默认值 | 含义 |
 | --- | --- | --- |
 | `credential` | `Option<Secret<String>>` / `None` | 本次请求的有效凭证；不读取配置中的环境变量或静态密钥 |
+| `fallback_credentials` | `BTreeMap<String, Secret<String>>` / 空 | 按备用 profile 名提供独立凭证；未提供时不会复用首连接密钥 |
+| `total_timeout` | `Option<Duration>` / `None` | 逐请求总时限；`complete()` 省略时默认 120 秒，`stream()` 省略时不设总时限 |
 | `stream` | `bool` / `false` | 直接调用 codec 时控制编码模式；高层 `complete()` 强制非流式，`stream()` 强制流式 |
 
 ### `CompletionRequest`
@@ -151,8 +155,8 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 
 | `ContentBlock` 变体 | 字段 / 用途 |
 | --- | --- |
-| `Text` | `text` |
-| `ToolUse` | `id: ToolUseId`、`name`、`input: Value` |
+| `Text` | `text`、可选 `thought_signature`；Gemini 重放需保留该字段 |
+| `ToolUse` | `id: ToolUseId`、`name`、`input: Value`、可选 `provider_id` 与 `thought_signature`；Gemini 真实调用 ID 和签名需原样重放 |
 | `ToolResult` | `tool_use_id`、`content`、`is_error`、可选 `blocks: Vec<Value>` |
 | `Thinking` | `text`、可选 `signature`；重放时保留签名 |
 | `RedactedThinking` | `data`；保留 provider 返回的原始值 |
@@ -164,7 +168,7 @@ Base64 源携带 `media_type` 和 `data`；URL 源携带 `url`。库不执行工
 
 ### `CompletionResponse`
 
-返回 `message: ConversationMessage`、`web_search: Option<WebSearchResult>`、`stop_reason: StopReason`、`usage: Usage`、`model: String` 和 `response_id: Option<ResponseId>`。`StopReason` 包括 `EndTurn`、`ToolUse`、`MaxTokens`、`StopSequence`、`Refusal` 和 `Other(String)`。
+返回 `message: ConversationMessage`、`web_search: Option<WebSearchResult>`、`stop_reason: StopReason`、`usage: Usage`、`model: String`、`response_id: Option<ResponseId>` 和 `executed_profile: Option<String>`。高层 `complete()` 会设置实际成功的连接名称；直接调用 codec 解码时此字段为 `None`。`StopReason` 包括 `EndTurn`、`ToolUse`、`MaxTokens`、`StopSequence`、`Refusal` 和 `Other(String)`。
 
 ## Web Search 接口
 
@@ -264,7 +268,7 @@ async fn read_stream(
 }
 ```
 
-`ModelStream` 提供自己的异步 `next()`，无需导入 `StreamExt`。可通过 `status()`、`header(name)`、`headers()` 读取打开流时的状态和响应头，header 查找不区分大小写。
+`ModelStream` 提供自己的异步 `next()`，无需导入 `StreamExt`。可通过 `status()`、`header(name)`、`headers()` 读取打开流时的状态和响应头，header 查找不区分大小写。`executed_profile()` 返回接受请求的连接名称，可用于流结束后的费用估算。
 
 | 事件 | 含义 |
 | --- | --- |
@@ -329,7 +333,7 @@ Azure 必须配置 `azure.api_version`；`azure.deployment` 省略时使用 `req
 
 `ResolvedRoute` 包含 `provider_id`、`profile_name`、`request_model`、`display_model`、`pricing_model`、`capabilities`、`connection_chain` 和 `failover`。不要把任意手工构造的 route 当作客户端已经验证过的路由。
 
-`connection.group` 省略时，组名为 `profile_name`。连接按 `(order, profile_name)` 排序。备选连接必须在同组、提供相同 `request_model` 且有效计费模式相同；限定起始连接不禁用该组的故障转移。隐藏连接仍可参与解析和故障转移。
+`connection.group` 省略时，组名为 `profile_name`。连接按 `(order, profile_name)` 排序。备选连接必须在同组、提供相同 `request_model` 且有效计费模式相同；限定起始连接不禁用该组的故障转移。未指定连接时优先选择可见连接；显式指定 profile 仍可选中隐藏连接，隐藏连接也可参与故障转移。
 
 **默认不启用故障转移。** `FailoverTriggers::default()` / `NONE` 全为 false；显式赋值 `FailoverTriggers::DEFAULT` 可启用全部五类。JSON 示例：
 
@@ -370,7 +374,7 @@ Azure 必须配置 `azure.api_version`；`azure.deployment` 省略时使用 `req
 
 `CredentialConfig::{Env, Static, HostManaged, None}` 只是来源描述；内置认证器仅使用 `RequestOptions.credential`，缺失时返回 `Authentication`。`Secret<String>` 的 Debug/Display 脱敏且不能序列化，读取明文需 `expose_secret()` 或 `into_inner()`；它不承诺内存清零。认证后的 `HttpRequest.headers` 包含明文凭证；`HttpRequest` 的 Debug 输出会隐藏 URL、header 值与 body 内容，但直接记录这些字段仍需宿主自行脱敏。
 
-同一次自动故障转移会把同一个 `RequestOptions.credential` 传给每个连接。内置认证器不会根据连接配置轮换密钥。需要不同连接不同密钥时，宿主应实现按传入 `profile` 选择凭证的认证器，或自行控制独立请求；不要把互不信任的端点配置成共享凭证的故障转移组。
+`RequestOptions.credential` 只用于首连接。自动故障转移到需要认证的备用连接时，必须在 `fallback_credentials` 中按 profile 名提供其凭证；缺失时返回 `Authentication`，不会发送该备用请求。宿主负责凭证的获取和更新；自定义认证器仍可按传入的 `profile` 实现其他认证策略。
 
 ## 传输接口
 
@@ -384,7 +388,8 @@ Azure 必须配置 `azure.api_version`；`azure.deployment` 省略时使用 `req
 | 重定向 | 默认禁止跟随；`execute` 和 `execute_no_follow` 都保留原始重定向响应 |
 | 重试 | 不自动重试；高层显式配置的故障转移仍可生效 |
 | 连接超时 | 30 秒 |
-| 总超时 | 默认不设置；`HttpRequest.timeout` 设置从发送请求到完整读取 body 的总时限，包含流读取 |
+| 流读取空闲超时 | 默认 60 秒；`HttpTransport::with_read_timeout(Duration)` 可在客户端级调整 |
+| 总超时 | `complete()` 默认 120 秒；`stream()` 默认不设总时限，活跃长流可持续运行；`RequestOptions.total_timeout` 为两者指定总时限，包含流读取 |
 | HTTP 错误状态 | 保留状态、响应头和 body，由 codec 分类，不提前丢弃错误体 |
 | 网络错误 | 返回语义化 `LlmError`，错误消息不包含请求 URL、认证头或 body |
 | WebSocket | 不支持；扩展方法返回不支持能力错误 |
@@ -474,10 +479,10 @@ fn show_estimate(client: &LlmClient, model: &str, usage: &Usage) -> Result<(), L
 - `TokenPricing` 每项费率以 USD / 百万 token 为单位；非零用量缺少对应费率时返回 `CostUnavailable`。使用中的费率必须非负且有限，费用计算溢出也返回 `CostUnavailable`。
 - 整个模型缺少价格且 `pricing.require_priced = false` 时返回 `Ok(None)`，为 true 时返回错误。
 - `Submission::Batch` 使用各桶显式的批处理费率，不假定固定折扣，也不表示客户端会提交 batch 作业。
-- 如果单独配置 reasoning 价格，则从输出桶中拆出 reasoning，避免重复计费。
+- 如果单独配置 reasoning 价格，则从输出桶中拆出 reasoning，避免重复计费；`reasoning_tokens > output_tokens` 返回 `CostUnavailable`。
 - `PeakSchedule` 使用 UTC 时间窗（`HH:MM-HH:MM`，结束时间可为 `24:00`）和可选工作日约束；高级调用方可使用 `pricing::estimate(...)` 显式传入时间和费率。
 
-费用是目录估算，不替代 provider 账单。高层响应没有返回实际成功的故障转移 profile；`estimate_cost` 使用调用方传入 route 对应的目录价格，因此切换到不同价格连接后，初始 route 的估算不代表实际费用。需要精确追踪时，应由宿主记录连接或使用 provider 报告金额。
+费用是目录估算，不替代 provider 账单。`estimate_cost` 只用于请求前对初始 route 预估；故障转移后应使用 `estimate_actual_cost(&route, &response, &response.usage, submission)`。流式响应可读取 `stream.executed_profile()`，汇总流事件中的 `Usage` 后调用 `estimate_cost_for_profile(...)`。两种实际连接估价仍使用目录价格，可能与 provider 账单不同。
 
 ## 错误处理
 
@@ -510,7 +515,7 @@ fn show_estimate(client: &LlmClient, model: &str, usage: &Usage) -> Result<(), L
 
 `ProtocolFamily` 是封闭枚举；现有兼容协议的新 provider 只需配置，新增协议族需要修改枚举与 codec。codec 应把非成功响应转换为语义化 `LlmError`，归一化 token 用量，并保留思考签名和工具 ID。
 
-`framing::sse::SseFrameSplitter` 提供 `new()`、`push(&[u8])` 和 `finish()`；`framing::eventstream` 提供 AWS 二进制帧解析。通常只在自定义传输/codec 集成时直接使用。
+`framing::sse::SseFrameSplitter` 提供 `new()`、`push(&[u8])` 和 `finish()`；未完成事件超过 8 MiB 时返回错误。`framing::eventstream` 提供 AWS 二进制帧解析并限制单帧大小。通常只在自定义传输/codec 集成时直接使用。
 
 源码索引：[客户端](../src/client/mod.rs)、[共享请求/响应](../crates/agent-api/src/protocol/llm.rs)、[配置](../crates/agent-api/src/protocol/provider.rs)、[传输](../src/transport.rs)、[集成测试](../tests/)。可在本地生成逐项 Rust API 文档：
 

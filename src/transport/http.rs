@@ -9,8 +9,9 @@ use std::time::Duration;
 /// Execute requests inside a Tokio runtime with I/O and time enabled. Clones
 /// share the connection pool. Redirects and automatic retries are disabled so
 /// a provider cannot forward credentials or silently replay a billed request.
-/// Connections have a 30-second timeout; [`HttpRequest::timeout`] controls the
-/// total deadline, including streaming body reads. `None` means no total limit.
+/// Connections have a 30-second timeout and reads have a 60-second idle
+/// timeout by default. [`HttpRequest::timeout`] controls the total deadline,
+/// including streaming body reads.
 /// WebSocket sessions are not supported by this implementation.
 #[derive(Clone)]
 pub struct HttpTransport {
@@ -19,10 +20,16 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new() -> Result<Self, LlmError> {
+        Self::with_read_timeout(Duration::from_secs(60))
+    }
+
+    /// Build with a custom timeout for each idle response-body read.
+    pub fn with_read_timeout(read_timeout: Duration) -> Result<Self, LlmError> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(30))
+            .read_timeout(read_timeout)
             .build()
             .map_err(|_| LlmError::Transport {
                 message: "could not initialize HTTP client".into(),

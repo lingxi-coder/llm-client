@@ -171,6 +171,7 @@ impl AnthropicStreamDecoder {
             out.push(StreamEvent::ToolCallDelta {
                 block: index,
                 id,
+                provider_id: None,
                 name,
                 arguments_fragment: String::new(),
             });
@@ -226,6 +227,7 @@ impl AnthropicStreamDecoder {
                 out.push(StreamEvent::ToolCallDelta {
                     block: index,
                     id: id.clone(),
+                    provider_id: None,
                     name: name.clone(),
                     arguments_fragment: delta
                         .get("partial_json")

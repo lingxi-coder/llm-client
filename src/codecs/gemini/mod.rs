@@ -3,10 +3,8 @@
 //! Ported from the previous project's `llm-client/src/providers/gemini.rs`.
 //! Three things set this wire apart, and each one bites if it is missed:
 //!
-//! - **a tool result is keyed by the function's *name*, not by the call id.**
-//!   A transcript carries only the id, so the encoder builds a map from the
-//!   `ToolUse` blocks earlier in the conversation and looks the name up. Lose
-//!   it and the result cannot be encoded at all.
+//! - **a tool result names its function and echoes the provider's call ID when
+//!   supplied.** The encoder finds both from earlier `ToolUse` blocks.
 //! - **the assistant's role on this wire is `model`.**
 //! - **a prompt over the context window arrives as HTTP 400 `INVALID_ARGUMENT`,
 //!   not 413.** Left as `InvalidRequest` it would end the turn terminally

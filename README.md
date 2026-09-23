@@ -8,6 +8,7 @@
 
 - [详细 API 接口文档](docs/api.md)：接入示例、请求与流式响应、配置路由、认证传输、模型目录、费用与扩展接口。
 - [Web Search](docs/web-search.md)：`web_search()` / `web_search_stream()` 调用示例、统一搜索选项、provider 配置、引用、流式事件与 Claude 搜索上下文重放。
+- [目录维护与发布](docs/maintenance.md)：静态 provider 目录的更新步骤，以及两个 crate 的发布顺序。
 - 本地 Rust API 文档：运行 `cargo doc --workspace --no-deps --open`。
 
 ## 项目结构
@@ -28,11 +29,12 @@
 cargo test --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 ```
 
 测试使用模拟传输和本地回环 HTTP 服务，不需要真实 LLM API key。
 客户端接入方式可参考 `tests/support/mod.rs` 和 `tests/failover.rs`。
-内置模型目录与价格是静态快照，需要随 provider 的变更维护。
+内置模型目录与价格是静态快照，需要按[目录维护步骤](docs/maintenance.md#更新静态目录)核对 provider 原始资料并更新。
 
 ## 在其他 Rust 项目中使用
 

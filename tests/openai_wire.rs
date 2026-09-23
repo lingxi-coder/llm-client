@@ -54,6 +54,7 @@ fn request() -> CompletionRequest {
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
+                thought_signature: None,
             }],
         }],
         tools: vec![],
@@ -188,6 +189,8 @@ fn a_tool_result_becomes_its_own_message() {
             id: lingxi_agent_api::protocol::ToolUseId::new("call-1"),
             name: "read".to_owned(),
             input: json!({"path": "a"}),
+            provider_id: None,
+            thought_signature: None,
         }],
     });
     req.messages.push(ConversationMessage {
@@ -224,6 +227,69 @@ fn a_tool_result_becomes_its_own_message() {
         messages[1]["tool_calls"][0]["function"]["arguments"], "{\"path\":\"a\"}",
         "arguments go on the wire as a JSON string, not as an object"
     );
+}
+
+#[test]
+fn assistant_text_and_tool_calls_replay_in_the_same_chat_message() {
+    let response = HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "model": "wire-m",
+            "choices": [{"finish_reason": "tool_calls", "message": {
+                "content": "I will read the file.",
+                "tool_calls": [{"id": "call-1", "type": "function", "function": {
+                    "name": "read", "arguments": "{\"path\":\"a\"}"
+                }}]
+            }}]
+        }))
+        .unwrap()
+        .into(),
+    };
+    let decoded = OpenAiChatCodec.decode_response(&response).unwrap();
+    let messages = encoded(&request_with_assistant(decoded.message), Value::Null)["messages"]
+        .as_array()
+        .unwrap()
+        .clone();
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"], "I will read the file.");
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call-1");
+}
+
+#[test]
+fn nonstream_reasoning_content_replays_when_profile_requires_it() {
+    let response = HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "model": "wire-m",
+            "choices": [{"finish_reason": "stop", "message": {
+                "reasoning_content": "check the path",
+                "content": "The file exists."
+            }}]
+        }))
+        .unwrap()
+        .into(),
+    };
+    let decoded = OpenAiChatCodec.decode_response(&response).unwrap();
+    let messages = encoded(
+        &request_with_assistant(decoded.message),
+        json!({"preserve_reasoning_content": true}),
+    )["messages"]
+        .as_array()
+        .unwrap()
+        .clone();
+
+    assert_eq!(messages[1]["reasoning_content"], "check the path");
+    assert_eq!(messages[1]["content"], "The file exists.");
+}
+
+fn request_with_assistant(assistant: ConversationMessage) -> CompletionRequest {
+    let mut req = request();
+    req.messages.push(assistant);
+    req
 }
 
 #[test]

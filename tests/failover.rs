@@ -32,6 +32,8 @@ struct ScriptedTransport {
     answers: Mutex<Vec<(String, Result<u16, LlmError>)>>,
     seen: Mutex<Vec<String>>,
     calls: AtomicUsize,
+    seen_auth: Mutex<Vec<Option<String>>>,
+    seen_timeouts: Mutex<Vec<Option<std::time::Duration>>>,
 }
 
 impl ScriptedTransport {
@@ -80,14 +82,34 @@ impl ScriptedTransport {
     fn hops(&self) -> Vec<String> {
         self.seen.lock().unwrap().clone()
     }
+
+    fn auth_headers(&self) -> Vec<Option<String>> {
+        self.seen_auth.lock().unwrap().clone()
+    }
+
+    fn timeouts(&self) -> Vec<Option<std::time::Duration>> {
+        self.seen_timeouts.lock().unwrap().clone()
+    }
+
+    fn record_request(&self, req: &HttpRequest) {
+        self.seen_auth.lock().unwrap().push(
+            req.headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                .map(|(_, value)| value.clone()),
+        );
+        self.seen_timeouts.lock().unwrap().push(req.timeout);
+    }
 }
 
 #[async_trait]
 impl Transport for ScriptedTransport {
     async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
+        self.record_request(&req);
         self.answer_for(&req.url)
     }
     async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.record_request(&req);
         let answered = self.answer_for(&req.url)?;
         let frames: Vec<Result<Bytes, LlmError>> = vec![
             Ok(Bytes::from_static(b"one")),
@@ -154,12 +176,14 @@ impl WireCodec for FakeCodec {
                 role: MessageRole::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "hi".to_owned(),
+                    thought_signature: None,
                 }],
             },
             stop_reason: StopReason::EndTurn,
             usage: Usage::default(),
             model: "fake".to_owned(),
             response_id: None,
+            executed_profile: None,
         })
     }
     fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
@@ -302,6 +326,7 @@ fn request(model: &str) -> CompletionRequest {
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_owned(),
+                thought_signature: None,
             }],
         }],
         tools: vec![],
@@ -1314,5 +1339,221 @@ fn client_methods_determine_wire_mode() {
             assert!(block_on(client.complete(&request("m"), &opts)).is_ok());
         }
         assert_eq!(opts.stream, !streaming, "caller options stay unchanged");
+    }
+}
+
+#[test]
+fn a_fallback_without_its_own_credential_is_never_sent() {
+    use lingxi_agent_api::protocol::Secret;
+
+    let mut primary = conn(
+        "primary",
+        "https://one.test",
+        model("m", "m"),
+        Some("g"),
+        0,
+        "per_token",
+        false,
+    );
+    let mut secondary = conn(
+        "secondary",
+        "https://two.test",
+        model("m", "m"),
+        Some("g"),
+        1,
+        "per_token",
+        true,
+    );
+    primary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
+    secondary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
+    let http = ScriptedTransport::new(vec![
+        (
+            "https://one.test",
+            Err(LlmError::Overloaded {
+                message: "busy".into(),
+            }),
+        ),
+        ("https://two.test", Ok(200)),
+    ]);
+    let client = client(&[primary, secondary], http.clone());
+    let opts = RequestOptions {
+        credential: Some(Secret::new("primary-secret".to_owned())),
+        ..Default::default()
+    };
+    assert!(block_on(client.complete(&request("m"), &opts)).is_err());
+    assert_eq!(http.hops(), vec!["https://one.test/chat"]);
+}
+
+#[test]
+fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
+    use lingxi_agent_api::protocol::{Secret, Submission, TokenPricing};
+    use std::collections::BTreeMap;
+
+    let mut primary = conn(
+        "primary",
+        "https://one.test",
+        model("m", "m"),
+        Some("g"),
+        0,
+        "per_token",
+        false,
+    );
+    let mut secondary = conn(
+        "secondary",
+        "https://two.test",
+        model("m", "m"),
+        Some("g"),
+        1,
+        "per_token",
+        true,
+    );
+    primary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
+    secondary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
+    primary.models[0].pricing = Some(TokenPricing {
+        input_per_million: Some(1.0),
+        ..Default::default()
+    });
+    secondary.models[0].pricing = Some(TokenPricing {
+        input_per_million: Some(2.0),
+        ..Default::default()
+    });
+    let http = ScriptedTransport::new(vec![
+        (
+            "https://one.test",
+            Err(LlmError::Overloaded {
+                message: "busy".into(),
+            }),
+        ),
+        ("https://two.test", Ok(200)),
+    ]);
+    let client = client(&[primary, secondary], http.clone());
+    let opts = RequestOptions {
+        credential: Some(Secret::new("primary-secret".to_owned())),
+        fallback_credentials: BTreeMap::from([(
+            "secondary".to_owned(),
+            Secret::new("secondary-secret".to_owned()),
+        )]),
+        ..Default::default()
+    };
+    let response = block_on(client.complete(&request("m"), &opts)).unwrap();
+    assert_eq!(response.executed_profile.as_deref(), Some("secondary"));
+    let route = client.resolve("m").unwrap();
+    let usage = Usage {
+        input_tokens: 1_000_000,
+        ..Default::default()
+    };
+    assert_eq!(
+        client
+            .estimate_cost(&route, &usage, Submission::Interactive)
+            .unwrap()
+            .unwrap()
+            .total_usd,
+        1.0
+    );
+    assert_eq!(
+        client
+            .estimate_actual_cost(&route, &response, &usage, Submission::Interactive)
+            .unwrap()
+            .unwrap()
+            .total_usd,
+        2.0
+    );
+    assert_eq!(
+        http.hops(),
+        vec!["https://one.test/chat", "https://two.test/chat"]
+    );
+    assert_eq!(
+        http.auth_headers(),
+        vec![
+            Some("Bearer primary-secret".into()),
+            Some("Bearer secondary-secret".into())
+        ]
+    );
+    let stream = block_on(client.stream(&request("m"), &opts)).unwrap();
+    assert_eq!(stream.executed_profile(), "secondary");
+    assert_eq!(
+        client
+            .estimate_cost_for_profile(
+                &route,
+                stream.executed_profile(),
+                &usage,
+                Submission::Interactive
+            )
+            .unwrap()
+            .unwrap()
+            .total_usd,
+        2.0
+    );
+}
+
+#[test]
+fn request_timeout_defaults_to_120_seconds_and_can_be_overridden() {
+    use std::time::Duration;
+    let http = ScriptedTransport::new(vec![("https://one.test", Ok(200))]);
+    let client = client(
+        &[solo("only", "https://one.test", model("m", "m"))],
+        http.clone(),
+    );
+    block_on(client.complete(&request("m"), &RequestOptions::default())).unwrap();
+    block_on(client.complete(
+        &request("m"),
+        &RequestOptions {
+            total_timeout: Some(Duration::from_secs(7)),
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let timeouts = http.timeouts();
+    assert!(
+        timeouts[0].is_some_and(|t| t <= Duration::from_secs(120) && t > Duration::from_secs(119))
+    );
+    assert!(timeouts[1].is_some_and(|t| t <= Duration::from_secs(7) && t > Duration::from_secs(6)));
+    block_on(client.stream(&request("m"), &RequestOptions::default())).unwrap();
+    assert_eq!(
+        http.timeouts()[2],
+        None,
+        "streaming has no default total deadline"
+    );
+}
+
+#[tokio::test]
+async fn total_timeout_expires_during_authentication_before_a_request_is_sent() {
+    use lingxi_agent_api::protocol::{AuthStrategy, Secret};
+    use std::time::Duration;
+
+    struct SlowAuthenticator;
+
+    #[async_trait]
+    impl lingxi_llm_client::Authenticator for SlowAuthenticator {
+        async fn apply(
+            &self,
+            _req: &mut HttpRequest,
+            _profile: &ProviderProfile,
+            _credential: Option<&Secret<String>>,
+        ) -> Result<(), LlmError> {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Ok(())
+        }
+    }
+
+    for streaming in [false, true] {
+        let mut profile = solo("only", "https://one.test", model("m", "m"));
+        profile.auth = AuthStrategy::ApiKey;
+        let http = ScriptedTransport::new(vec![("https://one.test", Ok(200))]);
+        let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+        builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(SlowAuthenticator));
+        let client = builder.build().unwrap();
+        let options = RequestOptions {
+            total_timeout: Some(Duration::from_millis(10)),
+            ..Default::default()
+        };
+
+        let result = if streaming {
+            client.stream(&request("m"), &options).await.map(|_| ())
+        } else {
+            client.complete(&request("m"), &options).await.map(|_| ())
+        };
+        assert!(matches!(result, Err(LlmError::TransportTimeout { .. })));
+        assert!(http.hops().is_empty(), "expired work must never be sent");
     }
 }

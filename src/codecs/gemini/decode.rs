@@ -6,7 +6,11 @@ use lingxi_agent_api::protocol::{
     ToolUseId, Usage,
 };
 use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+static NEXT_LOCAL_CALL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
@@ -27,15 +31,17 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         .cloned()
         .unwrap_or(Value::Null);
 
-    let mut content = Vec::new();
-    let mut saw_tool_call = false;
-    for part in candidate
+    let parts = candidate
         .get("content")
         .and_then(|c| c.get("parts"))
         .and_then(Value::as_array)
-        .unwrap_or(&Vec::new())
-    {
-        if let Some(block) = decode_part(part, &mut saw_tool_call) {
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut content = Vec::new();
+    let mut saw_tool_call = false;
+    let mut used_ids = provider_call_ids(parts);
+    for part in parts {
+        if let Some(block) = decode_part(part, &mut saw_tool_call, &mut used_ids) {
             content.push(block);
         }
     }
@@ -60,30 +66,70 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: None,
+        executed_profile: None,
     })
 }
 
-pub fn decode_part(part: &Value, saw_tool_call: &mut bool) -> Option<ContentBlock> {
+pub(super) fn provider_call_ids(parts: &[Value]) -> HashSet<String> {
+    parts
+        .iter()
+        .filter_map(|part| part.get("functionCall")?.get("id")?.as_str())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+pub(super) fn call_id(call: &Value, used_ids: &mut HashSet<String>) -> (ToolUseId, Option<String>) {
+    if let Some(id) = call
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        return (ToolUseId::new(id), Some(id.to_owned()));
+    }
+    loop {
+        let id = format!(
+            "__gemini_local_call_{}",
+            NEXT_LOCAL_CALL_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        if used_ids.insert(id.clone()) {
+            return (ToolUseId::new(id), None);
+        }
+    }
+}
+
+fn decode_part(
+    part: &Value,
+    saw_tool_call: &mut bool,
+    used_ids: &mut HashSet<String>,
+) -> Option<ContentBlock> {
+    let thought_signature = part
+        .get("thoughtSignature")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     if let Some(call) = part.get("functionCall") {
         *saw_tool_call = true;
         let name = call.get("name").and_then(Value::as_str)?.to_owned();
+        let (id, provider_id) = call_id(call, used_ids);
         return Some(ContentBlock::ToolUse {
-            // This wire issues no call id, so the function name is the only
-            // stable handle; the encoder's name map is keyed off what it puts
-            // here.
-            id: ToolUseId::new(&name),
+            id,
             name,
             input: call.get("args").cloned().unwrap_or(Value::Null),
+            provider_id,
+            thought_signature,
         });
     }
     let text = part.get("text").and_then(Value::as_str)?.to_owned();
     if part.get("thought").and_then(Value::as_bool) == Some(true) {
         return Some(ContentBlock::Thinking {
             text,
-            signature: None,
+            signature: thought_signature,
         });
     }
-    Some(ContentBlock::Text { text })
+    Some(ContentBlock::Text {
+        text,
+        thought_signature,
+    })
 }
 
 /// Map a non-success response onto the taxonomy.

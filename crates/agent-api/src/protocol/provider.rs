@@ -390,6 +390,23 @@ pub struct PeakSchedule {
 }
 
 impl PeakSchedule {
+    /// Validate a configured schedule before it is used for pricing.
+    /// `is_peak` remains total for callers reading older malformed data.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.utc_windows.is_empty() {
+            return Err("at least one UTC window is required".to_owned());
+        }
+        if !self.off_peak_multiplier.is_finite() || self.off_peak_multiplier < 0.0 {
+            return Err("off-peak multiplier must be finite and non-negative".to_owned());
+        }
+        for window in &self.utc_windows {
+            if parse_window(window).is_none() {
+                return Err(format!("invalid UTC window {window:?}"));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `unix_seconds` falls inside a peak window.
     ///
     /// Hand-rolled rather than pulling in a calendar crate: this needs the UTC
@@ -779,6 +796,19 @@ mod pricing_tests {
             };
             assert!(!s.is_peak(at(0, 2, 0)), "{bad:?} must not match");
         }
+    }
+
+    #[test]
+    fn invalid_pricing_schedules_are_rejected_before_use() {
+        assert!(schedule().validate().is_ok());
+        for windows in [vec![], vec!["25:00-26:00".to_owned()]] {
+            let mut candidate = schedule();
+            candidate.utc_windows = windows;
+            assert!(candidate.validate().is_err());
+        }
+        let mut candidate = schedule();
+        candidate.off_peak_multiplier = f64::NAN;
+        assert!(candidate.validate().is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
-# Routing is hand-authored; the `[[model]]` blocks below are generated from the
-# upstream catalog by `scripts/vendor-catalog.py` and are replaced wholesale on
-# a refresh. Everything above the first `[[model]]` survives that.
+# Routing is hand-authored; the `[[model]]` blocks below are a snapshot of the
+# upstream catalog. Refresh model blocks from upstream data without replacing
+# route metadata above the first `[[model]]`.
 provider_id = "deepseek"
 base_url = "https://api.deepseek.com"
 protocol = "open_ai_chat"

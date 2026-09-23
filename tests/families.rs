@@ -69,6 +69,7 @@ fn user(text: &str) -> ConversationMessage {
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
+            thought_signature: None,
         }],
     }
 }
@@ -109,6 +110,8 @@ fn the_conversation_is_a_flat_list_of_items() {
                 id: ToolUseId::new("call-1"),
                 name: "read".to_owned(),
                 input: json!({"path": "a"}),
+                provider_id: None,
+                thought_signature: None,
             }],
         },
         ConversationMessage {
@@ -323,6 +326,47 @@ fn a_function_call_is_named_once_and_its_arguments_stream_after() {
         events.last(),
         Some(StreamEvent::End {
             stop_reason: StopReason::ToolUse,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn an_incomplete_function_call_retains_its_truncation_reason() {
+    let response = lingxi_llm_client::HttpResponse {
+        status: 200,
+        headers: vec![],
+        body: serde_json::to_vec(&json!({
+            "id": "resp_incomplete",
+            "model": "wire-m",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "function_call", "call_id": "call-1", "name": "read", "arguments": "{\"path\":"}]
+        }))
+        .unwrap()
+        .into(),
+    };
+    let decoded = OpenAiResponsesCodec.decode_response(&response).unwrap();
+    assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
+    assert!(matches!(
+        decoded.message.content.as_slice(),
+        [ContentBlock::ToolUse { .. }]
+    ));
+
+    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut events = Vec::new();
+    for frame in [
+        r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call-1","name":"read"}}"#,
+        r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":"}"#,
+        r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
+    ] {
+        events.extend(decoder.decode_frame(frame.as_bytes()).unwrap());
+    }
+    events.extend(decoder.finish().unwrap());
+    assert!(matches!(
+        events.last(),
+        Some(StreamEvent::End {
+            stop_reason: StopReason::MaxTokens,
             ..
         })
     ));

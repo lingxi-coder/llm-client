@@ -747,15 +747,13 @@ fn no_provider_link_is_present_but_useless() {
     }
 }
 
-/// `scripts/vendor-catalog.py` regenerates a preset by replacing everything from
-/// the first `[[model]]` onward. Metadata lives above that line, so a refresh
-/// keeps it — but only while it stays above. A bare key that slips below the
-/// line binds into that model's table instead and is silently lost from the
-/// route.
+/// A catalog refresh replaces `[[model]]` blocks after the hand-authored route
+/// metadata. A bare key below the first model binds to that model's table and
+/// is silently lost from the route.
 #[test]
 fn provider_metadata_survives_a_catalog_regeneration() {
-    // Read the files the script rewrites, not the compiled-in copies: this is
-    // a claim about the data on disk.
+    // Read the editable files, not the compiled-in copies: this is a claim
+    // about the data on disk.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/providers");
     let mut seen = 0;
     for entry in std::fs::read_dir(&dir).expect("the preset directory exists") {

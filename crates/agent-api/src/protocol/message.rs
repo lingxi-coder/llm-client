@@ -27,6 +27,9 @@ pub enum ContentBlock {
     /// Plain UTF-8 text.
     Text {
         text: String,
+        /// Gemini's opaque signature, attached to this exact text part.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
 
     /// A tool invocation requested by the model.
@@ -34,6 +37,13 @@ pub enum ContentBlock {
         id: ToolUseId,
         name: String,
         input: Value,
+        /// Provider-issued call ID, if one exists. The local `id` also pairs
+        /// calls with results when an older provider omits this field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_id: Option<String>,
+        /// Gemini's opaque signature, attached to this exact call part.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
 
     /// The result of a previously requested tool call.
@@ -99,7 +109,10 @@ impl ConversationMessage {
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
             role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                thought_signature: None,
+            }],
         }
     }
 
@@ -113,7 +126,9 @@ impl ConversationMessage {
     /// Every tool call this message requests, in order.
     pub fn tool_uses(&self) -> impl Iterator<Item = (&ToolUseId, &str, &Value)> {
         self.content.iter().filter_map(|b| match b {
-            ContentBlock::ToolUse { id, name, input } => Some((id, name.as_str(), input)),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => Some((id, name.as_str(), input)),
             _ => None,
         })
     }
@@ -123,7 +138,7 @@ impl ConversationMessage {
         self.content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 ContentBlock::ProviderContent { value, .. } => {
                     value.get("text").and_then(Value::as_str)
                 }

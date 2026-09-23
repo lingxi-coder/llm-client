@@ -139,6 +139,30 @@ fn a_hidden_connection_is_not_offered() {
     );
 }
 
+#[test]
+fn an_unqualified_model_starts_on_a_visible_connection() {
+    let hidden: ProviderProfile = serde_json::from_value(json!({
+        "provider_id":"acme", "profile_name":"hidden", "base_url":"https://hidden.test",
+        "protocol":"open_ai_chat", "auth":"none",
+        "models":[{"display_model":"m", "request_model":"m", "billing_model":"m"}],
+        "connection":{"group":"g", "order":0, "hidden":true}
+    }))
+    .unwrap();
+    let visible: ProviderProfile = serde_json::from_value(json!({
+        "provider_id":"acme", "profile_name":"visible", "base_url":"https://visible.test",
+        "protocol":"open_ai_chat", "auth":"none",
+        "models":[{"display_model":"m", "request_model":"m", "billing_model":"m"}],
+        "connection":{"group":"g", "order":1}
+    }))
+    .unwrap();
+    let client = client_of(&[hidden, visible]);
+    assert_eq!(client.resolve("m").unwrap().profile_name, "visible");
+    assert_eq!(
+        client.resolve_in("m", Some("hidden")).unwrap().profile_name,
+        "hidden"
+    );
+}
+
 /// The half of a model ref that says *which connection*. Without it a caller
 /// holding a listing row cannot name the connection it came from, and a group
 /// with two connections serving one model is ambiguous.

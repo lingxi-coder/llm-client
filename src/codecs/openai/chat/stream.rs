@@ -203,6 +203,7 @@ impl OpenAiStreamDecoder {
             id: slot.id.clone(),
             name: slot.name.clone(),
             arguments_fragment: fragment.to_owned(),
+            provider_id: None,
         });
     }
 

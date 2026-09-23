@@ -7,8 +7,9 @@ use super::decode;
 use crate::client::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::StreamDecoder;
-use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, ToolUseId, Usage};
+use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, Usage};
 use serde_json::Value;
+use std::collections::HashSet;
 
 #[derive(Debug, Default)]
 pub struct GeminiStreamDecoder {
@@ -26,6 +27,7 @@ pub struct GeminiStreamDecoder {
     usage_raw: Option<Value>,
     stop: Option<StopReason>,
     saw_tool_call: bool,
+    used_call_ids: HashSet<String>,
     done: bool,
     search: SearchStream,
 }
@@ -83,14 +85,24 @@ impl StreamDecoder for GeminiStreamDecoder {
         self.search
             .emit(web_search_decode::gemini(candidate), &mut out);
 
-        for part in candidate
+        let parts = candidate
             .get("content")
             .and_then(|c| c.get("parts"))
             .and_then(Value::as_array)
-            .unwrap_or(&Vec::new())
-        {
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        self.used_call_ids.extend(decode::provider_call_ids(parts));
+        let mut saw_text_part_in_frame = false;
+        let mut saw_reasoning_part_in_frame = false;
+        for part in parts {
+            let signature = part
+                .get("thoughtSignature")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             if let Some(call) = part.get("functionCall") {
                 self.saw_tool_call = true;
+                self.text_block = None;
+                self.reasoning_block = None;
                 let name = call
                     .get("name")
                     .and_then(Value::as_str)
@@ -98,11 +110,13 @@ impl StreamDecoder for GeminiStreamDecoder {
                     .to_owned();
                 let block = self.next_block;
                 self.next_block += 1;
+                let (id, provider_id) = decode::call_id(call, &mut self.used_call_ids);
                 // Arguments arrive whole here rather than in fragments, so the
                 // one delta carries the complete object.
                 out.push(StreamEvent::ToolCallDelta {
                     block,
-                    id: ToolUseId::new(&name),
+                    id,
+                    provider_id,
                     name,
                     arguments_fragment: call
                         .get("args")
@@ -110,12 +124,20 @@ impl StreamDecoder for GeminiStreamDecoder {
                         .unwrap_or(Value::Null)
                         .to_string(),
                 });
+                if let Some(signature) = signature {
+                    out.push(StreamEvent::ThoughtSignature { block, signature });
+                }
                 continue;
             }
             let Some(text) = part.get("text").and_then(Value::as_str) else {
                 continue;
             };
             if part.get("thought").and_then(Value::as_bool) == Some(true) {
+                self.text_block = None;
+                if saw_reasoning_part_in_frame {
+                    self.reasoning_block = None;
+                }
+                saw_reasoning_part_in_frame = true;
                 let block = *self.reasoning_block.get_or_insert_with(|| {
                     let b = self.next_block;
                     self.next_block += 1;
@@ -125,7 +147,16 @@ impl StreamDecoder for GeminiStreamDecoder {
                     block,
                     text: text.to_owned(),
                 });
+                if let Some(signature) = signature {
+                    out.push(StreamEvent::ThoughtSignature { block, signature });
+                    self.reasoning_block = None;
+                }
             } else {
+                self.reasoning_block = None;
+                if saw_text_part_in_frame {
+                    self.text_block = None;
+                }
+                saw_text_part_in_frame = true;
                 let block = *self.text_block.get_or_insert_with(|| {
                     let b = self.next_block;
                     self.next_block += 1;
@@ -135,6 +166,10 @@ impl StreamDecoder for GeminiStreamDecoder {
                     block,
                     text: text.to_owned(),
                 });
+                if let Some(signature) = signature {
+                    out.push(StreamEvent::ThoughtSignature { block, signature });
+                    self.text_block = None;
+                }
             }
         }
 

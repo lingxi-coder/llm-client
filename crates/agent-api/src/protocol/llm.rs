@@ -278,6 +278,10 @@ pub enum StreamEvent {
     ToolCallDelta {
         block: usize,
         id: ToolUseId,
+        /// Provider-issued call ID, when one was present on the wire.
+        /// Absent for locally generated IDs and protocols that do not need it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_id: Option<String>,
         name: String,
         arguments_fragment: String,
     },
@@ -404,6 +408,10 @@ pub struct CompletionResponse {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<ResponseId>,
+    /// Profile that completed a high-level client request. Direct codec
+    /// decoding leaves this absent because the wire does not identify it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executed_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,11 +554,26 @@ mod tests {
         let ev = StreamEvent::ToolCallDelta {
             block: 1,
             id: ToolUseId::new("call_1"),
+            provider_id: None,
             name: "Read".into(),
             arguments_fragment: "{\"file".into(),
         };
         let s = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<StreamEvent>(&s).unwrap(), ev);
+        let old = serde_json::json!({
+            "event": "tool_call_delta",
+            "block": 1,
+            "id": "call_1",
+            "name": "Read",
+            "arguments_fragment": "{}"
+        });
+        assert!(matches!(
+            serde_json::from_value::<StreamEvent>(old).unwrap(),
+            StreamEvent::ToolCallDelta {
+                provider_id: None,
+                ..
+            }
+        ));
     }
 
     /// A request that is not continuing anything must not say so with a null.
@@ -596,6 +619,7 @@ mod tests {
         }))
         .unwrap();
         assert!(resp.response_id.is_none());
+        assert!(resp.executed_profile.is_none());
 
         let start: StreamEvent = serde_json::from_value(serde_json::json!({
             "event": "start",

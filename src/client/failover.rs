@@ -1,6 +1,7 @@
 //! `complete` and `stream` walk the route's connection chain until one
 //! answers or an error is not a failover trigger (gate 32).
 
+use super::options::DEFAULT_REQUEST_TIMEOUT;
 use super::route::ResolvedRoute;
 use super::stream::ModelStream;
 use super::{LlmClient, RequestOptions};
@@ -11,6 +12,7 @@ use lingxi_agent_api::protocol::{
     AuthStrategy, CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, WebSearchConfig,
 };
 use std::sync::Arc;
+use std::time::Instant;
 
 /// One connection to try: the head of the route, then each sibling in order.
 /// The chain holds only the siblings, so the head is prepended here rather than
@@ -19,6 +21,26 @@ use std::sync::Arc;
 struct Attempt {
     profile_name: String,
     request_model: String,
+}
+
+fn deadline_elapsed() -> LlmError {
+    LlmError::TransportTimeout {
+        message: "request deadline elapsed".into(),
+    }
+}
+
+fn remaining_timeout(
+    started: Instant,
+    total: Option<std::time::Duration>,
+) -> Result<Option<std::time::Duration>, LlmError> {
+    total
+        .map(|total| {
+            total
+                .checked_sub(started.elapsed())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(deadline_elapsed)
+        })
+        .transpose()
 }
 
 fn attempts(route: &ResolvedRoute, continuation: bool) -> Vec<Attempt> {
@@ -37,6 +59,32 @@ fn attempts(route: &ResolvedRoute, continuation: bool) -> Vec<Attempt> {
 }
 
 impl LlmClient {
+    async fn prepare_before_deadline(
+        &self,
+        route: &ResolvedRoute,
+        attempt: &Attempt,
+        req: &CompletionRequest,
+        opts: &RequestOptions,
+        started: Instant,
+    ) -> Result<(HttpRequest, Arc<dyn WireCodec>), LlmError> {
+        let remaining = remaining_timeout(started, opts.total_timeout)?;
+        let mut attempt_opts = opts.clone();
+        attempt_opts.total_timeout = remaining;
+        let preparation = self.prepare(route, attempt, req, &attempt_opts);
+        let (mut http, codec) = match remaining {
+            Some(limit) if tokio::runtime::Handle::try_current().is_ok() => {
+                tokio::time::timeout(limit, preparation)
+                    .await
+                    .map_err(|_| deadline_elapsed())??
+            }
+            _ => preparation.await?,
+        };
+        // Authentication may have awaited a token refresh. The transport
+        // receives only the time still available after that work.
+        http.timeout = remaining_timeout(started, opts.total_timeout)?;
+        Ok((http, codec))
+    }
+
     /// Run a completion with provider-hosted web search enabled. The supplied
     /// configuration replaces `req.web_search` for this call; `req` is unchanged.
     /// The selected profile must declare a compatible `extra.web_search` adapter.
@@ -101,10 +149,24 @@ impl LlmClient {
         hop_route.request_model.clone_from(&attempt.request_model);
         let mut http = codec.encode_request(req, profile, &hop_route, opts)?;
 
+        http.timeout = opts.total_timeout;
+
         if profile.auth != AuthStrategy::None {
+            let credential = if attempt.profile_name == route.profile_name {
+                opts.credential.as_ref()
+            } else {
+                opts.fallback_credentials.get(&attempt.profile_name)
+            };
+            if attempt.profile_name != route.profile_name && credential.is_none() {
+                return Err(LlmError::Authentication {
+                    message: format!(
+                        "profile {:?} needs its own credential",
+                        attempt.profile_name
+                    ),
+                });
+            }
             if let Some(auth) = self.authenticators.get(&profile.auth) {
-                auth.apply(&mut http, profile, opts.credential.as_ref())
-                    .await?;
+                auth.apply(&mut http, profile, credential).await?;
             }
         }
         Ok((http, codec))
@@ -120,19 +182,26 @@ impl LlmClient {
     ) -> Result<CompletionResponse, LlmError> {
         let opts = RequestOptions {
             stream: false,
+            total_timeout: Some(opts.total_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT)),
             ..opts.clone()
         };
         let route = self.resolve(&req.model)?;
+        let started = Instant::now();
         let mut last = None;
         for attempt in attempts(&route, req.previous_response_id.is_some()) {
             let outcome = async {
-                let (http, codec) = self.prepare(&route, &attempt, req, &opts).await?;
+                let (http, codec) = self
+                    .prepare_before_deadline(&route, &attempt, req, &opts, started)
+                    .await?;
                 let resp = self.http.execute(http).await?;
                 codec.decode_response(&resp)
             }
             .await;
             match outcome {
-                Ok(resp) => return Ok(resp),
+                Ok(mut resp) => {
+                    resp.executed_profile = Some(attempt.profile_name);
+                    return Ok(resp);
+                }
                 Err(e) if route.failover.matches(&e) => last = Some(e),
                 Err(e) => return Err(e),
             }
@@ -153,10 +222,13 @@ impl LlmClient {
             ..opts.clone()
         };
         let route = self.resolve(&req.model)?;
+        let started = Instant::now();
         let mut last = None;
         for attempt in attempts(&route, req.previous_response_id.is_some()) {
             let outcome = async {
-                let (http, codec) = self.prepare(&route, &attempt, req, &opts).await?;
+                let (http, codec) = self
+                    .prepare_before_deadline(&route, &attempt, req, &opts, started)
+                    .await?;
                 let mut resp = self.http.open_stream(http).await?;
                 if !(200..300).contains(&resp.status) {
                     // Reuse each codec's status/body classification, including
@@ -182,7 +254,11 @@ impl LlmClient {
                         }
                     }));
                 }
-                Ok::<_, LlmError>(ModelStream::new(resp, codec.stream_decoder()))
+                Ok::<_, LlmError>(ModelStream::new(
+                    resp,
+                    codec.stream_decoder(),
+                    attempt.profile_name.clone(),
+                ))
             }
             .await;
             match outcome {

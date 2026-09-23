@@ -25,10 +25,19 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let message = choice.get("message").unwrap_or(&Value::Null);
 
     let mut content = Vec::new();
+    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
+        if !reasoning.is_empty() {
+            content.push(ContentBlock::Thinking {
+                text: reasoning.to_owned(),
+                signature: None,
+            });
+        }
+    }
     if let Some(text) = message.get("content").and_then(Value::as_str) {
         if !text.is_empty() {
             content.push(ContentBlock::Text {
                 text: text.to_owned(),
+                thought_signature: None,
             });
         }
     }
@@ -53,6 +62,8 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             // truncated fragment leaves it unparseable, and the tool's own
             // schema validation is where that should surface.
             input: serde_json::from_str(arguments).unwrap_or(Value::Null),
+            provider_id: None,
+            thought_signature: None,
         });
     }
 
@@ -73,6 +84,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: None,
+        executed_profile: None,
     })
 }
 

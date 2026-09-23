@@ -19,12 +19,14 @@ pub struct ModelStream {
     finished: bool,
     status: u16,
     headers: Vec<(String, String)>,
+    executed_profile: String,
 }
 
 impl ModelStream {
     pub(super) fn new(
         resp: crate::transport::StreamResponse,
         decoder: Box<dyn StreamDecoder>,
+        executed_profile: String,
     ) -> Self {
         let sse = resp
             .header("content-type")
@@ -46,6 +48,7 @@ impl ModelStream {
             finished: false,
             status: resp.status,
             headers: resp.headers,
+            executed_profile,
         }
     }
 
@@ -53,6 +56,11 @@ impl ModelStream {
     #[must_use]
     pub fn status(&self) -> u16 {
         self.status
+    }
+
+    /// The connection that accepted this streamed request.
+    pub fn executed_profile(&self) -> &str {
+        &self.executed_profile
     }
 
     /// A response header of the streamed response, case-insensitively.
@@ -98,8 +106,15 @@ impl ModelStream {
             match self.frames.next().await {
                 Some(Ok(chunk)) => {
                     if let Some(sse) = &mut self.sse {
-                        self.pending_frames
-                            .extend(sse.push(&chunk).into_iter().map(Bytes::from));
+                        match sse.push(&chunk) {
+                            Ok(frames) => self
+                                .pending_frames
+                                .extend(frames.into_iter().map(Bytes::from)),
+                            Err(error) => {
+                                self.finished = true;
+                                return Some(Err(error));
+                            }
+                        }
                     } else {
                         self.pending_frames.push_back(chunk);
                     }
@@ -109,7 +124,15 @@ impl ModelStream {
                     return Some(Err(e));
                 }
                 None => {
-                    if let Some(frame) = self.sse.as_mut().and_then(SseFrameSplitter::finish) {
+                    let tail = match self.sse.as_mut().map(SseFrameSplitter::finish) {
+                        Some(Ok(frame)) => frame,
+                        Some(Err(error)) => {
+                            self.finished = true;
+                            return Some(Err(error));
+                        }
+                        None => None,
+                    };
+                    if let Some(frame) = tail {
                         match self.decoder.decode_frame(&frame) {
                             Ok(evs) => self.ready.extend(evs),
                             Err(e) => {

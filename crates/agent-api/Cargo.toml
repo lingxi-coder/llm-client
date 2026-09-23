@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "What an agent's parts exchange on the wire: messages, ids, scope, origin, LLM request/response/error, permission requests, provider profiles, settings. Plain data, no workspace dependency."
+repository.workspace = true
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true

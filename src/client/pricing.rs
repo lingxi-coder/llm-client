@@ -38,6 +38,11 @@ pub fn estimate(
     usage: &Usage,
     pricing_model: &PricingModelRef,
 ) -> Result<CostEstimate, LlmError> {
+    if usage.reasoning_tokens > usage.output_tokens {
+        return Err(LlmError::CostUnavailable {
+            message: "reasoning tokens exceed output tokens".to_owned(),
+        });
+    }
     if schedule.is_some_and(|s| !s.off_peak_multiplier.is_finite() || s.off_peak_multiplier < 0.0) {
         return Err(LlmError::CostUnavailable {
             message: "off-peak multiplier must be finite and non-negative".to_owned(),
@@ -62,7 +67,7 @@ pub fn estimate(
     // the output bucket only when the catalog prices it on its own.
     let (output_usd, reasoning_usd) = match rates.reasoning_per_million {
         Some(rate) => {
-            let reasoning = usage.reasoning_tokens.min(usage.output_tokens);
+            let reasoning = usage.reasoning_tokens;
             (
                 bucket(
                     usage.output_tokens - reasoning,
@@ -271,6 +276,23 @@ mod tests {
         let split = estimate(&p, Submission::Interactive, None, 0, &u, &model()).unwrap();
         assert_eq!((split.output_usd, split.reasoning_usd), (6.0, 12.0));
         assert_eq!(split.total_usd, 18.0);
+    }
+
+    #[test]
+    fn impossible_reasoning_subtotal_cannot_be_priced() {
+        let usage = Usage {
+            output_tokens: 1,
+            reasoning_tokens: 2,
+            ..Usage::default()
+        };
+        for reasoning_rate in [None, Some(3.0)] {
+            let mut pricing = rates(1.0, 1.0, 0.0);
+            pricing.reasoning_per_million = reasoning_rate;
+            assert!(matches!(
+                estimate(&pricing, Submission::Interactive, None, 0, &usage, &model()),
+                Err(LlmError::CostUnavailable { .. })
+            ));
+        }
     }
 
     #[test]

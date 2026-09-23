@@ -45,6 +45,11 @@ pub enum BuildError {
     },
     #[error("provider profile name {profile_name:?} is declared twice")]
     DuplicateProfile { profile_name: String },
+    #[error("provider profile {profile_name:?} has an invalid peak price schedule: {reason}")]
+    InvalidPeakSchedule {
+        profile_name: String,
+        reason: String,
+    },
 }
 
 pub struct LlmClientBuilder {
@@ -144,6 +149,13 @@ impl LlmClientBuilder {
             }
         }
         for p in &self.profiles {
+            if let Some(peak) = &p.pricing.peak {
+                peak.validate()
+                    .map_err(|reason| BuildError::InvalidPeakSchedule {
+                        profile_name: p.profile_name.clone(),
+                        reason,
+                    })?;
+            }
             if !self.codecs.contains_key(&p.protocol) {
                 return Err(BuildError::MissingCodec {
                     profile_name: p.profile_name.clone(),
@@ -269,6 +281,8 @@ impl LlmClient {
         self.profiles.iter().find(|p| p.profile_name == name)
     }
 
+    /// Preflight estimate for the route's first connection. For a completed
+    /// request that may have failed over, use [`Self::estimate_actual_cost`].
     /// What a finished request on `route` cost, priced from the catalog at
     /// the rates in force now. `Ok(None)` is a model the catalog does not
     /// price on a connection that tolerates that; a connection that set
@@ -312,6 +326,67 @@ impl LlmClient {
             &route.pricing_model,
         )
         .map(Some)
+    }
+
+    /// Price usage against the connection that actually served a response.
+    pub fn estimate_actual_cost(
+        &self,
+        route: &ResolvedRoute,
+        response: &lingxi_agent_api::protocol::CompletionResponse,
+        usage: &Usage,
+        submission: Submission,
+    ) -> Result<Option<pricing::CostEstimate>, LlmError> {
+        let name =
+            response
+                .executed_profile
+                .as_deref()
+                .ok_or_else(|| LlmError::CostUnavailable {
+                    message: "response has no executed profile".into(),
+                })?;
+        self.estimate_cost_for_profile(route, name, usage, submission)
+    }
+
+    /// Price usage from a streamed request using `ModelStream::executed_profile`.
+    pub fn estimate_cost_for_profile(
+        &self,
+        route: &ResolvedRoute,
+        name: &str,
+        usage: &Usage,
+        submission: Submission,
+    ) -> Result<Option<pricing::CostEstimate>, LlmError> {
+        if name != route.profile_name
+            && !route
+                .connection_chain
+                .iter()
+                .any(|hop| hop.profile_name == name)
+        {
+            return Err(LlmError::CostUnavailable {
+                message: format!("profile {name:?} is not on this route"),
+            });
+        }
+        let profile = self
+            .profile(name)
+            .ok_or_else(|| LlmError::CostUnavailable {
+                message: format!("executed profile {name:?} is unavailable"),
+            })?;
+        let model = profile
+            .models
+            .iter()
+            .find(|m| m.request_model == route.request_model)
+            .ok_or_else(|| LlmError::CostUnavailable {
+                message: format!(
+                    "executed profile {name:?} does not serve {:?}",
+                    route.request_model
+                ),
+            })?;
+        let mut actual_route = route.clone();
+        actual_route.profile_name = name.to_owned();
+        actual_route.provider_id = profile.provider_id.clone();
+        actual_route.display_model = model.display_model.clone();
+        actual_route.pricing_model.pricing_provider_id = profile.provider_id.clone();
+        actual_route.pricing_model.billing_model = model.billing_model.clone();
+        actual_route.pricing_model.display_model = model.display_model.clone();
+        self.estimate_cost(&actual_route, usage, submission)
     }
 }
 
@@ -407,6 +482,24 @@ mod tests {
             .build()
             .unwrap();
         assert!(c.models().is_empty());
+    }
+
+    #[test]
+    fn build_rejects_empty_and_malformed_peak_windows() {
+        use lingxi_agent_api::protocol::PeakSchedule;
+
+        for windows in [vec![], vec!["25:00-26:00".to_owned()]] {
+            let mut profile = profile("p1", "open_ai_chat");
+            profile.pricing.peak = Some(PeakSchedule {
+                utc_windows: windows,
+                weekdays_only: false,
+                off_peak_multiplier: 0.5,
+            });
+            assert!(matches!(
+                LlmClientBuilder::with_transport(Arc::new(NoHttp), &[profile]).build(),
+                Err(BuildError::InvalidPeakSchedule { .. })
+            ));
+        }
     }
 
     #[test]

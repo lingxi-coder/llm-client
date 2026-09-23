@@ -119,6 +119,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
                         id,
                         name,
                         arguments_fragment: String::new(),
+                        provider_id: None,
                     });
                 }
             }
@@ -139,6 +140,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
                         id: id.clone(),
                         name: name.clone(),
                         arguments_fragment: delta(&root),
+                        provider_id: None,
                     });
                 }
             }
@@ -207,7 +209,13 @@ impl ResponsesStreamDecoder {
         }
         self.done = true;
         out.push(StreamEvent::End {
-            stop_reason: if self.saw_tool_call {
+            stop_reason: if self
+                .stop
+                .as_ref()
+                .is_some_and(|reason| *reason != StopReason::EndTurn)
+            {
+                self.stop.clone().unwrap()
+            } else if self.saw_tool_call {
                 StopReason::ToolUse
             } else {
                 self.stop.clone().unwrap_or(StopReason::EndTurn)

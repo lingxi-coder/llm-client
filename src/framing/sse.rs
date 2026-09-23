@@ -4,6 +4,10 @@
 //! HTTP layer already parses SSE can hand each event's data payload straight to
 //! a decoder and skip this.
 
+use lingxi_agent_api::protocol::LlmError;
+
+const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
+
 /// Splits an SSE byte stream into one frame per event.
 ///
 /// A frame carries the event's joined `data:` payload without the field prefix
@@ -26,9 +30,10 @@ impl SseFrameSplitter {
     /// A partial event stays buffered until a blank line terminates it, so a
     /// transport that splits mid-event loses nothing. Mixed line endings are
     /// accepted because providers mix them.
-    pub fn push(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, LlmError> {
         // Normalize CR, LF and CRLF while preserving a CRLF pair split
         // across transport chunks. A CR already terminates its line.
+        let mut frames = Vec::new();
         for &byte in bytes {
             if std::mem::take(&mut self.skip_lf) && byte == b'\n' {
                 continue;
@@ -39,42 +44,28 @@ impl SseFrameSplitter {
             } else {
                 self.buffer.push(byte);
             }
-        }
-        let mut frames = Vec::new();
-        while let Some((content_len, consumed)) = find_event_boundary(&self.buffer) {
-            if let Some(frame) = parse_event(&self.buffer[..content_len]) {
-                frames.push(frame);
+            if self.buffer.ends_with(b"\n\n") {
+                if let Some(frame) = parse_event(&self.buffer[..self.buffer.len() - 1]) {
+                    frames.push(frame);
+                }
+                self.buffer.clear();
+            } else if self.buffer.len() > MAX_EVENT_BYTES {
+                self.buffer.clear();
+                return Err(LlmError::StreamInterrupted {
+                    message: format!("SSE event exceeds the {MAX_EVENT_BYTES}-byte limit"),
+                });
             }
-            let remaining = self.buffer.len() - consumed;
-            self.buffer.copy_within(consumed.., 0);
-            self.buffer.truncate(remaining);
         }
-        frames
+        Ok(frames)
     }
 
     /// Flush a trailing unterminated event at end of stream. A provider that
     /// closes without the final blank line still gets its last event decoded.
-    pub fn finish(&mut self) -> Option<Vec<u8>> {
+    pub fn finish(&mut self) -> Result<Option<Vec<u8>>, LlmError> {
         self.skip_lf = false;
         let event = std::mem::take(&mut self.buffer);
-        parse_event(&event)
+        Ok(parse_event(&event))
     }
-}
-
-/// The first blank line: `(content_len, total_consumed)`.
-fn find_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
-    for (index, byte) in buffer.iter().enumerate() {
-        if *byte != b'\n' {
-            continue;
-        }
-        if buffer.get(index + 1) == Some(&b'\n') {
-            return Some((index + 1, index + 2));
-        }
-        if buffer.get(index + 1) == Some(&b'\r') && buffer.get(index + 2) == Some(&b'\n') {
-            return Some((index + 1, index + 3));
-        }
-    }
-    None
 }
 
 fn parse_event(event: &[u8]) -> Option<Vec<u8>> {
@@ -118,24 +109,24 @@ mod tests {
         let bytes = b"data: one\r\rdata: two\r\n\r\ndata: three\n\r";
         for split in 0..=bytes.len() {
             let mut s = SseFrameSplitter::new();
-            let mut frames = s.push(&bytes[..split]);
-            frames.extend(s.push(&bytes[split..]));
+            let mut frames = s.push(&bytes[..split]).unwrap();
+            frames.extend(s.push(&bytes[split..]).unwrap());
             assert_eq!(text(frames), vec!["one", "two", "three"], "split {split}");
-            assert!(s.finish().is_none());
+            assert!(s.finish().unwrap().is_none());
         }
     }
 
     #[test]
     fn a_data_field_without_a_colon_is_an_empty_data_line() {
         let mut s = SseFrameSplitter::new();
-        assert_eq!(text(s.push(b"data\n\n")), vec![""]);
+        assert_eq!(text(s.push(b"data\n\n").unwrap()), vec![""]);
     }
 
     #[test]
     fn one_event_per_blank_line() {
         let mut s = SseFrameSplitter::new();
         assert_eq!(
-            text(s.push(b"data: one\n\ndata: two\n\n")),
+            text(s.push(b"data: one\n\ndata: two\n\n").unwrap()),
             vec!["one", "two"]
         );
     }
@@ -143,14 +134,17 @@ mod tests {
     #[test]
     fn an_event_split_across_chunks_is_held_until_it_is_whole() {
         let mut s = SseFrameSplitter::new();
-        assert!(s.push(b"data: par").is_empty(), "nothing is emitted yet");
-        assert_eq!(text(s.push(b"tial\n\n")), vec!["partial"]);
+        assert!(
+            s.push(b"data: par").unwrap().is_empty(),
+            "nothing is emitted yet"
+        );
+        assert_eq!(text(s.push(b"tial\n\n").unwrap()), vec!["partial"]);
     }
 
     #[test]
     fn several_data_lines_join_with_newlines() {
         let mut s = SseFrameSplitter::new();
-        assert_eq!(text(s.push(b"data: a\ndata: b\n\n")), vec!["a\nb"]);
+        assert_eq!(text(s.push(b"data: a\ndata: b\n\n").unwrap()), vec!["a\nb"]);
     }
 
     #[test]
@@ -158,6 +152,7 @@ mod tests {
         let mut s = SseFrameSplitter::new();
         assert!(s
             .push(b": keep-alive\nevent: ping\nid: 7\nretry: 100\n\n")
+            .unwrap()
             .is_empty());
     }
 
@@ -165,7 +160,7 @@ mod tests {
     fn crlf_and_mixed_endings_both_terminate() {
         let mut s = SseFrameSplitter::new();
         assert_eq!(
-            text(s.push(b"data: one\r\n\r\ndata: two\n\n")),
+            text(s.push(b"data: one\r\n\r\ndata: two\n\n").unwrap()),
             vec!["one", "two"]
         );
     }
@@ -173,7 +168,32 @@ mod tests {
     #[test]
     fn a_stream_that_ends_without_a_blank_line_still_yields_its_last_event() {
         let mut s = SseFrameSplitter::new();
-        assert!(s.push(b"data: last").is_empty());
-        assert_eq!(String::from_utf8(s.finish().unwrap()).unwrap(), "last");
+        assert!(s.push(b"data: last").unwrap().is_empty());
+        assert_eq!(
+            String::from_utf8(s.finish().unwrap().unwrap()).unwrap(),
+            "last"
+        );
+    }
+
+    #[test]
+    fn an_unfinished_event_over_eight_mib_is_rejected() {
+        let mut s = SseFrameSplitter::new();
+        let chunk = vec![b'a'; MAX_EVENT_BYTES + 1];
+        let err = s.push(&chunk).unwrap_err();
+        assert!(
+            matches!(err, LlmError::StreamInterrupted { message } if message.contains("SSE event") && message.contains("limit"))
+        );
+        assert!(s.buffer.len() <= MAX_EVENT_BYTES);
+    }
+
+    #[test]
+    fn many_small_events_in_one_large_chunk_do_not_hit_the_limit() {
+        let mut s = SseFrameSplitter::new();
+        let event = [b"data: ".as_slice(), &vec![b'x'; 1024], b"\n\n"].concat();
+        let count = MAX_EVENT_BYTES / event.len() + 1;
+        let chunk = event.repeat(count);
+        assert!(chunk.len() > MAX_EVENT_BYTES);
+        assert_eq!(s.push(&chunk).unwrap().len(), count);
+        assert!(s.buffer.is_empty());
     }
 }

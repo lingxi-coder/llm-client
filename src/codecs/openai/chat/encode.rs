@@ -157,7 +157,7 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<V
                     message: "native content cannot be replayed on Chat Completions".to_owned(),
                 })
             }
-            ContentBlock::Text { text: t } => {
+            ContentBlock::Text { text: t, .. } => {
                 if !text.is_empty() {
                     text.push('\n');
                 }
@@ -184,7 +184,9 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<V
             // (gate 18); this wire has no slot, so a replayed block is dropped
             // rather than sent somewhere it would be rejected.
             ContentBlock::RedactedThinking { .. } => {}
-            ContentBlock::ToolUse { id, name, input } => tool_calls.push(json!({
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => tool_calls.push(json!({
                 "id": id,
                 "type": "function",
                 "function": { "name": name, "arguments": input.to_string() },
@@ -194,14 +196,15 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<V
                 content,
                 ..
             } => {
+                if !tool_calls.is_empty() {
+                    out.push(assistant_tool_calls(&text, &reasoning, &tool_calls));
+                    text.clear();
+                    tool_calls.clear();
+                }
                 if !text.is_empty() || !media.is_empty() {
                     out.push(user_message(role, &text, &media));
                     text.clear();
                     media.clear();
-                }
-                if !tool_calls.is_empty() {
-                    out.push(assistant_tool_calls(&reasoning, &tool_calls));
-                    tool_calls.clear();
                 }
                 out.push(json!({
                     "role": "tool",
@@ -213,7 +216,7 @@ fn encode_message(m: &ConversationMessage, keep_reasoning: bool) -> Result<Vec<V
     }
 
     if !tool_calls.is_empty() {
-        out.push(assistant_tool_calls(&reasoning, &tool_calls));
+        out.push(assistant_tool_calls(&text, &reasoning, &tool_calls));
     } else if !text.is_empty() || !media.is_empty() {
         if role == "assistant" {
             let mut msg = json!({"role": "assistant", "content": text});
@@ -262,10 +265,10 @@ fn user_message(role: &str, text: &str, media: &[Value]) -> Value {
     json!({"role": role, "content": parts})
 }
 
-fn assistant_tool_calls(reasoning: &str, calls: &[Value]) -> Value {
+fn assistant_tool_calls(text: &str, reasoning: &str, calls: &[Value]) -> Value {
     let mut msg = json!({
         "role": "assistant",
-        "content": Value::Null,
+        "content": if text.is_empty() { Value::Null } else { Value::String(text.to_owned()) },
         "tool_calls": calls,
     });
     if !reasoning.is_empty() {

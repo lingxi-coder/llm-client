@@ -109,15 +109,24 @@ pub(crate) fn request_to(
     })
 }
 
-/// A tool result on this wire names the function, and a transcript carries only
-/// the call id — so the names are collected from the `ToolUse` blocks that came
-/// before. First one wins: an id is issued once.
-fn tool_call_names(messages: &[ConversationMessage]) -> BTreeMap<ToolUseId, String> {
+/// Match each result to the earlier call, retaining a provider-issued ID only
+/// when one was present. Local IDs are never sent to Gemini.
+fn tool_call_names(
+    messages: &[ConversationMessage],
+) -> BTreeMap<ToolUseId, (String, Option<String>)> {
     let mut names = BTreeMap::new();
     for m in messages {
         for b in &m.content {
-            if let ContentBlock::ToolUse { id, name, .. } = b {
-                names.entry(id.clone()).or_insert_with(|| name.clone());
+            if let ContentBlock::ToolUse {
+                id,
+                name,
+                provider_id,
+                ..
+            } = b
+            {
+                names
+                    .entry(id.clone())
+                    .or_insert_with(|| (name.clone(), provider_id.clone()));
             }
         }
     }
@@ -126,7 +135,7 @@ fn tool_call_names(messages: &[ConversationMessage]) -> BTreeMap<ToolUseId, Stri
 
 fn contents(
     messages: &[ConversationMessage],
-    names: &BTreeMap<ToolUseId, String>,
+    names: &BTreeMap<ToolUseId, (String, Option<String>)>,
 ) -> Result<Vec<Value>, LlmError> {
     let mut out = Vec::new();
     for m in messages {
@@ -155,7 +164,7 @@ fn contents(
 
 fn encode_part(
     b: &ContentBlock,
-    names: &BTreeMap<ToolUseId, String>,
+    names: &BTreeMap<ToolUseId, (String, Option<String>)>,
 ) -> Result<Option<Value>, LlmError> {
     Ok(match b {
         ContentBlock::ProviderContent { .. } => {
@@ -163,30 +172,60 @@ fn encode_part(
                 message: "native content cannot be replayed on Gemini".to_owned(),
             })
         }
-        ContentBlock::Text { text } => Some(json!({"text": text})),
-        // This wire marks reasoning with a flag on an ordinary text part; it
-        // carries no signature, so nothing is lost by replaying it as one.
-        ContentBlock::Thinking { text, .. } => Some(json!({"text": text, "thought": true})),
+        ContentBlock::Text {
+            text,
+            thought_signature,
+        } => {
+            let mut part = json!({"text": text});
+            if let Some(signature) = thought_signature {
+                part["thoughtSignature"] = Value::String(signature.clone());
+            }
+            Some(part)
+        }
+        ContentBlock::Thinking { text, signature } => {
+            let mut part = json!({"text": text, "thought": true});
+            if let Some(signature) = signature {
+                part["thoughtSignature"] = Value::String(signature.clone());
+            }
+            Some(part)
+        }
         ContentBlock::RedactedThinking { .. } => None,
-        ContentBlock::ToolUse { name, input, .. } => {
-            Some(json!({"functionCall": {"name": name, "args": input}}))
+        ContentBlock::ToolUse {
+            name,
+            input,
+            provider_id,
+            thought_signature,
+            ..
+        } => {
+            let mut call = json!({"name": name, "args": input});
+            if let Some(id) = provider_id {
+                call["id"] = Value::String(id.clone());
+            }
+            let mut part = json!({"functionCall": call});
+            if let Some(signature) = thought_signature {
+                part["thoughtSignature"] = Value::String(signature.clone());
+            }
+            Some(part)
         }
         ContentBlock::ToolResult {
             tool_use_id,
             content,
             ..
         } => {
-            let name = names
-                .get(tool_use_id)
-                .ok_or_else(|| LlmError::InvalidRequest {
-                    message: format!(
+            let (name, provider_id) =
+                names
+                    .get(tool_use_id)
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: format!(
                         "a tool result for {tool_use_id} has no matching call in the transcript, \
                          and this wire keys results by function name"
                     ),
-                })?;
-            Some(json!({
-                "functionResponse": {"name": name, "response": {"result": content}},
-            }))
+                    })?;
+            let mut response = json!({"name": name, "response": {"result": content}});
+            if let Some(id) = provider_id {
+                response["id"] = Value::String(id.clone());
+            }
+            Some(json!({"functionResponse": response}))
         }
         ContentBlock::Image { source } => Some(match source {
             ImageSource::Base64 { media_type, data } => {

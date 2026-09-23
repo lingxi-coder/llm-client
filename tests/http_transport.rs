@@ -199,6 +199,32 @@ async fn total_timeout_covers_streaming_and_buffered_body_reads() {
 }
 
 #[tokio::test]
+async fn custom_read_idle_timeout_ends_a_stalled_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_request(&mut socket).await;
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nx")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    });
+    let http = HttpTransport::with_read_timeout(Duration::from_millis(100)).unwrap();
+    let mut req = request(url);
+    req.timeout = None;
+    let mut response = http.open_stream(req).await.unwrap();
+    assert_eq!(response.body.next().await.unwrap().unwrap(), "x");
+    let error = response.body.next().await.unwrap().unwrap_err();
+    assert!(
+        matches!(error, LlmError::TransportTimeout { .. }),
+        "{error:?}"
+    );
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn truncated_stream_is_reported_as_interrupted() {
     let (url, task) = server("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort".into()).await;
     let mut reply = HttpTransport::new()
@@ -245,6 +271,7 @@ fn completion() -> CompletionRequest {
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hello".into(),
+                thought_signature: None,
             }],
         }],
         tools: vec![],
@@ -289,11 +316,9 @@ async fn builtin_builder_completes_and_streams_with_api_key_and_bearer_authentic
                 assert_eq!(text, "hello");
             } else {
                 let reply = client.complete(&completion(), &opts).await.unwrap();
-                assert!(reply
-                    .message
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::Text { text } if text == "hello")));
+                assert!(reply.message.content.iter().any(
+                    |block| matches!(block, ContentBlock::Text { text, .. } if text == "hello")
+                ));
             }
             let seen = task.await.unwrap();
             assert!(seen

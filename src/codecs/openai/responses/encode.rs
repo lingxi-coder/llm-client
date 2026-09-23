@@ -126,7 +126,7 @@ fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) -> Result<(),
             ContentBlock::ProviderContent { .. } => return Err(LlmError::UnsupportedCapability {
                 message: "native content cannot be replayed on Responses".to_owned(),
             }),
-            ContentBlock::Text { text } => parts.push(json!({"type": text_part, "text": text})),
+            ContentBlock::Text { text, .. } => parts.push(json!({"type": text_part, "text": text})),
             ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
             ContentBlock::Image { source } => parts.push(json!({
                 "type": "input_image",
@@ -152,7 +152,7 @@ fn encode_message(m: &ConversationMessage, input: &mut Vec<Value>) -> Result<(),
                 }
                 parts.push(part);
             }
-            ContentBlock::ToolUse { id, name, input: args } => {
+            ContentBlock::ToolUse { id, name, input: args, .. } => {
                 flush(role, &mut parts, input);
                 input.push(json!({
                     "type": "function_call",

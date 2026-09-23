@@ -140,7 +140,16 @@ impl LlmClient {
             });
         }
 
-        matches.sort_by(|(a, _), (b, _)| a.connection_sort_key().cmp(&b.connection_sort_key()));
+        // A bare model reference starts on a connection the picker can show.
+        // An explicitly scoped profile remains addressable even when hidden.
+        matches.sort_by(|(a, _), (b, _)| {
+            let visibility = if profile.is_none() {
+                a.connection.hidden.cmp(&b.connection.hidden)
+            } else {
+                std::cmp::Ordering::Equal
+            };
+            visibility.then_with(|| a.connection_sort_key().cmp(&b.connection_sort_key()))
+        });
         let (provider, model) = matches[0];
 
         // Siblings come from the head's GROUP, not from whatever was in scope.

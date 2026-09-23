@@ -178,7 +178,7 @@ fn encode_block(b: &ContentBlock, unsigned_thinking: bool) -> Result<Value, LlmE
             }
             value.clone()
         }
-        ContentBlock::Text { text } => json!({"type": "text", "text": text}),
+        ContentBlock::Text { text, .. } => json!({"type": "text", "text": text}),
         ContentBlock::Thinking { text, signature } => {
             if signature.is_none() && unsigned_thinking {
                 return Ok(json!({"type": "thinking", "thinking": text}));
@@ -196,7 +196,9 @@ fn encode_block(b: &ContentBlock, unsigned_thinking: bool) -> Result<Value, LlmE
         ContentBlock::RedactedThinking { data } => {
             json!({"type": "redacted_thinking", "data": data})
         }
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse {
+            id, name, input, ..
+        } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
         ContentBlock::ToolResult {

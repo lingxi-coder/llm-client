@@ -34,10 +34,10 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
 ```
 
-## 仍需由宿主处理的边界
+## 后续修复与仍需由宿主处理的边界
 
-- 同一次故障转移默认复用同一个请求凭证。不同连接使用不同密钥时，需要宿主认证器按 profile 选择。
-- 高层响应未携带最终成功连接，初始 route 的价格可能与故障转移后的实际价格不同；估算不等于账单。
+- 本轮修复将首连接凭证限定在首连接；备用连接需由宿主按 profile 提供独立凭证。完整和流式响应会暴露实际成功连接，供调用方按该连接估价。
+- 本次后续修复已处理 Gemini 工具 ID 和签名、OpenAI 消息回放与截断响应、请求时限、SSE/AWS 帧大小边界及峰值价格配置验证。这些修复不计入前述初次审查的测试数量。
 - 后续已实现内置 HTTP 客户端；WebSocket 调度、OAuth 刷新和目录自动合并仍未提供。
 - 没有进行真实 provider 网络请求、真实账单校验或所有 provider 配置的在线可用性验证；静态目录仍需要维护。
 
