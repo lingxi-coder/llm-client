@@ -1531,3 +1531,32 @@ open_weights = false
 thinking = "unsupported"
 fast = "unknown"
 sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+
+[images.routes.primary]
+api = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key_header = "x-goog-api-key"
+
+[[images.models]]
+display_model = "gemini-3.1-flash-image"
+request_model = "gemini-3.1-flash-image"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+editing = true
+max_inputs = 4
+max_outputs = 1
+
+[[images.models]]
+display_model = "gemini-2.5-flash-image"
+request_model = "gemini-2.5-flash-image"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+editing = true
+max_inputs = 4
+max_outputs = 1

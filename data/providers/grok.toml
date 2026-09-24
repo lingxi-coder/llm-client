@@ -256,3 +256,18 @@ thinking = "supported"
 fast = "supported"
 sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
 budget = { support = "unsupported", dynamic = "unsupported" }
+
+[images.routes.primary]
+api = "xai"
+base_url = "https://api.x.ai/v1"
+
+[[images.models]]
+display_model = "grok-imagine-image-2.0"
+request_model = "grok-imagine-image-2.0"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+editing = true
+max_inputs = 1
+max_outputs = 4

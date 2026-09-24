@@ -19,6 +19,8 @@ pub mod api {}
 
 #[doc = include_str!("../docs/inference.md")]
 pub mod inference {}
+#[doc = include_str!("../docs/images.md")]
+pub mod image_generation {}
 
 #[doc = include_str!("../docs/web-search.md")]
 pub mod web_search {}
@@ -31,6 +33,7 @@ pub mod configuration;
 pub mod directory;
 pub mod files;
 pub mod framing;
+pub mod images;
 pub mod presets;
 pub mod protocol;
 mod runtime;
@@ -48,7 +51,7 @@ pub use client::{
     AccountFetchContext, AccountIdentity, AccountMetric, AccountQuery, AccountQuotaWindow,
     AccountReport, AccountScope, AccountScopeKind, AccountSelector, AccountSnapshot,
     AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
-    AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, LlmClient,
+    AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, ChatService, LlmClient,
     LlmClientBuilder, LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission,
     ModelStream, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, RequestOptions,
     ResolveError, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
@@ -75,6 +78,7 @@ pub use files::{
     MAX_PROVIDER_FILE_DOWNLOAD_BYTES,
 };
 pub use framing::sse::SseFrameSplitter;
+pub use images::{ImageAdapter, ImageAuthenticator, ImageDispatch, ImageError, ImageService};
 pub use presets::{builtin as builtin_providers, merge as merge_providers, PresetError};
 pub use transport::{
     Clock, HttpExecutor, HttpRequest, HttpResponse, HttpTransport, StreamResponse, SystemClock,

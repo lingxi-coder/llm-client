@@ -2386,3 +2386,40 @@ sources = ["https://developers.openai.com/api/docs/guides/reasoning"]
 budget = { support = "unsupported", dynamic = "unsupported" }
 effort = { support = "unsupported" }
 modes = []
+
+[images.routes.primary]
+api = "open_ai"
+base_url = "https://api.openai.com/v1"
+
+[[images.models]]
+display_model = "gpt-image-2.5-flare"
+request_model = "gpt-image-2.5-flare"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+editing = true
+mask_editing = true
+max_outputs = 4
+
+[[images.models]]
+display_model = "gpt-image-2.5-sunburst"
+request_model = "gpt-image-2.5-sunburst"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+editing = true
+mask_editing = true
+max_outputs = 4
+
+[[images.models]]
+display_model = "gpt-image-1.5"
+request_model = "gpt-image-1.5"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+editing = true
+mask_editing = true
+max_outputs = 4

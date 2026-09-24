@@ -87,6 +87,7 @@ impl LlmClient {
         req: &CompletionRequest,
         opts: &RequestOptions,
     ) -> Result<CompletionResponse, LlmError> {
+        reject_image_output(&route)?;
         match RequestExecutor::new(self)
             .run(route, req, opts, RequestMode::Complete)
             .await?
@@ -101,6 +102,7 @@ impl LlmClient {
         req: &CompletionRequest,
         opts: &RequestOptions,
     ) -> Result<ModelStream, LlmError> {
+        reject_image_output(&route)?;
         match RequestExecutor::new(self)
             .run(route, req, opts, RequestMode::Stream)
             .await?
@@ -109,4 +111,20 @@ impl LlmClient {
             RequestOutput::Complete(_) => unreachable!(),
         }
     }
+}
+
+fn reject_image_output(route: &RequestRoute<'_>) -> Result<(), LlmError> {
+    if route.connections.first().is_some_and(|connection| {
+        connection
+            .model
+            .metadata
+            .output_modalities
+            .iter()
+            .any(|modality| modality == "image")
+    }) {
+        return Err(LlmError::UnsupportedCapability {
+            message: "image-output model requires client.images()".into(),
+        });
+    }
+    Ok(())
 }

@@ -92,6 +92,8 @@ struct Preset {
     extra: Value,
     #[serde(default)]
     model: Vec<CatalogModel>,
+    #[serde(default)]
+    images: crate::protocol::ImageServiceConfig,
 }
 
 /// The provider-level half of pricing: when the listed rates apply.
@@ -222,6 +224,7 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
                 .map(model_profile)
                 .collect(),
         ),
+        images: p.images,
         pricing: PricingConfig {
             billing_mode: p.billing_mode,
             peak: p.pricing.peak.clone(),

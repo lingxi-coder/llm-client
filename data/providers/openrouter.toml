@@ -9882,3 +9882,19 @@ source = "models.dev"
 thinking = "supported"
 fast = "unknown"
 sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
+[images.routes.primary]
+api = "open_router"
+base_url = "https://openrouter.ai/api/v1"
+
+[[images.models]]
+display_model = "bytedance-seed/seedream-4.5"
+request_model = "bytedance-seed/seedream-4.5"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+editing = true
+max_inputs = 4
+max_outputs = 10

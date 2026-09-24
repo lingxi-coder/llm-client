@@ -66,6 +66,7 @@ impl CodecContext {
                     model
                 })
                 .collect(),
+            images: Default::default(),
             pricing: Default::default(),
             signing: profile.signing.clone(),
             azure: profile.azure.clone(),

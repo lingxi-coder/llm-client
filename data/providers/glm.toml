@@ -48,3 +48,17 @@ sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
 budget = { support = "unsupported", dynamic = "unsupported" }
 modes = ["enabled", "disabled"]
 effort = { support = "unknown" }
+
+[images.routes.primary]
+api = "zai"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+
+[[images.models]]
+display_model = "glm-image"
+request_model = "glm-image"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+async_generate = true
+max_outputs = 1

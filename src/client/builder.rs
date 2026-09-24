@@ -4,6 +4,11 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuildError {
+    #[error("invalid image configuration on {profile_name:?}: {reason}")]
+    InvalidImage {
+        profile_name: String,
+        reason: String,
+    },
     #[error("invalid inference or pricing configuration on {profile_name:?}: {reason}")]
     InvalidInference {
         profile_name: String,
@@ -46,6 +51,8 @@ pub struct LlmClientBuilder {
     http: Arc<dyn Transport>,
     clock: Arc<dyn Clock>,
     pub(super) codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
+    image_adapters: BTreeMap<crate::protocol::ImageApi, Arc<dyn crate::images::ImageAdapter>>,
+    image_authenticators: BTreeMap<String, Arc<dyn crate::images::ImageAuthenticator>>,
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
     authenticators: BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
     account_sources:
@@ -86,6 +93,8 @@ impl LlmClientBuilder {
             http,
             clock: Arc::new(SystemClock),
             codecs,
+            image_adapters: crate::images::builtin_adapters(),
+            image_authenticators: BTreeMap::new(),
             directories,
             authenticators: BTreeMap::new(),
             account_sources: account::builtin_sources(),
@@ -115,6 +124,24 @@ impl LlmClientBuilder {
     /// composition root decides the order.
     pub fn register_codec(&mut self, codec: Arc<dyn WireCodec>) -> &mut Self {
         self.codecs.insert(codec.family(), codec);
+        self
+    }
+
+    /// Register a provider image protocol independently of chat codecs.
+    pub fn register_image_adapter(
+        &mut self,
+        adapter: Arc<dyn crate::images::ImageAdapter>,
+    ) -> &mut Self {
+        self.image_adapters.insert(adapter.api(), adapter);
+        self
+    }
+
+    pub fn register_image_authenticator(
+        &mut self,
+        name: impl Into<String>,
+        authenticator: Arc<dyn crate::images::ImageAuthenticator>,
+    ) -> &mut Self {
+        self.image_authenticators.insert(name.into(), authenticator);
         self
     }
 
@@ -228,6 +255,24 @@ impl LlmClientBuilder {
     pub fn build(self) -> Result<LlmClient, BuildError> {
         let region = self.region.ok_or(BuildError::MissingRegion)?;
         validate_profiles(&self.profiles, &self.codecs, &self.authenticators)?;
+        for profile in &self.profiles {
+            for route in profile.images.routes.values() {
+                if !self.image_adapters.contains_key(&route.api) {
+                    return Err(BuildError::InvalidImage {
+                        profile_name: profile.profile_name.clone(),
+                        reason: format!("missing image adapter {:?}", route.api),
+                    });
+                }
+                if let Some(auth) = &route.authenticator {
+                    if !self.image_authenticators.contains_key(auth) {
+                        return Err(BuildError::InvalidImage {
+                            profile_name: profile.profile_name.clone(),
+                            reason: format!("missing image authenticator {auth:?}"),
+                        });
+                    }
+                }
+            }
+        }
         let mut store = crate::configuration::Coordinator::new(self.profiles.clone());
         store.definitions.builtin_names = self.builtin_definitions;
         Ok(LlmClient {
@@ -243,6 +288,8 @@ impl LlmClientBuilder {
             http: self.http,
             clock: self.clock,
             codecs: self.codecs,
+            image_adapters: self.image_adapters,
+            image_authenticators: self.image_authenticators,
             directories: self.directories,
             authenticators: self.authenticators,
             snapshot: Arc::new(super::snapshot::RuntimeSnapshot::new(
@@ -263,6 +310,75 @@ pub(super) fn validate_profiles(
     let mut seen = std::collections::BTreeSet::new();
     let mut connections = std::collections::BTreeSet::new();
     for p in profiles {
+        for (name, route) in &p.images.routes {
+            for (label, raw) in [
+                ("base_url", &route.base_url),
+                (
+                    "task_base_url",
+                    route.task_base_url.as_ref().unwrap_or(&route.base_url),
+                ),
+            ] {
+                let parsed = url::Url::parse(raw).map_err(|e| BuildError::InvalidImage {
+                    profile_name: p.profile_name.clone(),
+                    reason: format!("route {name:?} {label}: {e}"),
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+                    return Err(BuildError::InvalidImage {
+                        profile_name: p.profile_name.clone(),
+                        reason: format!("route {name:?} {label} must be an HTTP(S) URL"),
+                    });
+                }
+            }
+            if route.api_key_header.as_ref().is_some_and(|header| {
+                header.is_empty()
+                    || !header
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            }) {
+                return Err(BuildError::InvalidImage {
+                    profile_name: p.profile_name.clone(),
+                    reason: format!("route {name:?} has an invalid API-key header"),
+                });
+            }
+        }
+        let mut image_names = BTreeSet::new();
+        for model in &p.images.models {
+            if !p.images.routes.contains_key(&model.route) {
+                return Err(BuildError::InvalidImage {
+                    profile_name: p.profile_name.clone(),
+                    reason: format!(
+                        "model {:?} references missing route {:?}",
+                        model.request_model, model.route
+                    ),
+                });
+            }
+            if (model.capabilities.async_generate || model.capabilities.async_edit)
+                && p.images.routes.get(&model.route).is_some_and(|route| {
+                    matches!(
+                        route.api,
+                        crate::protocol::ImageApi::Qwen | crate::protocol::ImageApi::Wan
+                    ) && route.task_base_url.is_none()
+                })
+            {
+                return Err(BuildError::InvalidImage {
+                    profile_name: p.profile_name.clone(),
+                    reason: format!("model {:?} needs a task_base_url", model.request_model),
+                });
+            }
+            let selectors: BTreeSet<_> = std::iter::once(&model.display_model)
+                .chain(std::iter::once(&model.request_model))
+                .chain(&model.aliases)
+                .cloned()
+                .collect();
+            for selector in selectors {
+                if selector.is_empty() || !image_names.insert(selector.clone()) {
+                    return Err(BuildError::InvalidImage {
+                        profile_name: p.profile_name.clone(),
+                        reason: format!("ambiguous or empty image selector {selector:?}"),
+                    });
+                }
+            }
+        }
         if !seen.insert(p.profile_name.clone()) {
             return Err(BuildError::DuplicateProfile {
                 profile_name: p.profile_name.clone(),

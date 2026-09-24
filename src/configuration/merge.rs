@@ -65,6 +65,10 @@ impl SavedProfile {
     pub(crate) fn inherited(profile: &ProviderProfile, definition: DefinitionRef) -> Self {
         let mut connection = profile.clone();
         connection.models.clear();
+        if matches!(definition, DefinitionRef::Builtin { .. }) {
+            // Built-in image routes are inherited just like built-in model rows.
+            connection.images = Default::default();
+        }
         let models = keys(profile)
             .into_iter()
             .map(|key| ModelRow {
@@ -89,6 +93,7 @@ impl SavedProfile {
     }
     pub(crate) fn replacement(profile: &ProviderProfile, definition: DefinitionRef) -> Self {
         let mut saved = Self::inherited(profile, definition);
+        saved.connection.images = profile.images.clone();
         saved.replace_models = true;
         for (row, model) in saved.models.iter_mut().zip(&profile.models) {
             row.replacement = true;
@@ -301,6 +306,14 @@ impl SavedConfig {
             .filter(|p| !self.deleted_profiles.contains(&p.connection.profile_name))
             .map(|p| {
                 let mut profile = p.connection.clone();
+                if !p.replace_models
+                    && profile.images.routes.is_empty()
+                    && profile.images.models.is_empty()
+                {
+                    if let Some(definition) = definitions.get(&p.definition) {
+                        profile.images = definition.images.clone();
+                    }
+                }
                 profile.info.features = profile.inference_features();
                 profile.models = p
                     .rows(definitions)?

@@ -145,3 +145,18 @@ min_input_tokens = 512001
 multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read"] }
 source = "https://platform.minimax.io/docs/guides/pricing-paygo"
 verified_at = "2026-09-24"
+
+[images.routes.primary]
+api = "minimax"
+base_url = "https://api.minimax.io/v1"
+
+[[images.models]]
+display_model = "image-01"
+request_model = "image-01"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+max_inputs = 1
+max_outputs = 9

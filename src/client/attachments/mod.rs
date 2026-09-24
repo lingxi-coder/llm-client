@@ -23,7 +23,7 @@ mod resolve;
 pub(crate) use plan::uses_first_party_anthropic_messages;
 use plan::*;
 
-pub(super) struct AttachmentManager {
+pub(crate) struct AttachmentManager {
     http: Arc<dyn Transport>,
     attachment_resolver: Option<Arc<dyn AttachmentResolver>>,
     provider_file_cache: Mutex<BTreeMap<FileCacheKey, CachedProviderFile>>,
@@ -32,6 +32,30 @@ pub(super) struct AttachmentManager {
     qwen_file_rate_limiters: Mutex<BTreeMap<(String, String), Arc<files::QwenFileRateLimiter>>>,
 }
 impl AttachmentManager {
+    pub(crate) async fn resolve_image(
+        &self,
+        attachment: &AttachmentRef,
+    ) -> Result<Bytes, LlmError> {
+        if attachment.size_bytes > MAX_ATTACHMENT_BYTES {
+            return Err(LlmError::RequestTooLarge {
+                message: "image attachment exceeds 64 MiB".into(),
+            });
+        }
+        let resolver =
+            self.attachment_resolver
+                .as_ref()
+                .ok_or_else(|| LlmError::UnsupportedCapability {
+                    message: "image attachment requires an AttachmentResolver".into(),
+                })?;
+        let bytes = resolver.resolve(attachment).await?;
+        if bytes.len() as u64 != attachment.size_bytes || bytes.len() as u64 > MAX_ATTACHMENT_BYTES
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "resolved image attachment size does not match its reference".into(),
+            });
+        }
+        Ok(bytes)
+    }
     pub(super) fn new(
         http: Arc<dyn Transport>,
         attachment_resolver: Option<Arc<dyn AttachmentResolver>>,

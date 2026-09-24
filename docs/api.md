@@ -4,6 +4,8 @@
 
 本文对应本仓库的 Rust API。`lingxi-llm-client` 是库，内置 HTTP 客户端，不提供监听端口的 HTTP 服务、CLI 或密钥管理服务。核心客户端 API 可从 `lingxi_llm_client` 导入；请求、响应和配置类型通过 `lingxi_llm_client::protocol` 导入。
 
+图像生成与编辑使用独立的 `client.images()` 服务；请求、任务和内置 provider 能力见[图像生成指南](images.md)。`client.chat()` 提供与原有 `complete()` / `stream()` 相同的对话接口。
+
 ## Region 区域过滤
 
 构建 client 必须显式调用 `.with_region(Region::ChinaMainland)` 或 `.with_region(Region::International)`，否则 `build()` 返回 `BuildError::MissingRegion`。`Region` 从 `lingxi_llm_client::protocol` 导入；`client.region()` 返回当前选择。区域在 client 生命周期内固定，切换时重新构建 client，并可复用同一配置目录。

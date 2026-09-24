@@ -711,6 +711,9 @@ pub struct ProviderProfile {
     pub credential: CredentialConfig,
     #[serde(default)]
     pub models: Vec<ModelProfile>,
+    /// Image routes and models are independent of the chat model directory.
+    #[serde(default)]
+    pub images: super::ImageServiceConfig,
     #[serde(default)]
     pub pricing: PricingConfig,
     #[serde(default)]

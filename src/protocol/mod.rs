@@ -5,6 +5,7 @@
 //! credential refresh, and context-compaction decisions.
 
 pub mod ids;
+pub mod image;
 mod inference;
 pub mod llm;
 pub mod message;
@@ -15,6 +16,7 @@ pub use inference::*;
 pub use price_quote::*;
 
 pub use ids::{ProviderId, ResponseId, ToolUseId};
+pub use image::*;
 pub use llm::{
     CapabilitySupport, CompletionRequest, CompletionResponse, FileSearchConfig, FileSearchHit,
     FileSearchResult, LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport,

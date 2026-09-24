@@ -4,6 +4,8 @@
 
 This document covers the Rust API in this repository. `lingxi-llm-client` is a library with a built-in HTTP client. It does not provide an HTTP service with a listening port, a CLI, or a key management service. The core client API can be imported from `lingxi_llm_client`; request, response, and configuration types are available through `lingxi_llm_client::protocol`.
 
+Image generation and editing use the independent `client.images()` service; see the [image guide](images.en.md) for requests, tasks, and built-in provider support. `client.chat()` exposes the same conversation operations as the existing `complete()` and `stream()` methods.
+
 ## Region filtering
 
 Every client must explicitly select `.with_region(Region::ChinaMainland)` or `.with_region(Region::International)` before `build()`, otherwise it returns `BuildError::MissingRegion`. Import `Region` from `lingxi_llm_client::protocol`; `client.region()` returns the selection. It is fixed for the client lifetime. To switch regions, build another client and reuse the same configuration directory if desired.

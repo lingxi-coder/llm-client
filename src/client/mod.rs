@@ -15,6 +15,7 @@ mod builder;
 pub(crate) use attachments::*;
 use builder::validate_profiles;
 pub use builder::{BuildError, LlmClientBuilder};
+pub mod chat;
 pub mod options;
 mod price_query;
 pub mod pricing;
@@ -32,6 +33,7 @@ pub use account::{
     AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
     AccountUsageSource, AlibabaAccessKey, SubscriptionStatus,
 };
+pub use chat::ChatService;
 pub use options::RequestOptions;
 pub use resolve::ResolveError;
 pub use store::{ProviderStoreError, ProviderSyncOperation, ProviderSyncResult};
@@ -68,19 +70,31 @@ pub trait AttachmentResolver: Send + Sync + 'static {
 /// The provider-neutral client. Holds every registered codec and profile;
 /// routing and requests are M1.
 pub struct LlmClient {
-    region: Region,
-    http: Arc<dyn Transport>,
+    pub(crate) region: Region,
+    pub(crate) http: Arc<dyn Transport>,
     clock: Arc<dyn Clock>,
     codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
+    pub(crate) image_adapters:
+        BTreeMap<crate::protocol::ImageApi, Arc<dyn crate::images::ImageAdapter>>,
+    pub(crate) image_authenticators: BTreeMap<String, Arc<dyn crate::images::ImageAuthenticator>>,
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
     authenticators: BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
     accounts: account::Service,
-    attachments: AttachmentManager,
-    snapshot: Arc<snapshot::RuntimeSnapshot>,
+    pub(crate) attachments: AttachmentManager,
+    pub(crate) snapshot: Arc<snapshot::RuntimeSnapshot>,
     store: crate::configuration::Coordinator,
 }
 
 impl LlmClient {
+    /// The conversation service. Legacy `complete` and `stream` remain available.
+    pub fn chat(&self) -> ChatService<'_> {
+        ChatService::new(self)
+    }
+
+    /// The independent image generation service.
+    pub fn images(&self) -> crate::images::ImageService<'_> {
+        crate::images::ImageService::new(self)
+    }
     /// Query one account with its configured execution budgets.
     pub async fn account_usage(
         &self,
