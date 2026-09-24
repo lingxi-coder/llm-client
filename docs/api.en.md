@@ -41,9 +41,9 @@ Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, 
 
 1. Use the client within a Tokio async runtime.
 2. Load your own `ProviderProfile`, or use `builtin_providers()` / `merge_providers(user)`.
-3. Create a builder with `LlmClientBuilder::new(&profiles)?`, then call `build()`; API key and Bearer authenticators are registered automatically.
+3. Create a builder with `LlmClientBuilder::new(&profiles)?`, select a region with `with_region(Region::International)` or `with_region(Region::ChinaMainland)`, then call `build()`; API key and Bearer authenticators are registered automatically.
 4. The host obtains valid credentials and passes them in each request's `RequestOptions`.
-5. Call `complete()` or `stream()`; the host manages conversation history, tool execution, cancellation, and subsequent requests.
+5. Call `client.chat().complete()` or `client.chat().stream()`; the host manages conversation history, tool execution, cancellation, and subsequent requests.
 
 See the [README](../README.en.md#1-create-an-application-and-add-dependencies) for dependency setup. The example below uses `serde_json` to construct a configuration, so the calling project also needs to declare `serde_json = "1"` and a Tokio runtime dependency. There is no need to depend directly on `reqwest` or implement transport and a clock yourself.
 
@@ -94,7 +94,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         credential: Some(Secret::new(api_key)),
         ..RequestOptions::default()
     };
-    let response = client.complete_in("primary", &request, &options).await?;
+    let response = client.chat().complete_in("primary", &request, &options).await?;
     Ok(response.message.text())
 }
 ```
@@ -122,7 +122,26 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 
 `BuildError` includes `MissingRegion`, `DuplicateProfile { profile_name }`, `MissingCodec { profile_name, family }`, `MissingAuthenticator { profile_name, strategy }`, and `InvalidPeakSchedule { profile_name, reason }`. `AuthStrategy::None` needs no authenticator; a missing directory parser does not prevent the build. The build rejects invalid or empty peak pricing windows. A successful build does not mean the credentials are valid, the address is reachable, or the provider supports every request parameter.
 
+### `ChatService`
+
+`client.chat()` returns a borrowed `ChatService<'_>` for conversation calls. It uses the same configuration, credentials, routing, attachment preparation, deadlines, and failover as the top-level completion and streaming methods, which remain available. It does not store conversation history or execute tools.
+
+| Method | Return value | Behavior |
+| --- | --- | --- |
+| `models()` | `Vec<ModelListing>` | List visible models in the current region, filtering out models whose metadata declares `image` output |
+| `complete(&CompletionRequest, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | Route by model and return a complete response |
+| `complete_in(&str, &CompletionRequest, &RequestOptions).await` | Same | Restrict the starting profile or connection group |
+| `stream(&CompletionRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Route by model and open a stream |
+| `stream_in(&str, &CompletionRequest, &RequestOptions).await` | Same | Open a stream on the specified profile or group |
+
+For hosted search, set `CompletionRequest.web_search` or `file_search` before calling Chat, or use the `LlmClient::web_search*` convenience methods. `ChatService` has no `web_search*` methods. Configuration, account queries, routing inspection, token estimation, and pricing remain on `LlmClient`; image generation and editing use `client.images()`.
+
 ### `LlmClient`
+
+| Service entry | Return value | Purpose |
+| --- | --- | --- |
+| `chat()` | `ChatService<'_>` | Conversation model listing, completions, and streams |
+| `images()` | `ImageService<'_>` | Independent image catalog, generation, editing, and native tasks |
 
 | Method | Return value | Behavior |
 | --- | --- | --- |
@@ -164,7 +183,7 @@ The configuration is copied at build time. Local configuration management APIs c
 | --- | --- | --- |
 | `credential` | `Option<Secret<String>>` / `None` | Valid credential for this request; does not read environment variables or static keys from the configuration |
 | `fallback_credentials` | `BTreeMap<String, Secret<String>>` / empty | Provides separate credentials by fallback profile name; the first connection's key is not reused if one is missing |
-| `total_timeout` | `Option<Duration>` / `None` | Total limit for each request; when omitted, `complete()` defaults to 120 seconds and `stream()` has no total limit |
+| `total_timeout` | `Option<Duration>` / `None` | Total limit for each request; when omitted, `complete()` defaults to 120 seconds (two hours for video requests) and `stream()` has no total limit |
 | `file_account_scope` | `Option<String>` / `None` | Stable, non-secret provider-account identity used to bind and optionally reuse provider file references |
 
 ### `CompletionRequest`
@@ -212,7 +231,9 @@ Base64 sources carry `media_type` and `data`; URL sources carry `url`. The libra
 
 `UsageReport` combines `Option<Usage>` with `Missing`, `Partial`, `Complete`, or `Invalid`. Old persisted usage-only objects are rejected. Actual-cost APIs accept only complete reports.
 
-Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `file_search: Option<FileSearchResult>`, `stop_reason: StopReason`, `usage: UsageReport`, `model: String`, `response_id: Option<ResponseId>`, and `executed_profile: Option<String>`. High-level `complete()` sets the name of the connection that actually succeeded; this field is `None` when decoding directly through a codec. `StopReason` includes `EndTurn`, `ToolUse`, `MaxTokens`, `StopSequence`, `Refusal`, and `Other(String)`.
+Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `file_search: Option<FileSearchResult>`, `stop_reason: StopReason`, `usage: UsageReport`, `model: String`, `response_id: Option<ResponseId>`, `inference: InferenceReport`, and `executed_profile: Option<String>`. High-level `complete()` sets the name of the connection that actually succeeded; this field is `None` when decoding directly through a codec. `StopReason` includes `EndTurn`, `ToolUse`, `MaxTokens`, `StopSequence`, `Refusal`, and `Other(String)`.
+
+`inference` preserves requested reasoning effort and service tier, provider-reported tier, and local execution time. Requested values do not confirm the actual tier; see [reasoning and pricing](inference.en.md).
 
 ### Host tool execution and context recovery
 
@@ -258,10 +279,10 @@ async fn call_with_one_context_retry(
     options: &RequestOptions,
     reduce: impl FnOnce(CompletionRequest, &LlmError) -> CompletionRequest,
 ) -> Result<CompletionResponse, LlmError> {
-    match client.complete_in(profile, &request, options).await {
+    match client.chat().complete_in(profile, &request, options).await {
         Err(error @ (LlmError::ContextOverflow { .. } | LlmError::RequestTooLarge { .. })) => {
             let reduced = reduce(request, &error);
-            client.complete_in(profile, &reduced, options).await
+            client.chat().complete_in(profile, &reduced, options).await
         }
         result => result,
     }
@@ -373,7 +394,7 @@ async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std
         credential: Some(Secret::new(api_key)),
         ..RequestOptions::default()
     };
-    let response = client.complete_in("qwen-search", &request, &options).await?;
+    let response = client.chat().complete_in("qwen-search", &request, &options).await?;
     if let Some(search) = response.file_search {
         for hit in search.hits {
             println!("{}: {}", hit.filename.unwrap_or_default(), hit.text.unwrap_or_default());
@@ -396,7 +417,7 @@ async fn read_stream(
     request: &CompletionRequest,
     options: &RequestOptions,
 ) -> Result<(), LlmError> {
-    let mut stream = client.stream(request, options).await?;
+    let mut stream = client.chat().stream(request, options).await?;
     while let Some(event) = stream.next().await {
         match event? {
             StreamEvent::TextDelta { text, .. } => print!("{text}"),
@@ -619,7 +640,7 @@ The built-in authenticators are stateless unit structs. Both `new()` and `with_t
 | Retries | No automatic retry; explicitly configured failover at the high level can still apply |
 | Connection timeout | 30 seconds |
 | Stream read idle timeout | 60 seconds by default; `HttpTransport::with_read_timeout(Duration)` adjusts it at the client level |
-| Total timeout | `complete()` defaults to 120 seconds; `stream()` has no total limit by default, so an active long-running stream can continue; `RequestOptions.total_timeout` sets a total limit for either, including stream reads |
+| Total timeout | `complete()` defaults to 120 seconds (two hours for video requests); `stream()` has no total limit by default, so an active long-running stream can continue; `RequestOptions.total_timeout` sets a total limit for either, including stream reads |
 | HTTP error status | Preserves status, response headers, and body for codec classification instead of discarding the error body early |
 | Network errors | Returns a semantic `LlmError`; its message omits the request URL, authentication headers, and body |
 

@@ -41,9 +41,9 @@
 
 1. 在 Tokio 异步运行时中使用客户端。
 2. 加载自己的 `ProviderProfile`，或使用 `builtin_providers()` / `merge_providers(user)`。
-3. 用 `LlmClientBuilder::new(&profiles)?` 创建构建器，再调用 `build()`；已自动注册 API key 和 Bearer 认证器。
+3. 用 `LlmClientBuilder::new(&profiles)?` 创建构建器，通过 `with_region(Region::International)` 或 `with_region(Region::ChinaMainland)` 选择区域，再调用 `build()`；已自动注册 API key 和 Bearer 认证器。
 4. 宿主取得有效凭证，通过每次请求的 `RequestOptions` 传入。
-5. 调用 `complete()` 或 `stream()`；宿主负责会话历史、工具执行、取消和后续请求。
+5. 调用 `client.chat().complete()` 或 `client.chat().stream()`；宿主负责会话历史、工具执行、取消和后续请求。
 
 依赖配置见 [README](../README.md#1-创建应用并添加依赖)。下面示例使用 `serde_json` 构造配置，调用项目还需要声明 `serde_json = "1"` 和 Tokio 运行时依赖。无需直接依赖 `reqwest`，也无需自行实现传输和时钟。
 
@@ -94,7 +94,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         credential: Some(Secret::new(api_key)),
         ..RequestOptions::default()
     };
-    let response = client.complete_in("primary", &request, &options).await?;
+    let response = client.chat().complete_in("primary", &request, &options).await?;
     Ok(response.message.text())
 }
 ```
@@ -122,7 +122,26 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 
 `BuildError` 包括 `MissingRegion`、 `DuplicateProfile { profile_name }`、`MissingCodec { profile_name, family }`、`MissingAuthenticator { profile_name, strategy }` 和 `InvalidPeakSchedule { profile_name, reason }`。`AuthStrategy::None` 不需要认证器；缺少目录解析器不阻止构建。构建时会拒绝无效或空的峰值价格时间窗；构建成功不代表凭证有效、地址可达或 provider 支持所有请求参数。
 
+### `ChatService`
+
+`client.chat()` 返回借用客户端的 `ChatService<'_>`，用于对话调用。它与仍然保留的顶层对话和流式方法共用配置、凭据、路由、附件准备、请求时限及故障转移逻辑，不保存会话历史或执行工具。
+
+| 方法 | 返回值 | 行为 |
+| --- | --- | --- |
+| `models()` | `Vec<ModelListing>` | 列出当前区域可见模型，并过滤元数据中声明 `image` 输出的模型 |
+| `complete(&CompletionRequest, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | 按模型路由并返回完整响应 |
+| `complete_in(&str, &CompletionRequest, &RequestOptions).await` | 同上 | 限定起始 profile 或连接组 |
+| `stream(&CompletionRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 按模型路由并打开流 |
+| `stream_in(&str, &CompletionRequest, &RequestOptions).await` | 同上 | 在指定 profile 或连接组上打开流 |
+
+托管搜索可在调用 Chat 前设置 `CompletionRequest.web_search` 或 `file_search`，也可使用 `LlmClient::web_search*` 便捷方法；`ChatService` 本身没有 `web_search*` 方法。配置、账户查询、路由检查、token 估算和价格接口仍属于 `LlmClient`；图像生成与编辑使用 `client.images()`。
+
 ### `LlmClient`
+
+| 服务入口 | 返回值 | 用途 |
+| --- | --- | --- |
+| `chat()` | `ChatService<'_>` | 对话模型列表、完整响应与流式响应 |
+| `images()` | `ImageService<'_>` | 独立图像目录、生成、编辑与原生任务 |
 
 | 方法 | 返回值 | 行为 |
 | --- | --- | --- |
@@ -164,7 +183,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | --- | --- | --- |
 | `credential` | `Option<Secret<String>>` / `None` | 本次请求的有效凭证；不读取配置中的环境变量或静态密钥 |
 | `fallback_credentials` | `BTreeMap<String, Secret<String>>` / 空 | 按备用 profile 名提供独立凭证；未提供时不会复用首连接密钥 |
-| `total_timeout` | `Option<Duration>` / `None` | 逐请求总时限；`complete()` 省略时默认 120 秒，`stream()` 省略时不设总时限 |
+| `total_timeout` | `Option<Duration>` / `None` | 逐请求总时限；`complete()` 省略时默认 120 秒（含视频的请求默认两小时），`stream()` 省略时不设总时限 |
 | `file_account_scope` | `Option<String>` / `None` | 不含密钥的稳定 provider 账号身份，用于绑定或跨请求复用 provider 文件引用 |
 
 ### `CompletionRequest`
@@ -212,7 +231,9 @@ Base64 源携带 `media_type` 和 `data`；URL 源携带 `url`。库不执行工
 
 `UsageReport` 将 `Option<Usage>` 与 `Missing`、`Partial`、`Complete`、`Invalid` 状态统一保存。仅有 usage 数值的旧格式不再接受；实际成本 API 只接受完整报告。
 
-返回 `message: ConversationMessage`、`web_search: Option<WebSearchResult>`、`file_search: Option<FileSearchResult>`、`stop_reason: StopReason`、`usage: UsageReport`、`model: String`、`response_id: Option<ResponseId>` 和 `executed_profile: Option<String>`。高层 `complete()` 会设置实际成功的连接名称；直接调用 codec 解码时此字段为 `None`。`StopReason` 包括 `EndTurn`、`ToolUse`、`MaxTokens`、`StopSequence`、`Refusal` 和 `Other(String)`。
+返回 `message: ConversationMessage`、`web_search: Option<WebSearchResult>`、`file_search: Option<FileSearchResult>`、`stop_reason: StopReason`、`usage: UsageReport`、`model: String`、`response_id: Option<ResponseId>`、`inference: InferenceReport` 和 `executed_profile: Option<String>`。高层 `complete()` 会设置实际成功的连接名称；直接调用 codec 解码时此字段为 `None`。`StopReason` 包括 `EndTurn`、`ToolUse`、`MaxTokens`、`StopSequence`、`Refusal` 和 `Other(String)`。
+
+`inference` 保留请求的推理 effort 与服务档位、供应商回报的实际档位及本地执行时间。请求值不能证明实际档位，详见[推理控制与价格](inference.md)。
 
 ### 宿主工具执行与上下文恢复
 
@@ -258,10 +279,10 @@ async fn call_with_one_context_retry(
     options: &RequestOptions,
     reduce: impl FnOnce(CompletionRequest, &LlmError) -> CompletionRequest,
 ) -> Result<CompletionResponse, LlmError> {
-    match client.complete_in(profile, &request, options).await {
+    match client.chat().complete_in(profile, &request, options).await {
         Err(error @ (LlmError::ContextOverflow { .. } | LlmError::RequestTooLarge { .. })) => {
             let reduced = reduce(request, &error);
-            client.complete_in(profile, &reduced, options).await
+            client.chat().complete_in(profile, &reduced, options).await
         }
         result => result,
     }
@@ -373,7 +394,7 @@ async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std
         credential: Some(Secret::new(api_key)),
         ..RequestOptions::default()
     };
-    let response = client.complete_in("qwen-search", &request, &options).await?;
+    let response = client.chat().complete_in("qwen-search", &request, &options).await?;
     if let Some(search) = response.file_search {
         for hit in search.hits {
             println!("{}: {}", hit.filename.unwrap_or_default(), hit.text.unwrap_or_default());
@@ -396,7 +417,7 @@ async fn read_stream(
     request: &CompletionRequest,
     options: &RequestOptions,
 ) -> Result<(), LlmError> {
-    let mut stream = client.stream(request, options).await?;
+    let mut stream = client.chat().stream(request, options).await?;
     while let Some(event) = stream.next().await {
         match event? {
             StreamEvent::TextDelta { text, .. } => print!("{text}"),
@@ -615,7 +636,7 @@ OpenAI Chat 连接可通过 `extra.max_tokens_field` 选择输出上限字段：
 | 重试 | 不自动重试；高层显式配置的故障转移仍可生效 |
 | 连接超时 | 30 秒 |
 | 流读取空闲超时 | 默认 60 秒；`HttpTransport::with_read_timeout(Duration)` 可在客户端级调整 |
-| 总超时 | `complete()` 默认 120 秒；`stream()` 默认不设总时限，活跃长流可持续运行；`RequestOptions.total_timeout` 为两者指定总时限，包含流读取 |
+| 总超时 | `complete()` 默认 120 秒（含视频的请求默认两小时）；`stream()` 默认不设总时限，活跃长流可持续运行；`RequestOptions.total_timeout` 为两者指定总时限，包含流读取 |
 | HTTP 错误状态 | 保留状态、响应头和 body，由 codec 分类，不提前丢弃错误体 |
 | 网络错误 | 返回语义化 `LlmError`，错误消息不包含请求 URL、认证头或 body |
 

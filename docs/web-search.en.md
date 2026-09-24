@@ -2,7 +2,7 @@
 
 [简体中文](web-search.md)
 
-`LlmClient::web_search()` and `web_search_stream()` enable provider-hosted search for a single request without implementing a search function or registering a client-side `ToolSpec`. You can also set `CompletionRequest.web_search` and then call `complete()` / `stream()`; it defaults to `None`, preserving the original request behavior. The server decides whether to search; enabling search does not guarantee a search on every request.
+`LlmClient::web_search()` and `web_search_stream()` enable provider-hosted search for a single request without implementing a search function or registering a client-side `ToolSpec`. You can also set `CompletionRequest.web_search` and then call `client.chat().complete()` / `client.chat().stream()`; it defaults to `None`, preserving the original request behavior. The server decides whether to search; enabling search does not guarantee a search on every request.
 
 ## Quick start
 
@@ -14,7 +14,7 @@ use lingxi_llm_client::protocol::WebSearchConfig;
 request.web_search = Some(WebSearchConfig::default());
 ```
 
-When you know which connection owns the credentials, use `client.complete_in("openai", &request, &options)`. You can also pass the configuration separately to `client.web_search_in("openai", &request, WebSearchConfig::default(), &options)`; the streaming equivalent is `web_search_stream_in()`. `request.model` can be the connection's native model ID. The search methods do not modify `request` and override any `web_search` configuration already in it. The connection-agnostic `complete()`, `web_search()`, and `web_search_stream()` remain available, but return an ambiguity error when a native model ID and `profile/model` could be interpreted differently. The provider validates whether search is available for a particular model, account, and deployment. A profile declaration only indicates which search interface the connection uses; it does not mean every model in its catalog supports search.
+When you know which connection owns the credentials, use `client.chat().complete_in("openai", &request, &options)`. You can also pass the configuration separately to `client.web_search_in("openai", &request, WebSearchConfig::default(), &options)`; the streaming equivalent is `web_search_stream_in()`. `request.model` can be the connection's native model ID. The search methods do not modify `request` and override any `web_search` configuration already in it. The connection-agnostic `complete()`, `web_search()`, and `web_search_stream()` remain available, but return an ambiguity error when a native model ID and `profile/model` could be interpreted differently. The provider validates whether search is available for a particular model, account, and deployment. A profile declaration only indicates which search interface the connection uses; it does not mean every model in its catalog supports search.
 
 To restrict sources or the number of searches:
 

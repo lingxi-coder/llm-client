@@ -2,7 +2,7 @@
 
 [English](web-search.en.md)
 
-`LlmClient::web_search()` 和 `web_search_stream()` 为单次请求启用 provider 托管的搜索，不需要实现搜索函数或注册客户端 `ToolSpec`。也可设置 `CompletionRequest.web_search` 后调用 `complete()` / `stream()`；默认 `None`，保持原请求行为。服务端决定是否搜索；启用不保证每次都会搜索。
+`LlmClient::web_search()` 和 `web_search_stream()` 为单次请求启用 provider 托管的搜索，不需要实现搜索函数或注册客户端 `ToolSpec`。也可设置 `CompletionRequest.web_search` 后调用 `client.chat().complete()` / `client.chat().stream()`；默认 `None`，保持原请求行为。服务端决定是否搜索；启用不保证每次都会搜索。
 
 ## 快速使用
 
@@ -14,7 +14,7 @@ use lingxi_llm_client::protocol::WebSearchConfig;
 request.web_search = Some(WebSearchConfig::default());
 ```
 
-已知凭证所属连接时，推荐通过 `client.complete_in("openai", &request, &options)` 发送，也可将配置作为独立参数传入 `client.web_search_in("openai", &request, WebSearchConfig::default(), &options)`；流式对应 `web_search_stream_in()`。`request.model` 可直接使用该连接的原生模型 ID。搜索方法不会修改 `request`，并覆盖其中已有的 `web_search` 配置。未限定连接的 `complete()`、`web_search()` 和 `web_search_stream()` 仍可使用，但原生模型 ID 与 `profile/model` 有不同解释时会返回歧义错误。搜索功能是否对具体模型、账户和部署开放由 provider 校验；profile 声明仅表示该连接使用哪种搜索接口，不代表其目录中的全部模型都支持搜索。
+已知凭证所属连接时，推荐通过 `client.chat().complete_in("openai", &request, &options)` 发送，也可将配置作为独立参数传入 `client.web_search_in("openai", &request, WebSearchConfig::default(), &options)`；流式对应 `web_search_stream_in()`。`request.model` 可直接使用该连接的原生模型 ID。搜索方法不会修改 `request`，并覆盖其中已有的 `web_search` 配置。未限定连接的 `complete()`、`web_search()` 和 `web_search_stream()` 仍可使用，但原生模型 ID 与 `profile/model` 有不同解释时会返回歧义错误。搜索功能是否对具体模型、账户和部署开放由 provider 校验；profile 声明仅表示该连接使用哪种搜索接口，不代表其目录中的全部模型都支持搜索。
 
 限定来源或搜索次数：
 
