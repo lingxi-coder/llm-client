@@ -122,6 +122,34 @@ cache_read_per_million = 0.5
 source = "models.dev via aggregator"
 
 [[model]]
+id = "grok-4.7"
+name = "Grok 4.7"
+description = "SpaceXAI's frontier model for coding, agentic tasks, and knowledge work."
+release_date = "2026-09-21"
+context_window = 500000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 6
+cache_read_per_million = 0.5
+source = "https://docs.x.ai/developers/models/grok-4.7"
+verified_at = "2026-09-24"
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+sources = ["https://docs.x.ai/developers/models/grok-4.7"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "medium", "high", "xhigh"], default = "high" }
+
+[[model]]
 id = "grok-build-0.1"
 name = "Grok Build 0.1"
 description = "Grok Build 0.1 is SpaceXAI’s fast coding model trained specifically for agentic software engineering workflows. It supports text and image inputs with text output, and is optimized for interactive coding..."

@@ -252,6 +252,51 @@ cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
 [[model]]
+id = "claude-opus-5-5"
+name = "Claude Opus 5.5"
+description = "Claude Opus 5.5 is Anthropic's model for long-running agentic coding and knowledge work."
+release_date = "2026-09-22"
+context_window = 1000000
+max_output = 128000
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+
+[model.pricing]
+input_per_million = 4
+output_per_million = 20
+cache_read_per_million = 0.2
+cache_write_per_million = 5
+cache_write_1h_per_million = 8
+source = "https://platform.claude.com/docs/en/models/opus-5-5/overview"
+verified_at = "2026-09-24"
+
+[model.pricing.batch]
+input_per_million = 2
+output_per_million = 10
+cache_read_per_million = 0.1
+cache_write_per_million = 2.5
+
+[[model.pricing.rules]]
+service_tier = "fast"
+source = "https://platform.claude.com/docs/en/models/opus-5-5/overview"
+verified_at = "2026-09-24"
+
+[model.features]
+default_mode = "adaptive"
+mode_support = { adaptive = { forced_tool_choice = "unsupported" } }
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.claude.com/docs/en/models/opus-5-5/overview"]
+modes = ["adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported", hard_limit = false }
+effort = { support = "supported", levels = ["low", "medium", "high"], default = "medium" }
+
+[[model]]
 id = "claude-sonnet-4-5-20250929"
 aliases = ["claude-sonnet-4.5", "claude-sonnet-4-5"]
 name = "Claude Sonnet 4.5"

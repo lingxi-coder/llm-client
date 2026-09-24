@@ -884,6 +884,178 @@ cache_write_per_million = 12.5
 source = "models.dev"
 
 [[model]]
+id = "gpt-6-luna"
+name = "GPT-6 Luna"
+description = "OpenAI's efficient model for focused, high-volume tasks."
+family = "gpt-luna"
+knowledge_cutoff = "2026-05-18"
+release_date = "2026-09-22"
+last_updated = "2026-09-22"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.1
+cache_read_per_million = 0.01
+cache_write_per_million = 0.125
+output_per_million = 0.5
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[model.pricing.batch]
+input_per_million = 0.05
+cache_read_per_million = 0.005
+cache_write_per_million = 0.0625
+output_per_million = 0.25
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://developers.openai.com/api/docs/models/gpt-6-luna"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["none", "low", "medium", "high", "xhigh", "max"], default = "medium" }
+modes = ["enabled", "disabled"]
+
+[[model.pricing.rules]]
+service_tier = "standard"
+max_input_tokens = 272000
+rates = { input_per_million = 0.1, cache_read_per_million = 0.01, cache_write_per_million = 0.125, output_per_million = 0.5 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+min_input_tokens = 272001
+rates = { input_per_million = 0.2, cache_read_per_million = 0.02, cache_write_per_million = 0.25, output_per_million = 0.75 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+max_input_tokens = 272000
+rates = { input_per_million = 0.2, cache_read_per_million = 0.02, cache_write_per_million = 0.25, output_per_million = 1.0 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+min_input_tokens = 272001
+rates = { input_per_million = 0.4, cache_read_per_million = 0.04, cache_write_per_million = 0.5, output_per_million = 1.5 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+max_input_tokens = 272000
+rates = { input_per_million = 0.05, cache_read_per_million = 0.005, cache_write_per_million = 0.0625, output_per_million = 0.25 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+min_input_tokens = 272001
+rates = { input_per_million = 0.1, cache_read_per_million = 0.01, cache_write_per_million = 0.125, output_per_million = 0.375 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
+verified_at = "2026-09-24"
+
+[[model]]
+id = "gpt-6-sol"
+name = "GPT-6 Sol"
+description = "OpenAI's model for complex coding and agentic workflows."
+family = "gpt-sol"
+knowledge_cutoff = "2026-04-20"
+release_date = "2026-09-22"
+last_updated = "2026-09-22"
+context_window = 1050000
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+cache_read_per_million = 0.2
+cache_write_per_million = 2.5
+output_per_million = 10
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[model.pricing.batch]
+input_per_million = 1
+cache_read_per_million = 0.1
+cache_write_per_million = 1.25
+output_per_million = 5
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://developers.openai.com/api/docs/models/gpt-6-sol"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["none", "low", "medium", "high", "xhigh", "max"], default = "medium" }
+modes = ["enabled", "disabled"]
+
+[[model.pricing.rules]]
+service_tier = "standard"
+max_input_tokens = 272000
+rates = { input_per_million = 2, cache_read_per_million = 0.2, cache_write_per_million = 2.5, output_per_million = 10 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+min_input_tokens = 272001
+rates = { input_per_million = 4, cache_read_per_million = 0.4, cache_write_per_million = 5, output_per_million = 15 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+max_input_tokens = 272000
+rates = { input_per_million = 4, cache_read_per_million = 0.4, cache_write_per_million = 5, output_per_million = 20 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+min_input_tokens = 272001
+rates = { input_per_million = 8, cache_read_per_million = 0.8, cache_write_per_million = 10, output_per_million = 30 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+max_input_tokens = 272000
+rates = { input_per_million = 1, cache_read_per_million = 0.1, cache_write_per_million = 1.25, output_per_million = 5 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+min_input_tokens = 272001
+rates = { input_per_million = 2, cache_read_per_million = 0.2, cache_write_per_million = 2.5, output_per_million = 7.5 }
+source = "https://developers.openai.com/api/docs/models/gpt-6-sol"
+verified_at = "2026-09-24"
+
+[[model]]
 id = "gpt-image-1"
 name = "gpt-image-1"
 description = "OpenAI image model for production generation, edits, and brand-safe visual workflows"
