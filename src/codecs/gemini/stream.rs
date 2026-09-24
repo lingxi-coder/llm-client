@@ -4,15 +4,16 @@
 //! block indices are assigned here the way the OpenAI decoder does it.
 
 use super::decode;
-use crate::client::usage;
+use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
-use crate::codecs::StreamDecoder;
-use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, Usage};
+use crate::codecs::EventDecoder;
+use crate::protocol::{LlmError, StopReason, StreamEvent};
 use serde_json::Value;
 use std::collections::HashSet;
 
 #[derive(Debug, Default)]
 pub struct GeminiStreamDecoder {
+    inference: crate::codecs::inference::StreamInference,
     started: bool,
     next_block: usize,
     text_block: Option<usize>,
@@ -27,12 +28,13 @@ pub struct GeminiStreamDecoder {
     usage_raw: Option<Value>,
     stop: Option<StopReason>,
     saw_tool_call: bool,
+    prompt_blocked: bool,
     used_call_ids: HashSet<String>,
     done: bool,
     search: SearchStream,
 }
 
-impl StreamDecoder for GeminiStreamDecoder {
+impl EventDecoder for GeminiStreamDecoder {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         let text = std::str::from_utf8(frame).map_err(|_| LlmError::InvalidRequest {
             message: "stream frame is not valid UTF-8".to_owned(),
@@ -50,6 +52,7 @@ impl StreamDecoder for GeminiStreamDecoder {
         }
 
         let mut out = Vec::new();
+        self.inference.observe(&root, &mut out);
         if !self.started {
             self.started = true;
             out.push(StreamEvent::Start {
@@ -66,6 +69,7 @@ impl StreamDecoder for GeminiStreamDecoder {
         }
 
         if decode::prompt_feedback_is_blocking(&root) {
+            self.prompt_blocked = true;
             self.stop = Some(StopReason::Refusal);
         }
 
@@ -168,7 +172,11 @@ impl StreamDecoder for GeminiStreamDecoder {
             }
         }
 
-        if let Some(f) = candidate.get("finishReason").and_then(Value::as_str) {
+        if let Some(f) = candidate
+            .get("finishReason")
+            .and_then(Value::as_str)
+            .filter(|_| !self.prompt_blocked)
+        {
             self.stop = Some(decode::stop_reason(Some(f)));
         }
         Ok(out)
@@ -184,32 +192,38 @@ impl StreamDecoder for GeminiStreamDecoder {
         if !self.done {
             self.done = true;
             out.push(StreamEvent::End {
-                // A turn that called a tool is a tool turn even though this
-                // wire finishes it with STOP.
-                stop_reason: if self.saw_tool_call {
-                    StopReason::ToolUse
-                } else {
-                    self.stop.clone().unwrap_or(StopReason::EndTurn)
-                },
-                usage: self
-                    .usage_raw
-                    .as_ref()
-                    .map(decode::usage)
-                    .unwrap_or_default(),
+                stop_reason: decode::with_tool_stop_reason(
+                    self.stop.clone().unwrap_or(StopReason::EndTurn),
+                    self.saw_tool_call,
+                ),
+                usage: self.usage_report(),
+                inference: self.inference.report.clone(),
             });
         }
         Ok(out)
     }
 
-    fn observed_usage(&self) -> Option<Usage> {
-        self.usage_raw.as_ref().map(decode::usage)
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        self.inference.report.clone()
     }
-
-    fn usage_is_complete(&self) -> bool {
-        self.usage_raw
-            .as_ref()
-            .is_some_and(|raw| usage::is_complete(raw, &usage::GEMINI))
+    fn set_response_headers(&mut self, headers: &[(String, String)]) {
+        self.inference.headers(headers);
     }
+    fn usage_report(&self) -> crate::protocol::UsageReport {
+        usage::report(
+            self.usage_raw.as_ref(),
+            &usage::GEMINI,
+            decode::usage,
+            self.done,
+        )
+    }
+}
 
-    fn set_provider_metadata(&mut self, _meta: Value) {}
+impl GeminiStreamDecoder {
+    pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
+        Self {
+            inference: crate::codecs::inference::StreamInference::new(context),
+            ..Self::default()
+        }
+    }
 }

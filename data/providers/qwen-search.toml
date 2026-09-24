@@ -1,3 +1,9 @@
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "open_ai_responses", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://www.alibabacloud.com/help/en/model-studio/deep-thinking"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland"]
 provider_id = "qwen"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -23,6 +29,14 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://help.aliyun.com/zh/model-studio/compatibility-with-openai-responses-api"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported" }
+
 [[model]]
 id = "qwen3.8-max"
 name = "Qwen3.8 Max"
@@ -33,3 +47,10 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://help.aliyun.com/zh/model-studio/compatibility-with-openai-responses-api"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported" }

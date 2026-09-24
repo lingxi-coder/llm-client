@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use lingxi_llm_client::protocol::{LlmError, ProviderProfile, Secret};
 use lingxi_llm_client::{
-    AccountFailure, AccountIdentity, AccountMetric, AccountQuery, AccountRpc, AccountUsageSource,
-    CodexAccountSource, CopilotAccountSource, HttpRequest, HttpResponse, KimiCodeAccountSource,
-    LlmClientBuilder, StreamResponse, Transport, WebSocketSession,
+    AccountFailure, AccountIdentity, AccountMetric, AccountQuery, AccountRpc, AccountSnapshot,
+    AccountUsageSource, CodexAccountSource, CopilotAccountSource, HttpRequest, HttpResponse,
+    KimiCodeAccountSource, LlmClientBuilder, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -54,15 +54,20 @@ impl AccountRpc for MockRpc {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct MockHttp {
     responses: BTreeMap<String, Value>,
-    requests: Mutex<Vec<HttpRequest>>,
+    requests: Arc<Mutex<Vec<HttpRequest>>>,
 }
 
 #[async_trait]
 impl Transport for MockHttp {
-    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
+    }
+}
+impl MockHttp {
+    async fn response(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
         let response = self.responses.get(&request.url).cloned();
         self.requests.lock().unwrap().push(request);
         Ok(HttpResponse {
@@ -72,21 +77,6 @@ impl Transport for MockHttp {
                 .unwrap()
                 .into(),
         })
-    }
-
-    async fn execute_no_follow(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute(request).await
-    }
-
-    async fn open_stream(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
-        unreachable!()
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        unreachable!()
     }
 }
 
@@ -127,7 +117,7 @@ async fn codex_reads_plan_all_quota_windows_and_daily_tokens() {
     let source = CodexAccountSource::new(rpc.clone());
     let query = AccountQuery::new(AccountIdentity::AuthUser);
     let result = source
-        .fetch(
+        .fetch_fixture(
             &profile("openai"),
             &query,
             (1_790_121_600, 1_790_208_000),
@@ -177,7 +167,7 @@ async fn codex_one_failed_rpc_does_not_hide_other_metrics() {
         ),
     ]));
     let result = CodexAccountSource::new(rpc)
-        .fetch(
+        .fetch_fixture(
             &profile("openai"),
             &AccountQuery::new(AccountIdentity::AuthUser),
             (0, 1),
@@ -220,7 +210,7 @@ async fn codex_uses_limit_plan_when_account_read_fails_and_keeps_overlapping_day
     ]));
     let start = 1_790_121_600 + 12 * 3_600;
     let result = CodexAccountSource::new(rpc)
-        .fetch(
+        .fetch_fixture(
             &profile("openai"),
             &AccountQuery::new(AccountIdentity::AuthUser),
             (start, start + 3_600),
@@ -265,7 +255,7 @@ async fn copilot_reports_account_quota_without_inventing_token_history() {
         })),
     )]));
     let result = CopilotAccountSource::new(rpc.clone())
-        .fetch(
+        .fetch_fixture(
             &profile("copilot"),
             &AccountQuery::new(AccountIdentity::AuthUser),
             (0, 1),
@@ -299,7 +289,7 @@ async fn copilot_uses_the_queried_users_token_for_quota() {
     let mut query = AccountQuery::new(AccountIdentity::AuthUser);
     query.credential = Some(Secret::new("github-user-token".into()));
     CopilotAccountSource::new(rpc.clone())
-        .fetch(
+        .fetch_fixture(
             &profile("copilot"),
             &query,
             (0, 1),
@@ -347,7 +337,7 @@ async fn one_copilot_source_can_query_distinct_users_with_their_tokens() {
         Arc::new(CopilotAccountSource::new(Arc::new(UserQuotaRpc))),
     );
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     for (profile_name, token, expected) in [
@@ -388,7 +378,7 @@ async fn kimi_uses_authenticated_loopback_service_and_parses_wallet() {
     query.service_url = Some("http://127.0.0.1:58627".into());
     query.service_credential = Some(Secret::new("service-token".into()));
     let result = KimiCodeAccountSource::new()
-        .fetch(&profile("kimi-code"), &query, (0, 1), 100, &http)
+        .fetch_fixture(&profile("kimi-code"), &query, (0, 1), 100, &http)
         .await;
     assert!(
         matches!(result.balance, AccountMetric::Available { value, .. } if value[0].remaining == "12.34" && value[0].total.as_deref() == Some("50.00"))
@@ -415,7 +405,7 @@ async fn kimi_rejects_non_loopback_url_before_sending_credential() {
     query.service_url = Some("https://example.com".into());
     query.service_credential = Some(Secret::new("service-token".into()));
     let result = KimiCodeAccountSource::new()
-        .fetch(&profile("kimi-code"), &query, (0, 1), 100, &http)
+        .fetch_fixture(&profile("kimi-code"), &query, (0, 1), 100, &http)
         .await;
     assert!(matches!(
         result.quota_windows,
@@ -446,7 +436,7 @@ async fn malformed_kimi_reset_fails_quota_without_hiding_wallet_or_plan() {
     query.service_url = Some("http://127.0.0.1:58627".into());
     query.service_credential = Some(Secret::new("service-token".into()));
     let result = KimiCodeAccountSource::new()
-        .fetch(&profile("kimi-code"), &query, (0, 1), 100, &http)
+        .fetch_fixture(&profile("kimi-code"), &query, (0, 1), 100, &http)
         .await;
     assert!(matches!(
         result.quota_windows,
@@ -462,3 +452,26 @@ async fn malformed_kimi_reset_fails_quota_without_hiding_wallet_or_plan() {
         AccountMetric::Available { .. }
     ));
 }
+
+#[async_trait]
+trait SourceFixture: AccountUsageSource + Sized {
+    async fn fetch_fixture(
+        &self,
+        profile: &ProviderProfile,
+        query: &AccountQuery,
+        range: (u64, u64),
+        now: u64,
+        http: &MockHttp,
+    ) -> AccountSnapshot {
+        lingxi_llm_client::AccountFetchContext::new(
+            profile,
+            query,
+            range,
+            now,
+            Arc::new(http.clone()),
+        )
+        .collect(self)
+        .await
+    }
+}
+impl<T: AccountUsageSource> SourceFixture for T {}

@@ -10,28 +10,43 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: [default, tokenizers-all]
     steps:
       - uses: actions/checkout@v6.1.0
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt clippy
       - name: Test
-        run: cargo test --workspace --locked
-      - name: Compile documentation examples as downstream consumer
-        run: cargo test --manifest-path tests/downstream-docs/Cargo.toml --doc --locked --offline --target-dir target
-      - name: Verify protocol-only feature surface
-        run: |
-          cargo check -p lingxi-agent-api --no-default-features --locked
-          cargo test -p lingxi-agent-api --no-default-features --locked
-          cargo check -p lingxi-llm-client --locked
+        run: cargo test --locked --features '${{ matrix.features }}'
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked --features '${{ matrix.features }}' -- -D warnings
       - name: Check Rustdoc
-        run: RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
-      - name: Check package contents
+        run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --features '${{ matrix.features }}'
+      - name: Compile bilingual documentation and extension APIs downstream
+        if: matrix.features == 'default'
+        run: cargo test --manifest-path tests/downstream-docs/Cargo.toml --locked --offline --target-dir target
+      - name: Verify default dependency isolation
+        if: matrix.features == 'default'
         run: |
-          cargo package -p lingxi-agent-api --list --locked
-          cargo package -p lingxi-llm-client --list --locked
-      - name: Verify publishable shared types crate
-        run: cargo package -p lingxi-agent-api --locked
+          cargo tree --no-default-features --edges normal --prefix none > target/default-dependencies.txt
+          if grep -E '^(tokenizers|onig|tiktoken-rs|xz2) v' target/default-dependencies.txt; then exit 1; fi
+      - name: Check package contents
+        if: matrix.features == 'default'
+        run: cargo package --list --locked
+      - name: Verify standalone client package
+        if: matrix.features == 'default'
+        run: cargo package --locked
+  tokenizer-features:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        feature: [tokenizer-openai, tokenizer-deepseek, tokenizer-qwen, tokenizer-kimi, tokenizer-glm]
+    steps:
+      - uses: actions/checkout@v6.1.0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal
+      - name: Compile individual backend
+        run: cargo check --locked --no-default-features --features '${{ matrix.feature }}'

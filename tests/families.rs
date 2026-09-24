@@ -1,13 +1,16 @@
 //! Every protocol family has a codec, and the two wires that are not variants
 //! of the other seven behave the way their providers expect.
 
-use lingxi_agent_api::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
-    ModelCapabilities, ProtocolFamily, ProviderId, ProviderProfile, ResponseId, StopReason,
-    StreamEvent, SystemBlock, ToolChoice, ToolUseId, Usage,
-};
+#[path = "support/wire_api.rs"]
+mod wire_api;
+
 use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 use lingxi_llm_client::framing::eventstream::crc32;
+use lingxi_llm_client::protocol::{
+    CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
+    ModelCapabilitySupport, ProtocolFamily, ProviderId, ProviderProfile, ResponseId, StopReason,
+    StreamEvent, SystemBlock, ToolChoice, ToolUseId, Usage,
+};
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, GeminiCodec, LlmClientBuilder, PricingModelRef,
     RequestOptions, ResolvedRoute, VertexClaudeCodec, WireCodec,
@@ -41,7 +44,7 @@ fn route() -> ResolvedRoute {
             request_model: "wire-m".to_owned(),
             display_model: "m".to_owned(),
         },
-        capabilities: ModelCapabilities::default(),
+        capability_support: ModelCapabilitySupport::default(),
         connection_chain: vec![],
         failover: FailoverTriggers::default(),
     }
@@ -49,6 +52,7 @@ fn route() -> ResolvedRoute {
 
 fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
+        service_tier: None,
         model: "m".to_owned(),
         web_search: None,
         file_search: None,
@@ -85,7 +89,7 @@ fn body(http: &lingxi_llm_client::HttpRequest) -> Value {
 fn every_protocol_family_has_a_codec() {
     let http = std::sync::Arc::new(NoHttp);
     let families: Vec<ProtocolFamily> = LlmClientBuilder::with_transport(http, &[])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap()
         .codec_families();
@@ -129,10 +133,12 @@ fn the_conversation_is_a_flat_list_of_items() {
 
     let http = OpenAiResponsesCodec
         .encode_request(
-            &req,
-            &profile("open_ai_responses", "https://api.acme.test/v1"),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile("open_ai_responses", "https://api.acme.test/v1"),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap();
     let b = body(&http);
@@ -166,10 +172,12 @@ fn the_system_prompt_is_instructions_not_a_message() {
     let b = body(
         &OpenAiResponsesCodec
             .encode_request(
-                &req,
-                &profile("open_ai_responses", "https://api.acme.test/v1"),
-                &route(),
-                &RequestOptions::default(),
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(
+                    &profile("open_ai_responses", "https://api.acme.test/v1"),
+                    &route().request_model,
+                    &RequestOptions::default(),
+                ),
             )
             .unwrap(),
     );
@@ -190,7 +198,10 @@ fn a_declared_stateful_endpoint_receives_the_typed_continuation_id() {
 
     let b = body(
         &OpenAiResponsesCodec
-            .encode_request(&req, &p, &route(), &RequestOptions::default())
+            .encode_request(
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(&p, &route().request_model, &RequestOptions::default()),
+            )
             .unwrap(),
     );
     assert_eq!(b["previous_response_id"], "resp_previous");
@@ -204,10 +215,12 @@ fn a_responses_profile_must_opt_in_before_it_can_receive_a_continuation_id() {
     req.previous_response_id = Some(ResponseId::new("resp_previous"));
     let err = OpenAiResponsesCodec
         .encode_request(
-            &req,
-            &profile("open_ai_responses", "https://api.acme.test/v1"),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile("open_ai_responses", "https://api.acme.test/v1"),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap_err();
     assert!(matches!(err, LlmError::UnsupportedCapability { .. }));
@@ -227,10 +240,12 @@ fn non_responses_wires_refuse_a_continuation_id_instead_of_dropping_it() {
     ] {
         let err = codec
             .encode_request(
-                &req,
-                &profile(family, "https://api.acme.test"),
-                &route(),
-                &RequestOptions::default(),
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(
+                    &profile(family, "https://api.acme.test"),
+                    &route().request_model,
+                    &RequestOptions::default(),
+                ),
             )
             .unwrap_err();
         assert!(matches!(err, LlmError::UnsupportedCapability { .. }));
@@ -244,10 +259,12 @@ fn a_stop_sequence_is_refused_rather_than_dropped() {
 
     let err = OpenAiResponsesCodec
         .encode_request(
-            &req,
-            &profile("open_ai_responses", "https://api.acme.test/v1"),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile("open_ai_responses", "https://api.acme.test/v1"),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap_err();
     assert!(
@@ -259,7 +276,7 @@ fn a_stop_sequence_is_refused_rather_than_dropped() {
 
 #[test]
 fn the_stream_ends_at_response_completed_without_a_sentinel() {
-    let mut d = OpenAiResponsesCodec.stream_decoder();
+    let mut d = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();
     for f in [
         r#"{"type":"response.created","response":{"id":"resp_stream","model":"wire-m"}}"#,
@@ -268,11 +285,11 @@ fn the_stream_ends_at_response_completed_without_a_sentinel() {
         r#"{"type":"response.in_progress"}"#,
         r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":4,"output_tokens":2}}}"#,
     ] {
-        events.extend(d.decode_frame(f.as_bytes()).unwrap());
+        events.extend(wire_api::decode_frame(&mut *d, f.as_bytes()).unwrap());
     }
     // A gateway may append [DONE] after that; it must not produce a second end.
-    events.extend(d.decode_frame(b"[DONE]").unwrap());
-    events.extend(d.finish().unwrap());
+    events.extend(wire_api::decode_frame(&mut *d, b"[DONE]").unwrap());
+    events.extend(wire_api::finish(&mut *d).unwrap());
 
     assert!(matches!(
         events.first(),
@@ -290,9 +307,11 @@ fn the_stream_ends_at_response_completed_without_a_sentinel() {
         1
     );
     match events.last() {
-        Some(StreamEvent::End { usage, stop_reason }) => {
+        Some(StreamEvent::End {
+            usage, stop_reason, ..
+        }) => {
             assert_eq!(*stop_reason, StopReason::EndTurn);
-            assert_eq!(usage.input_tokens, 4);
+            assert_eq!(usage.usage.as_ref().unwrap().input_tokens, 4);
         }
         other => panic!("{other:?}"),
     }
@@ -300,7 +319,7 @@ fn the_stream_ends_at_response_completed_without_a_sentinel() {
 
 #[test]
 fn a_function_call_is_named_once_and_its_arguments_stream_after() {
-    let mut d = OpenAiResponsesCodec.stream_decoder();
+    let mut d = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();
     for f in [
         r#"{"type":"response.created","response":{"model":"m"}}"#,
@@ -309,7 +328,7 @@ fn a_function_call_is_named_once_and_its_arguments_stream_after() {
         r#"{"type":"response.function_call_arguments.delta","output_index":1,"delta":"1}"}"#,
         r#"{"type":"response.completed","response":{"status":"completed"}}"#,
     ] {
-        events.extend(d.decode_frame(f.as_bytes()).unwrap());
+        events.extend(wire_api::decode_frame(&mut *d, f.as_bytes()).unwrap());
     }
 
     let fragments: Vec<&str> = events
@@ -350,7 +369,9 @@ fn buffered_and_streamed_responses_preserve_all_reasoning_summary_parts() {
         .unwrap()
         .into(),
     };
-    let buffered = OpenAiResponsesCodec.decode_response(&response).unwrap();
+    let buffered = OpenAiResponsesCodec
+        .decode_response(&response, &wire_api::decode_context())
+        .unwrap();
     let buffered_summary = buffered
         .message
         .content
@@ -361,7 +382,7 @@ fn buffered_and_streamed_responses_preserve_all_reasoning_summary_parts() {
         })
         .collect::<Vec<_>>();
 
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();
     for frame in [
         r#"{"type":"response.created","response":{"model":"wire-m"}}"#,
@@ -369,9 +390,9 @@ fn buffered_and_streamed_responses_preserve_all_reasoning_summary_parts() {
         r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"second"}"#,
         r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"first"},{"type":"summary_text","text":"second"}]}]}}"#,
     ] {
-        events.extend(decoder.decode_frame(frame.as_bytes()).unwrap());
+        events.extend(wire_api::decode_frame(&mut *decoder, frame.as_bytes()).unwrap());
     }
-    events.extend(decoder.finish().unwrap());
+    events.extend(wire_api::finish(&mut *decoder).unwrap());
     let streamed_summary = events
         .iter()
         .filter_map(|event| match event {
@@ -399,23 +420,25 @@ fn an_incomplete_function_call_retains_its_truncation_reason() {
         .unwrap()
         .into(),
     };
-    let decoded = OpenAiResponsesCodec.decode_response(&response).unwrap();
+    let decoded = OpenAiResponsesCodec
+        .decode_response(&response, &wire_api::decode_context())
+        .unwrap();
     assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
     assert!(matches!(
         decoded.message.content.as_slice(),
         [ContentBlock::ToolUse { .. }]
     ));
 
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();
     for frame in [
         r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call-1","name":"read"}}"#,
         r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":"}"#,
         r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
     ] {
-        events.extend(decoder.decode_frame(frame.as_bytes()).unwrap());
+        events.extend(wire_api::decode_frame(&mut *decoder, frame.as_bytes()).unwrap());
     }
-    events.extend(decoder.finish().unwrap());
+    events.extend(wire_api::finish(&mut *decoder).unwrap());
     assert!(matches!(
         events.last(),
         Some(StreamEvent::End {
@@ -442,7 +465,9 @@ fn a_refusal_part_is_not_reported_as_the_answer() {
         .unwrap()
         .into(),
     };
-    let decoded = OpenAiResponsesCodec.decode_response(&resp).unwrap();
+    let decoded = OpenAiResponsesCodec
+        .decode_response(&resp, &wire_api::decode_context())
+        .unwrap();
     assert!(
         matches!(
             decoded.message.content.as_slice(),
@@ -477,23 +502,25 @@ fn a_completed_refusal_only_response_has_no_answer_text_but_keeps_refusal_status
         .unwrap()
         .into(),
     };
-    let decoded = OpenAiResponsesCodec.decode_response(&response).unwrap();
+    let decoded = OpenAiResponsesCodec
+        .decode_response(&response, &wire_api::decode_context())
+        .unwrap();
     assert!(decoded.message.content.is_empty());
     assert_eq!(decoded.stop_reason, StopReason::Refusal);
 }
 
 #[test]
 fn responses_streamed_refusal_keeps_its_stop_reason() {
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();
     for frame in [
         r#"{"type":"response.created","response":{"model":"wire-m"}}"#,
         r#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"I can't help with that"}"#,
         r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"I can't help with that"}]}]}}"#,
     ] {
-        events.extend(decoder.decode_frame(frame.as_bytes()).unwrap());
+        events.extend(wire_api::decode_frame(&mut *decoder, frame.as_bytes()).unwrap());
     }
-    events.extend(decoder.finish().unwrap());
+    events.extend(wire_api::finish(&mut *decoder).unwrap());
 
     assert!(matches!(
         events.last(),
@@ -519,19 +546,15 @@ fn responses_refusal_does_not_replace_truncation_or_provider_errors() {
         .unwrap()
         .into(),
     };
-    let decoded = OpenAiResponsesCodec.decode_response(&truncated).unwrap();
+    let decoded = OpenAiResponsesCodec
+        .decode_response(&truncated, &wire_api::decode_context())
+        .unwrap();
     assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
 
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
-    decoder
-        .decode_frame(
-            br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"partial refusal"}"#,
-        )
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *decoder , br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"partial refusal"}"#)
         .unwrap();
-    let events = decoder
-        .decode_frame(
-            br#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#,
-        )
+    let events = wire_api::decode_frame(&mut *decoder , br#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}"#)
         .unwrap();
     assert!(matches!(
         events.last(),
@@ -541,16 +564,11 @@ fn responses_refusal_does_not_replace_truncation_or_provider_errors() {
         })
     ));
 
-    let mut failed = OpenAiResponsesCodec.stream_decoder();
-    failed
-        .decode_frame(
-            br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"refusal"}"#,
-        )
+    let mut failed = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *failed , br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"refusal"}"#)
         .unwrap();
     assert!(matches!(
-        failed.decode_frame(
-            br#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"generation failed"}}}"#,
-        ),
+        wire_api::decode_frame(&mut *failed , br#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"generation failed"}}}"#),
         Err(LlmError::ProviderInternal { .. })
     ));
 }
@@ -589,16 +607,18 @@ fn bedrock_frame(event_json: &str) -> Vec<u8> {
 fn bedrock_puts_the_model_in_the_url_and_its_own_version_in_the_body() {
     let http = BedrockClaudeCodec
         .encode_request(
-            &request(vec![user("hi")]),
-            &profile(
-                "bedrock_claude",
-                "https://bedrock-runtime.us-east-1.amazonaws.com",
+            lingxi_llm_client::EncodeRequest::new(&request(vec![user("hi")])),
+            &wire_api::context(
+                &profile(
+                    "bedrock_claude",
+                    "https://bedrock-runtime.us-east-1.amazonaws.com",
+                ),
+                &route().request_model,
+                &wire_api::EncodingOptions {
+                    stream: true,
+                    ..wire_api::EncodingOptions::default()
+                },
             ),
-            &route(),
-            &RequestOptions {
-                stream: true,
-                ..RequestOptions::default()
-            },
         )
         .unwrap();
     let b = body(&http);
@@ -643,13 +663,15 @@ fn bedrock_uses_one_path_segment_for_model_ids_and_omits_the_stream_body_field()
         selected.request_model = model_id.to_owned();
         let http = BedrockClaudeCodec
             .encode_request(
-                &request(vec![user("hi")]),
-                &profile("bedrock_claude", base),
-                &selected,
-                &RequestOptions {
-                    stream,
-                    ..RequestOptions::default()
-                },
+                lingxi_llm_client::EncodeRequest::new(&request(vec![user("hi")])),
+                &wire_api::context(
+                    &profile("bedrock_claude", base),
+                    &selected.request_model,
+                    &wire_api::EncodingOptions {
+                        stream,
+                        ..wire_api::EncodingOptions::default()
+                    },
+                ),
             )
             .unwrap();
 
@@ -671,13 +693,15 @@ fn vertex_claude_uses_its_platform_version_in_both_request_modes() {
     for stream in [false, true] {
         let http = VertexClaudeCodec
             .encode_request(
-                &request(vec![user("hi")]),
-                &p,
-                &route(),
-                &RequestOptions {
-                    stream,
-                    ..RequestOptions::default()
-                },
+                lingxi_llm_client::EncodeRequest::new(&request(vec![user("hi")])),
+                &wire_api::context(
+                    &p,
+                    &route().request_model,
+                    &wire_api::EncodingOptions {
+                        stream,
+                        ..wire_api::EncodingOptions::default()
+                    },
+                ),
             )
             .unwrap();
 
@@ -702,10 +726,8 @@ fn vertex_claude_preserves_an_explicit_profile_api_version_override() {
 
     let http = VertexClaudeCodec
         .encode_request(
-            &request(vec![user("hi")]),
-            &p,
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&request(vec![user("hi")])),
+            &wire_api::context(&p, &route().request_model, &RequestOptions::default()),
         )
         .unwrap();
 
@@ -714,7 +736,7 @@ fn vertex_claude_preserves_an_explicit_profile_api_version_override() {
 
 #[test]
 fn bedrock_unwraps_event_stream_frames_into_the_anthropic_decoder() {
-    let mut d = BedrockClaudeCodec.stream_decoder();
+    let mut d = BedrockClaudeCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();
     for json in [
         r#"{"type":"message_start","message":{"model":"wire-m","usage":{"input_tokens":3}}}"#,
@@ -723,19 +745,21 @@ fn bedrock_unwraps_event_stream_frames_into_the_anthropic_decoder() {
         r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#,
         r#"{"type":"message_stop"}"#,
     ] {
-        events.extend(d.decode_frame(&bedrock_frame(json)).unwrap());
+        events.extend(wire_api::decode_frame(&mut *d, &bedrock_frame(json)).unwrap());
     }
-    events.extend(d.finish().unwrap());
+    events.extend(wire_api::finish(&mut *d).unwrap());
 
     assert!(events.iter().any(|e| matches!(
         e,
         StreamEvent::TextDelta { text, .. } if text == "hello"
     )));
     match events.last() {
-        Some(StreamEvent::End { usage, stop_reason }) => {
+        Some(StreamEvent::End {
+            usage, stop_reason, ..
+        }) => {
             assert_eq!(*stop_reason, StopReason::EndTurn);
             assert_eq!(
-                *usage,
+                usage.usage.unwrap(),
                 Usage {
                     input_tokens: 3,
                     output_tokens: 2,
@@ -755,10 +779,10 @@ fn bedrock_unwraps_event_stream_frames_into_the_anthropic_decoder() {
 #[test]
 fn a_truncated_bedrock_stream_is_an_interruption_not_a_clean_end() {
     let bytes = bedrock_frame(r#"{"type":"message_stop"}"#);
-    let mut d = BedrockClaudeCodec.stream_decoder();
-    d.decode_frame(&bytes[..bytes.len() - 4]).unwrap();
+    let mut d = BedrockClaudeCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *d, &bytes[..bytes.len() - 4]).unwrap();
 
-    let err = d.finish().unwrap_err();
+    let err = wire_api::finish(&mut *d).unwrap_err();
     assert!(
         matches!(err, LlmError::StreamInterrupted { .. }),
         "ending on a half-frame must not look like a finished turn: {err:?}"
@@ -787,41 +811,56 @@ fn every_wire_decodes_the_same_turn_to_the_same_usage() {
         server_tool_usage: None,
     };
 
-    let openai = OpenAiChatCodec.response_usage(&json_response(&json!({
-        "usage": {
-            "prompt_tokens": 1000,           // 600 uncached + 400 cached
-            "completion_tokens": 57,         // 50 answer + 7 thinking
-            "prompt_tokens_details": {"cached_tokens": 400},
-            "completion_tokens_details": {"reasoning_tokens": 7},
-        }
-    })));
-    let gemini = lingxi_llm_client::GeminiCodec.response_usage(&json_response(&json!({
-        "candidates": [],
-        "usageMetadata": {
-            "promptTokenCount": 1000,        // cached folded in
-            "cachedContentTokenCount": 400,
-            "candidatesTokenCount": 50,      // thoughts NOT folded in
-            "thoughtsTokenCount": 7,
-        }
-    })));
-    let anthropic =
-        lingxi_llm_client::AnthropicMessagesCodec.response_usage(&json_response(&json!({
+    let openai = wire_api::response_usage(
+        &OpenAiChatCodec,
+        &json_response(&json!({
+            "usage": {
+                "prompt_tokens": 1000,           // 600 uncached + 400 cached
+                "completion_tokens": 57,         // 50 answer + 7 thinking
+                "prompt_tokens_details": {"cached_tokens": 400},
+                "completion_tokens_details": {"reasoning_tokens": 7},
+            }
+        })),
+        &wire_api::decode_context(),
+    );
+    let gemini = wire_api::response_usage(
+        &lingxi_llm_client::GeminiCodec,
+        &json_response(&json!({
+            "candidates": [],
+            "usageMetadata": {
+                "promptTokenCount": 1000,        // cached folded in
+                "cachedContentTokenCount": 400,
+                "candidatesTokenCount": 50,      // thoughts NOT folded in
+                "thoughtsTokenCount": 7,
+            }
+        })),
+        &wire_api::decode_context(),
+    );
+    let anthropic = wire_api::response_usage(
+        &lingxi_llm_client::AnthropicMessagesCodec,
+        &json_response(&json!({
             "usage": {
                 "input_tokens": 600,         // already excludes the cached read
                 "output_tokens": 57,
                 "cache_read_input_tokens": 400,
                 "cache_creation_input_tokens": 0,
             }
-        })));
+        })),
+        &wire_api::decode_context(),
+    );
 
-    let responses = OpenAiResponsesCodec.response_usage(&json_response(&json!({
-        "usage": {
-            "input_tokens": 1000,            // cached folded in, as on chat
-            "output_tokens": 57,
-            "input_tokens_details": {"cached_tokens": 400},
-            "output_tokens_details": {"reasoning_tokens": 7},
-        }
-    })));
+    let responses = wire_api::response_usage(
+        &OpenAiResponsesCodec,
+        &json_response(&json!({
+            "usage": {
+                "input_tokens": 1000,            // cached folded in, as on chat
+                "output_tokens": 57,
+                "input_tokens_details": {"cached_tokens": 400},
+                "output_tokens_details": {"reasoning_tokens": 7},
+            }
+        })),
+        &wire_api::decode_context(),
+    );
 
     assert_eq!(openai, Some(expected), "openai chat");
     assert_eq!(responses, Some(expected), "openai responses");
@@ -861,32 +900,44 @@ fn json_response(body: &Value) -> lingxi_llm_client::HttpResponse {
 /// unknown, not as free.
 #[test]
 fn a_cost_is_read_when_the_provider_sends_one_and_absent_when_it_does_not() {
-    let priced = OpenAiChatCodec.response_usage(&json_response(&json!({
-        "usage": {
-            "prompt_tokens": 194,
-            "completion_tokens": 2,
-            "cost": 0.95,
-        }
-    })));
+    let priced = wire_api::response_usage(
+        &OpenAiChatCodec,
+        &json_response(&json!({
+            "usage": {
+                "prompt_tokens": 194,
+                "completion_tokens": 2,
+                "cost": 0.95,
+            }
+        })),
+        &wire_api::decode_context(),
+    );
     assert_eq!(
         priced.unwrap().cost,
-        Some(lingxi_agent_api::protocol::ReportedCost {
+        Some(lingxi_llm_client::protocol::ReportedCost {
             nano_usd: 950_000_000
         })
     );
 
-    let unpriced = OpenAiChatCodec.response_usage(&json_response(&json!({
-        "usage": {"prompt_tokens": 194, "completion_tokens": 2}
-    })));
+    let unpriced = wire_api::response_usage(
+        &OpenAiChatCodec,
+        &json_response(&json!({
+            "usage": {"prompt_tokens": 194, "completion_tokens": 2}
+        })),
+        &wire_api::decode_context(),
+    );
     assert_eq!(
         unpriced.unwrap().cost,
         None,
         "the same wire, a provider that does not price it: unknown, not zero"
     );
 
-    let nonsense = OpenAiChatCodec.response_usage(&json_response(&json!({
-        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": -3.0}
-    })));
+    let nonsense = wire_api::response_usage(
+        &OpenAiChatCodec,
+        &json_response(&json!({
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": -3.0}
+        })),
+        &wire_api::decode_context(),
+    );
     assert_eq!(
         nonsense.unwrap().cost,
         None,
@@ -909,7 +960,9 @@ fn codecs_reject_malformed_success_bodies_and_redirects() {
                 body: body.as_bytes().to_vec().into(),
             };
             assert!(
-                codec.decode_response(&response).is_err(),
+                codec
+                    .decode_response(&response, &wire_api::decode_context())
+                    .is_err(),
                 "{:?}: {status} {body}",
                 codec.family()
             );
@@ -919,21 +972,25 @@ fn codecs_reject_malformed_success_bodies_and_redirects() {
 
 #[test]
 fn responses_failed_event_preserves_provider_error_classification() {
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
-    let error = decoder.decode_frame(br#"{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"context exceeded"}}}"#).unwrap_err();
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+    let error = wire_api::decode_frame(&mut *decoder , br#"{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"context exceeded"}}}"#).unwrap_err();
     assert!(matches!(error, LlmError::ContextOverflow { .. }));
 }
 
 #[test]
 fn chat_and_gemini_stream_error_frames_are_errors() {
-    let mut chat = OpenAiChatCodec.stream_decoder();
+    let mut chat = OpenAiChatCodec.stream_decoder(&wire_api::decode_context());
     assert!(matches!(
-        chat.decode_frame(br#"{"error":{"code":"invalid_api_key","message":"bad key"}}"#),
+        wire_api::decode_frame(
+            &mut *chat,
+            br#"{"error":{"code":"invalid_api_key","message":"bad key"}}"#
+        ),
         Err(LlmError::Authentication { .. })
     ));
-    let mut gemini = GeminiCodec.stream_decoder();
+    let mut gemini = GeminiCodec.stream_decoder(&wire_api::decode_context());
     assert!(matches!(
-        gemini.decode_frame(
+        wire_api::decode_frame(
+            &mut *gemini,
             br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"too many requests"}}"#
         ),
         Err(LlmError::RateLimited { .. })
@@ -943,7 +1000,7 @@ fn chat_and_gemini_stream_error_frames_are_errors() {
 #[test]
 fn text_documents_are_base64_encoded_on_gemini_and_responses() {
     use base64::Engine;
-    use lingxi_agent_api::protocol::DocumentSource;
+    use lingxi_llm_client::protocol::DocumentSource;
     let text = "hello 世界";
     let req = request(vec![ConversationMessage {
         role: MessageRole::User,
@@ -958,10 +1015,12 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     let gemini = GeminiCodec
         .encode_request(
-            &req,
-            &profile("gemini_generate_content", "https://example.test"),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile("gemini_generate_content", "https://example.test"),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap();
     let body: Value = serde_json::from_slice(&gemini.body).unwrap();
@@ -971,10 +1030,12 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
     );
     let responses = OpenAiResponsesCodec
         .encode_request(
-            &req,
-            &profile("open_ai_responses", "https://example.test"),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile("open_ai_responses", "https://example.test"),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap();
     let body: Value = serde_json::from_slice(&responses.body).unwrap();
@@ -986,7 +1047,7 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
 
 #[test]
 fn responses_document_urls_use_file_url() {
-    use lingxi_agent_api::protocol::DocumentSource;
+    use lingxi_llm_client::protocol::DocumentSource;
     let req = request(vec![ConversationMessage {
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
@@ -998,10 +1059,12 @@ fn responses_document_urls_use_file_url() {
     }]);
     let encoded = OpenAiResponsesCodec
         .encode_request(
-            &req,
-            &profile("open_ai_responses", "https://example.test"),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile("open_ai_responses", "https://example.test"),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap();
     let body: Value = serde_json::from_slice(&encoded.body).unwrap();
@@ -1023,7 +1086,7 @@ fn responses_failed_body_is_an_error_even_with_http_success() {
         .into(),
     };
     assert!(matches!(
-        OpenAiResponsesCodec.decode_response(&response),
+        OpenAiResponsesCodec.decode_response(&response, &wire_api::decode_context()),
         Err(LlmError::QuotaExceeded { .. })
     ));
 }
@@ -1037,16 +1100,22 @@ fn stream_eof_without_terminal_evidence_is_interrupted() {
         (Box::new(GeminiCodec), br#"{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}"#),
     ];
     for (codec, frame) in cases {
-        let mut empty = codec.stream_decoder();
+        let mut empty = codec.stream_decoder(&wire_api::decode_context());
         assert!(
-            matches!(empty.finish(), Err(LlmError::StreamInterrupted { .. })),
+            matches!(
+                wire_api::finish(&mut *empty),
+                Err(LlmError::StreamInterrupted { .. })
+            ),
             "empty {:?}",
             codec.family()
         );
-        let mut partial = codec.stream_decoder();
-        partial.decode_frame(frame).unwrap();
+        let mut partial = codec.stream_decoder(&wire_api::decode_context());
+        wire_api::decode_frame(&mut *partial, frame).unwrap();
         assert!(
-            matches!(partial.finish(), Err(LlmError::StreamInterrupted { .. })),
+            matches!(
+                wire_api::finish(&mut *partial),
+                Err(LlmError::StreamInterrupted { .. })
+            ),
             "partial {:?}",
             codec.family()
         );
@@ -1074,9 +1143,9 @@ fn terminal_evidence_allows_clean_eof() {
         ),
     ];
     for (codec, frame) in cases {
-        let mut decoder = codec.stream_decoder();
-        let mut events = decoder.decode_frame(frame).unwrap();
-        events.extend(decoder.finish().unwrap());
+        let mut decoder = codec.stream_decoder(&wire_api::decode_context());
+        let mut events = wire_api::decode_frame(&mut *decoder, frame).unwrap();
+        events.extend(wire_api::finish(&mut *decoder).unwrap());
         assert_eq!(
             events
                 .iter()
@@ -1084,7 +1153,7 @@ fn terminal_evidence_allows_clean_eof() {
                 .count(),
             1
         );
-        assert!(decoder.finish().unwrap().is_empty());
+        assert!(wire_api::finish(&mut *decoder).unwrap().is_empty());
     }
 }
 
@@ -1100,17 +1169,18 @@ fn gemini_explicit_prompt_block_is_a_refusal_not_truncation() {
         body: serde_json::to_vec(&blocked).unwrap().into(),
     };
     assert_eq!(
-        GeminiCodec.decode_response(&response).unwrap().stop_reason,
+        GeminiCodec
+            .decode_response(&response, &wire_api::decode_context())
+            .unwrap()
+            .stop_reason,
         StopReason::Refusal,
         "prompt-level safety blocks are refusals in buffered responses too"
     );
 
-    let mut decoder = GeminiCodec.stream_decoder();
-    decoder
-        .decode_frame(&serde_json::to_vec(&blocked).unwrap())
-        .unwrap();
+    let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *decoder, &serde_json::to_vec(&blocked).unwrap()).unwrap();
     assert!(matches!(
-        decoder.finish().unwrap().as_slice(),
+        wire_api::finish(&mut *decoder).unwrap().as_slice(),
         [StreamEvent::End {
             stop_reason: StopReason::Refusal,
             ..
@@ -1131,17 +1201,18 @@ fn gemini_explicit_prompt_block_is_a_refusal_not_truncation() {
             body: serde_json::to_vec(&body).unwrap().into(),
         };
         assert_eq!(
-            GeminiCodec.decode_response(&response).unwrap().stop_reason,
+            GeminiCodec
+                .decode_response(&response, &wire_api::decode_context())
+                .unwrap()
+                .stop_reason,
             StopReason::EndTurn,
             "empty and unspecified prompt feedback must not be interpreted as a block"
         );
 
-        let mut decoder = GeminiCodec.stream_decoder();
-        decoder
-            .decode_frame(&serde_json::to_vec(&body).unwrap())
-            .unwrap();
+        let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
+        wire_api::decode_frame(&mut *decoder, &serde_json::to_vec(&body).unwrap()).unwrap();
         assert!(matches!(
-            decoder.finish().unwrap().as_slice(),
+            wire_api::finish(&mut *decoder).unwrap().as_slice(),
             [StreamEvent::End {
                 stop_reason: StopReason::EndTurn,
                 ..
@@ -1152,11 +1223,136 @@ fn gemini_explicit_prompt_block_is_a_refusal_not_truncation() {
 
 #[test]
 fn responses_flat_error_event_keeps_error_code() {
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     assert!(matches!(
-        decoder.decode_frame(
+        wire_api::decode_frame(
+            &mut *decoder,
             br#"{"type":"error","code":"context_length_exceeded","message":"context exceeded"}"#
         ),
         Err(LlmError::ContextOverflow { .. })
     ));
+}
+
+#[test]
+fn responses_reasoning_round_trips_before_tool_outputs() {
+    for summary in [json!([]), json!([{"type":"summary_text","text":"plan"}])] {
+        let reasoning =
+            json!({"type":"reasoning","id":"rs_1","summary":summary,"encrypted_content":"opaque"});
+        let response = json_response(
+            &json!({"model":"wire-m","status":"completed","output":[reasoning, {"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"}]}),
+        );
+        let decoded = OpenAiResponsesCodec
+            .decode_response(&response, &wire_api::decode_context())
+            .unwrap();
+        let req = request(vec![
+            decoded.message,
+            ConversationMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: ToolUseId::new("call_1"),
+                    content: "result".into(),
+                    is_error: false,
+                    blocks: None,
+                }],
+            },
+        ]);
+        let http = OpenAiResponsesCodec
+            .encode_request(
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(
+                    &profile("open_ai_responses", "https://test.invalid/v1"),
+                    &route().request_model,
+                    &RequestOptions::default(),
+                ),
+            )
+            .unwrap();
+        let body: Value = serde_json::from_slice(&http.body).unwrap();
+        assert_eq!(body["input"][0], reasoning);
+        assert_eq!(body["input"][1]["type"], "function_call");
+        assert_eq!(body["input"][2]["type"], "function_call_output");
+        assert!(OpenAiChatCodec
+            .encode_request(
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(
+                    &profile("open_ai_chat", "https://test.invalid/v1"),
+                    &route().request_model,
+                    &RequestOptions::default()
+                )
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn responses_stream_preserves_native_reasoning_once_with_terminal_fallback() {
+    for item_done in [true, false] {
+        let reasoning =
+            json!({"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"});
+        let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+        let mut events = vec![];
+        if item_done {
+            events.extend(
+                wire_api::decode_frame(
+                    &mut *decoder,
+                    json!({"type":"response.output_item.done","output_index":0,"item":reasoning})
+                        .to_string()
+                        .as_bytes(),
+                )
+                .unwrap(),
+            );
+        }
+        events.extend(wire_api::decode_frame(&mut *decoder , json!({"type":"response.completed","response":{"status":"completed","output":[reasoning]}}).to_string().as_bytes()).unwrap());
+        let native: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ProviderContent {
+                    block,
+                    protocol,
+                    value,
+                } => Some((*block, *protocol, value)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            native,
+            vec![(0, ProtocolFamily::OpenAiResponses, &reasoning)]
+        );
+        assert!(matches!(events.last(), Some(StreamEvent::End { .. })));
+    }
+}
+
+#[test]
+fn responses_tool_results_preserve_structured_and_text_outputs() {
+    for blocks in [
+        None,
+        Some(vec![
+            json!({"type":"input_image","image_url":"https://example.test/screenshot.png"}),
+            json!({"type":"input_file","file_id":"file-result"}),
+        ]),
+    ] {
+        let req = request(vec![ConversationMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: ToolUseId::new("call_1"),
+                content: "fallback".into(),
+                is_error: false,
+                blocks: blocks.clone(),
+            }],
+        }]);
+        let http = OpenAiResponsesCodec
+            .encode_request(
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(
+                    &profile("open_ai_responses", "https://test.invalid/v1"),
+                    &route().request_model,
+                    &RequestOptions::default(),
+                ),
+            )
+            .unwrap();
+        let body: Value = serde_json::from_slice(&http.body).unwrap();
+        assert_eq!(
+            body["input"][0]["output"],
+            blocks.map_or(json!("fallback"), |v| json!(v))
+        );
+    }
 }

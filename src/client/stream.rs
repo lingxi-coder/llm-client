@@ -1,11 +1,10 @@
 //! `ModelStream`: the transport's frames run through the codec's decoder.
 
-use crate::client::files::AutomaticFileCleanup;
 use crate::codecs::StreamDecoder;
-use crate::framing::sse::SseFrameSplitter;
+use crate::files::AutomaticFileCleanup;
+use crate::protocol::{LlmError, StreamEvent, Usage};
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
-use lingxi_agent_api::protocol::{LlmError, StreamEvent, Usage};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,9 +15,8 @@ use std::time::Instant;
 pub struct ModelStream {
     frames: BoxStream<'static, Result<Bytes, LlmError>>,
     decoder: Box<dyn StreamDecoder>,
-    sse: Option<SseFrameSplitter>,
-    pending_frames: VecDeque<Bytes>,
-    ready: VecDeque<StreamEvent>,
+    requested_inference: crate::protocol::InferenceReport,
+    ready: VecDeque<Result<StreamEvent, LlmError>>,
     finished: bool,
     status: u16,
     headers: Vec<(String, String)>,
@@ -30,28 +28,23 @@ pub struct ModelStream {
 impl ModelStream {
     pub(super) fn new(
         resp: crate::transport::StreamResponse,
-        decoder: Box<dyn StreamDecoder>,
+        mut decoder: Box<dyn StreamDecoder>,
         executed_profile: String,
         automatic_file_cleanup: Option<Arc<AutomaticFileCleanup>>,
         automatic_file_cleanup_deadline: Option<Instant>,
+        requested_inference: crate::protocol::InferenceReport,
     ) -> Self {
-        let sse = resp
-            .header("content-type")
-            .is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .unwrap_or_default()
-                    .trim()
-                    .eq_ignore_ascii_case("text/event-stream")
-            })
-            .then(SseFrameSplitter::new);
+        decoder.set_response_headers(&resp.headers);
+        let mut ready = VecDeque::new();
+        let initial = decoder.inference_report();
+        if initial != crate::protocol::InferenceReport::default() {
+            ready.push_back(Ok(StreamEvent::Inference { report: initial }));
+        }
         Self {
-            sse,
-            pending_frames: VecDeque::new(),
+            requested_inference,
             frames: resp.body,
             decoder,
-            ready: VecDeque::new(),
+            ready,
             finished: false,
             status: resp.status,
             headers: resp.headers,
@@ -93,12 +86,22 @@ impl ModelStream {
 
     /// The next event, or `None` at the end. One frame can decode to several
     /// events, so decoded events are buffered and drained before the next
-    /// frame is pulled. At EOF, automatic Qwen file deletion may use the
+    /// frame is pulled. After a terminal event or EOF, automatic Qwen file deletion may use the
     /// remaining request deadline, or up to 120 seconds without one.
     pub async fn next(&mut self) -> Option<Result<StreamEvent, LlmError>> {
         loop {
-            if let Some(ev) = self.ready.pop_front() {
-                return Some(Ok(ev));
+            if let Some(mut event) = self.ready.pop_front() {
+                match &mut event {
+                    Ok(StreamEvent::Inference { report })
+                    | Ok(StreamEvent::End {
+                        inference: report, ..
+                    }) => self.add_requested(report),
+                    _ => {}
+                }
+                if matches!(&event, Ok(StreamEvent::End { .. }) | Err(_)) {
+                    self.finish_transport();
+                }
+                return Some(event);
             }
             if self.finished {
                 if let Some(cleanup) = self.automatic_file_cleanup.take() {
@@ -106,67 +109,57 @@ impl ModelStream {
                 }
                 return None;
             }
-            if let Some(frame) = self.pending_frames.pop_front() {
-                match self.decoder.decode_frame(&frame) {
-                    Ok(evs) => self.ready.extend(evs),
-                    Err(e) => {
-                        self.finished = true;
-                        return Some(Err(e));
-                    }
-                }
-                continue;
-            }
             match self.frames.next().await {
                 Some(Ok(chunk)) => {
-                    if let Some(sse) = &mut self.sse {
-                        match sse.push(&chunk) {
-                            Ok(frames) => self
-                                .pending_frames
-                                .extend(frames.into_iter().map(Bytes::from)),
-                            Err(error) => {
-                                self.finished = true;
-                                return Some(Err(error));
-                            }
-                        }
-                    } else {
-                        self.pending_frames.push_back(chunk);
+                    let events = self.decoder.push_bytes(&chunk);
+                    if events
+                        .iter()
+                        .any(|event| matches!(event, Ok(StreamEvent::End { .. }) | Err(_)))
+                    {
+                        self.finish_transport();
                     }
+                    self.ready.extend(events);
                 }
-                Some(Err(e)) => {
-                    self.finished = true;
-                    return Some(Err(e));
+                Some(Err(error)) => {
+                    self.finish_transport();
+                    return Some(Err(error));
                 }
                 None => {
-                    let tail = match self.sse.as_mut().map(SseFrameSplitter::finish) {
-                        Some(Ok(frame)) => frame,
-                        Some(Err(error)) => {
-                            self.finished = true;
-                            return Some(Err(error));
-                        }
-                        None => None,
-                    };
-                    if let Some(frame) = tail {
-                        match self.decoder.decode_frame(&frame) {
-                            Ok(evs) => self.ready.extend(evs),
-                            Err(e) => {
-                                self.finished = true;
-                                return Some(Err(e));
-                            }
-                        }
-                    }
-                    self.finished = true;
-                    match self.decoder.finish() {
-                        Ok(evs) => self.ready.extend(evs),
-                        Err(e) => return Some(Err(e)),
-                    }
+                    self.ready.extend(self.decoder.finish());
+                    self.finish_transport();
                 }
             }
         }
     }
 
+    /// A terminal outcome releases network resources even when the caller
+    /// retains this handle to inspect usage and response headers.
+    fn finish_transport(&mut self) {
+        self.finished = true;
+        self.frames = futures::stream::empty().boxed();
+    }
+
+    pub fn inference_report(&self) -> crate::protocol::InferenceReport {
+        let mut report = self.decoder.inference_report();
+        self.add_requested(&mut report);
+        report
+    }
+    fn add_requested(&self, report: &mut crate::protocol::InferenceReport) {
+        report.executed_at = self.requested_inference.executed_at;
+        report.requested_effort = self.requested_inference.requested_effort;
+        report.requested_service_tier = self.requested_inference.requested_service_tier;
+        report
+            .requested_raw_service_tier
+            .clone_from(&self.requested_inference.requested_raw_service_tier);
+    }
+
+    pub fn usage_report(&self) -> crate::protocol::UsageReport {
+        self.decoder.usage_report()
+    }
+
     /// Usage the decoder observed, once the stream has ended.
     pub fn observed_usage(&self) -> Option<Usage> {
-        self.decoder.observed_usage()
+        self.decoder.usage_report().usage
     }
 
     /// Whether that usage is a complete, self-consistent report.
@@ -176,6 +169,6 @@ impl ModelStream {
     /// still worth showing; they are not worth billing from.
     #[must_use]
     pub fn usage_is_complete(&self) -> bool {
-        self.decoder.usage_is_complete()
+        self.decoder.usage_report().state == crate::protocol::UsageState::Complete
     }
 }

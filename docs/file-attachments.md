@@ -6,13 +6,15 @@ application's `AttachmentRef`; a provider file id or URI is only a request-time
 model input and must not be used to render the attachment in another device.
 
 ```rust
-AttachmentRef {
-    attachment_id: "att_...", // stable id in the host application's store
-    revision: "v1",           // immutable content revision
-    filename: "diagram.png",
-    media_type: "image/png",
+use lingxi_llm_client::protocol::AttachmentRef;
+
+let attachment = AttachmentRef {
+    attachment_id: "att_...".into(), // stable id in the host application's store
+    revision: "v1".into(),           // immutable content revision
+    filename: "diagram.png".into(),
+    media_type: "image/png".into(),
     size_bytes: 12345,
-}
+};
 ```
 
 Use `ImageSource::Attachment`, `DocumentSource::Attachment`, or
@@ -61,6 +63,25 @@ returns `UnsupportedCapability`.
 
 Gemini Files accepts PDFs up to 50,000,000 bytes (50 MB); the general 2 GiB
 upload limit still applies to other Gemini file types.
+Gemini video attachments use Files upload and a `fileData` URI when the model
+declares video input and the MIME type is supported. Smaller video data can
+also be sent inline. Direct provider file references must include a matching
+media type and an input purpose compatible with the selected model.
+Gemini file references follow the model's declared image, audio, video, or
+document input modality. MOV videos may use `video/mov` or `video/quicktime`.
+Gemini video file operations have a two-hour initial budget. The upload may
+use that budget; processing polls for up to ten minutes and then returns
+`LlmError::ProviderFileProcessing` with the scoped file reference when still
+pending. Call `FileService::resume_gemini_processing()` with that reference
+later, while the file remains within Gemini's 48-hour retention. Direct
+`FileService` callers can configure upload and polling limits separately with
+`with_gemini_upload_timeout()` and `with_gemini_processing_timeout()`.
+The processing deadline includes authentication and each status request.
+Polling failures, including HTTP errors and malformed status responses, also
+return the scoped reference because readiness could not be confirmed. An
+explicit `FAILED` status is a terminal processing error.
+Completions containing video blocks default to a two-hour total deadline;
+an explicit `RequestOptions::total_timeout` still takes precedence.
 For first-party Anthropic Messages, the client measures the encoded request
 body against the 32 MB limit and uploads app-owned images as file references
 when several inline images would exceed it. If the body is still too large,
@@ -81,14 +102,15 @@ be treated as ordinary listable or deletable files. `download` returns original
 bytes only when that provider marks them downloadable; text extraction is a
 separate result. Each service instance is bound to one profile, authenticator,
 credential and account scope.
+Purpose-filtered listing is available for OpenAI, Qwen, and MiniMax; providers
+without a documented purpose filter return `UnsupportedCapability`.
 After a direct Qwen upload, use `get` to wait for `processed` before sending its
 ID to the model; automatic app attachments perform that wait in the client.
 
 FileService uses no-redirect transport operations for credentialed requests.
-Custom `Transport` implementations must implement `execute_no_follow`; file
-downloads also require `open_stream_no_follow`. Unsupported operations fail
-closed, and the client enforces its 64 MiB download cap while reading the
-stream. OpenAI model-input uploads for `input_file` documents are capped at
+Custom `Transport` implementations provide one `send` method returning raw
+bytes and must disable automatic redirects and retries. The shared executor
+enforces its 64 MiB download cap while reading the stream. OpenAI model-input uploads for `input_file` documents are capped at
 50,000,000 bytes. First-party OpenAI Responses and Chat requests also enforce
 the 50,000,000-byte combined limit for file inputs with known sizes before
 uploading app attachments. Callers supplying provider file IDs directly must
@@ -120,7 +142,8 @@ Direct `FileService` uploads for `FilePurpose::ModelInput` or
 references require an explicit, non-empty account scope.
 Pass the same stable scope to `FileService` and as
 `RequestOptions::file_account_scope` when sending the reference. The automatic
-request-local scope is internal and cannot be used for direct references.
+request-local scope is internal and cannot be used for a new direct model input;
+it can be supplied to `resume_gemini_processing()` for the same pending upload.
 Never pass an API key, OAuth token, or other credential as this scope.
 
 Provider file references also carry a deterministic FNV-1a 128 fingerprint of
@@ -132,3 +155,5 @@ This fingerprint is an endpoint identifier, not an authentication credential.
 Normally obtain a `ProviderFileSource` from `ProviderFileRef::model_reference()`;
 if constructing one manually, set `endpoint_fingerprint` with
 `provider_file_endpoint_fingerprint(profile.base_url)`.
+
+Attachments resolve once per revision into shared `Bytes`. Each attempt validates a complete transfer plan before uploading, and passes borrowed content bindings to the codec. Upload/cache paths never create Base64 strings. Inline Base64 writes directly into the final JSON serializer; Anthropic preflight uses the same serializer with a counting writer. One cleanup lease owns temporary files for each attempt, independently of cache-reference bookkeeping.

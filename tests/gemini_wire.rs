@@ -4,12 +4,15 @@
 //! Gate 31 on this family is the surprising one: a prompt over the context
 //! window arrives as HTTP 400 `INVALID_ARGUMENT`, not 413.
 
-use lingxi_agent_api::protocol::{
+#[path = "support/wire_api.rs"]
+mod wire_api;
+
+use lingxi_llm_client::codecs::gemini::classify_error;
+use lingxi_llm_client::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
-    ModelCapabilities, ProviderId, ProviderProfile, StopReason, StreamEvent, SystemBlock,
+    ModelCapabilitySupport, ProviderId, ProviderProfile, StopReason, StreamEvent, SystemBlock,
     ToolChoice, ToolSpec, ToolUseId, Usage,
 };
-use lingxi_llm_client::codecs::gemini::classify_error;
 use lingxi_llm_client::{
     AzureOpenAiCodec, FoundryClaudeCodec, GeminiCodec, PricingModelRef, RequestOptions,
     ResolvedRoute, VertexClaudeCodec, VertexGeminiCodec, WireCodec,
@@ -45,7 +48,7 @@ fn route() -> ResolvedRoute {
             request_model: "wire-m".to_owned(),
             display_model: "m".to_owned(),
         },
-        capabilities: ModelCapabilities::default(),
+        capability_support: ModelCapabilitySupport::default(),
         connection_chain: vec![],
         failover: FailoverTriggers::default(),
     }
@@ -53,6 +56,7 @@ fn route() -> ResolvedRoute {
 
 fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
+        service_tier: None,
         model: "m".to_owned(),
         web_search: None,
         file_search: None,
@@ -91,13 +95,15 @@ fn encode(
 ) -> lingxi_llm_client::HttpRequest {
     codec
         .encode_request(
-            req,
-            p,
-            &route(),
-            &RequestOptions {
-                stream,
-                ..RequestOptions::default()
-            },
+            lingxi_llm_client::EncodeRequest::new(req),
+            &wire_api::context(
+                p,
+                &route().request_model,
+                &wire_api::EncodingOptions {
+                    stream,
+                    ..wire_api::EncodingOptions::default()
+                },
+            ),
         )
         .unwrap()
 }
@@ -208,14 +214,16 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
 
     let err = GeminiCodec
         .encode_request(
-            &req,
-            &profile(
-                "gemini_generate_content",
-                "https://g.test/v1beta",
-                Value::Null,
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile(
+                    "gemini_generate_content",
+                    "https://g.test/v1beta",
+                    Value::Null,
+                ),
+                &route().request_model,
+                &RequestOptions::default(),
             ),
-            &route(),
-            &RequestOptions::default(),
         )
         .unwrap_err();
     assert!(
@@ -340,7 +348,7 @@ fn cached_tokens_are_subtracted_from_the_prompt_count() {
             .into(),
     };
     assert_eq!(
-        GeminiCodec.response_usage(&resp),
+        wire_api::response_usage(&GeminiCodec, &resp, &wire_api::decode_context()),
         Some(Usage {
             input_tokens: 600,
             output_tokens: 57,
@@ -374,7 +382,7 @@ fn tool_use_prompt_tokens_are_added_to_input_and_validated_in_totals() {
             .into(),
     };
     assert_eq!(
-        GeminiCodec.response_usage(&response),
+        wire_api::response_usage(&GeminiCodec, &response, &wire_api::decode_context()),
         Some(Usage {
             input_tokens: 723,
             output_tokens: 57,
@@ -387,45 +395,37 @@ fn tool_use_prompt_tokens_are_added_to_input_and_validated_in_totals() {
         })
     );
 
-    let mut decoder = GeminiCodec.stream_decoder();
-    decoder
-        .decode_frame(
-            br#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":400,"candidatesTokenCount":50,"thoughtsTokenCount":7,"toolUsePromptTokenCount":123,"totalTokenCount":1180}}"#,
-        )
+    let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *decoder , br#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":400,"candidatesTokenCount":50,"thoughtsTokenCount":7,"toolUsePromptTokenCount":123,"totalTokenCount":1180}}"#)
         .unwrap();
-    assert!(decoder.usage_is_complete());
+    wire_api::finish(&mut *decoder).unwrap();
+    assert!(crate::wire_api::usage_is_complete(&decoder));
 
-    let mut mismatched_total = GeminiCodec.stream_decoder();
-    mismatched_total
-        .decode_frame(
-            br#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":400,"candidatesTokenCount":50,"thoughtsTokenCount":7,"toolUsePromptTokenCount":123,"totalTokenCount":1057}}"#,
-        )
+    let mut mismatched_total = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *mismatched_total , br#"{"candidates":[{"content":{"parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"cachedContentTokenCount":400,"candidatesTokenCount":50,"thoughtsTokenCount":7,"toolUsePromptTokenCount":123,"totalTokenCount":1057}}"#)
         .unwrap();
-    assert!(!mismatched_total.usage_is_complete());
+    assert!(!crate::wire_api::usage_is_complete(&mismatched_total));
 }
 
 #[test]
 fn malformed_tool_use_prompt_count_makes_gemini_usage_incomplete() {
     for malformed in [br#""123""#.as_slice(), b"-1", b"null", b"1.5"] {
-        let mut decoder = GeminiCodec.stream_decoder();
+        let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
         let frame = format!(
             r#"{{"candidates":[{{"content":{{"parts":[]}},"finishReason":"STOP"}}],"usageMetadata":{{"promptTokenCount":10,"candidatesTokenCount":2,"toolUsePromptTokenCount":{}}}}}"#,
             std::str::from_utf8(malformed).unwrap()
         );
-        decoder.decode_frame(frame.as_bytes()).unwrap();
-        assert!(!decoder.usage_is_complete(), "{frame}");
+        wire_api::decode_frame(&mut *decoder, frame.as_bytes()).unwrap();
+        assert!(!crate::wire_api::usage_is_complete(&decoder), "{frame}");
     }
 }
 
 #[test]
 fn a_turn_that_called_a_tool_is_a_tool_turn_even_though_the_wire_says_stop() {
-    let mut d = GeminiCodec.stream_decoder();
-    let mut events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}}}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let mut events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}}}]},"finishReason":"STOP"}]}"#)
         .unwrap();
-    events.extend(d.finish().unwrap());
+    events.extend(wire_api::finish(&mut *d).unwrap());
 
     assert!(events.iter().any(|e| matches!(
         e,
@@ -445,11 +445,8 @@ fn a_turn_that_called_a_tool_is_a_tool_turn_even_though_the_wire_says_stop() {
 
 #[test]
 fn a_thought_part_decodes_as_reasoning_not_as_text() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"m","candidates":[{"content":{"parts":[{"text":"pondering","thought":true},{"text":"answer"}]}}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"m","candidates":[{"content":{"parts":[{"text":"pondering","thought":true},{"text":"answer"}]}}]}"#)
         .unwrap();
     assert!(events
         .iter()
@@ -485,10 +482,8 @@ fn azure_without_an_api_version_names_the_profile_rather_than_guessing() {
     let p = profile("azure_open_ai", "https://res.openai.azure.com", Value::Null);
     let err = AzureOpenAiCodec
         .encode_request(
-            &request(vec![user("hi")]),
-            &p,
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&request(vec![user("hi")])),
+            &wire_api::context(&p, &route().request_model, &RequestOptions::default()),
         )
         .unwrap_err();
     assert!(
@@ -555,16 +550,21 @@ fn foundry_is_the_anthropic_wire_at_a_foundry_endpoint() {
 
 #[test]
 fn oversized_usage_counters_do_not_panic_or_wrap() {
-    let mut decoder = GeminiCodec.stream_decoder();
+    let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
     let frame = serde_json::to_vec(&json!({"usageMetadata": {
         "promptTokenCount": 0,
         "candidatesTokenCount": u64::MAX,
         "thoughtsTokenCount": 1,
     }}))
     .unwrap();
-    decoder.decode_frame(&frame).unwrap();
-    assert_eq!(decoder.observed_usage().unwrap().output_tokens, u64::MAX);
-    assert!(!decoder.usage_is_complete());
+    wire_api::decode_frame(&mut *decoder, &frame).unwrap();
+    assert_eq!(
+        crate::wire_api::observed_usage(&decoder)
+            .unwrap()
+            .output_tokens,
+        u64::MAX
+    );
+    assert!(!crate::wire_api::usage_is_complete(&decoder));
 }
 
 fn gemini_response(parts: Value) -> lingxi_llm_client::HttpResponse {
@@ -586,7 +586,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
         .decode_response(&gemini_response(json!([
             {"functionCall": {"id": "call-a", "name": "read", "args": {"path": "a"}}, "thoughtSignature": "sig-a"},
             {"functionCall": {"id": "call-b", "name": "read", "args": {"path": "b"}}}
-        ])))
+        ])), &wire_api::decode_context())
         .unwrap();
     let calls: Vec<_> = decoded
         .message
@@ -640,18 +640,24 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
 #[test]
 fn calls_without_provider_ids_get_unique_local_handles_without_wire_ids() {
     let decoded = GeminiCodec
-        .decode_response(&gemini_response(json!([
-            {"functionCall": {"name": "read", "args": {"path": "a"}}},
-            {"functionCall": {"name": "read", "args": {"path": "b"}}}
-        ])))
+        .decode_response(
+            &gemini_response(json!([
+                {"functionCall": {"name": "read", "args": {"path": "a"}}},
+                {"functionCall": {"name": "read", "args": {"path": "b"}}}
+            ])),
+            &wire_api::decode_context(),
+        )
         .unwrap();
     let calls: Vec<_> = decoded.message.tool_uses().collect();
     assert_eq!(calls.len(), 2);
     assert_ne!(calls[0].0, calls[1].0);
     let next_turn = GeminiCodec
-        .decode_response(&gemini_response(json!([
-            {"functionCall": {"name": "write", "args": {"path": "c"}}}
-        ])))
+        .decode_response(
+            &gemini_response(json!([
+                {"functionCall": {"name": "write", "args": {"path": "c"}}}
+            ])),
+            &wire_api::decode_context(),
+        )
         .unwrap();
     let next_id = next_turn.message.tool_uses().next().unwrap().0;
     assert_ne!(calls[0].0, next_id);
@@ -677,9 +683,12 @@ fn calls_without_provider_ids_get_unique_local_handles_without_wire_ids() {
 #[test]
 fn text_part_thought_signature_survives_full_response_replay() {
     let decoded = GeminiCodec
-        .decode_response(&gemini_response(json!([
-            {"text": "answer", "thoughtSignature": "sig-text"}
-        ])))
+        .decode_response(
+            &gemini_response(json!([
+                {"text": "answer", "thoughtSignature": "sig-text"}
+            ])),
+            &wire_api::decode_context(),
+        )
         .unwrap();
     let serialized = serde_json::to_value(&decoded.message).unwrap();
     assert_eq!(serialized["content"][0]["thought_signature"], "sig-text");
@@ -698,11 +707,8 @@ fn text_part_thought_signature_survives_full_response_replay() {
 
 #[test]
 fn streaming_calls_have_distinct_ids_and_signatures_at_their_blocks() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"id":"call-a","name":"read","args":{"path":"a"}},"thoughtSignature":"sig-a"},{"functionCall":{"id":"call-b","name":"read","args":{"path":"b"}}},{"text":"done","thoughtSignature":"sig-text"}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"id":"call-a","name":"read","args":{"path":"a"}},"thoughtSignature":"sig-a"},{"functionCall":{"id":"call-b","name":"read","args":{"path":"b"}}},{"text":"done","thoughtSignature":"sig-text"}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     assert!(events.iter().any(|e| matches!(e, StreamEvent::ToolCallDelta { block: 0, id, provider_id: Some(provider_id), .. } if id.as_str() == "call-a" && provider_id == "call-a")));
     assert!(events.iter().any(|e| matches!(e, StreamEvent::ToolCallDelta { block: 1, id, provider_id: Some(provider_id), .. } if id.as_str() == "call-b" && provider_id == "call-b")));
@@ -712,11 +718,8 @@ fn streaming_calls_have_distinct_ids_and_signatures_at_their_blocks() {
 
 #[test]
 fn streaming_legacy_calls_have_distinct_local_ids_without_provider_ids() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}}},{"functionCall":{"name":"read","args":{"path":"b"}}}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a"}}},{"functionCall":{"name":"read","args":{"path":"b"}}}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     let calls: Vec<_> = events
         .iter()
@@ -734,11 +737,8 @@ fn streaming_legacy_calls_have_distinct_local_ids_without_provider_ids() {
 
 #[test]
 fn streaming_signed_text_parts_keep_their_own_signature_blocks() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"first","thoughtSignature":"sig-1"},{"text":"second","thoughtSignature":"sig-2"}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"first","thoughtSignature":"sig-1"},{"text":"second","thoughtSignature":"sig-2"}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     assert!(events
         .iter()
@@ -752,11 +752,8 @@ fn streaming_signed_text_parts_keep_their_own_signature_blocks() {
 
 #[test]
 fn streaming_unsigned_then_signed_text_parts_do_not_share_a_block() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thoughtSignature":"sig-B"}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A"},{"text":"B","thoughtSignature":"sig-B"}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     assert!(events
         .iter()
@@ -769,11 +766,8 @@ fn streaming_unsigned_then_signed_text_parts_do_not_share_a_block() {
 
 #[test]
 fn streaming_unsigned_then_signed_reasoning_parts_do_not_share_a_block() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A","thought":true},{"text":"B","thought":true,"thoughtSignature":"sig-B"}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A","thought":true},{"text":"B","thought":true,"thoughtSignature":"sig-B"}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     assert!(events
         .iter()
@@ -786,16 +780,13 @@ fn streaming_unsigned_then_signed_reasoning_parts_do_not_share_a_block() {
 
 #[test]
 fn streaming_one_text_part_per_frame_keeps_its_open_block_until_signed() {
-    let mut d = GeminiCodec.stream_decoder();
-    let first = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A"}]}}]}"#,
-        )
-        .unwrap();
-    let second = d
-        .decode_frame(
-            br#"{"candidates":[{"content":{"parts":[{"text":"B","thoughtSignature":"sig-AB"}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let first = wire_api::decode_frame(
+        &mut *d,
+        br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"A"}]}}]}"#,
+    )
+    .unwrap();
+    let second = wire_api::decode_frame(&mut *d , br#"{"candidates":[{"content":{"parts":[{"text":"B","thoughtSignature":"sig-AB"}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     assert!(first
         .iter()
@@ -808,11 +799,8 @@ fn streaming_one_text_part_per_frame_keeps_its_open_block_until_signed() {
 
 #[test]
 fn streaming_tool_call_separates_surrounding_text_blocks() {
-    let mut d = GeminiCodec.stream_decoder();
-    let events = d
-        .decode_frame(
-            br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"before"},{"functionCall":{"id":"call-a","name":"read","args":{}}},{"text":"after"}]},"finishReason":"STOP"}]}"#,
-        )
+    let mut d = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *d , br#"{"modelVersion":"wire-m","candidates":[{"content":{"parts":[{"text":"before"},{"functionCall":{"id":"call-a","name":"read","args":{}}},{"text":"after"}]},"finishReason":"STOP"}]}"#)
         .unwrap();
     assert!(events
         .iter()
@@ -823,4 +811,65 @@ fn streaming_tool_call_separates_surrounding_text_blocks() {
     assert!(events
         .iter()
         .any(|e| matches!(e, StreamEvent::TextDelta { block: 2, text } if text == "after")));
+}
+
+#[test]
+fn tool_calls_refine_only_normal_gemini_completion() {
+    for (finish, expected) in [
+        ("STOP", StopReason::ToolUse),
+        ("MAX_TOKENS", StopReason::MaxTokens),
+        ("SAFETY", StopReason::Refusal),
+        (
+            "MALFORMED_FUNCTION_CALL",
+            StopReason::Other("MALFORMED_FUNCTION_CALL".into()),
+        ),
+    ] {
+        let raw = json!({"candidates":[{"content":{"parts":[{
+            "functionCall":{"name":"read","args":{"path":"a"}}
+        }]},"finishReason":finish}]});
+        let response = lingxi_llm_client::HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: raw.to_string().into(),
+        };
+        assert_eq!(
+            GeminiCodec
+                .decode_response(&response, &wire_api::decode_context())
+                .unwrap()
+                .stop_reason,
+            expected
+        );
+        let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
+        wire_api::decode_frame(&mut *decoder, &response.body).unwrap();
+        assert!(
+            matches!(wire_api::finish(&mut *decoder).unwrap().last(), Some(StreamEvent::End { stop_reason, .. }) if *stop_reason == expected)
+        );
+    }
+}
+
+#[test]
+fn prompt_blocking_remains_authoritative_after_a_streamed_tool_call() {
+    let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(
+        &mut *decoder,
+        br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{}}}]}}]}"#,
+    )
+    .unwrap();
+    wire_api::decode_frame(
+        &mut *decoder,
+        br#"{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[{"finishReason":"STOP"}]}"#,
+    )
+    .unwrap();
+    wire_api::decode_frame(
+        &mut *decoder,
+        br#"{"candidates":[{"finishReason":"STOP"}]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        wire_api::finish(&mut *decoder).unwrap().last(),
+        Some(StreamEvent::End {
+            stop_reason: StopReason::Refusal,
+            ..
+        })
+    ));
 }

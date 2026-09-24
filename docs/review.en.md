@@ -2,7 +2,17 @@
 
 [简体中文](review.md)
 
+Current architecture and API contracts are documented in the [architecture update](architecture-migration.en.md), with current checks and measurements in the [validation record](architecture-validation.md). The records below describe their historical revisions. The current implementation rejects v1 configuration and usage-only response formats.
+
 The initial review covered client routing and failover, authentication and transport boundaries, built-in codecs, stream parsing, the model catalog, usage and pricing calculations, and API documentation builds in an independent repository. That round of fixes preserved the existing API shape and added no dependencies. The later built-in HTTP functionality is described separately below.
+
+## Standalone Client and Harness Boundary
+
+The client owns its protocol types and has no Agent API dependency. Tool execution, permissions, session state, context compaction, media delegation, and credential refresh belong to the host. Communication data, including tool-call IDs, response IDs, signatures, and native replay blocks, remains available through `lingxi_llm_client::protocol`.
+
+Compaction helpers, media-delegation configuration/errors, the OAuth-refresh lifecycle error, and unused legacy token-estimate types have been removed. Existing `visionDelegate` JSON is ignored and omitted on save. Provider management, account queries, pricing, and the active local token estimator remain available. See the [migration guide](api.en.md#migrating-from-the-shared-agent-api) for source compatibility changes.
+
+CI now verifies the client package directly and compiles both Chinese and English examples as an independent consumer. Earlier test counts and shared-crate checks below describe their historical revisions.
 
 ## Issues Fixed
 
@@ -19,7 +29,7 @@ The initial review covered client routing and failover, authentication and trans
 | Medium | SSE parsing mishandled CR line endings, CRLF split across chunks, and data fields without a colon | `src/framing/sse.rs`: normalize line endings and preserve empty data lines |
 | Medium | Gemini token addition could overflow; cache reads and writes totaling more than the input were still considered valid | Gemini decode and `src/client/usage.rs`: prevent overflow and validate count consistency |
 | Medium | Invalid rates, multipliers, or amount overflow still yielded successful cost estimates | `src/client/pricing.rs`: return `CostUnavailable` |
-| Medium | Large numbers in peak-period windows could panic; a window ending at midnight could not be represented | `crates/agent-api/src/protocol/provider.rs`: validate before calculating and support the end time `24:00` |
+| Medium | Large numbers in peak-period windows could panic; a window ending at midnight could not be represented | `src/protocol/provider.rs`: validate before calculating and support the end time `24:00` |
 | Medium | Broken internal Rustdoc links caused strict documentation builds to fail | Shared protocol documentation: correct nonexistent links |
 
 ## Documentation and Verification
@@ -30,10 +40,10 @@ The initial review covered client routing and failover, authentication and trans
 - Initial review verification (excluding the later built-in HTTP functionality): 228 unit/integration tests and 4 documentation examples passed; 24 behavior regression tests were added relative to baseline. Formatting, Clippy (warnings treated as errors), and strict Rustdoc builds passed, and all local documentation link targets existed.
 
 ```sh
-cargo test --workspace --locked
+cargo test --locked
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+cargo clippy --all-targets --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked
 ```
 
 ## Later Fixes and Boundaries the Host Still Handles
@@ -70,10 +80,10 @@ This round kept the existing separation among codecs, authenticators, transport,
 - When a streaming entry point receives an unsuccessful HTTP status, it preserves the status, collected content, and `Retry-After` even if the error body is interrupted, and evaluates failover under the existing policy. An interruption after a successful stream has already been returned is still not replayed automatically.
 - The Anthropic catalog returns an error when the boolean `has_more` is absent, or when `has_more: true` lacks a valid `last_id`, avoiding silent acceptance of an incomplete catalog.
 - The client's persisted overrides, cache, and tracking state were consolidated in an internal `ProviderStore`, separate from the effective profile snapshot used for requests. `prepare_provider_sync` creates an operation that does not borrow the client; `fetch` retrieves the catalog, and `apply_provider_sync` validates and commits it. File locks and file I/O involved in sync run on Tokio's blocking thread pool. Before committing, it checks fresh disk state, connection configuration, and the configuration directory generation.
-- The default `agent` feature of `lingxi-agent-api` retains the full original API. The LLM client disables this feature and re-exports the protocol through `lingxi_llm_client::protocol`. CI checks the minimal feature set separately so workspace feature unification cannot hide problems.
+- At the time of this review, the shared protocol used a separate `agent` feature. The protocol has since moved into the standalone client, and Agent-only types and feature checks have been removed; see the migration section of the [API guide](api.en.md#migrating-from-the-shared-agent-api).
 - Models gained optional tri-state capability information distinguishing unknown, supported, and unsupported. The old Boolean fields remain: explicit new metadata takes precedence, an old `true` can establish support, and an old `false` remains unknown. Newly cataloged models without capability facts remain unknown. Capability metadata remains available to the host for decisions, without introducing a new runtime rejection.
 
-During migration, existing JSON configurations remain readable; Rust `ModelProfile` literals need `capability_support: None`. Callers relying on unqualified model names should switch to the explicit-profile `_in` methods if they encounter ambiguity. Old imports directly from `lingxi-agent-api` remain valid.
+During migration, existing JSON configurations remain readable; Rust `ModelProfile` literals need `capability_support: None`. Callers relying on unqualified model names should switch to the explicit-profile `_in` methods if they encounter ambiguity. Current integrations import protocol types from `lingxi_llm_client::protocol`.
 
 The fetch phase of configuration sync can be canceled without writing to disk. Once the commit enters the file-writing phase, cancellation can still leave updated files and an outdated in-memory snapshot; the host should reload configuration in that case. Synchronous configuration-management methods remain blocking interfaces, so async hosts should choose an appropriate execution environment.
 

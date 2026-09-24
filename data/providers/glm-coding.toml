@@ -2,6 +2,12 @@
 # OpenAI-compatible one, so the two connections of this group speak different
 # wires. Neither is "the compatible one", and the catalog's advisory `api` field
 # describes the other — which is why routing stays hand-authored.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://docs.z.ai/api-reference/llm/chat-completion"] }
+pricing_info = { currencies = [], units = ["subscription_quota"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland"]
 provider_id = "zhipu"
 base_url = "https://open.bigmodel.cn/api/anthropic"
@@ -40,9 +46,16 @@ attachment = true
 open_weights = true
 
 [model.pricing]
-input_per_million = 0.3
-output_per_million = 0.9
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-4.7"
@@ -63,11 +76,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5-turbo"
@@ -88,11 +106,16 @@ attachment = false
 open_weights = false
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.1"
@@ -113,11 +136,16 @@ attachment = false
 open_weights = false
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.2"
@@ -138,11 +166,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.2-highspeed"
@@ -163,11 +196,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.3"
@@ -188,11 +226,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5.3-flash"
@@ -213,11 +256,16 @@ attachment = true
 open_weights = false
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5.3-highspeed"
@@ -238,11 +286,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5v-turbo"
@@ -262,8 +315,12 @@ attachment = true
 open_weights = false
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }

@@ -1,15 +1,17 @@
 # The same account over the other wire. Hidden: a picker offers the default
 # connection, and this one is here to fail over onto.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = ["https://docs.x.ai/developers/pricing"] }
+
 regions = ["international"]
 provider_id = "xai"
 base_url = "https://api.x.ai"
 protocol = "anthropic_messages"
-# No `model_list` override, and it is worth saying why: this host publishes its
-# list in the *other* wire's shape, at the path this wire's shape would look —
-# and the two shapes read an id from the same place, so the derived route lands
-# on the right URL and reads the right ids anyway. Naming the other shape would
-# mean naming the endpoint too, because that shape appends its path to a base
-# that already carries the version segment and this route's does not.
+# xAI shares its OpenAI-shaped model directory across both inference wires.
+model_list = "open_ai_chat"
 auth = "api_key"
 credential_env = "XAI_API_KEY"
 billing_mode = "per_token"
@@ -43,6 +45,13 @@ output_per_million = 2.5
 cache_read_per_million = 0.19999999999999998
 source = "models.dev via aggregator"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+
 [[model]]
 id = "grok-4.20-multi-agent"
 name = "Grok 4.20 Multi-Agent"
@@ -63,6 +72,13 @@ input_per_million = 1.25
 output_per_million = 2.5
 cache_read_per_million = 0.19999999999999998
 source = "models.dev via aggregator"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
+budget = { support = "unsupported", dynamic = "unsupported" }
 
 [[model]]
 id = "grok-4.3"
@@ -85,6 +101,13 @@ output_per_million = 2.5
 cache_read_per_million = 0.19999999999999998
 source = "models.dev via aggregator"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+
 [[model]]
 id = "grok-4.5"
 name = "Grok 4.5"
@@ -106,6 +129,14 @@ output_per_million = 6
 cache_read_per_million = 0.3
 source = "models.dev via aggregator"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unknown", levels = ["low", "medium", "high"] }
+
 [[model]]
 id = "grok-4.6"
 name = "Grok 4.6"
@@ -126,6 +157,14 @@ input_per_million = 2
 output_per_million = 6
 cache_read_per_million = 0.5
 source = "models.dev via aggregator"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unknown", levels = ["low", "medium", "high", "xhigh"] }
 
 [[model]]
 id = "grok-4.7"
@@ -154,7 +193,6 @@ fast = "unsupported"
 sources = ["https://docs.x.ai/developers/models/grok-4.7"]
 budget = { support = "unsupported", dynamic = "unsupported" }
 effort = { support = "supported", levels = ["low", "medium", "high", "xhigh"], default = "high" }
-
 [[model]]
 id = "grok-build-0.1"
 name = "Grok Build 0.1"
@@ -175,3 +213,9 @@ input_per_million = 1
 output_per_million = 2
 cache_read_per_million = 0.19999999999999998
 source = "models.dev via aggregator"
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.x.ai/developers/model-capabilities/text/reasoning"]
+budget = { support = "unsupported", dynamic = "unsupported" }

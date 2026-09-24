@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use lingxi_agent_api::protocol::{LlmError, ProtocolFamily, ProviderProfile, Secret};
+use lingxi_llm_client::protocol::{LlmError, ProtocolFamily, ProviderProfile, Secret};
 use lingxi_llm_client::{
     builtin_providers, AccountFailure, AccountIdentity, AccountMetric, AccountQuery,
     AccountScopeKind, HttpRequest, HttpResponse, LlmClientBuilder, StreamResponse, Transport,
-    WebSocketSession,
 };
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -30,7 +29,12 @@ impl ScriptedTransport {
 
 #[async_trait]
 impl Transport for ScriptedTransport {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
+    }
+}
+impl ScriptedTransport {
+    async fn response(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
         self.seen.lock().unwrap().push(req);
         let (status, body) = self
             .replies
@@ -44,18 +48,6 @@ impl Transport for ScriptedTransport {
             body: Bytes::from(body.to_string()),
         })
     }
-    async fn execute_no_follow(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute(req).await
-    }
-    async fn open_stream(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
-        panic!("account API must not stream")
-    }
-    async fn open_responses_websocket_session(
-        &self,
-        _: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        panic!("account API must not use websocket")
-    }
 }
 
 fn profile(id: &str) -> ProviderProfile {
@@ -68,7 +60,7 @@ fn profile(id: &str) -> ProviderProfile {
 
 fn client(profile: ProviderProfile, http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
     LlmClientBuilder::with_transport(http, &[profile])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap()
 }

@@ -3,9 +3,10 @@
 //! These name providers on purpose — they assert what the data files say. Gate
 //! 30 scans `src/` only, because a test reading a shipped data file is not a
 //! code path that adds a provider.
+use lingxi_llm_client::protocol::PricingContext;
 
-use lingxi_agent_api::protocol::{BillingMode, ProtocolFamily, ProviderProfile, Submission, Usage};
 use lingxi_llm_client::presets::{builtin, merge};
+use lingxi_llm_client::protocol::{BillingMode, ProtocolFamily, ProviderProfile, Usage};
 use lingxi_llm_client::LlmClientBuilder;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -21,7 +22,7 @@ fn metered_glm_never_inherits_subscription_zero_prices() {
         .unwrap();
     assert_eq!(profile.pricing.billing_mode, BillingMode::PerToken);
     let client = LlmClientBuilder::with_transport(Arc::new(support::NoHttp), &[profile])
-        .with_region(lingxi_agent_api::protocol::Region::ChinaMainland)
+        .with_region(lingxi_llm_client::protocol::Region::ChinaMainland)
         .build()
         .unwrap();
     let route = client.resolve("glm/glm-4.7").unwrap();
@@ -30,10 +31,10 @@ fn metered_glm_never_inherits_subscription_zero_prices() {
         output_tokens: 100,
         ..Usage::default()
     };
-    assert!(client
-        .estimate_cost(&route, &usage, Submission::Interactive)
-        .unwrap()
-        .is_none());
+    assert!(matches!(
+        client.estimate_cost(&route, &usage, &PricingContext::default()),
+        Err(lingxi_llm_client::protocol::LlmError::CostUnavailable { .. })
+    ));
 }
 
 #[test]
@@ -144,7 +145,7 @@ fn presets_and_their_models_are_ordered_so_two_dumps_agree() {
 
 #[test]
 fn every_wire_this_crate_speaks_has_at_least_one_preset() {
-    use lingxi_agent_api::protocol::ProtocolFamily;
+    use lingxi_llm_client::protocol::ProtocolFamily;
     let served: std::collections::BTreeSet<_> =
         builtin().unwrap().iter().map(|p| p.protocol).collect();
     for family in [
@@ -270,7 +271,7 @@ fn the_quirk_flags_are_set_where_the_wire_cannot_infer_them() {
 
 #[test]
 fn catalog_capability_flags_distinguish_known_negative_from_missing() {
-    use lingxi_agent_api::protocol::{CapabilitySupport, ModelCapability};
+    use lingxi_llm_client::protocol::{CapabilitySupport, ModelCapability};
 
     let presets = builtin().unwrap();
     let model = |profile_name: &str, request_model: &str| {
@@ -355,9 +356,9 @@ fn a_model_resolves_through_the_client_built_from_the_presets() {
         .first()
         .expect("there is at least one preset")
         .clone();
-    oauth_profile.auth = lingxi_agent_api::protocol::AuthStrategy::OAuthBearer;
+    oauth_profile.auth = lingxi_llm_client::protocol::AuthStrategy::OAuthBearer;
     let missing = match LlmClientBuilder::with_transport(http.clone(), &[oauth_profile.clone()])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
     {
         Err(e) => e,
@@ -370,11 +371,11 @@ fn a_model_resolves_through_the_client_built_from_the_presets() {
 
     // Replace authentication for this offline catalog-only test.
     let mut b = LlmClientBuilder::with_transport(http, &presets);
-    for strategy in lingxi_agent_api::protocol::AuthStrategy::ALL {
+    for strategy in lingxi_llm_client::protocol::AuthStrategy::ALL {
         b.register_authenticator(strategy, std::sync::Arc::new(support::NoAuth));
     }
     let client = b
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("every preset's wire has a codec");
 
@@ -438,32 +439,47 @@ fn the_deepseek_style_schedule_halves_the_bill_outside_peak() {
         .iter()
         .find(|p| p.profile_name == "deepseek")
         .expect("preset");
-    let schedule = p
-        .pricing
-        .peak
-        .as_ref()
-        .expect("this vendor publishes peak and off-peak rates");
+    assert!(p.pricing.peak.is_some());
     let model = p
         .models
         .iter()
         .find(|m| m.request_model == "deepseek-flash")
         .expect("model");
     let listed = model.pricing.as_ref().expect("priced");
+    let client =
+        LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
+            .with_region(lingxi_llm_client::protocol::Region::International)
+            .build()
+            .unwrap();
+    let rates_at = |unix_seconds| {
+        client
+            .price_quote(
+                &model.request_model,
+                Some(&p.profile_name),
+                &PricingContext {
+                    unix_seconds: Some(unix_seconds),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .rates
+            .unwrap()
+    };
 
     // Inside a published peak window on a weekday: the listed rates stand.
-    let peak = listed.at(Submission::Interactive, Some(schedule), utc(0, 2, 0));
+    let peak = rates_at(utc(0, 2, 0));
     assert_eq!(peak.input_per_million, listed.input_per_million);
     assert_eq!(peak.output_per_million, listed.output_per_million);
 
     // Between the two windows on the same weekday is off-peak.
-    let between = listed.at(Submission::Interactive, Some(schedule), utc(0, 5, 0));
+    let between = rates_at(utc(0, 5, 0));
     assert_eq!(
         between.output_per_million,
         listed.output_per_million.map(|v| v / 2.0)
     );
 
     // And the whole weekend is off-peak, peak hours or not.
-    let saturday = listed.at(Submission::Interactive, Some(schedule), utc(5, 2, 0));
+    let saturday = rates_at(utc(5, 2, 0));
     assert_eq!(
         saturday.input_per_million,
         listed.input_per_million.map(|v| v / 2.0),
@@ -485,7 +501,22 @@ fn a_provider_with_no_schedule_is_billed_at_its_listed_rates() {
         .expect("most providers charge one rate");
     let model = flat.models.iter().find(|m| m.pricing.is_some()).unwrap();
     let listed = model.pricing.as_ref().unwrap();
-    let resolved = listed.at(Submission::Interactive, None, utc(5, 2, 0));
+    let client =
+        LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(flat))
+            .with_region(lingxi_llm_client::protocol::Region::International)
+            .build()
+            .unwrap();
+    let quote = client
+        .price_quote(
+            &model.request_model,
+            Some(&flat.profile_name),
+            &PricingContext {
+                unix_seconds: Some(utc(5, 2, 0)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let resolved = quote.rates.unwrap();
     assert_eq!(resolved.input_per_million, listed.input_per_million);
     assert_eq!(resolved.output_per_million, listed.output_per_million);
     assert_eq!(
@@ -497,11 +528,7 @@ fn a_provider_with_no_schedule_is_billed_at_its_listed_rates() {
         listed.cache_write_per_million
     );
     assert_eq!(resolved.reasoning_per_million, listed.reasoning_per_million);
-    assert_eq!(resolved.source, listed.source, "provenance survives");
-    assert_eq!(
-        resolved.batch, None,
-        "a resolved rate is what you pay, not a table to resolve again"
-    );
+    assert_eq!(quote.source, listed.source, "provenance survives");
 }
 
 #[test]
@@ -709,8 +736,8 @@ fn a_batch_rate_is_carried_as_published_not_assumed_to_be_a_discount() {
         }
     }
     assert_eq!(
-        carried, 77,
-        "the catalog ships 77 batch rate sets; a refresh that changes this \
+        carried, 110,
+        "the catalog ships 110 batch rate sets; a refresh that changes this \
          should change this number deliberately"
     );
 }
@@ -752,47 +779,35 @@ fn an_aggregators_free_tier_is_billed_differently_from_its_metered_models() {
     );
 }
 
-/// The rule that must not be applied: several models are priced at zero because
-/// a subscription already covers them. Covered is not free, and reading a zero
-/// price as free would let a request move off a plan and start charging.
+/// Subscription quota prices never masquerade as dollar rates or free tokens.
 #[test]
-fn a_model_priced_at_zero_is_not_thereby_free() {
+fn subscription_presets_expose_quotas_without_monetary_token_rates() {
     let presets = builtin().unwrap();
     let mut checked = 0;
     for p in &presets {
         if p.pricing.billing_mode != BillingMode::Subscription {
             continue;
         }
+        assert!(p.info.pricing.currencies.is_empty());
         for m in &p.models {
-            let all_zero = m.pricing.as_ref().is_some_and(|pr| {
-                [
-                    pr.input_per_million,
-                    pr.output_per_million,
-                    pr.cache_read_per_million,
-                    pr.cache_write_per_million,
+            checked += 1;
+            assert_eq!(m.billing_mode_on(&p.pricing), BillingMode::Subscription);
+            if let Some(prices) = &m.pricing {
+                assert!([
+                    prices.input_per_million,
+                    prices.output_per_million,
+                    prices.cache_read_per_million,
+                    prices.cache_write_per_million,
+                    prices.cache_write_1h_per_million,
+                    prices.reasoning_per_million
                 ]
                 .iter()
-                .flatten()
-                .all(|v| *v == 0.0)
-            });
-            if !all_zero {
-                continue;
+                .all(Option::is_none));
+                assert_eq!(m.info.pricing.as_ref(), Some(prices));
             }
-            checked += 1;
-            assert_eq!(
-                m.billing_mode_on(&p.pricing),
-                BillingMode::Subscription,
-                "{}/{} is covered by a plan, not free",
-                p.profile_name,
-                m.request_model
-            );
         }
     }
-    assert!(
-        checked >= 10,
-        "only {checked} zero-priced subscription models; this guards against a \
-         refresh deciding they are free"
-    );
+    assert!(checked >= 10);
 }
 
 /// The one field an app needs to turn "you have no key for this provider" into
@@ -906,7 +921,7 @@ fn first_party_anthropic_ids_use_official_names_and_keep_legacy_selectors() {
         .unwrap();
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(&profile))
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
     for (old, official) in [

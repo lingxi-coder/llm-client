@@ -6,14 +6,14 @@
 //! rejects tool_choice in thinking mode". That is what keeps a new
 //! OpenAI-compatible provider a settings change (gate 30).
 
-use crate::client::route::ResolvedRoute;
-use crate::transport::HttpRequest;
-use crate::RequestOptions;
-use base64::Engine;
-use lingxi_agent_api::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
-    MessageRole, ProviderProfile, ToolChoice,
+use crate::codecs::json::{WireRequest, WireValue};
+use crate::codecs::{CodecContext, EncodeRequest};
+use crate::protocol::{
+    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
+    ProviderProfile, ToolChoice,
 };
+
+use base64::Engine;
 use serde_json::{json, Map, Value};
 
 /// A boolean knob a profile may set in `extra`.
@@ -25,36 +25,39 @@ fn flag(profile: &ProviderProfile, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn request(
-    req: &CompletionRequest,
+pub fn request<'a>(
+    wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
-    route: &ResolvedRoute,
-    opts: &RequestOptions,
-) -> Result<HttpRequest, LlmError> {
-    crate::codecs::reject_responses_continuation(
-        req,
-        lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat,
+    opts: &CodecContext,
+) -> Result<WireRequest<'a>, LlmError> {
+    let req = wire.request();
+    crate::files::validate_direct_provider_file_inputs(
+        wire.blocks(),
+        profile,
+        &opts.request_model,
+        opts.file_scope(),
     )?;
+    crate::codecs::reject_responses_continuation(req, crate::protocol::ProtocolFamily::OpenAiChat)?;
     if req.file_search.is_some() {
         return Err(LlmError::UnsupportedCapability {
             message: "hosted file search is supported only on Qwen Responses profiles".into(),
         });
     }
     let max_tokens_field = max_tokens_field(profile)?;
-    let mut messages = Vec::new();
+    let mut messages: Vec<WireValue<'a>> = Vec::new();
     let qwen_long = profile.provider_id.as_str() == "qwen"
-        && crate::client::files::is_qwen_long_model(&route.request_model);
+        && crate::files::is_qwen_long_model(&opts.request_model);
     if qwen_long {
-        if !crate::client::files::qwen_long_region_supported(profile) {
+        if !crate::files::qwen_long_region_supported(profile) {
             return Err(LlmError::UnsupportedCapability {
                 message: "Qwen-Long is supported only on a Beijing Qwen endpoint".into(),
             });
         }
-        crate::client::files::validate_qwen_long_inputs(req, &[])?;
+        crate::files::validate_qwen_long_blocks(wire.blocks())?;
     }
     let keep_reasoning = flag(profile, "preserve_reasoning_content");
     let pdf_only_files = flag(profile, "chat_pdf_only")
-        || reqwest::Url::parse(&profile.base_url)
+        || url::Url::parse(&profile.base_url)
             .ok()
             .is_some_and(|url| url.host_str() == Some("api.openai.com"));
     let mut consumed_leading_system = false;
@@ -70,13 +73,14 @@ pub fn request(
             .collect::<Vec<_>>()
             .join("\n\n");
         if !qwen_long || !text.trim().is_empty() {
-            messages.push(json!({"role": "system", "content": text}));
+            messages.push((json!({"role": "system", "content": text})).into());
         }
     }
 
     if qwen_long {
         let mut file_ids = Vec::new();
         for block in req.messages.iter().flat_map(|message| &message.content) {
+            let block = wire.block(block);
             let file = match block {
                 ContentBlock::Document {
                     source: DocumentSource::ProviderFile { file },
@@ -88,12 +92,12 @@ pub fn request(
                 _ => continue,
             };
             let file = crate::codecs::validate_provider_file(file, profile, opts)?;
-            if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat
+            if file.protocol != crate::protocol::ProtocolFamily::OpenAiChat
                 || file.purpose.as_deref() != Some("file-extract")
             {
                 return Err(crate::codecs::provider_file_protocol_error());
             }
-            if !crate::client::files::valid_qwen_file_id(&file.file_id) {
+            if !crate::files::valid_qwen_file_id(&file.file_id) {
                 return Err(LlmError::InvalidRequest {
                     message: "Qwen-Long file IDs must contain only letters, digits, hyphens, or underscores".into(),
                 });
@@ -101,11 +105,11 @@ pub fn request(
             file_ids.push(format!("fileid://{}", file.file_id));
         }
         if !file_ids.is_empty() {
-            if file_ids.len() > crate::client::files::QWEN_LONG_MAX_FILE_REFERENCES {
+            if file_ids.len() > crate::files::QWEN_LONG_MAX_FILE_REFERENCES {
                 return Err(LlmError::InvalidRequest {
                     message: format!(
                         "Qwen-Long accepts at most {} file references per request",
-                        crate::client::files::QWEN_LONG_MAX_FILE_REFERENCES
+                        crate::files::QWEN_LONG_MAX_FILE_REFERENCES
                     ),
                 });
             }
@@ -122,6 +126,7 @@ pub fn request(
                         qwen_long,
                         profile,
                         opts,
+                        wire,
                     )?;
                     if encoded.len() == 1
                         && encoded[0].get("role").and_then(Value::as_str) == Some("system")
@@ -135,8 +140,10 @@ pub fn request(
                     }
                 }
                 if messages.is_empty() {
-                    messages
-                        .push(json!({"role": "system", "content": "You are a helpful assistant."}));
+                    messages.push(
+                        (json!({"role": "system", "content": "You are a helpful assistant."}))
+                            .into(),
+                    );
                 }
             } else if messages[0]
                 .get("content")
@@ -145,7 +152,7 @@ pub fn request(
             {
                 messages[0]["content"] = Value::String("You are a helpful assistant.".into());
             }
-            messages.push(json!({"role": "system", "content": file_ids.join(",")}));
+            messages.push((json!({"role": "system", "content": file_ids.join(",")})).into());
         }
     }
 
@@ -161,15 +168,16 @@ pub fn request(
             qwen_long,
             profile,
             opts,
+            wire,
         )?);
     }
 
     let mut body = Map::new();
     body.insert(
         "model".to_owned(),
-        Value::String(route.request_model.clone()),
+        Value::String(opts.request_model.clone()),
     );
-    body.insert("messages".to_owned(), Value::Array(messages));
+    body.insert("messages".to_owned(), Value::Null);
 
     if opts.stream {
         body.insert("stream".to_owned(), Value::Bool(true));
@@ -203,27 +211,18 @@ pub fn request(
             "tools".to_owned(),
             Value::Array(req.tools.iter().map(encode_tool).collect()),
         );
-        // Some endpoints refuse a *forced* tool choice while thinking is on —
-        // `required` and a named function each come back 400 — while `none`,
-        // `auto` and the tools themselves are all accepted. So the tools stay,
-        // `none` and `auto` pass through, and only a forced choice relaxes to
-        // `auto`: the model then follows its prompt, and the caller's own
-        // validation and retry path still apply.
-        //
-        // Dropping the key outright would be wrong. `none` means "do not call a
-        // tool", and losing it lets the model call one.
-        let choice = if flag(profile, "thinking_rejects_forced_tool_choice") {
-            relax_forced_choice(&req.tool_choice)
-        } else {
-            req.tool_choice.clone()
-        };
-        body.insert("tool_choice".to_owned(), encode_tool_choice(&choice));
+        body.insert(
+            "tool_choice".to_owned(),
+            encode_tool_choice(&req.tool_choice),
+        );
     }
 
     // Whatever else this particular endpoint understands. Additive only, and
     // never a credential — see `wire_extras`.
     crate::codecs::web_search::apply(req, profile, &mut body)?;
-    crate::codecs::extras::merge_body(profile, &mut body);
+    let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+    crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::wire_options::merge_body(profile, &mut body);
     if req.max_tokens.is_some() {
         // The selected typed field is authoritative. A profile body extra must
         // not add the other spelling and send conflicting output limits.
@@ -234,63 +233,75 @@ pub fn request(
         };
         body.remove(alternate);
     }
-    let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
-    crate::codecs::extras::merge_headers(profile, &mut headers);
+    crate::wire_options::merge_headers(profile, &mut headers);
 
     let url = format!(
         "{}/chat/completions",
         profile.base_url.trim_end_matches('/')
     );
-    Ok(HttpRequest {
-        method: "POST".to_owned(),
+    Ok(WireRequest::new(
         url,
         headers,
-        body: serde_json::to_vec(&Value::Object(body))
-            .map_err(|e| LlmError::InvalidRequest {
-                message: format!("request body is not serializable: {e}"),
-            })?
-            .into(),
-        timeout: None,
-    })
+        WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages)),
+    ))
 }
 
 /// One conversation message becomes one or more wire messages: a tool result
 /// cannot share a message with text, so any pending text is flushed first and
 /// the result becomes its own `role: "tool"` entry.
-fn encode_message(
+fn encode_message<'a>(
     m: &ConversationMessage,
     keep_reasoning: bool,
     pdf_only_files: bool,
     qwen_long: bool,
     profile: &ProviderProfile,
-    opts: &RequestOptions,
-) -> Result<Vec<Value>, LlmError> {
+    opts: &CodecContext,
+    wire: EncodeRequest<'a>,
+) -> Result<Vec<WireValue<'a>>, LlmError> {
     let role = match m.role {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
         MessageRole::System => "system",
     };
-    let mut text = String::new();
+    let mut native_reasoning = None;
+    for block in &m.content {
+        let block = wire.block(block);
+        if let ContentBlock::ProviderContent { protocol, value } = block {
+            if m.role != MessageRole::Assistant {
+                return Err(LlmError::InvalidRequest {
+                    message: "Chat reasoning metadata belongs to an assistant message".into(),
+                });
+            }
+            if native_reasoning.is_some() {
+                return Err(LlmError::InvalidRequest {
+                    message: "an assistant message may contain only one Chat reasoning envelope"
+                        .into(),
+                });
+            }
+            native_reasoning = Some(super::reasoning::replay_fields(*protocol, value)?);
+        }
+    }
     let mut reasoning = String::new();
-    let mut media: Vec<Value> = Vec::new();
+    let mut parts: Vec<WireValue<'a>> = Vec::new();
     let mut tool_calls: Vec<Value> = Vec::new();
-    let mut out: Vec<Value> = Vec::new();
+    let mut out: Vec<WireValue<'a>> = Vec::new();
 
     for block in &m.content {
+        let block = wire.block(block);
+        if let Some(media) = inline(wire, block, opts)? {
+            parts.push(media);
+            continue;
+        }
         match block {
-            ContentBlock::ProviderContent { .. } => {
-                return Err(LlmError::UnsupportedCapability {
-                    message: "native content cannot be replayed on Chat Completions".to_owned(),
-                })
-            }
-            ContentBlock::Text { text: t, .. } => {
-                if !text.is_empty() {
-                    text.push('\n');
-                }
-                text.push_str(t);
+            // Pre-scanned because the envelope describes the whole message,
+            // including tool calls which may precede it in the block sequence.
+            ContentBlock::ProviderContent { .. } => {}
+            ContentBlock::Text { text, .. } => {
+                parts.push((json!({"type":"text", "text":text})).into());
             }
             ContentBlock::Thinking { text: t, .. } => {
-                if keep_reasoning {
+                if keep_reasoning && native_reasoning.is_none() && m.role == MessageRole::Assistant
+                {
                     reasoning.push_str(t);
                 }
             }
@@ -298,7 +309,7 @@ fn encode_message(
                 ImageSource::ProviderFile { file } => {
                     let file = crate::codecs::validate_provider_file(file, profile, opts)?;
                     if qwen_long
-                        && file.protocol == lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat
+                        && file.protocol == crate::protocol::ProtocolFamily::OpenAiChat
                         && file.purpose.as_deref() == Some("file-extract")
                     {
                         continue;
@@ -311,15 +322,18 @@ fn encode_message(
                 ImageSource::Attachment { .. } => {
                     return Err(crate::codecs::unresolved_attachment_error());
                 }
-                _ => media.push(json!({
-                    "type": "image_url",
-                    "image_url": { "url": image_url(source)? },
-                })),
+                _ => parts.push(
+                    (json!({
+                        "type": "image_url",
+                        "image_url": { "url": image_url(source)? },
+                    }))
+                    .into(),
+                ),
             },
             ContentBlock::Document { source, .. } => {
                 if let DocumentSource::ProviderFile { file } = source {
                     let file = crate::codecs::validate_provider_file(file, profile, opts)?;
-                    if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::OpenAiChat {
+                    if file.protocol != crate::protocol::ProtocolFamily::OpenAiChat {
                         return Err(crate::codecs::provider_file_protocol_error());
                     }
                     if qwen_long
@@ -333,17 +347,23 @@ fn encode_message(
                             message: "Chat Completions provider file references are supported only for PDF input".into(),
                         });
                     }
-                    media.push(json!({
-                        "type": "file",
-                        "file": { "file_id": file.file_id },
-                    }));
+                    parts.push(
+                        (json!({
+                            "type": "file",
+                            "file": { "file_id": file.file_id },
+                        }))
+                        .into(),
+                    );
                     continue;
                 }
                 let file_data = document_url(source, pdf_only_files)?;
-                media.push(json!({
-                    "type": "file",
-                    "file": { "file_data": file_data },
-                }));
+                parts.push(
+                    (json!({
+                        "type": "file",
+                        "file": { "file_data": file_data },
+                    }))
+                    .into(),
+                );
             }
             // Signed reasoning round-trips only on providers that sign it
             // (gate 18); this wire has no slot, so a replayed block is dropped
@@ -366,42 +386,34 @@ fn encode_message(
                 content,
                 ..
             } => {
-                if !tool_calls.is_empty() {
-                    out.push(assistant_tool_calls(&text, &reasoning, &tool_calls));
-                    text.clear();
-                    tool_calls.clear();
-                }
-                if !text.is_empty() || !media.is_empty() {
-                    out.push(user_message(role, &text, &media));
-                    text.clear();
-                    media.clear();
-                }
-                out.push(json!({
-                    "role": "tool",
-                    "tool_call_id": tool_use_id,
-                    "content": content,
-                }));
+                flush_message(
+                    &mut out,
+                    role,
+                    &mut parts,
+                    &mut reasoning,
+                    &mut tool_calls,
+                    &mut native_reasoning,
+                );
+                out.push(
+                    (json!({
+                        "role": "tool",
+                        "tool_call_id": tool_use_id,
+                        "content": content,
+                    }))
+                    .into(),
+                );
             }
         }
     }
 
-    if !tool_calls.is_empty() {
-        out.push(assistant_tool_calls(&text, &reasoning, &tool_calls));
-    } else if !text.is_empty() || !media.is_empty() {
-        if role == "assistant" {
-            let mut msg = json!({"role": "assistant", "content": text});
-            // An endpoint whose thinking mode is on by default rejects a later
-            // turn that omits that turn's reasoning: "the reasoning_content in
-            // the thinking mode must be passed back". It is not limited to
-            // tool-call messages.
-            if keep_reasoning && !reasoning.is_empty() {
-                msg["reasoning_content"] = Value::String(reasoning);
-            }
-            out.push(msg);
-        } else {
-            out.push(user_message(role, &text, &media));
-        }
-    }
+    flush_message(
+        &mut out,
+        role,
+        &mut parts,
+        &mut reasoning,
+        &mut tool_calls,
+        &mut native_reasoning,
+    );
     Ok(out)
 }
 
@@ -473,46 +485,68 @@ fn document_url(source: &DocumentSource, pdf_only_files: bool) -> Result<String,
     }
 }
 
-fn user_message(role: &str, text: &str, media: &[Value]) -> Value {
-    if media.is_empty() {
-        return json!({"role": role, "content": text});
-    }
-    let mut parts = vec![json!({"type": "text", "text": text})];
-    parts.extend(media.iter().cloned());
-    json!({"role": role, "content": parts})
+fn user_message<'a>(role: &str, parts: &[WireValue<'a>]) -> WireValue<'a> {
+    let content = if parts
+        .iter()
+        .all(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+    {
+        WireValue::from(Value::String(
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ))
+    } else {
+        WireValue::array(parts.to_vec())
+    };
+    WireValue::from(json!({"role": role})).with("content", content)
 }
 
-fn assistant_tool_calls(text: &str, reasoning: &str, calls: &[Value]) -> Value {
-    let mut msg = json!({
-        "role": "assistant",
-        "content": if text.is_empty() { Value::Null } else { Value::String(text.to_owned()) },
-        "tool_calls": calls,
-    });
-    if !reasoning.is_empty() {
-        msg["reasoning_content"] = Value::String(reasoning.to_owned());
+fn flush_message<'a>(
+    out: &mut Vec<WireValue<'a>>,
+    role: &str,
+    parts: &mut Vec<WireValue<'a>>,
+    reasoning: &mut String,
+    calls: &mut Vec<Value>,
+    native_reasoning: &mut Option<Map<String, Value>>,
+) {
+    if parts.is_empty() && reasoning.is_empty() && calls.is_empty() && native_reasoning.is_none() {
+        return;
     }
-    msg
+    let role = if calls.is_empty() { role } else { "assistant" };
+    let mut message = user_message(role, parts);
+    if role == "assistant" {
+        if parts.is_empty() {
+            message["content"] = Value::Null;
+        }
+        if let Some(native) = native_reasoning.take() {
+            message.object_mut().extend(native);
+        } else if !reasoning.is_empty() {
+            message["reasoning_content"] = Value::String(std::mem::take(reasoning));
+        }
+    }
+    if !calls.is_empty() {
+        message["tool_calls"] = Value::Array(std::mem::take(calls));
+    }
+    out.push(message);
+    parts.clear();
+    reasoning.clear();
 }
 
-fn encode_tool(t: &lingxi_agent_api::protocol::ToolSpec) -> Value {
+fn encode_tool(t: &crate::protocol::ToolSpec) -> Value {
     json!({
         "type": "function",
         "function": {
             "name": t.name,
             "description": t.description,
             "parameters": t.input_schema,
+            "strict": t.strict,
         }
     })
 }
 
-/// `required` and a named tool become `auto`; `none` and `auto` are untouched.
-fn relax_forced_choice(c: &ToolChoice) -> ToolChoice {
-    match c {
-        ToolChoice::Any | ToolChoice::Tool { .. } => ToolChoice::Auto,
-        other => other.clone(),
-    }
-}
-
+/// Preserve the caller's tool selection in Chat Completions vocabulary.
 fn encode_tool_choice(c: &ToolChoice) -> Value {
     match c {
         ToolChoice::Auto => Value::String("auto".to_owned()),
@@ -525,4 +559,55 @@ fn encode_tool_choice(c: &ToolChoice) -> Value {
 /// Base64 for an image a caller handed over as bytes.
 pub fn base64_of(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn inline<'a>(
+    wire: EncodeRequest<'a>,
+    block: &ContentBlock,
+    context: &CodecContext,
+) -> Result<Option<WireValue<'a>>, LlmError> {
+    let Some(media) = wire.inline_media(block)? else {
+        return Ok(None);
+    };
+    let attachment = media.attachment;
+    let (kind, _title) = match block {
+        ContentBlock::Image { .. } => ("image", None),
+        ContentBlock::Document { title, .. } => ("document", title.as_deref()),
+        ContentBlock::Video { .. } => ("video", None),
+        _ => unreachable!("inline_media accepts only attachment blocks"),
+    };
+    let _data = || WireValue::base64(media.bytes, String::new());
+    let uri = || {
+        WireValue::base64(
+            media.bytes,
+            format!("data:{};base64,", attachment.media_type),
+        )
+    };
+    Ok(Some(match kind {
+        "image" => WireValue::from(json!({"type":"image_url"}))
+            .with("image_url", WireValue::from(json!({})).with("url", uri())),
+        "document" => {
+            let pdf_only = context
+                .profile
+                .extra
+                .get("chat_pdf_only")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                || url::Url::parse(&context.profile.base_url)
+                    .ok()
+                    .is_some_and(|url| url.host_str() == Some("api.openai.com"));
+            if pdf_only && attachment.media_type != "application/pdf" {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "OpenAI Chat Completions accepts only PDF file input".into(),
+                });
+            }
+            WireValue::from(json!({"type":"file"}))
+                .with("file", WireValue::from(json!({})).with("file_data", uri()))
+        }
+        _ => {
+            return Err(LlmError::UnsupportedCapability {
+                message: "Chat Completions does not support video content blocks".into(),
+            })
+        }
+    }))
 }

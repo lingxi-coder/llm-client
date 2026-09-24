@@ -1,4 +1,10 @@
 # Native search uses Anthropic compatibility; Responses ignores web_search.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unsupported", sources = ["https://api-docs.deepseek.com/guides/thinking_mode/"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland", "international"]
 provider_id = "deepseek"
 base_url = "https://api.deepseek.com/anthropic"
@@ -47,6 +53,14 @@ cache_read_per_million = 0.006
 reasoning_per_million = 1.2
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+sources = ["https://api-docs.deepseek.com/guides/thinking_mode/"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", default = "high" }
+
 [[model]]
 id = "deepseek-v4-pro"
 name = "DeepSeek V4 Pro"
@@ -71,3 +85,10 @@ output_per_million = 3.96
 cache_read_per_million = 0.044
 reasoning_per_million = 3.96
 source = "models.dev"
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+sources = ["https://api-docs.deepseek.com/guides/thinking_mode/"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", default = "high" }

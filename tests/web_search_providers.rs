@@ -1,5 +1,8 @@
 //! Verified first-party search endpoints and their distinct wire contracts.
-use lingxi_agent_api::protocol::{
+#[path = "support/wire_api.rs"]
+mod wire_api;
+
+use lingxi_llm_client::protocol::{
     AuthStrategy, BillingMode, CompletionRequest, CredentialConfig, FileSearchConfig, LlmError,
     ProviderId, ProviderProfile, StreamEvent, ToolChoice, ToolSpec,
 };
@@ -33,11 +36,11 @@ fn request() -> CompletionRequest {
 fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
     let route = client.resolve("m").unwrap();
-    use lingxi_agent_api::protocol::ProtocolFamily::*;
+    use lingxi_llm_client::protocol::ProtocolFamily::*;
     let codec: &dyn WireCodec = match p.protocol {
         OpenAiResponses => &OpenAiResponsesCodec,
         OpenAiChat => &OpenAiChatCodec,
@@ -45,7 +48,10 @@ fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmErro
         _ => panic!("unhandled fixture"),
     };
     codec
-        .encode_request(req, p, &route, &RequestOptions::default())
+        .encode_request(
+            lingxi_llm_client::EncodeRequest::new(req),
+            &wire_api::context(p, &route.request_model, &RequestOptions::default()),
+        )
         .map(|http| serde_json::from_slice(&http.body).unwrap())
 }
 
@@ -65,9 +71,12 @@ fn deepseek_unsigned_thinking_and_search_results_replay_without_loosening_claude
         {"type":"web_search_tool_result","tool_use_id":"s1","content":[{"type":"web_search_result","url":"https://example.com","title":"News","encrypted_content":"opaque"}]}
     ]);
     let decoded = AnthropicMessagesCodec
-        .decode_response(&response(json!({
-            "content":content, "stop_reason":"pause_turn"
-        })))
+        .decode_response(
+            &response(json!({
+                "content":content, "stop_reason":"pause_turn"
+            })),
+            &wire_api::decode_context(),
+        )
         .unwrap();
     let mut req = request();
     req.messages.push(decoded.message);
@@ -274,7 +283,7 @@ fn search_presets_use_separate_verified_endpoints_and_credentials() {
 #[test]
 fn glm_results_survive_full_and_metadata_only_stream_frames() {
     let hits = json!([{"title":"Source","link":"https://example.com/news","content":"Relevant excerpt","media":"Example","icon":"https://example.com/icon.png","refer":"ref_1"}]);
-    let full = OpenAiChatCodec.decode_response(&response(json!({"choices":[{"message":{"content":"News"},"finish_reason":"stop"}],"web_search":hits}))).unwrap();
+    let full = OpenAiChatCodec.decode_response(&response(json!({"choices":[{"message":{"content":"News"},"finish_reason":"stop"}],"web_search":hits})), &wire_api::decode_context()).unwrap();
     let search = full.web_search.unwrap();
     assert_eq!(search.citations[0].url, "https://example.com/news");
     assert_eq!(search.citations[0].title.as_deref(), Some("Source"));
@@ -284,13 +293,13 @@ fn glm_results_survive_full_and_metadata_only_stream_frames() {
         Some(json!([])),
         Some(json!([{"delta":{"content":"News"}}])),
     ] {
-        let mut decoder = OpenAiChatCodec.stream_decoder();
+        let mut decoder = OpenAiChatCodec.stream_decoder(&wire_api::decode_context());
         let mut frame = json!({"web_search":hits});
         if let Some(choices) = choices {
             frame["choices"] = choices;
         }
         let bytes = frame.to_string();
-        let events = decoder.decode_frame(bytes.as_bytes()).unwrap();
+        let events = wire_api::decode_frame(&mut *decoder, bytes.as_bytes()).unwrap();
         let search = events
             .iter()
             .find_map(|e| {
@@ -306,8 +315,7 @@ fn glm_results_survive_full_and_metadata_only_stream_frames() {
         assert!(!events
             .iter()
             .any(|e| matches!(e, StreamEvent::ToolCallDelta { .. })));
-        assert!(!decoder
-            .decode_frame(bytes.as_bytes())
+        assert!(!wire_api::decode_frame(&mut *decoder, bytes.as_bytes())
             .unwrap()
             .iter()
             .any(|e| matches!(e, StreamEvent::WebSearch { .. })));
@@ -318,7 +326,10 @@ fn glm_results_survive_full_and_metadata_only_stream_frames() {
 fn kimi_source_only_search_calls_yield_attribution_in_full_and_stream() {
     let call = json!({"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"news","sources":[{"type":"url","url":"https://example.com/news","title":"Source"}]}});
     let full = OpenAiResponsesCodec
-        .decode_response(&response(json!({"output":[call]})))
+        .decode_response(
+            &response(json!({"output":[call]})),
+            &wire_api::decode_context(),
+        )
         .unwrap();
     let search = full.web_search.unwrap();
     assert_eq!(search.citations[0].url, "https://example.com/news");
@@ -328,8 +339,8 @@ fn kimi_source_only_search_calls_yield_attribution_in_full_and_stream() {
         json!({"type":"response.output_item.done","output_index":0,"item":call}),
         json!({"type":"response.completed","response":{"output":[call]}}),
     ] {
-        let mut decoder = OpenAiResponsesCodec.stream_decoder();
-        let events = decoder.decode_frame(frame.to_string().as_bytes()).unwrap();
+        let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+        let events = wire_api::decode_frame(&mut *decoder, frame.to_string().as_bytes()).unwrap();
         let citations: Vec<_> = events
             .iter()
             .filter_map(|e| {
@@ -360,7 +371,7 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
     p.extra["file_search"] = json!("qwen");
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(&p))
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
     let route = client.resolve("qwen3.8-max").unwrap();
@@ -371,7 +382,10 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
         workspace_id: "ws-demo-1".into(),
     });
     let http = OpenAiResponsesCodec
-        .encode_request(&req, &p, &route, &RequestOptions::default())
+        .encode_request(
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(&p, &route.request_model, &RequestOptions::default()),
+        )
         .unwrap();
     assert_eq!(
         http.url,
@@ -405,7 +419,14 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
         let mut regional_profile = p.clone();
         regional_profile.base_url = base_url.into();
         let regional_request = OpenAiResponsesCodec
-            .encode_request(&req, &regional_profile, &route, &RequestOptions::default())
+            .encode_request(
+                lingxi_llm_client::EncodeRequest::new(&req),
+                &wire_api::context(
+                    &regional_profile,
+                    &route.request_model,
+                    &RequestOptions::default(),
+                ),
+            )
             .unwrap();
         assert!(regional_request.url.starts_with(&format!(
             "https://ws-demo-1.{region_domain}/compatible-mode/v1/responses"
@@ -422,7 +443,7 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
             "id":"resp-qwen","status":"completed","model":"qwen3.8-max",
             "output":[search_call],
             "usage":{"input_tokens":11,"output_tokens":4,"total_tokens":15,"x_tools":{"web_search":{"count":1},"file_search":{"count":1}}}
-        })))
+        })), &wire_api::decode_context())
         .unwrap();
     assert_eq!(
         response.file_search.as_ref().unwrap().queries,
@@ -437,28 +458,30 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
     assert_eq!(
         response
             .usage
+            .usage
+            .unwrap()
             .server_tool_usage
             .unwrap()
             .file_search_requests,
         Some(1)
     );
 
-    let mut decoder = OpenAiResponsesCodec.stream_decoder();
-    let mut streamed = decoder
-        .decode_frame(
-            json!({"type":"response.output_item.done","output_index":1,"item":search_call})
+    let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+    let mut streamed = wire_api::decode_frame(
+        &mut *decoder,
+        json!({"type":"response.output_item.done","output_index":1,"item":search_call})
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+    streamed.extend(
+        wire_api::decode_frame(
+            &mut *decoder,
+            json!({"type":"response.completed","response":{"output":[search_call]}})
                 .to_string()
                 .as_bytes(),
         )
-        .unwrap();
-    streamed.extend(
-        decoder
-            .decode_frame(
-                json!({"type":"response.completed","response":{"output":[search_call]}})
-                    .to_string()
-                    .as_bytes(),
-            )
-            .unwrap(),
+        .unwrap(),
     );
     assert_eq!(
         streamed
@@ -499,11 +522,63 @@ fn minimax_server_search_uses_anthropic_tool_without_unsupported_controls() {
                 {"type":"web_search_tool_result","tool_use_id":"s1","content":[{"type":"web_search_result","url":"https://example.com/news","title":"News"}]}
             ],
             "usage":{"input_tokens":10,"output_tokens":4,"server_tool_use":{"web_search_requests":1}}
-        })))
+        })), &wire_api::decode_context())
         .unwrap();
     assert!(decoded.web_search.is_some());
     assert_eq!(
-        decoded.usage.server_tool_usage.unwrap().web_search_requests,
+        decoded
+            .usage
+            .usage
+            .as_ref()
+            .unwrap()
+            .server_tool_usage
+            .unwrap()
+            .web_search_requests,
         Some(1)
+    );
+}
+
+#[test]
+fn qwen_file_search_alone_honors_tool_choice_and_validates_named_functions() {
+    let mut p = profile("qwen", "open_ai_responses");
+    p.provider_id = ProviderId::new("qwen");
+    p.base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1".into();
+    p.models[0].request_model = "qwen3.8-max".into();
+    p.extra["file_search"] = json!("qwen");
+    let mut req = request();
+    req.web_search = None;
+    req.file_search = Some(FileSearchConfig {
+        knowledge_base_id: "kb-123".into(),
+        workspace_id: "ws-demo".into(),
+    });
+    for (choice, expected) in [
+        (ToolChoice::None, "none"),
+        (ToolChoice::Auto, "auto"),
+        (ToolChoice::Any, "required"),
+    ] {
+        req.tool_choice = choice;
+        let body = encode(&req, &p).unwrap();
+        assert_eq!(
+            body["tools"],
+            json!([{"type":"file_search","vector_store_ids":["kb-123"]}])
+        );
+        assert_eq!(body["tool_choice"], expected);
+    }
+    req.tool_choice = ToolChoice::Tool {
+        name: "local_lookup".into(),
+    };
+    assert!(matches!(
+        encode(&req, &p),
+        Err(LlmError::InvalidRequest { .. })
+    ));
+    req.tools.push(ToolSpec {
+        name: "local_lookup".into(),
+        description: "lookup".into(),
+        input_schema: json!({"type":"object"}),
+        strict: false,
+    });
+    assert_eq!(
+        encode(&req, &p).unwrap()["tool_choice"],
+        json!({"type":"function","name":"local_lookup"})
     );
 }

@@ -4,16 +4,18 @@
 //! the wire rather than being synthesised.
 
 use super::decode;
-use crate::client::usage;
 use crate::codecs::file_search_decode::FileSearchStream;
+use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
-use crate::codecs::StreamDecoder;
-use lingxi_agent_api::protocol::{LlmError, ResponseId, StopReason, StreamEvent, ToolUseId, Usage};
+use crate::codecs::EventDecoder;
+use crate::protocol::{LlmError, ResponseId, StopReason, StreamEvent, ToolUseId};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
 pub struct ResponsesStreamDecoder {
+    inference: crate::codecs::inference::StreamInference,
     started: bool,
+    reasoning_items: std::collections::BTreeSet<usize>,
     /// output index → (call id, name), learned from `output_item.added`.
     calls: Vec<(usize, ToolUseId, String)>,
     /// The provider's usage object as sent. Kept raw so the report can be
@@ -32,7 +34,7 @@ pub struct ResponsesStreamDecoder {
     file_search: FileSearchStream,
 }
 
-impl StreamDecoder for ResponsesStreamDecoder {
+impl EventDecoder for ResponsesStreamDecoder {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         let text = std::str::from_utf8(frame).map_err(|_| LlmError::InvalidRequest {
             message: "stream frame is not valid UTF-8".to_owned(),
@@ -65,6 +67,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
                 .to_owned()
         };
 
+        self.inference.observe(&root, &mut out);
         match root.get("type").and_then(Value::as_str) {
             Some("response.output_text.annotation.added") => {
                 if root["annotation"]["type"].as_str() == Some("url_citation") {
@@ -75,6 +78,7 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.output_item.done") => {
                 let item = &root["item"];
+                self.emit_reasoning(index(&root), item, &mut out);
                 self.saw_refusal |= decode::has_refusal(item);
                 if item.get("type").and_then(Value::as_str) == Some("file_search_call") {
                     self.file_search
@@ -161,6 +165,11 @@ impl StreamDecoder for ResponsesStreamDecoder {
             }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
+                if let Some(items) = response.get("output").and_then(Value::as_array) {
+                    for (index, item) in items.iter().enumerate() {
+                        self.emit_reasoning(index, item, &mut out);
+                    }
+                }
                 self.file_search.emit(response, &mut out);
                 self.search.emit(
                     web_search_decode::with_usage(
@@ -209,20 +218,33 @@ impl StreamDecoder for ResponsesStreamDecoder {
         Ok(out)
     }
 
-    fn observed_usage(&self) -> Option<Usage> {
-        self.usage_raw.as_ref().map(decode::usage)
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        self.inference.report.clone()
     }
-
-    fn usage_is_complete(&self) -> bool {
-        self.usage_raw
-            .as_ref()
-            .is_some_and(|raw| usage::is_complete(raw, &usage::OPENAI_RESPONSES))
+    fn set_response_headers(&mut self, headers: &[(String, String)]) {
+        self.inference.headers(headers);
     }
-
-    fn set_provider_metadata(&mut self, _meta: Value) {}
+    fn usage_report(&self) -> crate::protocol::UsageReport {
+        usage::report(
+            self.usage_raw.as_ref(),
+            &usage::OPENAI_RESPONSES,
+            decode::usage,
+            self.done,
+        )
+    }
 }
 
 impl ResponsesStreamDecoder {
+    fn emit_reasoning(&mut self, block: usize, item: &Value, out: &mut Vec<StreamEvent>) {
+        if item["type"].as_str() == Some("reasoning") && self.reasoning_items.insert(block) {
+            out.push(StreamEvent::ProviderContent {
+                block,
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                value: item.clone(),
+            });
+        }
+    }
+
     fn finish_into(&mut self, out: &mut Vec<StreamEvent>) {
         if self.done {
             return;
@@ -242,11 +264,17 @@ impl ResponsesStreamDecoder {
             } else {
                 self.stop.clone().unwrap_or(StopReason::EndTurn)
             },
-            usage: self
-                .usage_raw
-                .as_ref()
-                .map(decode::usage)
-                .unwrap_or_default(),
+            usage: self.usage_report(),
+            inference: self.inference.report.clone(),
         });
+    }
+}
+
+impl ResponsesStreamDecoder {
+    pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
+        Self {
+            inference: crate::codecs::inference::StreamInference::new(context),
+            ..Self::default()
+        }
     }
 }

@@ -2,9 +2,9 @@
 
 use super::Authenticator;
 use super::{key_header, required, set_header, AUTHORIZATION};
+use crate::protocol::{LlmError, ProviderProfile, Secret};
 use crate::transport::HttpRequest;
 use async_trait::async_trait;
-use lingxi_agent_api::protocol::{LlmError, ProviderProfile, Secret};
 
 /// A bare API key, in whatever header this wire reads it from.
 pub struct ApiKeyAuthenticator;

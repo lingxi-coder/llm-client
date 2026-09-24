@@ -1,10 +1,10 @@
 //! Response and error decoding for the Messages API.
 
-use crate::transport::HttpResponse;
-use lingxi_agent_api::protocol::{
+use crate::protocol::{
     CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, StopReason,
     ToolUseId, Usage,
 };
+use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -29,6 +29,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         }
     }
     Ok(CompletionResponse {
+        inference: Default::default(),
         web_search: crate::codecs::web_search_decode::with_usage(
             crate::codecs::web_search_decode::anthropic(&body),
             body.get("usage"),
@@ -39,7 +40,12 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             content,
         },
         stop_reason: stop_reason(body.get("stop_reason").and_then(Value::as_str)),
-        usage: body.get("usage").map(usage).unwrap_or_default(),
+        usage: crate::codecs::usage::report(
+            body.get("usage"),
+            &crate::codecs::usage::ANTHROPIC,
+            usage,
+            true,
+        ),
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -62,7 +68,7 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
             })
     {
         return Some(ContentBlock::ProviderContent {
-            protocol: lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages,
+            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
             value: v.clone(),
         });
     }
@@ -222,9 +228,8 @@ pub fn stop_reason(s: Option<&str>) -> StopReason {
 /// reason `Usage` has both fields.
 /// The one wire whose buckets are already disjoint: `input_tokens` counts only
 /// what follows the last cache breakpoint, so the four counters sum to the bill
-/// with nothing to subtract. This wire reports no separate thinking count —
-/// thinking is billed as output and is not broken out — so `reasoning_tokens`
-/// stays zero rather than guessing.
+/// with nothing to subtract. Newer models report a thinking-token subset of output; absent breakdowns
+/// stay zero rather than being inferred from visible thinking text.
 pub fn usage(u: &Value) -> Usage {
     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
     let web_search_requests = u
@@ -242,10 +247,13 @@ pub fn usage(u: &Value) -> Usage {
             .pointer("/cache_creation/ephemeral_1h_input_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0),
-        reasoning_tokens: 0,
+        reasoning_tokens: u
+            .pointer("/output_tokens_details/thinking_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         cost: None,
         server_tool_usage: (web_search_requests.is_some() || file_search_requests.is_some())
-            .then_some(lingxi_agent_api::protocol::ServerToolUsage {
+            .then_some(crate::protocol::ServerToolUsage {
                 web_search_requests,
                 file_search_requests,
             }),

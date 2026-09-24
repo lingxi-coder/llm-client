@@ -4,7 +4,7 @@
 //! that it arrives in the header the wire actually reads, and that a missing one
 //! fails loudly instead of going out unauthenticated.
 
-use lingxi_agent_api::protocol::{LlmError, ProviderProfile, Secret};
+use lingxi_llm_client::protocol::{LlmError, ProviderProfile, Secret};
 use lingxi_llm_client::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator, HttpRequest};
 use serde_json::json;
 

@@ -1,6 +1,6 @@
 //! What a caller says about one request.
 
-use lingxi_agent_api::protocol::Secret;
+use crate::protocol::Secret;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -10,9 +10,6 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
-    /// Streaming mode for direct codec calls. `LlmClient::complete` and
-    /// `LlmClient::stream` select their own mode regardless of this field.
-    pub stream: bool,
     /// The secret this request authenticates with, if the profile needs one.
     ///
     /// Passed in rather than looked up: this crate does not hold, fetch or
@@ -31,7 +28,8 @@ pub struct RequestOptions {
     /// when this value is stable, because Qwen does not expire stored files.
     pub file_account_scope: Option<String>,
     /// Total request deadline, including response body reads. `complete()`
-    /// defaults to 120 seconds when omitted; `stream()` has no default total
+    /// defaults to 120 seconds when omitted, or two hours for a request with
+    /// video content; `stream()` has no default total
     /// deadline and relies on the transport's idle-read timeout. Automatic
     /// Qwen cleanup uses only the remaining budget, then retries in the background.
     pub total_timeout: Option<Duration>,

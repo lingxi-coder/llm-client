@@ -1,3 +1,9 @@
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "thinking_type", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["international"]
 provider_id = "kimi"
 base_url = "https://api.moonshot.ai/v1"
@@ -23,6 +29,14 @@ tool_call = true
 reasoning = true
 attachment = true
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+
 [[model]]
 id = "kimi-k2.6"
 name = "Kimi K2.6"
@@ -33,3 +47,10 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]

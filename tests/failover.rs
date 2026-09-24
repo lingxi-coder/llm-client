@@ -5,19 +5,23 @@
 //! The fakes are a `Transport` and a `WireCodec`, per the review: a fake
 //! provider is built at the transport/codec layer, never by stubbing the
 //! client itself.
+use lingxi_llm_client::protocol::PricingContext;
+
+#[path = "support/wire_api.rs"]
+mod wire_api;
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::executor::block_on;
 use futures::stream;
-use lingxi_agent_api::protocol::{
+use lingxi_llm_client::protocol::{
     AttachmentRef, CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage,
     DocumentSource, ImageSource, LlmError, MessageRole, ProtocolFamily, ProviderProfile,
     ResponseId, StopReason, StreamEvent, ToolChoice, Usage, WebSearchConfig,
 };
 use lingxi_llm_client::{
     builtin_providers, HttpRequest, HttpResponse, LlmClientBuilder, RequestOptions, ResolveError,
-    ResolvedRoute, StreamDecoder, StreamResponse, Transport, WebSocketSession, WireCodec,
+    StreamDecoder, StreamResponse, Transport, WireCodec,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -117,11 +121,24 @@ impl ScriptedTransport {
 
 #[async_trait]
 impl Transport for ScriptedTransport {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        if serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()
+            .and_then(|body| body.get("stream").and_then(serde_json::Value::as_bool))
+            == Some(true)
+        {
+            self.stream_response(request).await
+        } else {
+            self.response(request).await.map(Into::into)
+        }
+    }
+}
+impl ScriptedTransport {
+    async fn response(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
         self.record_request(&req);
         self.answer_for(&req.url)
     }
-    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
+    async fn stream_response(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
         self.record_request(&req);
         let answered = self.answer_for(&req.url)?;
         let frames: Vec<Result<Bytes, LlmError>> = vec![
@@ -132,14 +149,6 @@ impl Transport for ScriptedTransport {
             status: answered.status,
             headers: answered.headers,
             body: Box::pin(stream::iter(frames)),
-        })
-    }
-    async fn open_responses_websocket_session(
-        &self,
-        _req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "no websockets in this fake".to_owned(),
         })
     }
 }
@@ -164,11 +173,7 @@ impl InterruptedErrorBodyTransport {
 
 #[async_trait]
 impl Transport for InterruptedErrorBodyTransport {
-    async fn execute(&self, _req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        unreachable!("these regressions exercise the streaming path")
-    }
-
-    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
+    async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
         self.seen.lock().unwrap().push(req.url.clone());
         let backup = req.url.starts_with("https://two.test");
         let succeeds = backup && self.backup_succeeds;
@@ -188,15 +193,6 @@ impl Transport for InterruptedErrorBodyTransport {
             status: if succeeds { 200 } else { 429 },
             headers: vec![("Retry-After".to_owned(), "7".to_owned())],
             body: Box::pin(stream::iter(body)),
-        })
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "no websockets in this fake".to_owned(),
         })
     }
 }
@@ -235,7 +231,12 @@ impl FileFailoverTransport {
 
 #[async_trait]
 impl Transport for FileFailoverTransport {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
+    }
+}
+impl FileFailoverTransport {
+    async fn response(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
         let authorization = req
             .headers
             .iter()
@@ -287,25 +288,6 @@ impl Transport for FileFailoverTransport {
             message: format!("unexpected test URL: {}", req.url),
         })
     }
-
-    async fn execute_no_follow(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute(req).await
-    }
-
-    async fn open_stream(&self, _req: HttpRequest) -> Result<StreamResponse, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "stream not used by file failover test".into(),
-        })
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "websocket not used by file failover test".into(),
-        })
-    }
 }
 
 /// Encodes to `<base_url>/chat`, decodes 200 to one text block. One frame
@@ -317,13 +299,17 @@ impl WireCodec for FakeCodec {
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::OpenAiChat
     }
+
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        _opts: &RequestOptions,
+        input: lingxi_llm_client::EncodeRequest<'_>,
+        context: &lingxi_llm_client::CodecContext,
     ) -> Result<HttpRequest, LlmError> {
+        let req = input.request();
+        let profile = context.profile();
+        let route = &wire_api::route(context);
+        let opts = &wire_api::options(context);
+
         // The endpoint comes from the connection's own profile, which is why
         // the codec is handed one: it is registered per protocol family and
         // shared by every profile using it.
@@ -334,20 +320,25 @@ impl WireCodec for FakeCodec {
             headers: vec![],
             body: Bytes::from(
                 serde_json::to_vec(
-                    &json!({ "model": route.request_model, "n": req.messages.len(), "web_search": req.web_search }),
+                    &json!({ "model": route.request_model, "n": req.messages.len(), "web_search": req.web_search, "stream": opts.stream }),
                 )
                 .unwrap(),
             ),
             timeout: None,
         })
     }
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        _context: &lingxi_llm_client::CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
         if resp.status != 200 {
             return Err(LlmError::ProviderInternal {
                 message: format!("status {}", resp.status),
             });
         }
         Ok(CompletionResponse {
+            inference: Default::default(),
             web_search: None,
             file_search: None,
             message: ConversationMessage {
@@ -358,17 +349,14 @@ impl WireCodec for FakeCodec {
                 }],
             },
             stop_reason: StopReason::EndTurn,
-            usage: Usage::default(),
+            usage: Usage::default().into(),
             model: "fake".to_owned(),
             response_id: None,
             executed_profile: None,
         })
     }
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
+    fn stream_decoder(&self, _context: &lingxi_llm_client::CodecContext) -> Box<dyn StreamDecoder> {
         Box::new(FakeDecoder { blocks: 0 })
-    }
-    fn response_usage(&self, _resp: &HttpResponse) -> Option<Usage> {
-        None
     }
 }
 
@@ -382,23 +370,31 @@ impl WireCodec for FakeStatefulCodec {
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::OpenAiResponses
     }
+
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        input: lingxi_llm_client::EncodeRequest<'_>,
+        context: &lingxi_llm_client::CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        FakeCodec.encode_request(req, profile, route, opts)
+        let req = input.request();
+        let profile = context.profile();
+        let route = &wire_api::route(context);
+        let opts = &wire_api::options(context);
+
+        FakeCodec.encode_request(
+            lingxi_llm_client::EncodeRequest::new(req),
+            &wire_api::context(profile, &(route).request_model, opts),
+        )
     }
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        FakeCodec.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        _context: &lingxi_llm_client::CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        FakeCodec.decode_response(resp, &wire_api::decode_context())
     }
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        FakeCodec.stream_decoder()
-    }
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        FakeCodec.response_usage(resp)
+    fn stream_decoder(&self, _context: &lingxi_llm_client::CodecContext) -> Box<dyn StreamDecoder> {
+        FakeCodec.stream_decoder(&wire_api::decode_context())
     }
 }
 
@@ -407,28 +403,44 @@ struct FakeDecoder {
 }
 
 impl StreamDecoder for FakeDecoder {
-    fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
-        let block = self.blocks;
-        self.blocks += 1;
-        Ok(vec![StreamEvent::TextDelta {
-            block,
-            text: String::from_utf8_lossy(frame).into_owned(),
-        }])
+    fn push_bytes(&mut self, frame: &[u8]) -> Vec<Result<StreamEvent, LlmError>> {
+        let result: Result<Vec<StreamEvent>, LlmError> = {
+            let block = self.blocks;
+            self.blocks += 1;
+            Ok(vec![StreamEvent::TextDelta {
+                block,
+                text: String::from_utf8_lossy(frame).into_owned(),
+            }])
+        };
+        result
+            .map(|events| events.into_iter().map(Ok).collect())
+            .unwrap_or_else(|error| vec![Err(error)])
     }
-    fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
-        Ok(vec![StreamEvent::End {
+    fn finish(&mut self) -> Vec<Result<StreamEvent, LlmError>> {
+        let result: Result<Vec<StreamEvent>, LlmError> = Ok(vec![StreamEvent::End {
+            inference: Default::default(),
             stop_reason: StopReason::EndTurn,
-            usage: Usage::default(),
-        }])
-    }
-    fn observed_usage(&self) -> Option<Usage> {
-        None
+            usage: Usage::default().into(),
+        }]);
+        result
+            .map(|events| events.into_iter().map(Ok).collect())
+            .unwrap_or_else(|error| vec![Err(error)])
     }
 
-    fn usage_is_complete(&self) -> bool {
-        false
+    fn usage_report(&self) -> lingxi_llm_client::protocol::UsageReport {
+        let usage = { None };
+        let complete = { false };
+        lingxi_llm_client::protocol::UsageReport {
+            state: if usage.is_none() {
+                lingxi_llm_client::protocol::UsageState::Missing
+            } else if complete {
+                lingxi_llm_client::protocol::UsageState::Complete
+            } else {
+                lingxi_llm_client::protocol::UsageState::Partial
+            },
+            usage,
+        }
     }
-    fn set_provider_metadata(&mut self, _meta: Value) {}
 }
 
 // --- fixtures --------------------------------------------------------------
@@ -491,7 +503,7 @@ fn client(
 ) -> lingxi_llm_client::LlmClient {
     let mut b = LlmClientBuilder::with_transport(http, profiles);
     b.register_codec(Arc::new(FakeCodec));
-    b.with_region(lingxi_agent_api::protocol::Region::International)
+    b.with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("every profile's protocol has a codec")
 }
@@ -518,7 +530,7 @@ fn failover_pair_with_transport(http: Arc<dyn Transport>) -> lingxi_llm_client::
         ),
     ];
     LlmClientBuilder::with_transport(http, &profiles)
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("built-in OpenAI chat codec is registered")
 }
@@ -542,7 +554,7 @@ fn openai_openrouter_client(
     let mut b = LlmClientBuilder::with_transport(http, &profiles);
     b.register_codec(Arc::new(FakeCodec));
     (
-        b.with_region(lingxi_agent_api::protocol::Region::International)
+        b.with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .expect("built-in profiles have codecs"),
         profiles,
@@ -551,6 +563,7 @@ fn openai_openrouter_client(
 
 fn request(model: &str) -> CompletionRequest {
     CompletionRequest {
+        service_tier: None,
         model: model.to_owned(),
         web_search: None,
         file_search: None,
@@ -585,14 +598,14 @@ fn openai_file_profile(profile_name: &str, order: u32, grouped: bool) -> Provide
             "request_model": "gpt-test",
             "billing_model": "gpt-test",
             "metadata": {"input_modalities": ["text", "image", "file"]},
-            "capabilities": {
-                "vision": true,
-                "documents": true,
-                "tools": false,
-                "reasoning": false,
-                "signed_reasoning": false,
-                "streaming": false,
-                "structured_output": false
+            "capability_support": {
+                "vision": "supported",
+                "documents": "supported",
+                "tools": "unknown",
+                "reasoning": "unknown",
+                "signed_reasoning": "unknown",
+                "streaming": "unknown",
+                "structured_output": "unknown"
             }
         }],
         "connection": if grouped {
@@ -636,18 +649,18 @@ fn file_upload_is_repeated_for_the_fallback_profile_and_uses_its_credential() {
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &profiles);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("built-in Responses codec and API-key auth are available");
     let mut options = RequestOptions {
-        credential: Some(lingxi_agent_api::protocol::Secret::new(
+        credential: Some(lingxi_llm_client::protocol::Secret::new(
             "primary-secret".to_owned(),
         )),
         ..RequestOptions::default()
     };
     options.fallback_credentials.insert(
         "backup".into(),
-        lingxi_agent_api::protocol::Secret::new("backup-secret".to_owned()),
+        lingxi_llm_client::protocol::Secret::new("backup-secret".to_owned()),
     );
     let original = request_with_app_document();
 
@@ -676,11 +689,11 @@ fn cached_file_404_invalidates_and_reuploads_once_on_the_same_profile() {
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let options = RequestOptions {
-        credential: Some(lingxi_agent_api::protocol::Secret::new(
+        credential: Some(lingxi_llm_client::protocol::Secret::new(
             "openai-secret".to_owned(),
         )),
         file_account_scope: Some("account-1".into()),
@@ -706,12 +719,12 @@ fn concurrent_requests_share_one_upload_for_the_same_scoped_attachment() {
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let request = request_with_app_document();
     let options = RequestOptions {
-        credential: Some(lingxi_agent_api::protocol::Secret::new(
+        credential: Some(lingxi_llm_client::protocol::Secret::new(
             "openai-secret".to_owned(),
         )),
         file_account_scope: Some("account-1".into()),
@@ -756,7 +769,7 @@ fn small_images_stay_inline_without_provider_uploads() {
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"png"))));
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let mut request = request("gpt-test");
@@ -772,7 +785,7 @@ fn small_images_stay_inline_without_provider_uploads() {
         },
     });
     let options = RequestOptions {
-        credential: Some(lingxi_agent_api::protocol::Secret::new(
+        credential: Some(lingxi_llm_client::protocol::Secret::new(
             "openai-secret".to_owned(),
         )),
         ..RequestOptions::default()
@@ -797,12 +810,12 @@ fn provider_upload_cache_is_partitioned_by_account_scope() {
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(TestAttachmentResolver(Bytes::from_static(b"pdf"))));
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let request = request_with_app_document();
     let options = |scope: &str| RequestOptions {
-        credential: Some(lingxi_agent_api::protocol::Secret::new(
+        credential: Some(lingxi_llm_client::protocol::Secret::new(
             "openai-secret".to_owned(),
         )),
         file_account_scope: Some(scope.to_owned()),
@@ -854,14 +867,13 @@ fn grok_responses_profile_exposes_document_file_refs_without_changing_chat_profi
         Some(ProtocolFamily::OpenAiChat)
     );
     assert_eq!(
-        lingxi_llm_client::client::files::capabilities(chat, "grok-4.20", "application/pdf")
-            .model_input,
-        lingxi_llm_client::client::files::ModelFileReference::Unsupported
+        lingxi_llm_client::files::capabilities(chat, "grok-4.20", "application/pdf").model_input,
+        lingxi_llm_client::files::ModelFileReference::Unsupported
     );
     assert_eq!(
-        lingxi_llm_client::client::files::capabilities(responses, "grok-4.20", "application/pdf")
+        lingxi_llm_client::files::capabilities(responses, "grok-4.20", "application/pdf")
             .model_input,
-        lingxi_llm_client::client::files::ModelFileReference::FileId
+        lingxi_llm_client::files::ModelFileReference::FileId
     );
 }
 
@@ -1152,7 +1164,7 @@ fn native_qualified_collision_detection_compares_the_resolved_head() {
         "per_token",
         false,
     );
-    native.provider_id = lingxi_agent_api::protocol::ProviderId::new("foo");
+    native.provider_id = lingxi_llm_client::protocol::ProviderId::new("foo");
     let mut qualified = conn(
         "foo:two",
         "https://two.test",
@@ -1162,7 +1174,7 @@ fn native_qualified_collision_detection_compares_the_resolved_head() {
         "per_token",
         false,
     );
-    qualified.provider_id = lingxi_agent_api::protocol::ProviderId::new("foo");
+    qualified.provider_id = lingxi_llm_client::protocol::ProviderId::new("foo");
     let different_connection = client(&[native, qualified], ScriptedTransport::new(vec![]));
     assert!(matches!(
         different_connection.resolve("foo/bar"),
@@ -1196,7 +1208,7 @@ fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
     let (c, _) = openai_openrouter_client(http.clone());
     let req = request("openai/gpt-4o");
     let with_credential = |secret: &str| RequestOptions {
-        credential: Some(lingxi_agent_api::protocol::Secret::new(secret.to_owned())),
+        credential: Some(lingxi_llm_client::protocol::Secret::new(secret.to_owned())),
         ..RequestOptions::default()
     };
 
@@ -1281,7 +1293,7 @@ fn unscoped_collision_fails_before_authentication_or_http() {
     let err = block_on(c.complete(
         &request("openai/gpt-4o"),
         &RequestOptions {
-            credential: Some(lingxi_agent_api::protocol::Secret::new(
+            credential: Some(lingxi_llm_client::protocol::Secret::new(
                 "primary-secret".to_owned(),
             )),
             ..RequestOptions::default()
@@ -1366,7 +1378,7 @@ fn stateful_pair(http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
     ];
     let mut b = LlmClientBuilder::with_transport(http, &profiles);
     b.register_codec(Arc::new(FakeStatefulCodec));
-    b.with_region(lingxi_agent_api::protocol::Region::International)
+    b.with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("every profile's protocol has a codec")
 }
@@ -1568,7 +1580,6 @@ fn streaming_walks_the_same_connections_and_decodes_through_the_codec() {
             .stream(
                 &request("m-1"),
                 &RequestOptions {
-                    stream: true,
                     ..RequestOptions::default()
                 },
             )
@@ -1599,7 +1610,6 @@ fn an_interrupted_http_error_body_keeps_the_known_status_and_fails_over() {
     let stream = block_on(c.stream(
         &request("m-1"),
         &RequestOptions {
-            stream: true,
             ..RequestOptions::default()
         },
     ))
@@ -1623,7 +1633,6 @@ fn an_exhausted_interrupted_http_error_body_keeps_429_retry_after_and_body() {
     let result = block_on(c.stream(
         &request("m-1"),
         &RequestOptions {
-            stream: true,
             ..RequestOptions::default()
         },
     ));
@@ -1677,7 +1686,6 @@ fn a_streamed_response_still_has_its_headers() {
         c.stream(
             &request("m-1"),
             &RequestOptions {
-                stream: true,
                 ..RequestOptions::default()
             },
         )
@@ -1718,7 +1726,7 @@ mod credentials_come_from_the_caller {
             &self,
             _req: &mut HttpRequest,
             _profile: &ProviderProfile,
-            credential: Option<&lingxi_agent_api::protocol::Secret<String>>,
+            credential: Option<&lingxi_llm_client::protocol::Secret<String>>,
         ) -> Result<(), LlmError> {
             self.0
                 .lock()
@@ -1748,11 +1756,11 @@ mod credentials_come_from_the_caller {
         let mut b = LlmClientBuilder::with_transport(http, &profiles);
         b.register_codec(Arc::new(FakeCodec));
         b.register_authenticator(
-            lingxi_agent_api::protocol::AuthStrategy::ApiKey,
+            lingxi_llm_client::protocol::AuthStrategy::ApiKey,
             Arc::new(Recording(seen.clone())),
         );
         let c = b
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .expect("the profile's protocol has a codec");
 
@@ -1760,7 +1768,7 @@ mod credentials_come_from_the_caller {
             c.complete(
                 &request("m-1"),
                 &RequestOptions {
-                    credential: Some(lingxi_agent_api::protocol::Secret::new(
+                    credential: Some(lingxi_llm_client::protocol::Secret::new(
                         "sk-from-the-caller".to_owned(),
                     )),
                     ..RequestOptions::default()
@@ -1787,11 +1795,11 @@ mod credentials_come_from_the_caller {
         let mut b = LlmClientBuilder::with_transport(http, &profiles);
         b.register_codec(Arc::new(FakeCodec));
         b.register_authenticator(
-            lingxi_agent_api::protocol::AuthStrategy::ApiKey,
+            lingxi_llm_client::protocol::AuthStrategy::ApiKey,
             Arc::new(Recording(seen.clone())),
         );
         let c = b
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
 
@@ -1887,10 +1895,7 @@ mod raw_http_streams {
 
     #[async_trait]
     impl Transport for RawTransport {
-        async fn execute(&self, _: HttpRequest) -> Result<HttpResponse, LlmError> {
-            unreachable!("stream tests do not make buffered requests")
-        }
-        async fn open_stream(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
+        async fn send(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .responses
@@ -1898,12 +1903,6 @@ mod raw_http_streams {
                 .unwrap()
                 .pop_front()
                 .expect("scripted response"))
-        }
-        async fn open_responses_websocket_session(
-            &self,
-            _: HttpRequest,
-        ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-            unreachable!("HTTP test")
         }
     }
 
@@ -1955,7 +1954,7 @@ mod raw_http_streams {
         }
         (
             LlmClientBuilder::with_transport(http.clone(), &profiles)
-                .with_region(lingxi_agent_api::protocol::Region::International)
+                .with_region(lingxi_llm_client::protocol::Region::International)
                 .build()
                 .unwrap(),
             http,
@@ -2105,27 +2104,35 @@ impl WireCodec for ModeCheckingCodec {
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::OpenAiChat
     }
+
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        input: lingxi_llm_client::EncodeRequest<'_>,
+        context: &lingxi_llm_client::CodecContext,
     ) -> Result<HttpRequest, LlmError> {
+        let req = input.request();
+        let profile = context.profile();
+        let route = &wire_api::route(context);
+        let opts = &wire_api::options(context);
+
         assert_eq!(
             opts.stream, self.0,
             "client method must determine wire mode"
         );
-        FakeCodec.encode_request(req, profile, route, opts)
+        FakeCodec.encode_request(
+            lingxi_llm_client::EncodeRequest::new(req),
+            &wire_api::context(profile, &(route).request_model, opts),
+        )
     }
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        FakeCodec.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        _context: &lingxi_llm_client::CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        FakeCodec.decode_response(resp, &wire_api::decode_context())
     }
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        FakeCodec.stream_decoder()
-    }
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        FakeCodec.response_usage(resp)
+    fn stream_decoder(&self, _context: &lingxi_llm_client::CodecContext) -> Box<dyn StreamDecoder> {
+        FakeCodec.stream_decoder(&wire_api::decode_context())
     }
 }
 
@@ -2139,11 +2146,10 @@ fn client_methods_determine_wire_mode() {
         );
         builder.register_codec(Arc::new(ModeCheckingCodec(streaming)));
         let client = builder
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
         let opts = RequestOptions {
-            stream: !streaming,
             ..Default::default()
         };
         if streaming {
@@ -2151,7 +2157,6 @@ fn client_methods_determine_wire_mode() {
         } else {
             assert!(block_on(client.complete(&request("m"), &opts)).is_ok());
         }
-        assert_eq!(opts.stream, !streaming, "caller options stay unchanged");
     }
 }
 
@@ -2162,7 +2167,12 @@ struct BodyRecorder {
 
 #[async_trait]
 impl Transport for BodyRecorder {
-    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
+    }
+}
+impl BodyRecorder {
+    async fn response(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
         self.bodies.lock().unwrap().push(request.body.to_vec());
         Ok(HttpResponse {
             status: 200,
@@ -2172,17 +2182,6 @@ impl Transport for BodyRecorder {
             ),
         })
     }
-
-    async fn open_stream(&self, _request: HttpRequest) -> Result<StreamResponse, LlmError> {
-        unreachable!("this regression exercises completion mode")
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _request: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        unreachable!("this regression exercises completion mode")
-    }
 }
 
 #[test]
@@ -2191,14 +2190,13 @@ fn complete_cannot_be_changed_to_streaming_by_profile_body_extras() {
     profile.extra = json!({"body": {"stream": true}});
     let http = Arc::new(BodyRecorder::default());
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
 
     block_on(client.complete(
         &request("m"),
         &RequestOptions {
-            stream: true,
             ..RequestOptions::default()
         },
     ))
@@ -2211,7 +2209,7 @@ fn complete_cannot_be_changed_to_streaming_by_profile_body_extras() {
 
 #[test]
 fn a_fallback_without_its_own_credential_is_never_sent() {
-    use lingxi_agent_api::protocol::Secret;
+    use lingxi_llm_client::protocol::Secret;
 
     let mut primary = conn(
         "primary",
@@ -2231,8 +2229,8 @@ fn a_fallback_without_its_own_credential_is_never_sent() {
         "per_token",
         true,
     );
-    primary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
-    secondary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
+    primary.auth = lingxi_llm_client::protocol::AuthStrategy::ApiKey;
+    secondary.auth = lingxi_llm_client::protocol::AuthStrategy::ApiKey;
     let http = ScriptedTransport::new(vec![
         (
             "https://one.test",
@@ -2253,7 +2251,7 @@ fn a_fallback_without_its_own_credential_is_never_sent() {
 
 #[test]
 fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
-    use lingxi_agent_api::protocol::{Secret, Submission, TokenPricing};
+    use lingxi_llm_client::protocol::{Secret, Submission, TokenPricing};
     use std::collections::BTreeMap;
 
     let mut primary = conn(
@@ -2274,8 +2272,8 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
         "per_token",
         true,
     );
-    primary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
-    secondary.auth = lingxi_agent_api::protocol::AuthStrategy::ApiKey;
+    primary.auth = lingxi_llm_client::protocol::AuthStrategy::ApiKey;
+    secondary.auth = lingxi_llm_client::protocol::AuthStrategy::ApiKey;
     primary.models[0].pricing = Some(TokenPricing {
         input_per_million: Some(1.0),
         ..Default::default()
@@ -2302,7 +2300,7 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
         )]),
         ..Default::default()
     };
-    let response = block_on(client.complete(&request("m"), &opts)).unwrap();
+    let mut response = block_on(client.complete(&request("m"), &opts)).unwrap();
     assert_eq!(response.executed_profile.as_deref(), Some("secondary"));
     let route = client.resolve("m").unwrap();
     let usage = Usage {
@@ -2311,18 +2309,20 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
     };
     assert_eq!(
         client
-            .estimate_cost(&route, &usage, Submission::Interactive)
+            .estimate_cost(&route, &usage, &PricingContext::default())
             .unwrap()
-            .unwrap()
-            .total_usd,
+            .total_cost,
         1.0
+    );
+    response.usage = lingxi_llm_client::protocol::UsageReport::measured(
+        usage,
+        lingxi_llm_client::protocol::UsageState::Complete,
     );
     assert_eq!(
         client
-            .estimate_actual_cost(&route, &response, &usage, Submission::Interactive)
+            .estimate_actual_cost(&route, &response, Submission::Interactive)
             .unwrap()
-            .unwrap()
-            .total_usd,
+            .total_cost,
         2.0
     );
     assert_eq!(
@@ -2343,12 +2343,12 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
             .estimate_cost_for_profile(
                 &route,
                 stream.executed_profile(),
-                &usage,
+                &response.usage,
+                &lingxi_llm_client::protocol::InferenceReport::default(),
                 Submission::Interactive
             )
             .unwrap()
-            .unwrap()
-            .total_usd,
+            .total_cost,
         2.0
     );
 }
@@ -2385,7 +2385,7 @@ fn request_timeout_defaults_to_120_seconds_and_can_be_overridden() {
 
 #[tokio::test]
 async fn total_timeout_expires_during_authentication_before_a_request_is_sent() {
-    use lingxi_agent_api::protocol::{AuthStrategy, Secret};
+    use lingxi_llm_client::protocol::{AuthStrategy, Secret};
     use std::time::Duration;
 
     struct SlowAuthenticator;
@@ -2410,7 +2410,7 @@ async fn total_timeout_expires_during_authentication_before_a_request_is_sent() 
         let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
         builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(SlowAuthenticator));
         let client = builder
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
         let options = RequestOptions {

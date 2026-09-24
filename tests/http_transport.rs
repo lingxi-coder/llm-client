@@ -1,11 +1,13 @@
 //! Real loopback HTTP tests for the built-in transport (no provider credentials).
 use bytes::Bytes;
 use futures::StreamExt;
-use lingxi_agent_api::protocol::{
+use lingxi_llm_client::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProviderProfile,
     Secret, StreamEvent, ToolChoice,
 };
-use lingxi_llm_client::{HttpRequest, HttpTransport, LlmClientBuilder, RequestOptions, Transport};
+use lingxi_llm_client::{
+    HttpExecutor, HttpRequest, HttpTransport, LlmClientBuilder, RequestOptions, Transport,
+};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -93,7 +95,7 @@ fn rate_limit_failover_client(primary: &str, backup: &str) -> lingxi_llm_client:
         vec![profile("primary", primary, 0), profile("backup", backup, 1)];
     LlmClientBuilder::new(&profiles)
         .unwrap()
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap()
 }
@@ -117,7 +119,7 @@ async fn execute_preserves_request_and_non_success_response() {
     ))
     .await;
     let http = HttpTransport::new().unwrap();
-    let reply = http
+    let reply = HttpExecutor::new(&http)
         .execute(request(format!("{url}/path?q=1")))
         .await
         .unwrap();
@@ -140,8 +142,7 @@ async fn execute_keeps_status_headers_and_partial_body_for_interrupted_error_res
     ))
     .await;
 
-    let reply = HttpTransport::new()
-        .unwrap()
+    let reply = HttpExecutor::new(&HttpTransport::new().unwrap())
         .execute(request(url))
         .await
         .expect("a response status already arrived before its body was truncated");
@@ -332,8 +333,7 @@ async fn interrupted_401_and_5xx_keep_their_categories_without_rate_limit_failov
 async fn buffered_error_body_is_bounded_and_successful_body_interruptions_still_error() {
     let large = "x".repeat(96 * 1024);
     let (url, task) = server(response("500 Internal Server Error", "", &large)).await;
-    let reply = HttpTransport::new()
-        .unwrap()
+    let reply = HttpExecutor::new(&HttpTransport::new().unwrap())
         .execute(request(url))
         .await
         .unwrap();
@@ -341,8 +341,7 @@ async fn buffered_error_body_is_bounded_and_successful_body_interruptions_still_
     task.await.unwrap();
 
     let (url, task) = server(interrupted_response("200 OK", "", "partial success")).await;
-    let error = HttpTransport::new()
-        .unwrap()
+    let error = HttpExecutor::new(&HttpTransport::new().unwrap())
         .execute(request(url))
         .await
         .expect_err("a successful response with an interrupted body must still fail");
@@ -353,15 +352,15 @@ async fn buffered_error_body_is_bounded_and_successful_body_interruptions_still_
 #[tokio::test]
 async fn every_http_entry_point_returns_redirect_without_following() {
     let http = HttpTransport::new().unwrap();
-    for mode in 0..3 {
+    for mode in 0..2 {
         let (url, task) = server(response(
             "307 Temporary Redirect",
             "Location: http://127.0.0.1:1/secret\r\n",
             "redirect",
         ))
         .await;
-        if mode == 2 {
-            let mut reply = http.open_stream(request(url)).await.unwrap();
+        if mode == 1 {
+            let mut reply = http.send(request(url)).await.unwrap();
             assert_eq!(reply.status, 307);
             assert_eq!(reply.header("location"), Some("http://127.0.0.1:1/secret"));
             let mut body = Vec::new();
@@ -370,12 +369,10 @@ async fn every_http_entry_point_returns_redirect_without_following() {
             }
             assert_eq!(body, b"redirect");
         } else {
-            let reply = if mode == 0 {
-                http.execute(request(url)).await
-            } else {
-                http.execute_no_follow(request(url)).await
-            }
-            .unwrap();
+            let reply = HttpExecutor::new(&http)
+                .execute(request(url))
+                .await
+                .unwrap();
             assert_eq!(reply.status, 307);
             assert_eq!(reply.header("location"), Some("http://127.0.0.1:1/secret"));
             assert_eq!(reply.body, "redirect");
@@ -387,9 +384,8 @@ async fn every_http_entry_point_returns_redirect_without_following() {
 #[tokio::test]
 async fn bounded_account_read_rejects_an_oversized_success_body() {
     let (url, task) = server(response("200 OK", "", &"x".repeat(8_192))).await;
-    let error = HttpTransport::new()
-        .unwrap()
-        .execute_no_follow_bounded(request(url), 1_024)
+    let error = HttpExecutor::new(&HttpTransport::new().unwrap())
+        .execute_bounded(request(url), 1_024)
         .await
         .unwrap_err();
     assert!(matches!(error, LlmError::Transport { .. }));
@@ -413,7 +409,7 @@ async fn streaming_delivers_first_chunk_before_server_finishes() {
     });
     let mut reply = HttpTransport::new()
         .unwrap()
-        .open_stream(request(url))
+        .send(request(url))
         .await
         .unwrap();
     let chunk = tokio::time::timeout(Duration::from_secs(2), reply.body.next())
@@ -451,7 +447,7 @@ async fn total_timeout_covers_streaming_and_buffered_body_reads() {
         req.timeout = Some(Duration::from_millis(150));
         let error = tokio::time::timeout(Duration::from_secs(3), async {
             if streaming {
-                let mut reply = http.open_stream(req).await.unwrap();
+                let mut reply = http.send(req).await.unwrap();
                 loop {
                     match reply.body.next().await.expect("body must time out") {
                         Ok(_) => {}
@@ -459,7 +455,7 @@ async fn total_timeout_covers_streaming_and_buffered_body_reads() {
                     }
                 }
             } else {
-                http.execute(req).await.unwrap_err()
+                HttpExecutor::new(&http).execute(req).await.unwrap_err()
             }
         })
         .await
@@ -489,7 +485,7 @@ async fn custom_read_idle_timeout_ends_a_stalled_stream() {
     let http = HttpTransport::with_read_timeout(Duration::from_millis(100)).unwrap();
     let mut req = request(url);
     req.timeout = None;
-    let mut response = http.open_stream(req).await.unwrap();
+    let mut response = http.send(req).await.unwrap();
     assert_eq!(response.body.next().await.unwrap().unwrap(), "x");
     let error = response.body.next().await.unwrap().unwrap_err();
     assert!(
@@ -504,7 +500,7 @@ async fn truncated_stream_is_reported_as_interrupted() {
     let (url, task) = server("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort".into()).await;
     let mut reply = HttpTransport::new()
         .unwrap()
-        .open_stream(request(url))
+        .send(request(url))
         .await
         .unwrap();
     let mut error = None;
@@ -518,26 +514,9 @@ async fn truncated_stream_is_reported_as_interrupted() {
     task.await.unwrap();
 }
 
-#[tokio::test]
-async fn invalid_requests_do_not_disclose_secrets_and_websocket_is_unsupported() {
-    let http = HttpTransport::new().unwrap();
-    let mut invalid_header = request("http://127.0.0.1:1/?key=private-secret".into());
-    invalid_header.headers = vec![("Authorization".into(), "private-secret\ninvalid".into())];
-    for req in [request("private-secret invalid URL".into()), invalid_header] {
-        let err = http.execute(req).await.unwrap_err();
-        assert!(matches!(err, LlmError::InvalidRequest { .. }));
-        assert!(!format!("{err:?} {err}").contains("private-secret"));
-    }
-    let err = http
-        .open_responses_websocket_session(request("ws://127.0.0.1:1".into()))
-        .await
-        .err()
-        .unwrap();
-    assert!(matches!(err, LlmError::UnsupportedCapability { .. }));
-}
-
 fn completion() -> CompletionRequest {
     CompletionRequest {
+        service_tier: None,
         model: "test-model".into(),
         web_search: None,
         file_search: None,
@@ -578,7 +557,7 @@ async fn builtin_builder_completes_and_streams_with_api_key_and_bearer_authentic
             let profile: ProviderProfile = serde_json::from_value(json!({ "provider_id": "local", "profile_name": "local", "base_url": url, "protocol": "open_ai_chat", "auth": auth, "models": [{"display_model":"test-model", "request_model":"wire-model", "billing_model":"wire-model"}] })).unwrap();
             let client = LlmClientBuilder::new(&[profile])
                 .unwrap()
-                .with_region(lingxi_agent_api::protocol::Region::International)
+                .with_region(lingxi_llm_client::protocol::Region::International)
                 .build()
                 .unwrap();
             let opts = RequestOptions {

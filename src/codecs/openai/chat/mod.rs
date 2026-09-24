@@ -8,18 +8,16 @@
 //! a hard-coded provider name.
 
 mod decode;
-mod encode;
+pub(crate) mod encode;
+mod reasoning;
 mod stream;
 
 pub use decode::classify_error;
 
-use crate::client::route::ResolvedRoute;
+use crate::codecs::{CodecContext, EncodeRequest};
 use crate::codecs::{StreamDecoder, WireCodec};
+use crate::protocol::{CompletionResponse, LlmError, ProtocolFamily};
 use crate::transport::{HttpRequest, HttpResponse};
-use crate::RequestOptions;
-use lingxi_agent_api::protocol::{
-    CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, ProviderProfile, Usage,
-};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OpenAiChatCodec;
@@ -31,32 +29,60 @@ impl OpenAiChatCodec {
 }
 
 impl WireCodec for OpenAiChatCodec {
+    fn request_inference(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        crate::codecs::inference::requested(req, context.profile())
+    }
+    fn validate_request(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+    }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::OpenAiChat
     }
-
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        req: EncodeRequest<'_>,
+        context: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        encode::request(req, profile, route, opts)
+        encode::request(req, context.profile(), context)?.encode()
     }
+    fn encoded_body_len(
+        &self,
+        req: EncodeRequest<'_>,
+        context: &CodecContext,
+    ) -> Result<usize, LlmError> {
+        encode::request(req, context.profile(), context)?.body_len()
+    }
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        let _ = context;
+        decode::response_with_usage_mode(resp, separate_reasoning(&context.profile.extra)).map(
+            |mut response| {
+                response.inference = crate::codecs::inference::response(resp, context.profile());
+                response
+            },
+        )
+    }
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
+        let _ = context;
+        Box::new(crate::codecs::stream::SseDecoder::new(
+            stream::OpenAiStreamDecoder::configured(context),
+        ))
+    }
+}
 
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        decode::response(resp)
-    }
-
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        Box::new(stream::OpenAiStreamDecoder::default())
-    }
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        serde_json::from_slice::<serde_json::Value>(&resp.body)
-            .ok()
-            .and_then(|v| v.get("usage").cloned())
-            .map(|u| decode::usage(&u))
-    }
+fn separate_reasoning(meta: &serde_json::Value) -> bool {
+    meta.get("reasoning_tokens_separate")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }

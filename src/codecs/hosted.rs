@@ -13,14 +13,12 @@
 //! `Authenticator` selected by `profile.auth` attaches the credential, which is
 //! the only difference several of these have left.
 
-use crate::client::route::ResolvedRoute;
 use crate::codecs::{anthropic::AnthropicMessagesCodec, gemini, openai::chat::OpenAiChatCodec};
+use crate::codecs::{CodecContext, EncodeRequest};
 use crate::codecs::{StreamDecoder, WireCodec};
+use crate::protocol::{CompletionResponse, LlmError, ProtocolFamily};
 use crate::transport::{HttpRequest, HttpResponse};
-use crate::RequestOptions;
-use lingxi_agent_api::protocol::{
-    CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, ProviderProfile, Usage,
-};
+
 use serde_json::Value;
 
 /// Azure OpenAI: the Chat Completions body at a deployment URL.
@@ -31,18 +29,31 @@ use serde_json::Value;
 pub struct AzureOpenAiCodec;
 
 impl WireCodec for AzureOpenAiCodec {
+    fn request_inference(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        crate::codecs::inference::requested(req, context.profile())
+    }
+    fn validate_request(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+    }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::AzureOpenAi
     }
 
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        req: EncodeRequest<'_>,
+        opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        let mut http = OpenAiChatCodec.encode_request(req, profile, route, opts)?;
+        let profile = opts.profile();
+        let mut http = super::openai::chat::encode::request(req, profile, opts)?;
         let api_version = profile
             .azure
             .as_ref()
@@ -59,25 +70,25 @@ impl WireCodec for AzureOpenAiCodec {
             .azure
             .as_ref()
             .and_then(|a| a.deployment.as_deref())
-            .unwrap_or(&route.request_model);
-        http.url = format!(
+            .unwrap_or(&opts.request_model);
+        http.http.url = format!(
             "{}/openai/deployments/{deployment}/chat/completions?api-version={api_version}",
             profile.base_url.trim_end_matches('/')
         );
         strip_body_key(&mut http, "model")?;
-        Ok(http)
+        http.encode()
     }
 
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        OpenAiChatCodec.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        OpenAiChatCodec.decode_response(resp, context)
     }
 
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        OpenAiChatCodec.stream_decoder()
-    }
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        OpenAiChatCodec.response_usage(resp)
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
+        OpenAiChatCodec.stream_decoder(context)
     }
 }
 
@@ -87,30 +98,43 @@ impl WireCodec for AzureOpenAiCodec {
 pub struct FoundryClaudeCodec;
 
 impl WireCodec for FoundryClaudeCodec {
+    fn request_inference(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        crate::codecs::inference::requested(req, context.profile())
+    }
+    fn validate_request(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+    }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::FoundryClaude
     }
 
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        req: EncodeRequest<'_>,
+        opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        AnthropicMessagesCodec.encode_request(req, profile, route, opts)
+        let _profile = opts.profile();
+        AnthropicMessagesCodec.encode_request(req, opts)
     }
 
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        AnthropicMessagesCodec.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        AnthropicMessagesCodec.decode_response(resp, context)
     }
 
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        AnthropicMessagesCodec.stream_decoder()
-    }
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        AnthropicMessagesCodec.response_usage(resp)
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
+        AnthropicMessagesCodec.stream_decoder(context)
     }
 }
 
@@ -127,27 +151,40 @@ pub struct VertexClaudeCodec;
 const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
 
 impl WireCodec for VertexClaudeCodec {
+    fn request_inference(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        crate::codecs::inference::requested(req, context.profile())
+    }
+    fn validate_request(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+    }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::VertexClaude
     }
 
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        req: EncodeRequest<'_>,
+        opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        let mut http = AnthropicMessagesCodec.encode_request(req, profile, route, opts)?;
+        let profile = opts.profile();
+        let mut http = super::anthropic::encode::request(req, profile, opts)?;
         let action = if opts.stream {
             "streamRawPredict"
         } else {
             "rawPredict"
         };
-        http.url = format!(
+        http.http.url = format!(
             "{}/publishers/anthropic/models/{}:{action}",
             profile.base_url.trim_end_matches('/'),
-            route.request_model
+            opts.request_model
         );
         let version = profile
             .extra
@@ -155,24 +192,24 @@ impl WireCodec for VertexClaudeCodec {
             .and_then(Value::as_str)
             .unwrap_or(VERTEX_ANTHROPIC_VERSION)
             .to_owned();
-        http.headers.retain(|(k, _)| k != "anthropic-version");
+        http.http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
             body.insert("anthropic_version".to_owned(), Value::String(version));
         })?;
-        Ok(http)
+        http.encode()
     }
 
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        AnthropicMessagesCodec.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        AnthropicMessagesCodec.decode_response(resp, context)
     }
 
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        AnthropicMessagesCodec.stream_decoder()
-    }
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        AnthropicMessagesCodec.response_usage(resp)
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
+        AnthropicMessagesCodec.stream_decoder(context)
     }
 }
 
@@ -181,70 +218,69 @@ impl WireCodec for VertexClaudeCodec {
 pub struct VertexGeminiCodec;
 
 impl WireCodec for VertexGeminiCodec {
+    fn request_inference(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        crate::codecs::inference::requested(req, context.profile())
+    }
+    fn validate_request(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+    }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::VertexGemini
     }
 
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        req: EncodeRequest<'_>,
+        opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
+        let profile = opts.profile();
         let url = gemini::generate_content_url(
             &format!(
                 "{}/publishers/google",
                 profile.base_url.trim_end_matches('/')
             ),
-            &route.request_model,
+            &opts.request_model,
             opts.stream,
         );
-        gemini::encode::request_to(req, profile, &url, opts)
+        gemini::encode::request_to(req, profile, &url, opts)?.encode()
     }
 
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        GeminiLike.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        GeminiLike.decode_response(resp, context)
     }
 
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        GeminiLike.stream_decoder()
-    }
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        GeminiLike.response_usage(resp)
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
+        GeminiLike.stream_decoder(context)
     }
 }
 
 use crate::codecs::gemini::GeminiCodec as GeminiLike;
 
-/// Rewrite the JSON body of an already-encoded request.
 fn edit_body(
-    http: &mut HttpRequest,
+    http: &mut crate::codecs::json::WireRequest<'_>,
     f: impl FnOnce(&mut serde_json::Map<String, Value>),
 ) -> Result<(), LlmError> {
-    let mut body: Value =
-        serde_json::from_slice(&http.body).map_err(|e| LlmError::InvalidRequest {
-            message: format!("the encoded body is not JSON: {e}"),
-        })?;
-    let Some(map) = body.as_object_mut() else {
-        return Err(LlmError::InvalidRequest {
-            message: "the encoded body is not a JSON object".to_owned(),
-        });
-    };
-    f(map);
-    http.body = serde_json::to_vec(&body)
-        .map_err(|e| LlmError::InvalidRequest {
-            message: format!("request body is not serializable: {e}"),
-        })?
-        .into();
+    f(http.body.object_mut());
     Ok(())
 }
-
-fn strip_body_key(http: &mut HttpRequest, key: &str) -> Result<(), LlmError> {
-    edit_body(http, |body| {
-        body.remove(key);
-    })
+fn strip_body_key(
+    http: &mut crate::codecs::json::WireRequest<'_>,
+    key: &str,
+) -> Result<(), LlmError> {
+    http.body.remove(key);
+    Ok(())
 }
 
 /// The Anthropic Messages body on Amazon Bedrock: signed with SigV4 and
@@ -263,25 +299,38 @@ pub struct BedrockClaudeCodec;
 const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 
 impl WireCodec for BedrockClaudeCodec {
+    fn request_inference(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        crate::codecs::inference::requested(req, context.profile())
+    }
+    fn validate_request(
+        &self,
+        req: &crate::protocol::CompletionRequest,
+        context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+    }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::BedrockClaude
     }
 
     fn encode_request(
         &self,
-        req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        req: EncodeRequest<'_>,
+        opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        let mut http = AnthropicMessagesCodec.encode_request(req, profile, route, opts)?;
+        let profile = opts.profile();
+        let mut http = super::anthropic::encode::request(req, profile, opts)?;
         let action = if opts.stream {
             "invoke-with-response-stream"
         } else {
             "invoke"
         };
-        http.url = bedrock_model_url(&profile.base_url, &route.request_model, action)?;
-        http.headers.retain(|(k, _)| k != "anthropic-version");
+        http.http.url = bedrock_model_url(&profile.base_url, &opts.request_model, action)?;
+        http.http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
             // Bedrock selects streaming through the invoke-with-response-stream
@@ -293,19 +342,22 @@ impl WireCodec for BedrockClaudeCodec {
                 Value::String(BEDROCK_ANTHROPIC_VERSION.to_owned()),
             );
         })?;
-        Ok(http)
+        http.encode()
     }
 
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
-        AnthropicMessagesCodec.decode_response(resp)
+    fn decode_response(
+        &self,
+        resp: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError> {
+        AnthropicMessagesCodec.decode_response(resp, context)
     }
 
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        Box::new(BedrockStreamDecoder::default())
-    }
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage> {
-        AnthropicMessagesCodec.response_usage(resp)
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
+        Box::new(BedrockStreamDecoder {
+            inner: Box::new(super::anthropic::stream::AnthropicStreamDecoder::configured(context)),
+            ..BedrockStreamDecoder::default()
+        })
     }
 }
 
@@ -314,11 +366,10 @@ impl WireCodec for BedrockClaudeCodec {
 /// escaped so it cannot become another path separator; `Url` leaves the ARN's
 /// colons intact.
 fn bedrock_model_url(base_url: &str, model_id: &str, action: &str) -> Result<String, LlmError> {
-    let mut url = reqwest::Url::parse(base_url.trim_end_matches('/')).map_err(|e| {
-        LlmError::InvalidRequest {
+    let mut url =
+        url::Url::parse(base_url.trim_end_matches('/')).map_err(|e| LlmError::InvalidRequest {
             message: format!("Bedrock base URL is invalid: {e}"),
-        }
-    })?;
+        })?;
     {
         let mut segments = url
             .path_segments_mut()
@@ -337,76 +388,124 @@ fn bedrock_model_url(base_url: &str, model_id: &str, action: &str) -> Result<Str
 /// Unwraps AWS event-stream frames and feeds what is inside to the Anthropic
 /// decoder, which is the same JSON it would have received over SSE.
 struct BedrockStreamDecoder {
+    ended: bool,
     frames: crate::framing::eventstream::EventStreamSplitter,
-    inner: Box<dyn StreamDecoder>,
+    inner: Box<dyn crate::codecs::EventDecoder>,
 }
 
 impl Default for BedrockStreamDecoder {
     fn default() -> Self {
         Self {
+            ended: false,
             frames: crate::framing::eventstream::EventStreamSplitter::new(),
-            inner: AnthropicMessagesCodec.stream_decoder(),
+            inner: Box::new(super::anthropic::stream::AnthropicStreamDecoder::default()),
         }
     }
 }
 
-impl StreamDecoder for BedrockStreamDecoder {
-    fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
+impl BedrockStreamDecoder {
+    fn decode_message(
+        &mut self,
+        msg: &crate::framing::eventstream::EventStreamMessage,
+    ) -> Result<Vec<StreamEvent>, LlmError> {
         let mut out = Vec::new();
-        for msg in self.frames.feed(frame)? {
-            match msg.header(":message-type") {
-                Some("event") => {
-                    // The payload is `{"bytes": "<base64 of the event JSON>"}`.
-                    let payload: Value = serde_json::from_slice(&msg.payload).map_err(|e| {
-                        LlmError::StreamInterrupted {
-                            message: format!("event-stream payload is not JSON: {e}"),
-                        }
+        match msg.header(":message-type") {
+            Some("event") => {
+                // The payload is `{"bytes": "<base64 of the event JSON>"}`.
+                let payload: Value = serde_json::from_slice(&msg.payload).map_err(|e| {
+                    LlmError::StreamInterrupted {
+                        message: format!("event-stream payload is not JSON: {e}"),
+                    }
+                })?;
+                let b64 = payload
+                    .get("bytes")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| LlmError::StreamInterrupted {
+                        message: "event-stream payload has no `bytes` field".to_owned(),
                     })?;
-                    let b64 = payload
-                        .get("bytes")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| LlmError::StreamInterrupted {
-                            message: "event-stream payload has no `bytes` field".to_owned(),
-                        })?;
-                    let json = base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .map_err(|e| LlmError::StreamInterrupted {
-                            message: format!("event-stream `bytes` is not base64: {e}"),
-                        })?;
-                    out.extend(self.inner.decode_frame(&json)?);
-                }
-                Some("exception" | "error") => {
-                    let kind = msg.header(":exception-type").unwrap_or("unknown");
-                    let body = String::from_utf8_lossy(&msg.payload);
-                    return Err(LlmError::StreamInterrupted {
-                        message: format!("provider stream exception {kind}: {body}"),
-                    });
-                }
-                // Other message types carry no model output.
-                _ => {}
+                let json = base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .map_err(|e| LlmError::StreamInterrupted {
+                        message: format!("event-stream `bytes` is not base64: {e}"),
+                    })?;
+                out.extend(self.inner.decode_frame(&json)?);
             }
+            Some("exception" | "error") => {
+                let kind = msg.header(":exception-type").unwrap_or("unknown");
+                let body = String::from_utf8_lossy(&msg.payload);
+                return Err(LlmError::StreamInterrupted {
+                    message: format!("provider stream exception {kind}: {body}"),
+                });
+            }
+            // Other message types carry no model output.
+            _ => {}
         }
         Ok(out)
     }
-
-    fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
-        // A truncated final frame is an interruption, not a clean end.
-        self.frames.finish()?;
-        self.inner.finish()
+    fn append(
+        &mut self,
+        result: Result<Vec<StreamEvent>, LlmError>,
+        out: &mut Vec<Result<StreamEvent, LlmError>>,
+    ) {
+        match result {
+            Ok(events) => {
+                for event in events {
+                    let terminal = matches!(event, StreamEvent::End { .. });
+                    out.push(Ok(event));
+                    if terminal {
+                        self.ended = true;
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                self.ended = true;
+                out.push(Err(error));
+            }
+        }
     }
-
-    fn observed_usage(&self) -> Option<Usage> {
-        self.inner.observed_usage()
+}
+impl StreamDecoder for BedrockStreamDecoder {
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        self.inner.inference_report()
     }
-
-    fn usage_is_complete(&self) -> bool {
-        self.inner.usage_is_complete()
+    fn set_response_headers(&mut self, headers: &[(String, String)]) {
+        self.inner.set_response_headers(headers);
     }
-
-    fn set_provider_metadata(&mut self, meta: Value) {
-        self.inner.set_provider_metadata(meta);
+    fn push_bytes(&mut self, bytes: &[u8]) -> Vec<Result<StreamEvent, LlmError>> {
+        if self.ended {
+            return vec![];
+        }
+        let mut out = vec![];
+        let (frames, error) = self.frames.feed_batch(bytes);
+        for frame in frames {
+            let result = self.decode_message(&frame);
+            self.append(result, &mut out);
+            if self.ended {
+                break;
+            }
+        }
+        if !self.ended {
+            if let Some(error) = error {
+                self.append(Err(error), &mut out);
+            }
+        }
+        out
+    }
+    fn finish(&mut self) -> Vec<Result<StreamEvent, LlmError>> {
+        if self.ended {
+            return vec![];
+        }
+        let mut out = vec![];
+        let result = self.frames.finish().and_then(|()| self.inner.finish());
+        self.append(result, &mut out);
+        self.ended = true;
+        out
+    }
+    fn usage_report(&self) -> crate::protocol::UsageReport {
+        self.inner.usage_report()
     }
 }
 
+use crate::protocol::StreamEvent;
 use base64::Engine;
-use lingxi_agent_api::protocol::StreamEvent;

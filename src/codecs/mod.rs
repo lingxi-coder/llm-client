@@ -6,25 +6,26 @@
 //! a profile naming an OpenAI-compatible provider needs no capability entry —
 //! only a `ProviderProfile` (gate 30).
 
+pub(crate) mod inference;
+mod input;
+mod json;
+pub use input::{CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode};
 pub mod anthropic;
-pub(crate) mod extras;
 pub(crate) mod file_search_decode;
 pub mod gemini;
 pub mod hosted;
 pub mod openai;
+mod stream;
+pub(crate) mod usage;
 pub(crate) mod web_search;
 pub(crate) mod web_search_decode;
 
-use crate::client::route::ResolvedRoute;
-use crate::transport::{HttpRequest, HttpResponse};
-use crate::RequestOptions;
-use async_trait::async_trait;
-use bytes::Bytes;
-use lingxi_agent_api::protocol::{
+use crate::protocol::{
     CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, ProviderFileSource,
-    ProviderProfile, StreamEvent, Usage,
+    ProviderProfile, StreamEvent,
 };
-use serde_json::Value;
+use crate::transport::{HttpRequest, HttpResponse};
+
 use std::sync::Arc;
 
 /// A Responses continuation id is endpoint-side state, not an optional hint.
@@ -46,37 +47,9 @@ pub(crate) fn reject_responses_continuation(
 pub(crate) fn validate_provider_file<'a>(
     file: &'a ProviderFileSource,
     profile: &ProviderProfile,
-    opts: &RequestOptions,
+    opts: &CodecContext,
 ) -> Result<&'a ProviderFileSource, LlmError> {
-    let Some(active_account_scope) = opts
-        .file_account_scope
-        .as_deref()
-        .filter(|scope| !scope.trim().is_empty())
-    else {
-        return Err(LlmError::UnsupportedCapability {
-            message: "provider file inputs require an explicit account scope".into(),
-        });
-    };
-    if file.protocol != profile.protocol
-        || file.provider_id != profile.provider_id
-        || file.profile_name != profile.profile_name
-        || file.endpoint_fingerprint
-            != crate::client::files::provider_file_endpoint_fingerprint(&profile.base_url)
-        || file.account_scope.as_deref() != Some(active_account_scope)
-    {
-        return Err(LlmError::UnsupportedCapability {
-            message: "provider file reference belongs to a different connection, endpoint, or account scope".into(),
-        });
-    }
-    if file.file_id.trim().is_empty()
-        || file.uri.as_deref().is_some_and(str::is_empty)
-        || file.media_type.as_deref().is_some_and(str::is_empty)
-    {
-        return Err(LlmError::InvalidRequest {
-            message: "provider file reference is missing a required identifier".into(),
-        });
-    }
-    Ok(file)
+    crate::files::validate_provider_file(file, profile, opts.file_scope())
 }
 
 pub(crate) fn unresolved_attachment_error() -> LlmError {
@@ -95,60 +68,73 @@ pub(crate) fn provider_file_protocol_error() -> LlmError {
 // response decoding, error classification (gate 31: every family's overflow
 // becomes `LlmError::ContextOverflow`) and the stream decoder.
 pub trait WireCodec: Send + Sync + 'static {
-    fn family(&self) -> ProtocolFamily;
-
-    /// The codec is registered once per protocol family and shared by every
-    /// profile using it, so the connection's own configuration — base URL,
-    /// Azure api-version, signing region, provider-opaque `extra` — arrives as
-    /// `profile` rather than being baked into the instance.
-    fn encode_request(
+    /// Validate control settings before uploads or authentication have side effects.
+    fn validate_request(
+        &self,
+        _req: &CompletionRequest,
+        _context: &CodecContext,
+    ) -> Result<(), LlmError> {
+        Ok(())
+    }
+    /// Request metadata for pricing and reporting. Built-in codecs also read native body defaults.
+    fn request_inference(
         &self,
         req: &CompletionRequest,
-        profile: &ProviderProfile,
-        route: &ResolvedRoute,
-        opts: &RequestOptions,
+        _context: &CodecContext,
+    ) -> Result<crate::protocol::InferenceReport, LlmError> {
+        Ok(crate::protocol::InferenceReport {
+            requested_effort: req.thinking.as_ref().and_then(|thinking| thinking.effort),
+            requested_service_tier: req.service_tier,
+            ..Default::default()
+        })
+    }
+    fn family(&self) -> ProtocolFamily;
+    fn encode_request(
+        &self,
+        req: EncodeRequest<'_>,
+        context: &CodecContext,
     ) -> Result<HttpRequest, LlmError>;
-
-    /// A non-success response must come back as the matching `LlmError`
-    /// variant, never as a stringified status.
-    fn decode_response(&self, resp: &HttpResponse) -> Result<CompletionResponse, LlmError>;
-
-    fn stream_decoder(&self) -> Box<dyn StreamDecoder>;
-
-    fn response_usage(&self, resp: &HttpResponse) -> Option<Usage>;
+    fn encoded_body_len(
+        &self,
+        req: EncodeRequest<'_>,
+        context: &CodecContext,
+    ) -> Result<usize, LlmError> {
+        self.encode_request(req, context)
+            .map(|request| request.body.len())
+    }
+    fn decode_response(
+        &self,
+        response: &HttpResponse,
+        context: &CodecContext,
+    ) -> Result<CompletionResponse, LlmError>;
+    fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder>;
 }
 
-/// Turns transport frames into provider-neutral events. Stateful per response.
+/// Stateful decoder for arbitrary transport byte chunks. A batch may contain
+/// successful events followed by one error; consumers must preserve that order.
 pub trait StreamDecoder: Send {
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        Default::default()
+    }
+    fn set_response_headers(&mut self, _headers: &[(String, String)]) {}
+    fn push_bytes(&mut self, bytes: &[u8]) -> Vec<Result<StreamEvent, LlmError>>;
+    fn finish(&mut self) -> Vec<Result<StreamEvent, LlmError>>;
+    fn usage_report(&self) -> crate::protocol::UsageReport;
+}
+
+/// Protocol event parsing is internal; framing belongs to the codec.
+pub(crate) trait EventDecoder: Send {
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        Default::default()
+    }
+    fn set_response_headers(&mut self, _headers: &[(String, String)]) {}
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError>;
-
-    /// End of stream. Emits whatever is still buffered (the final `End`).
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError>;
-
-    fn observed_usage(&self) -> Option<Usage>;
-
-    /// Whether the observed usage is a complete, self-consistent report — a
-    /// measurement rather than a partial one.
-    ///
-    /// Separate from `observed_usage` because the counts are still the best
-    /// thing to show a user either way; what changes is whether anything may be
-    /// billed or budgeted from them. A stream cut off mid-response, or a
-    /// provider whose subtotals do not reconcile, answers `false`.
-    fn usage_is_complete(&self) -> bool;
-
-    fn set_provider_metadata(&mut self, meta: Value);
+    fn usage_report(&self) -> crate::protocol::UsageReport;
 }
 
-/// A framed byte stream (SSE, NDJSON, WebSocket) the decoder pulls from.
-#[async_trait]
-pub trait FrameStream: Send {
-    async fn next_frame(&mut self) -> Result<Option<Bytes>, LlmError>;
-}
-
-// Gate 3.
 const _: Option<&dyn WireCodec> = None;
 const _: Option<&dyn StreamDecoder> = None;
-const _: Option<&dyn FrameStream> = None;
 
 /// Every codec compiled into this crate. The remaining protocol families
 /// arrive with their ports; until then `build()` refuses a profile that names

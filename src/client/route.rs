@@ -5,7 +5,7 @@
 //! that matters is `connection_chain`: a hop is already resolved to its profile
 //! and wire model id, so nothing has to be looked up again at failover time.
 
-use lingxi_agent_api::protocol::{FailoverTriggers, ModelCapabilities, ProviderId};
+use crate::protocol::{FailoverTriggers, ModelCapabilitySupport, ProviderId};
 use serde::{Deserialize, Serialize};
 
 /// One sibling connection to fall over to, already resolved.
@@ -35,7 +35,7 @@ pub struct ResolvedRoute {
     pub request_model: String,
     pub display_model: String,
     pub pricing_model: PricingModelRef,
-    pub capabilities: ModelCapabilities,
+    pub capability_support: ModelCapabilitySupport,
     /// Sibling connections of the head's group, in order. Empty when the
     /// profile stands alone. The head itself is not in this list.
     pub connection_chain: Vec<ConnectionHop>,

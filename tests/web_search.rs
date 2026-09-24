@@ -1,13 +1,17 @@
 //! Hosted search stays opt-in, explicit per endpoint, and separate from client tools.
-use lingxi_agent_api::protocol::{
+#[path = "support/wire_api.rs"]
+mod wire_api;
+
+use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
+use lingxi_llm_client::protocol::{
     CompletionRequest, CompletionResponse, LlmError, ProviderProfile, ToolChoice, ToolSpec,
     WebSearchConfig,
 };
-use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, GeminiCodec, LlmClientBuilder, RequestOptions,
     WireCodec,
 };
+use lingxi_llm_client::{HttpRequest, StreamResponse, Transport};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 mod support;
@@ -34,11 +38,11 @@ fn request() -> CompletionRequest {
 fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
     let route = client.resolve("m").unwrap();
-    use lingxi_agent_api::protocol::ProtocolFamily::*;
+    use lingxi_llm_client::protocol::ProtocolFamily::*;
     let codec: &dyn WireCodec = match p.protocol {
         OpenAiResponses => &OpenAiResponsesCodec,
         OpenAiChat => &OpenAiChatCodec,
@@ -48,7 +52,10 @@ fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmErro
         _ => panic!("unhandled fixture"),
     };
     codec
-        .encode_request(req, p, &route, &RequestOptions::default())
+        .encode_request(
+            lingxi_llm_client::EncodeRequest::new(req),
+            &wire_api::context(p, &route.request_model, &RequestOptions::default()),
+        )
         .map(|http| serde_json::from_slice(&http.body).unwrap())
 }
 fn client_tool() -> ToolSpec {
@@ -279,7 +286,7 @@ fn search_tool_names_cannot_collide_with_hosted_tools() {
 }
 
 #[test]
-fn older_request_and_response_json_remain_valid_without_search_fields() {
+fn search_fields_are_optional_in_current_requests_and_responses() {
     let req: CompletionRequest =
         serde_json::from_value(json!({"model":"m","messages":[]})).unwrap();
     assert!(req.web_search.is_none());
@@ -287,7 +294,7 @@ fn older_request_and_response_json_remain_valid_without_search_fields() {
         .unwrap()
         .get("web_search")
         .is_none());
-    let response: CompletionResponse = serde_json::from_value(json!({"message":{"role":"assistant","content":[]},"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0},"model":"m"})).unwrap();
+    let response: CompletionResponse = serde_json::from_value(json!({"message":{"role":"assistant","content":[]},"stop_reason":"end_turn","usage":{"usage":null,"state":"missing"},"model":"m"})).unwrap();
     assert!(response.web_search.is_none());
     assert!(serde_json::to_value(response)
         .unwrap()
@@ -375,8 +382,13 @@ fn native_hosted_search_history_replays_only_on_its_own_wire() {
 struct CaptureSearchRequests(Mutex<Vec<Value>>);
 
 #[async_trait::async_trait]
-impl lingxi_llm_client::Transport for CaptureSearchRequests {
-    async fn execute(
+impl Transport for CaptureSearchRequests {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
+    }
+}
+impl CaptureSearchRequests {
+    async fn response(
         &self,
         req: lingxi_llm_client::HttpRequest,
     ) -> Result<lingxi_llm_client::HttpResponse, LlmError> {
@@ -388,26 +400,6 @@ impl lingxi_llm_client::Transport for CaptureSearchRequests {
             message: "captured".into(),
         })
     }
-
-    async fn open_stream(
-        &self,
-        req: lingxi_llm_client::HttpRequest,
-    ) -> Result<lingxi_llm_client::StreamResponse, LlmError> {
-        self.0
-            .lock()
-            .unwrap()
-            .push(serde_json::from_slice(&req.body).unwrap());
-        Err(LlmError::Transport {
-            message: "captured".into(),
-        })
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _req: lingxi_llm_client::HttpRequest,
-    ) -> Result<Box<dyn lingxi_llm_client::WebSocketSession>, LlmError> {
-        unreachable!()
-    }
 }
 
 #[test]
@@ -418,7 +410,7 @@ fn public_web_search_methods_enable_search_without_mutating_request() {
         transport.clone(),
         &[profile("openai_chat", "open_ai_chat")],
     )
-    .with_region(lingxi_agent_api::protocol::Region::International)
+    .with_region(lingxi_llm_client::protocol::Region::International)
     .build()
     .unwrap();
     let mut req = request();
@@ -459,7 +451,7 @@ fn failover_cannot_silently_drop_requested_search_on_an_unsupported_connection()
     fallback.connection.order = 1;
     fallback.extra = json!({});
     let client = LlmClientBuilder::with_transport(Arc::new(support::NoHttp), &[first, fallback])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let route = client.resolve("m").unwrap();

@@ -1,6 +1,12 @@
 # Routing is hand-authored; the `[[model]]` blocks below are a snapshot of the
 # upstream catalog. Refresh model blocks from upstream data without replacing
 # route metadata above the first `[[model]]`.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "thinking_type", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unsupported", sources = ["https://api-docs.deepseek.com/guides/thinking_mode/"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland", "international"]
 provider_id = "deepseek"
 base_url = "https://api.deepseek.com"
@@ -19,7 +25,7 @@ credential_hint = "sk-"
 # Thinking is on by default here, and the endpoint rejects a later turn that
 # omits that turn's reasoning. With thinking on it also answers 400 to a forced
 # tool choice — `required` or a named function — while `none`, `auto` and the
-# tools themselves are all accepted, so a forced choice is relaxed to `auto`.
+# tools themselves are all accepted. Incompatible forced choices are rejected.
 extra = { preserve_reasoning_content = true, thinking_rejects_forced_tool_choice = true }
 
 # This vendor charges half rate outside published peak hours, which is most of
@@ -61,6 +67,15 @@ cache_read_per_million = 0.006
 reasoning_per_million = 1.2
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+sources = ["https://api-docs.deepseek.com/guides/thinking_mode/"]
+modes = ["enabled", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "high", "max"], default = "high" }
+
 [[model]]
 id = "deepseek-v4-pro"
 name = "DeepSeek V4 Pro"
@@ -85,3 +100,11 @@ output_per_million = 3.96
 cache_read_per_million = 0.044
 reasoning_per_million = 3.96
 source = "models.dev"
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+sources = ["https://api-docs.deepseek.com/guides/thinking_mode/"]
+modes = ["enabled", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "high", "max"], default = "high" }

@@ -21,6 +21,12 @@
 #
 # What this does not model: the free tier carries its own request-rate caps,
 # which the catalog does not publish.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "reasoning_object", fast = "priority" }
+features = { thinking = "supported", budget = { support = "supported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "supported", sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = ["https://openrouter.ai/docs/guides/features/service-tiers"] }
+
 regions = ["international"]
 provider_id = "openrouter"
 base_url = "https://openrouter.ai/api/v1"
@@ -59,6 +65,12 @@ output_per_million = 1.5999999999999999
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "aion-labs/aion-3.0"
 name = "AionLabs: Aion-3.0"
@@ -79,6 +91,12 @@ input_per_million = 3
 output_per_million = 6
 cache_read_per_million = 0.75
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "aion-labs/aion-3.0-mini"
@@ -101,6 +119,12 @@ output_per_million = 1.4
 cache_read_per_million = 0.18
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "aion-labs/aion-rp-llama-3.1-8b"
 name = "AionLabs: Aion-RP 1.0 (8B)"
@@ -120,6 +144,15 @@ attachment = false
 input_per_million = 0.7999999999999999
 output_per_million = 1.5999999999999999
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "amazon/nova-2-lite-v1"
@@ -141,6 +174,12 @@ input_per_million = 0.3
 output_per_million = 2.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "amazon/nova-lite-v1"
 name = "Amazon: Nova Lite 1.0"
@@ -161,6 +200,15 @@ input_per_million = 0.06
 output_per_million = 0.24
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "amazon/nova-micro-v1"
 name = "Amazon: Nova Micro 1.0"
@@ -180,6 +228,15 @@ attachment = false
 input_per_million = 0.035
 output_per_million = 0.14
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "amazon/nova-premier-v1"
@@ -202,6 +259,15 @@ output_per_million = 12.5
 cache_read_per_million = 0.625
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "amazon/nova-pro-v1"
 name = "Amazon: Nova Pro 1.0"
@@ -222,6 +288,15 @@ input_per_million = 0.7999999999999999
 output_per_million = 3.1999999999999997
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "anthracite-org/magnum-v4-72b"
 name = "Magnum v4 72B"
@@ -241,6 +316,15 @@ attachment = false
 input_per_million = 2.5
 output_per_million = 5
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "anthropic/claude-3-haiku"
@@ -263,6 +347,15 @@ output_per_million = 1.25
 cache_read_per_million = 0.03
 cache_write_per_million = 0.3
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "anthropic/claude-fable-5"
@@ -292,6 +385,12 @@ output_per_million = 25
 cache_read_per_million = 0.5
 cache_write_per_million = 6.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-fable-5.1"
 name = "Anthropic: Claude Fable 5.1"
@@ -319,6 +418,12 @@ input_per_million = 5
 output_per_million = 25
 cache_read_per_million = 0.125
 cache_write_per_million = 6.25
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "anthropic/claude-haiku-4.5"
@@ -348,6 +453,12 @@ output_per_million = 2.5
 cache_read_per_million = 0.049999999999999996
 cache_write_per_million = 0.625
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-opus-4"
 name = "Anthropic: Claude Opus 4"
@@ -369,6 +480,12 @@ output_per_million = 75
 cache_read_per_million = 1.5
 cache_write_per_million = 18.75
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "anthropic/claude-opus-4.1"
@@ -398,6 +515,12 @@ output_per_million = 37.5
 cache_read_per_million = 0.75
 cache_write_per_million = 9.375
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-opus-4.5"
 name = "Anthropic: Claude Opus 4.5"
@@ -425,6 +548,12 @@ input_per_million = 2.5
 output_per_million = 12.5
 cache_read_per_million = 0.25
 cache_write_per_million = 3.125
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "anthropic/claude-opus-4.6"
@@ -454,6 +583,12 @@ output_per_million = 12.5
 cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-opus-4.7"
 name = "Anthropic: Claude Opus 4.7"
@@ -481,6 +616,12 @@ input_per_million = 2.5
 output_per_million = 12.5
 cache_read_per_million = 0.25
 cache_write_per_million = 3.125
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "anthropic/claude-opus-4.8"
@@ -510,6 +651,12 @@ output_per_million = 12.5
 cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-opus-5"
 name = "Claude Opus 5"
@@ -538,6 +685,12 @@ output_per_million = 12.5
 cache_read_per_million = 0.25
 cache_write_per_million = 3.125
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-sonnet-4"
 name = "Anthropic: Claude Sonnet 4"
@@ -559,6 +712,12 @@ output_per_million = 15
 cache_read_per_million = 0.3
 cache_write_per_million = 3.75
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "anthropic/claude-sonnet-4.5"
@@ -588,6 +747,12 @@ output_per_million = 7.5
 cache_read_per_million = 0.15
 cache_write_per_million = 1.875
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "anthropic/claude-sonnet-4.6"
 name = "Anthropic: Claude Sonnet 4.6"
@@ -615,6 +780,12 @@ input_per_million = 1.5
 output_per_million = 7.5
 cache_read_per_million = 0.15
 cache_write_per_million = 1.875
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "anthropic/claude-sonnet-5"
@@ -644,6 +815,12 @@ output_per_million = 5
 cache_read_per_million = 0.09999999999999999
 cache_write_per_million = 1.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "arcee-ai/trinity-large-thinking"
 name = "Arcee AI: Trinity Large Thinking"
@@ -665,6 +842,12 @@ output_per_million = 0.7999999999999999
 cache_read_per_million = 0.06
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "baidu/ernie-4.5-vl-424b-a47b"
 name = "Baidu: ERNIE 4.5 VL 424B A47B "
@@ -684,6 +867,12 @@ attachment = true
 input_per_million = 0.42
 output_per_million = 1.25
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "bytedance-seed/seed-1.6"
@@ -705,6 +894,12 @@ input_per_million = 0.25
 output_per_million = 2
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "bytedance-seed/seed-1.6-flash"
 name = "ByteDance Seed: Seed 1.6 Flash"
@@ -724,6 +919,12 @@ attachment = true
 input_per_million = 0.075
 output_per_million = 0.3
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "bytedance-seed/seed-2-1-turbo"
@@ -745,6 +946,12 @@ input_per_million = 0.5
 output_per_million = 2.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "bytedance-seed/seed-2.0-code"
 name = "ByteDance Seed: Seed-2.0-Code"
@@ -764,6 +971,12 @@ attachment = true
 input_per_million = 0.5
 output_per_million = 3
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "bytedance-seed/seed-2.0-lite"
@@ -785,6 +998,12 @@ input_per_million = 0.25
 output_per_million = 2
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "bytedance-seed/seed-2.0-mini"
 name = "ByteDance Seed: Seed-2.0-Mini"
@@ -804,6 +1023,12 @@ attachment = true
 input_per_million = 0.09999999999999999
 output_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "bytedance/ui-tars-1.5-7b"
@@ -826,6 +1051,15 @@ output_per_million = 0.19999999999999998
 cache_read_per_million = 0.09999999999999999
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 name = "Venice: Uncensored"
@@ -845,6 +1079,15 @@ attachment = false
 input_per_million = 0.19999999999999998
 output_per_million = 0.8999999999999999
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "cohere/command-a"
@@ -866,6 +1109,15 @@ input_per_million = 2.5
 output_per_million = 10
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "cohere/command-r-08-2024"
 name = "Cohere: Command R (08-2024)"
@@ -885,6 +1137,15 @@ attachment = false
 input_per_million = 0.15
 output_per_million = 0.6
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "cohere/command-r-plus-08-2024"
@@ -906,6 +1167,15 @@ input_per_million = 2.5
 output_per_million = 10
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "cohere/command-r7b-12-2024"
 name = "Cohere: Command R7B (12-2024)"
@@ -925,6 +1195,15 @@ attachment = false
 input_per_million = 0.0375
 output_per_million = 0.15
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "cohere/north-mini-code:free"
@@ -947,6 +1226,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-chat"
 name = "DeepSeek: DeepSeek V3"
@@ -967,6 +1252,15 @@ input_per_million = 0.2574
 output_per_million = 1.0287
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "deepseek/deepseek-chat-v3-0324"
 name = "DeepSeek: DeepSeek V3 0324"
@@ -986,6 +1280,15 @@ attachment = false
 input_per_million = 0.25
 output_per_million = 1
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "deepseek/deepseek-chat-v3.1"
@@ -1008,6 +1311,12 @@ output_per_million = 0.95
 cache_read_per_million = 0.13
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-r1"
 name = "DeepSeek: R1"
@@ -1027,6 +1336,12 @@ attachment = false
 input_per_million = 0.7
 output_per_million = 2.5
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "deepseek/deepseek-r1-0528"
@@ -1049,6 +1364,12 @@ output_per_million = 2.1500000000000004
 cache_read_per_million = 0.35
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-r1-distill-llama-70b"
 name = "DeepSeek: R1 Distill Llama 70B"
@@ -1068,6 +1389,12 @@ attachment = false
 input_per_million = 0.7999999999999999
 output_per_million = 0.7999999999999999
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "deepseek/deepseek-v3.1-terminus"
@@ -1090,6 +1417,12 @@ output_per_million = 1
 cache_read_per_million = 0.135
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-v3.2"
 name = "DeepSeek: DeepSeek V3.2"
@@ -1111,6 +1444,12 @@ output_per_million = 0.39999999999999997
 cache_read_per_million = 0.13449999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-v3.2-exp"
 name = "DeepSeek: DeepSeek V3.2 Exp"
@@ -1130,6 +1469,12 @@ attachment = false
 input_per_million = 0.27
 output_per_million = 0.41
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "deepseek/deepseek-v4-flash"
@@ -1151,6 +1496,12 @@ input_per_million = 0.088606
 output_per_million = 0.177212
 cache_read_per_million = 0.017721200000000003
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "deepseek/deepseek-v4-flash-0731"
@@ -1178,6 +1529,12 @@ input_per_million = 0.14
 output_per_million = 0.28
 cache_read_per_million = 0.03
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-v4-flash-vision-exp"
 name = "DeepSeek: DeepSeek V4 Flash Vision Exp"
@@ -1199,6 +1556,12 @@ output_per_million = 1.32
 cache_read_per_million = 0.014
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "deepseek/deepseek-v4-pro"
 name = "DeepSeek: DeepSeek V4 Pro 0423"
@@ -1219,6 +1582,12 @@ input_per_million = 1.04226
 output_per_million = 2.08452
 cache_read_per_million = 0.086855
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "deepseek/deepseek-v4-pro-0813"
@@ -1246,6 +1615,12 @@ input_per_million = 1.32
 output_per_million = 3.9600000000000004
 cache_read_per_million = 0.13
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "dots-studio/dots-3-note-preview:free"
 name = "Dots Studio: Dots3-Note Preview (free)"
@@ -1266,6 +1641,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-2.5-flash"
@@ -1296,6 +1677,12 @@ output_per_million = 1.25
 cache_read_per_million = 0.03
 reasoning_per_million = 1.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-2.5-flash-image"
 name = "Google: Nano Banana (Gemini 2.5 Flash Image)"
@@ -1318,6 +1705,15 @@ cache_read_per_million = 0.03
 cache_write_per_million = 0.0833333333333333
 reasoning_per_million = 2.5
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "google/gemini-2.5-flash-lite"
@@ -1348,6 +1744,12 @@ output_per_million = 0.19999999999999998
 cache_read_per_million = 0.01
 reasoning_per_million = 0.19999999999999998
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-2.5-pro"
 name = "Google: Gemini 2.5 Pro"
@@ -1377,6 +1779,12 @@ output_per_million = 5
 cache_read_per_million = 0.125
 reasoning_per_million = 5
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-2.5-pro-preview"
 name = "Google: Gemini 2.5 Pro Preview 06-05"
@@ -1400,6 +1808,12 @@ cache_write_per_million = 0.375
 reasoning_per_million = 10
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-2.5-pro-preview-05-06"
 name = "Google: Gemini 2.5 Pro Preview 05-06"
@@ -1422,6 +1836,12 @@ cache_read_per_million = 0.125
 cache_write_per_million = 0.375
 reasoning_per_million = 10
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3-flash-preview"
@@ -1451,6 +1871,12 @@ input_per_million = 0.25
 output_per_million = 1.5
 reasoning_per_million = 1.5
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3-pro-image"
 name = "Google: Nano Banana Pro (Gemini 3 Pro Image)"
@@ -1473,6 +1899,12 @@ cache_read_per_million = 0.19999999999999998
 cache_write_per_million = 0.375
 reasoning_per_million = 12
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3-pro-image-preview"
@@ -1497,6 +1929,12 @@ cache_write_per_million = 0.375
 reasoning_per_million = 12
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3.1-flash-image"
 name = "Google: Nano Banana 2 (Gemini 3.1 Flash Image)"
@@ -1517,6 +1955,12 @@ input_per_million = 0.5
 output_per_million = 3
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3.1-flash-image-preview"
 name = "Google: Nano Banana 2 (Gemini 3.1 Flash Image Preview)"
@@ -1536,6 +1980,12 @@ attachment = true
 input_per_million = 0.5
 output_per_million = 3
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3.1-flash-lite"
@@ -1566,6 +2016,12 @@ output_per_million = 0.75
 cache_read_per_million = 0.012499999999999999
 reasoning_per_million = 0.75
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3.1-flash-lite-image"
 name = "Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)"
@@ -1585,6 +2041,12 @@ attachment = true
 input_per_million = 0.25
 output_per_million = 1.5
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3.1-flash-lite-preview"
@@ -1608,6 +2070,12 @@ cache_read_per_million = 0.024999999999999998
 cache_write_per_million = 0.0833333333333333
 reasoning_per_million = 1.5
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3.1-pro-preview"
@@ -1637,6 +2105,12 @@ input_per_million = 1
 output_per_million = 6
 reasoning_per_million = 6
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3.1-pro-preview-customtools"
 name = "Google: Gemini 3.1 Pro Preview Custom Tools"
@@ -1659,6 +2133,12 @@ cache_read_per_million = 0.19999999999999998
 cache_write_per_million = 0.375
 reasoning_per_million = 12
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3.5-flash"
@@ -1689,6 +2169,12 @@ output_per_million = 4.5
 cache_read_per_million = 0.075
 reasoning_per_million = 4.5
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3.5-flash-lite"
 name = "Google: Gemini 3.5 Flash Lite"
@@ -1717,6 +2203,12 @@ input_per_million = 0.15
 output_per_million = 1.25
 cache_read_per_million = 0.015
 reasoning_per_million = 1.25
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemini-3.6-flash"
@@ -1748,6 +2240,12 @@ cache_read_per_million = 0.0375
 cache_write_per_million = 0.0416666666666667
 reasoning_per_million = 1.875
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemini-3.7-flash"
 name = "Google: Gemini 3.7 Flash"
@@ -1778,6 +2276,12 @@ cache_read_per_million = 0.01875
 cache_write_per_million = 0.0208333333333333
 reasoning_per_million = 0.9375
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemma-2-27b-it"
 name = "Google: Gemma 2 27B"
@@ -1798,6 +2302,15 @@ input_per_million = 0.65
 output_per_million = 0.65
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "google/gemma-3-12b-it"
 name = "Google: Gemma 3 12B"
@@ -1817,6 +2330,15 @@ attachment = true
 input_per_million = 0.049999999999999996
 output_per_million = 0.15
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "google/gemma-3-27b-it"
@@ -1839,6 +2361,15 @@ output_per_million = 0.44999999999999996
 cache_read_per_million = 0.04
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "google/gemma-3-4b-it"
 name = "Google: Gemma 3 4B"
@@ -1858,6 +2389,15 @@ attachment = true
 input_per_million = 0.049999999999999996
 output_per_million = 0.09999999999999999
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "google/gemma-4-26b-a4b-it"
@@ -1879,6 +2419,12 @@ input_per_million = 0.07
 output_per_million = 0.33999999999999997
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemma-4-26b-a4b-it:free"
 name = "Google: Gemma 4 26B A4B  (free)"
@@ -1899,6 +2445,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "google/gemma-4-31b-it"
@@ -1925,6 +2477,12 @@ source = "models.dev"
 input_per_million = 0.39
 output_per_million = 0.9700000000000001
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/gemma-4-31b-it:free"
 name = "Google: Gemma 4 31B (free)"
@@ -1946,6 +2504,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "google/lyria-3-clip-preview"
 name = "Google: Lyria 3 Clip Preview"
@@ -1965,6 +2529,15 @@ attachment = true
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "google/lyria-3-pro-preview"
@@ -1986,6 +2559,15 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "gryphe/mythomax-l2-13b"
 name = "MythoMax 13B"
@@ -2006,6 +2588,15 @@ input_per_million = 0.06
 output_per_million = 0.06
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "ibm-granite/granite-4.0-h-micro"
 name = "IBM: Granite 4.0 Micro"
@@ -2025,6 +2616,15 @@ attachment = false
 input_per_million = 0.017
 output_per_million = 0.112
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "ibm-granite/granite-4.1-8b"
@@ -2047,6 +2647,15 @@ output_per_million = 0.09999999999999999
 cache_read_per_million = 0.049999999999999996
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "ibm-granite/granite-4.2-8b"
 name = "IBM: Granite 4.2 8B"
@@ -2067,6 +2676,12 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.15
 cache_read_per_million = 0.049999999999999996
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "inception/mercury-2"
@@ -2089,6 +2704,12 @@ output_per_million = 0.75
 cache_read_per_million = 0.024999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "inception/mercury-2.5-preview"
 name = "Inception: Mercury 2.5 Preview"
@@ -2109,6 +2730,12 @@ input_per_million = 0.04
 output_per_million = 0.15
 cache_read_per_million = 0.004
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "inclusionai/ling-3.0-flash"
@@ -2131,6 +2758,12 @@ output_per_million = 0.063
 cache_read_per_million = 0.004200000000000001
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "inclusionai/ling-3.0-flash-fin:free"
 name = "Ling 3.0 Flash Fin (free)"
@@ -2151,6 +2784,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "kwaipilot/kat-coder-pro-v2"
@@ -2173,6 +2812,15 @@ output_per_million = 1.2
 cache_read_per_million = 0.06
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "kwaipilot/kat-coder-pro-v2.5"
 name = "Kwaipilot: KAT-Coder-Pro V2.5"
@@ -2193,6 +2841,15 @@ input_per_million = 0.74
 output_per_million = 2.96
 cache_read_per_million = 0.15
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "liquid/lfm-2.5-2.6b:free"
@@ -2215,6 +2872,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "mancer/weaver"
 name = "Mancer: Weaver (alpha)"
@@ -2234,6 +2897,15 @@ attachment = false
 input_per_million = 0.39999999999999997
 output_per_million = 0.75
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "meituan/longcat-2.0"
@@ -2256,6 +2928,12 @@ output_per_million = 1.2
 cache_read_per_million = 0.006
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "meta-llama/llama-3.1-70b-instruct"
 name = "Meta: Llama 3.1 70B Instruct"
@@ -2275,6 +2953,15 @@ attachment = false
 input_per_million = 0.39999999999999997
 output_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "meta-llama/llama-3.1-8b-instruct"
@@ -2297,6 +2984,15 @@ output_per_million = 0.08
 cache_read_per_million = 0.024999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "meta-llama/llama-3.2-1b-instruct"
 name = "Meta: Llama 3.2 1B Instruct"
@@ -2317,6 +3013,15 @@ input_per_million = 0.027
 output_per_million = 0.201
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "meta-llama/llama-3.2-3b-instruct"
 name = "Meta: Llama 3.2 3B Instruct"
@@ -2336,6 +3041,15 @@ attachment = false
 input_per_million = 0.049999999999999996
 output_per_million = 0.33
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "meta-llama/llama-3.3-70b-instruct"
@@ -2358,6 +3072,15 @@ output_per_million = 0.71
 cache_read_per_million = 0.71
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "meta-llama/llama-4-maverick"
 name = "Meta: Llama 4 Maverick"
@@ -2377,6 +3100,15 @@ attachment = true
 input_per_million = 0.19999999999999998
 output_per_million = 0.696
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "meta-llama/llama-4-scout"
@@ -2398,6 +3130,15 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.3
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "meta-llama/llama-guard-4-12b"
 name = "Meta: Llama Guard 4 12B"
@@ -2417,6 +3158,15 @@ attachment = true
 input_per_million = 0.18
 output_per_million = 0.18
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "meta/muse-glimmer-30b"
@@ -2444,6 +3194,12 @@ input_per_million = 0.35
 output_per_million = 1.5
 cache_read_per_million = 0.04
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "meta/muse-spark-1.1"
 name = "Meta: Muse Spark 1.1"
@@ -2464,6 +3220,12 @@ input_per_million = 1.25
 output_per_million = 4.25
 cache_read_per_million = 0.15
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "meta/muse-spark-1.2"
@@ -2486,6 +3248,12 @@ output_per_million = 4.25
 cache_read_per_million = 0.15
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "meta/muse-spark-1.2-contributor"
 name = "Meta: Muse Spark 1.2 Contributor"
@@ -2507,6 +3275,12 @@ output_per_million = 0.19999999999999998
 cache_read_per_million = 0.002
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "microsoft/phi-4"
 name = "Microsoft: Phi 4"
@@ -2526,6 +3300,15 @@ attachment = false
 input_per_million = 0.07
 output_per_million = 0.14
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "microsoft/wizardlm-2-8x22b"
@@ -2547,6 +3330,15 @@ input_per_million = 0.62
 output_per_million = 0.62
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "minimax/minimax-01"
 name = "MiniMax: MiniMax-01"
@@ -2566,6 +3358,15 @@ attachment = true
 input_per_million = 0.19999999999999998
 output_per_million = 1.1
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "minimax/minimax-m1"
@@ -2587,6 +3388,12 @@ input_per_million = 0.55
 output_per_million = 2.2
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "minimax/minimax-m2"
 name = "MiniMax: MiniMax M2"
@@ -2606,6 +3413,12 @@ attachment = false
 input_per_million = 0.255
 output_per_million = 1.02
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "minimax/minimax-m2-her"
@@ -2628,6 +3441,15 @@ output_per_million = 1.2
 cache_read_per_million = 0.03
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "minimax/minimax-m2.1"
 name = "MiniMax: MiniMax M2.1"
@@ -2648,6 +3470,12 @@ input_per_million = 0.3
 output_per_million = 1.2
 cache_read_per_million = 0.03
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "minimax/minimax-m2.5"
@@ -2670,6 +3498,12 @@ output_per_million = 1.08
 cache_read_per_million = 0.027
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "minimax/minimax-m2.7"
 name = "MiniMax: MiniMax M2.7"
@@ -2691,6 +3525,12 @@ output_per_million = 1.2
 cache_read_per_million = 0.06
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "minimax/minimax-m2.7:free"
 name = "MiniMax: MiniMax M2.7 (free)"
@@ -2711,6 +3551,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "minimax/minimax-m3"
@@ -2738,6 +3584,12 @@ input_per_million = 0.3
 output_per_million = 1.2
 cache_read_per_million = 0.06
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "minimax/minimax-m3:free"
 name = "MiniMax: MiniMax M3 (free)"
@@ -2758,6 +3610,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "mistralai/codestral-2508"
@@ -2780,6 +3638,15 @@ output_per_million = 0.8999999999999999
 cache_read_per_million = 0.03
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/devstral-2512"
 name = "Mistral: Devstral 2 2512"
@@ -2800,6 +3667,15 @@ input_per_million = 0.39999999999999997
 output_per_million = 2
 cache_read_per_million = 0.04
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/ministral-14b-2512"
@@ -2822,6 +3698,15 @@ output_per_million = 0.19999999999999998
 cache_read_per_million = 0.02
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/ministral-3b-2512"
 name = "Mistral: Ministral 3 3B 2512"
@@ -2842,6 +3727,15 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.09999999999999999
 cache_read_per_million = 0.01
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/ministral-8b-2512"
@@ -2864,6 +3758,15 @@ output_per_million = 0.15
 cache_read_per_million = 0.015
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/mistral-large"
 name = "Mistral Large"
@@ -2884,6 +3787,15 @@ input_per_million = 2
 output_per_million = 6
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/mistral-large-2407"
@@ -2906,6 +3818,15 @@ output_per_million = 6
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/mistral-large-2512"
 name = "Mistral: Mistral Large 3 2512"
@@ -2927,6 +3848,15 @@ output_per_million = 1.5
 cache_read_per_million = 0.049999999999999996
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/mistral-medium-3"
 name = "Mistral: Mistral Medium 3"
@@ -2947,6 +3877,15 @@ input_per_million = 0.39999999999999997
 output_per_million = 2
 cache_read_per_million = 0.04
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/mistral-medium-3-5"
@@ -2972,6 +3911,12 @@ source = "models.dev"
 input_per_million = 0.75
 output_per_million = 3.75
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "mistralai/mistral-medium-3.1"
 name = "Mistral: Mistral Medium 3.1"
@@ -2993,6 +3938,15 @@ output_per_million = 2
 cache_read_per_million = 0.04
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/mistral-nemo"
 name = "Mistral: Mistral Nemo"
@@ -3012,6 +3966,15 @@ attachment = false
 input_per_million = 0.019000000000000003
 output_per_million = 0.03
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/mistral-saba"
@@ -3034,6 +3997,15 @@ output_per_million = 0.6
 cache_read_per_million = 0.02
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/mistral-small-24b-instruct-2501"
 name = "Mistral: Mistral Small 3"
@@ -3053,6 +4025,15 @@ attachment = false
 input_per_million = 0.049999999999999996
 output_per_million = 0.08
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/mistral-small-2603"
@@ -3075,6 +4056,12 @@ output_per_million = 0.6
 cache_read_per_million = 0.015
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "mistralai/mistral-small-3.1-24b-instruct"
 name = "Mistral: Mistral Small 3.1 24B"
@@ -3095,6 +4082,15 @@ input_per_million = 0.351
 output_per_million = 0.5549999999999999
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/mistral-small-3.2-24b-instruct"
 name = "Mistral: Mistral Small 3.2 24B"
@@ -3114,6 +4110,15 @@ attachment = true
 input_per_million = 0.075
 output_per_million = 0.19999999999999998
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "mistralai/mixtral-8x22b-instruct"
@@ -3136,6 +4141,15 @@ output_per_million = 6
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "mistralai/voxtral-small-24b-2507"
 name = "Mistral: Voxtral Small 24B 2507"
@@ -3157,6 +4171,15 @@ output_per_million = 0.3
 cache_read_per_million = 0.01
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "moonshotai/kimi-k2"
 name = "MoonshotAI: Kimi K2 0711"
@@ -3177,6 +4200,15 @@ input_per_million = 0.5700000000000001
 output_per_million = 2.3
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "moonshotai/kimi-k2-0905"
 name = "MoonshotAI: Kimi K2 0905"
@@ -3196,6 +4228,15 @@ attachment = false
 input_per_million = 0.6
 output_per_million = 2.5
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "moonshotai/kimi-k2-thinking"
@@ -3218,6 +4259,12 @@ output_per_million = 2.5
 cache_read_per_million = 0.15
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "moonshotai/kimi-k2.5"
 name = "MoonshotAI: Kimi K2.5"
@@ -3238,6 +4285,12 @@ input_per_million = 0.44999999999999996
 output_per_million = 2.25
 cache_read_per_million = 0.07
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "moonshotai/kimi-k2.6"
@@ -3260,6 +4313,12 @@ output_per_million = 4
 cache_read_per_million = 0.16
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "moonshotai/kimi-k2.7-code"
 name = "MoonshotAI: Kimi K2.7 Code"
@@ -3280,6 +4339,12 @@ input_per_million = 0.66
 output_per_million = 3.4
 cache_read_per_million = 0.18
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "moonshotai/kimi-k3"
@@ -3307,6 +4372,12 @@ input_per_million = 3
 output_per_million = 15
 cache_read_per_million = 0.3
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "morph/morph-v3-fast"
 name = "Morph: Morph V3 Fast"
@@ -3327,6 +4398,15 @@ input_per_million = 0.7999999999999999
 output_per_million = 1.2
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "morph/morph-v3-large"
 name = "Morph: Morph V3 Large"
@@ -3346,6 +4426,15 @@ attachment = false
 input_per_million = 0.8999999999999999
 output_per_million = 1.9
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "nex-agi/nex-n2-mini"
@@ -3368,6 +4457,12 @@ output_per_million = 0.09999999999999999
 cache_read_per_million = 0.0025
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nex-agi/nex-n2-pro"
 name = "Nex AGI: Nex-N2-Pro"
@@ -3389,6 +4484,12 @@ output_per_million = 1
 cache_read_per_million = 0.024999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nousresearch/hermes-3-llama-3.1-405b"
 name = "Nous: Hermes 3 405B Instruct"
@@ -3408,6 +4509,15 @@ attachment = false
 input_per_million = 1
 output_per_million = 1
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "nousresearch/hermes-3-llama-3.1-70b"
@@ -3429,6 +4539,15 @@ input_per_million = 0.7
 output_per_million = 0.7
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "nousresearch/hermes-4-405b"
 name = "Nous: Hermes 4 405B"
@@ -3449,6 +4568,12 @@ input_per_million = 1
 output_per_million = 3
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nousresearch/hermes-4-70b"
 name = "Nous: Hermes 4 70B"
@@ -3468,6 +4593,12 @@ attachment = false
 input_per_million = 0.13
 output_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "nvidia/nemotron-3-nano-30b-a3b"
@@ -3490,6 +4621,12 @@ output_per_million = 0.19999999999999998
 cache_read_per_million = 0.024999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 name = "NVIDIA: Nemotron 3 Nano Omni (free)"
@@ -3511,6 +4648,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nvidia/nemotron-3-super-120b-a12b"
 name = "NVIDIA: Nemotron 3 Super"
@@ -3530,6 +4673,12 @@ attachment = false
 input_per_million = 0.08499999999999999
 output_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "nvidia/nemotron-3-super-120b-a12b:free"
@@ -3551,6 +4700,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -3578,6 +4733,12 @@ input_per_million = 0.6
 output_per_million = 3.5999999999999996
 cache_read_per_million = 0.19999999999999998
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nvidia/nemotron-3-ultra-550b-a55b:free"
 name = "NVIDIA: Nemotron 3 Ultra (free)"
@@ -3598,6 +4759,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "nvidia/nemotron-3.5-content-safety:free"
@@ -3620,6 +4787,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nvidia/nemotron-3.5-lightning"
 name = "NVIDIA: Nemotron 3.5 Lightning"
@@ -3641,6 +4814,12 @@ output_per_million = 0.19999999999999998
 cache_read_per_million = 0.04
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "nvidia/nemotron-3.5-lightning:free"
 name = "NVIDIA: Nemotron 3.5 Lightning (free)"
@@ -3661,6 +4840,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-3.5-turbo"
@@ -3686,6 +4871,15 @@ source = "models.dev"
 input_per_million = 0.25
 output_per_million = 0.75
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-3.5-turbo-0613"
 name = "OpenAI: GPT-3.5 Turbo (older v0613)"
@@ -3705,6 +4899,15 @@ attachment = false
 input_per_million = 1
 output_per_million = 2
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-3.5-turbo-16k"
@@ -3726,6 +4929,15 @@ input_per_million = 3
 output_per_million = 4
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-3.5-turbo-instruct"
 name = "OpenAI: GPT-3.5 Turbo Instruct"
@@ -3746,6 +4958,15 @@ input_per_million = 1.5
 output_per_million = 2
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4"
 name = "OpenAI: GPT-4"
@@ -3765,6 +4986,15 @@ attachment = false
 input_per_million = 30
 output_per_million = 60
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-4-turbo"
@@ -3790,6 +5020,15 @@ source = "models.dev"
 input_per_million = 5
 output_per_million = 15
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4-turbo-preview"
 name = "OpenAI: GPT-4 Turbo Preview"
@@ -3809,6 +5048,15 @@ attachment = false
 input_per_million = 10
 output_per_million = 30
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-4.1"
@@ -3836,6 +5084,15 @@ input_per_million = 1
 output_per_million = 4
 cache_read_per_million = 0.25
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4.1-mini"
 name = "OpenAI: GPT-4.1 Mini"
@@ -3861,6 +5118,15 @@ source = "models.dev"
 input_per_million = 0.19999999999999998
 output_per_million = 0.7999999999999999
 cache_read_per_million = 0.049999999999999996
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-4.1-nano"
@@ -3888,6 +5154,15 @@ input_per_million = 0.049999999999999996
 output_per_million = 0.19999999999999998
 cache_read_per_million = 0.012499999999999999
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4o"
 name = "OpenAI: GPT-4o"
@@ -3914,6 +5189,15 @@ input_per_million = 1.25
 output_per_million = 5
 cache_read_per_million = 0.625
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4o-2024-05-13"
 name = "OpenAI: GPT-4o (2024-05-13)"
@@ -3933,6 +5217,15 @@ attachment = true
 input_per_million = 5
 output_per_million = 15
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-4o-2024-08-06"
@@ -3955,6 +5248,15 @@ output_per_million = 10
 cache_read_per_million = 1.25
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4o-2024-11-20"
 name = "OpenAI: GPT-4o (2024-11-20)"
@@ -3975,6 +5277,15 @@ input_per_million = 2.5
 output_per_million = 10
 cache_read_per_million = 1.25
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-4o-mini"
@@ -4002,6 +5313,15 @@ input_per_million = 0.075
 output_per_million = 0.3
 cache_read_per_million = 0.0375
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-4o-mini-2024-07-18"
 name = "OpenAI: GPT-4o-mini (2024-07-18)"
@@ -4022,6 +5342,15 @@ input_per_million = 0.15
 output_per_million = 0.6
 cache_read_per_million = 0.075
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-5"
@@ -4049,6 +5378,12 @@ input_per_million = 0.625
 output_per_million = 5
 cache_read_per_million = 0.0625
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5-image"
 name = "OpenAI: GPT-5 Image"
@@ -4070,6 +5405,12 @@ output_per_million = 10
 cache_read_per_million = 1.25
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5-image-mini"
 name = "OpenAI: GPT-5 Image Mini"
@@ -4090,6 +5431,12 @@ input_per_million = 2.5
 output_per_million = 2
 cache_read_per_million = 0.25
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5-mini"
@@ -4117,6 +5464,12 @@ input_per_million = 0.125
 output_per_million = 1
 cache_read_per_million = 0.012499999999999999
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5-nano"
 name = "OpenAI: GPT-5 Nano"
@@ -4143,6 +5496,12 @@ input_per_million = 0.024999999999999998
 output_per_million = 0.19999999999999998
 cache_read_per_million = 0.0025
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5-pro"
 name = "OpenAI: GPT-5 Pro"
@@ -4166,6 +5525,12 @@ source = "models.dev"
 [model.pricing.batch]
 input_per_million = 7.5
 output_per_million = 60
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.1"
@@ -4193,6 +5558,12 @@ input_per_million = 0.625
 output_per_million = 5
 cache_read_per_million = 0.0625
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.1-codex"
 name = "OpenAI: GPT-5.1-Codex"
@@ -4213,6 +5584,12 @@ input_per_million = 1.25
 output_per_million = 10
 cache_read_per_million = 0.13
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.1-codex-max"
@@ -4235,6 +5612,12 @@ output_per_million = 10
 cache_read_per_million = 0.125
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.1-codex-mini"
 name = "OpenAI: GPT-5.1-Codex-Mini"
@@ -4255,6 +5638,12 @@ input_per_million = 0.25
 output_per_million = 2
 cache_read_per_million = 0.03
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.2"
@@ -4282,6 +5671,12 @@ input_per_million = 0.875
 output_per_million = 7
 cache_read_per_million = 0.0875
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.2-chat"
 name = "OpenAI: GPT-5.2 Chat"
@@ -4303,6 +5698,15 @@ output_per_million = 14
 cache_read_per_million = 0.175
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-5.2-codex"
 name = "OpenAI: GPT-5.2-Codex"
@@ -4323,6 +5727,12 @@ input_per_million = 1.75
 output_per_million = 14
 cache_read_per_million = 0.175
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.2-pro"
@@ -4348,6 +5758,12 @@ source = "models.dev"
 input_per_million = 10.5
 output_per_million = 84
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.3-codex"
 name = "OpenAI: GPT-5.3-Codex"
@@ -4368,6 +5784,12 @@ input_per_million = 1.75
 output_per_million = 14
 cache_read_per_million = 0.175
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.4"
@@ -4395,6 +5817,12 @@ input_per_million = 1.25
 output_per_million = 7.5
 cache_read_per_million = 0.125
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.4-image-2"
 name = "OpenAI: GPT-5.4 Image 2"
@@ -4415,6 +5843,12 @@ input_per_million = 8
 output_per_million = 15
 cache_read_per_million = 2
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.4-mini"
@@ -4442,6 +5876,12 @@ input_per_million = 0.375
 output_per_million = 2.25
 cache_read_per_million = 0.0375
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.4-nano"
 name = "OpenAI: GPT-5.4 Nano"
@@ -4468,6 +5908,12 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.625
 cache_read_per_million = 0.01
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.4-pro"
 name = "OpenAI: GPT-5.4 Pro"
@@ -4491,6 +5937,12 @@ source = "models.dev"
 [model.pricing.batch]
 input_per_million = 15
 output_per_million = 90
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.5"
@@ -4518,6 +5970,12 @@ input_per_million = 2.5
 output_per_million = 15
 cache_read_per_million = 0.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.5-pro"
 name = "OpenAI: GPT-5.5 Pro"
@@ -4541,6 +5999,12 @@ source = "models.dev"
 [model.pricing.batch]
 input_per_million = 15
 output_per_million = 90
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.6-luna"
@@ -4569,6 +6033,12 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.6
 cache_read_per_million = 0.01
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.6-luna-pro"
 name = "OpenAI: GPT-5.6 Luna Pro"
@@ -4595,6 +6065,12 @@ source = "models.dev"
 input_per_million = 0.09999999999999999
 output_per_million = 0.6
 cache_read_per_million = 0.01
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.6-sol"
@@ -4624,6 +6100,12 @@ output_per_million = 5
 cache_read_per_million = 0.09999999999999999
 cache_write_per_million = 1.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.6-sol-pro"
 name = "OpenAI: GPT-5.6 Sol Pro"
@@ -4652,6 +6134,12 @@ output_per_million = 5
 cache_read_per_million = 0.09999999999999999
 cache_write_per_million = 1.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-5.6-terra"
 name = "OpenAI: GPT-5.6 Terra"
@@ -4678,6 +6166,12 @@ source = "models.dev"
 input_per_million = 1
 output_per_million = 6
 cache_read_per_million = 0.09999999999999999
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-5.6-terra-pro"
@@ -4706,6 +6200,12 @@ input_per_million = 1
 output_per_million = 6
 cache_read_per_million = 0.09999999999999999
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-audio"
 name = "OpenAI: GPT Audio"
@@ -4725,6 +6225,15 @@ attachment = true
 input_per_million = 2.5
 output_per_million = 10
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-audio-mini"
@@ -4746,6 +6255,15 @@ input_per_million = 0.6
 output_per_million = 2.4
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "openai/gpt-chat-latest"
 name = "OpenAI: GPT Chat Latest"
@@ -4766,6 +6284,15 @@ input_per_million = 5
 output_per_million = 30
 cache_read_per_million = 0.5
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openai/gpt-oss-120b"
@@ -4790,6 +6317,12 @@ source = "models.dev"
 [model.pricing.batch]
 input_per_million = 0.15
 output_per_million = 0.6
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/gpt-oss-20b"
@@ -4816,6 +6349,12 @@ source = "models.dev"
 input_per_million = 0.049999999999999996
 output_per_million = 0.19999999999999998
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/gpt-oss-safeguard-20b"
 name = "OpenAI: gpt-oss-safeguard-20b"
@@ -4836,6 +6375,12 @@ input_per_million = 0.075
 output_per_million = 0.3
 cache_read_per_million = 0.0375
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/o1"
@@ -4858,6 +6403,12 @@ output_per_million = 60
 cache_read_per_million = 7.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/o1-pro"
 name = "OpenAI: o1-pro"
@@ -4877,6 +6428,12 @@ attachment = true
 input_per_million = 150
 output_per_million = 600
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/o3"
@@ -4904,6 +6461,12 @@ input_per_million = 1
 output_per_million = 4
 cache_read_per_million = 0.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/o3-mini"
 name = "OpenAI: o3 Mini"
@@ -4930,6 +6493,12 @@ input_per_million = 0.55
 output_per_million = 2.2
 cache_read_per_million = 0.275
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/o3-mini-high"
 name = "OpenAI: o3 Mini High"
@@ -4951,6 +6520,12 @@ output_per_million = 4.4
 cache_read_per_million = 0.55
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/o3-pro"
 name = "OpenAI: o3 Pro"
@@ -4970,6 +6545,12 @@ attachment = true
 input_per_million = 20
 output_per_million = 80
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openai/o4-mini"
@@ -4997,6 +6578,12 @@ input_per_million = 0.55
 output_per_million = 2.2
 cache_read_per_million = 0.1375
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openai/o4-mini-high"
 name = "OpenAI: o4 Mini High"
@@ -5018,6 +6605,12 @@ output_per_million = 4.4
 cache_read_per_million = 0.275
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openrouter/auto"
 name = "Auto Router"
@@ -5032,9 +6625,13 @@ temperature = true
 attachment = true
 
 [model.pricing]
-input_per_million = -1000000
-output_per_million = -1000000
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openrouter/auto-beta"
@@ -5050,9 +6647,13 @@ temperature = true
 attachment = true
 
 [model.pricing]
-input_per_million = -1000000
-output_per_million = -1000000
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "openrouter/bodybuilder"
@@ -5068,9 +6669,16 @@ temperature = false
 attachment = false
 
 [model.pricing]
-input_per_million = -1000000
-output_per_million = -1000000
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openrouter/free"
@@ -5090,6 +6698,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "openrouter/fusion"
 name = "OpenRouter: Fusion"
@@ -5104,9 +6718,16 @@ temperature = false
 attachment = false
 
 [model.pricing]
-input_per_million = -1000000
-output_per_million = -1000000
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "openrouter/pareto-code"
@@ -5122,9 +6743,16 @@ temperature = false
 attachment = false
 
 [model.pricing]
-input_per_million = -1000000
-output_per_million = -1000000
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "perceptron/perceptron-mk1"
@@ -5146,6 +6774,12 @@ input_per_million = 0.15
 output_per_million = 1.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "perplexity/sonar"
 name = "Perplexity: Sonar"
@@ -5165,6 +6799,15 @@ attachment = true
 input_per_million = 1
 output_per_million = 1
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "perplexity/sonar-deep-research"
@@ -5187,6 +6830,12 @@ output_per_million = 8
 reasoning_per_million = 3
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "perplexity/sonar-pro"
 name = "Perplexity: Sonar Pro"
@@ -5206,6 +6855,15 @@ attachment = true
 input_per_million = 3
 output_per_million = 15
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "perplexity/sonar-pro-search"
@@ -5227,6 +6885,12 @@ input_per_million = 3
 output_per_million = 15
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "perplexity/sonar-reasoning-pro"
 name = "Perplexity: Sonar Reasoning Pro"
@@ -5246,6 +6910,12 @@ attachment = true
 input_per_million = 2
 output_per_million = 8
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "poolside/laguna-s-2.1"
@@ -5268,6 +6938,12 @@ output_per_million = 0.18
 cache_read_per_million = 0.009
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "poolside/laguna-s-2.1:free"
 name = "Poolside: Laguna S 2.1 (free)"
@@ -5288,6 +6964,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "poolside/laguna-xs-2.1"
@@ -5310,6 +6992,12 @@ output_per_million = 0.12
 cache_read_per_million = 0.03
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "poolside/laguna-xs-2.1:free"
 name = "Poolside: Laguna XS 2.1 (free)"
@@ -5331,6 +7019,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen-2.5-72b-instruct"
 name = "Qwen2.5 72B Instruct"
@@ -5350,6 +7044,15 @@ attachment = false
 input_per_million = 0.36
 output_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "qwen/qwen-2.5-7b-instruct"
@@ -5371,6 +7074,15 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen-2.5-coder-32b-instruct"
 name = "Qwen2.5 Coder 32B Instruct"
@@ -5390,6 +7102,15 @@ attachment = false
 input_per_million = 0.66
 output_per_million = 1
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "qwen/qwen-plus"
@@ -5413,6 +7134,15 @@ cache_read_per_million = 0.052000000000000005
 cache_write_per_million = 0.325
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen-plus-2025-07-28"
 name = "Qwen: Qwen Plus 0728"
@@ -5432,6 +7162,12 @@ attachment = false
 input_per_million = 0.26
 output_per_million = 0.78
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen2.5-vl-72b-instruct"
@@ -5453,6 +7189,15 @@ input_per_million = 0.25
 output_per_million = 0.75
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-14b"
 name = "Qwen: Qwen3 14B"
@@ -5473,6 +7218,12 @@ input_per_million = 0.12
 output_per_million = 0.24
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3-235b-a22b"
 name = "Qwen: Qwen3 235B A22B"
@@ -5492,6 +7243,12 @@ attachment = false
 input_per_million = 0.45499999999999996
 output_per_million = 1.8199999999999998
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-235b-a22b-2507"
@@ -5514,6 +7271,15 @@ output_per_million = 0.35
 cache_read_per_million = 0.0175
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-235b-a22b-thinking-2507"
 name = "Qwen: Qwen3 235B A22B Thinking 2507"
@@ -5533,6 +7299,12 @@ attachment = false
 input_per_million = 0.22999999999999998
 output_per_million = 2.3
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-30b-a3b"
@@ -5554,6 +7326,12 @@ input_per_million = 0.12
 output_per_million = 0.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3-30b-a3b-instruct-2507"
 name = "Qwen: Qwen3 30B A3B Instruct 2507"
@@ -5573,6 +7351,15 @@ attachment = false
 input_per_million = 0.04815
 output_per_million = 0.19305
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "qwen/qwen3-30b-a3b-thinking-2507"
@@ -5594,6 +7381,12 @@ input_per_million = 0.19999999999999998
 output_per_million = 2.4
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3-32b"
 name = "Qwen: Qwen3 32B"
@@ -5614,6 +7407,12 @@ input_per_million = 0.08
 output_per_million = 0.28
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3-8b"
 name = "Qwen: Qwen3 8B"
@@ -5633,6 +7432,12 @@ attachment = false
 input_per_million = 0.117
 output_per_million = 0.45499999999999996
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-coder"
@@ -5655,6 +7460,15 @@ output_per_million = 1
 cache_read_per_million = 0.09999999999999999
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-coder-30b-a3b-instruct"
 name = "Qwen: Qwen3 Coder 30B A3B Instruct"
@@ -5674,6 +7488,15 @@ attachment = false
 input_per_million = 0.07
 output_per_million = 0.28
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "qwen/qwen3-coder-flash"
@@ -5697,6 +7520,15 @@ cache_read_per_million = 0.039
 cache_write_per_million = 0.24375
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-coder-next"
 name = "Qwen: Qwen3 Coder Next"
@@ -5717,6 +7549,15 @@ input_per_million = 0.12
 output_per_million = 0.7999999999999999
 cache_read_per_million = 0.07
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "qwen/qwen3-coder-plus"
@@ -5740,6 +7581,12 @@ cache_read_per_million = 0.13
 cache_write_per_million = 0.8125
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3-max"
 name = "Qwen: Qwen3 Max"
@@ -5762,6 +7609,12 @@ cache_read_per_million = 0.156
 cache_write_per_million = 0.975
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3-max-thinking"
 name = "Qwen: Qwen3 Max Thinking"
@@ -5781,6 +7634,12 @@ attachment = false
 input_per_million = 0.78
 output_per_million = 3.9
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-next-80b-a3b-instruct"
@@ -5803,6 +7662,15 @@ output_per_million = 1.1
 cache_read_per_million = 0.07
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-next-80b-a3b-thinking"
 name = "Qwen: Qwen3 Next 80B A3B Thinking"
@@ -5822,6 +7690,12 @@ attachment = false
 input_per_million = 0.15
 output_per_million = 1.2
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-vl-235b-a22b-instruct"
@@ -5844,6 +7718,15 @@ output_per_million = 1.9
 cache_read_per_million = 0.09999999999999999
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-vl-235b-a22b-thinking"
 name = "Qwen: Qwen3 VL 235B A22B Thinking"
@@ -5863,6 +7746,12 @@ attachment = true
 input_per_million = 0.39999999999999997
 output_per_million = 4
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-vl-30b-a3b-instruct"
@@ -5884,6 +7773,15 @@ input_per_million = 0.15
 output_per_million = 0.6
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-vl-30b-a3b-thinking"
 name = "Qwen: Qwen3 VL 30B A3B Thinking"
@@ -5903,6 +7801,12 @@ attachment = true
 input_per_million = 0.19999999999999998
 output_per_million = 2.4
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3-vl-32b-instruct"
@@ -5924,6 +7828,15 @@ input_per_million = 0.10400000000000001
 output_per_million = 0.41600000000000004
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "qwen/qwen3-vl-8b-instruct"
 name = "Qwen: Qwen3 VL 8B Instruct"
@@ -5943,6 +7856,15 @@ attachment = true
 input_per_million = 0.117
 output_per_million = 0.45499999999999996
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "qwen/qwen3-vl-8b-thinking"
@@ -5964,6 +7886,12 @@ input_per_million = 0.18
 output_per_million = 2.0999999999999996
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.5-122b-a10b"
 name = "Qwen: Qwen3.5-122B-A10B"
@@ -5984,6 +7912,12 @@ input_per_million = 0.29
 output_per_million = 2.4
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.5-27b"
 name = "Qwen: Qwen3.5-27B"
@@ -6003,6 +7937,12 @@ attachment = true
 input_per_million = 0.195
 output_per_million = 1.56
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.5-35b-a3b"
@@ -6025,6 +7965,12 @@ output_per_million = 1.25
 cache_read_per_million = 0.25
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.5-397b-a17b"
 name = "Qwen: Qwen3.5 397B A17B"
@@ -6044,6 +7990,12 @@ attachment = true
 input_per_million = 0.39
 output_per_million = 2.34
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.5-9b"
@@ -6069,6 +8021,12 @@ source = "models.dev"
 input_per_million = 0.16999999999999998
 output_per_million = 0.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.5-flash-02-23"
 name = "Qwen: Qwen3.5-Flash"
@@ -6089,6 +8047,12 @@ input_per_million = 0.065
 output_per_million = 0.26
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.5-plus-02-15"
 name = "Qwen: Qwen3.5 Plus 2026-02-15"
@@ -6108,6 +8072,12 @@ attachment = true
 input_per_million = 0.26
 output_per_million = 1.56
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.5-plus-20260420"
@@ -6130,6 +8100,12 @@ output_per_million = 1.7999999999999998
 cache_write_per_million = 0.375
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.6-27b"
 name = "Qwen: Qwen3.6 27B"
@@ -6150,6 +8126,12 @@ input_per_million = 0.6
 output_per_million = 3.5999999999999996
 cache_read_per_million = 0.12
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.6-35b-a3b"
@@ -6172,6 +8154,12 @@ output_per_million = 0.8999999999999999
 cache_read_per_million = 0.049999999999999996
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.6-flash"
 name = "Qwen: Qwen3.6 Flash"
@@ -6192,6 +8180,12 @@ input_per_million = 0.1875
 output_per_million = 1.125
 cache_write_per_million = 0.234375
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.6-max-preview"
@@ -6214,6 +8208,12 @@ output_per_million = 6.162
 cache_write_per_million = 1.28375
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.6-plus"
 name = "Qwen: Qwen3.6 Plus"
@@ -6234,6 +8234,12 @@ input_per_million = 0.325
 output_per_million = 1.95
 cache_write_per_million = 0.40625
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.7-flash"
@@ -6257,6 +8263,12 @@ cache_read_per_million = 0.006
 cache_write_per_million = 0.038000000000000006
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.7-max"
 name = "Qwen: Qwen3.7 Max"
@@ -6279,6 +8291,12 @@ cache_read_per_million = 0.295
 cache_write_per_million = 1.84375
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.7-plus"
 name = "Qwen: Qwen3.7 Plus"
@@ -6300,6 +8318,12 @@ output_per_million = 1.28
 cache_read_per_million = 0.064
 cache_write_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.8-2.4t-a95b"
@@ -6327,6 +8351,12 @@ input_per_million = 2
 output_per_million = 6
 cache_read_per_million = 0.25
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.8-27b"
 name = "Qwen: Qwen3.8 27B"
@@ -6348,6 +8378,12 @@ output_per_million = 2.5500000000000003
 cache_read_per_million = 0.08499999999999999
 cache_write_per_million = 0.53125
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "qwen/qwen3.8-flash"
@@ -6371,6 +8407,12 @@ cache_read_per_million = 0.016
 cache_write_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "qwen/qwen3.8-max"
 name = "Qwen: Qwen3.8 Max"
@@ -6393,6 +8435,12 @@ cache_read_per_million = 0.25
 cache_write_per_million = 2.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "rekaai/reka-edge"
 name = "Reka Edge"
@@ -6412,6 +8460,12 @@ attachment = true
 input_per_million = 0.09999999999999999
 output_per_million = 0.09999999999999999
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "rekaai/reka-flash-3"
@@ -6433,6 +8487,12 @@ input_per_million = 0.09999999999999999
 output_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "relace/relace-apply-3"
 name = "Relace: Relace Apply 3"
@@ -6453,6 +8513,15 @@ input_per_million = 0.85
 output_per_million = 1.25
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "relace/relace-search"
 name = "Relace: Relace Search"
@@ -6472,6 +8541,15 @@ attachment = false
 input_per_million = 1
 output_per_million = 3
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "sakana/fugu-ultra"
@@ -6494,6 +8572,12 @@ output_per_million = 30
 cache_read_per_million = 0.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "sakana/sakana-namazu"
 name = "Sakana: Sakana Namazu"
@@ -6515,6 +8599,12 @@ output_per_million = 4
 cache_read_per_million = 0.15
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "sao10k/l3-lunaris-8b"
 name = "Sao10K: Llama 3 8B Lunaris"
@@ -6534,6 +8624,15 @@ attachment = false
 input_per_million = 0.04
 output_per_million = 0.049999999999999996
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "sao10k/l3.1-euryale-70b"
@@ -6555,6 +8654,15 @@ input_per_million = 0.85
 output_per_million = 0.85
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "sao10k/l3.3-euryale-70b"
 name = "Sao10K: Llama 3.3 Euryale 70B"
@@ -6575,6 +8683,15 @@ input_per_million = 0.65
 output_per_million = 0.75
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "stepfun/step-3.5-flash"
 name = "StepFun: Step 3.5 Flash"
@@ -6594,6 +8711,12 @@ attachment = false
 input_per_million = 0.09999999999999999
 output_per_million = 0.3
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "stepfun/step-3.7-flash"
@@ -6616,6 +8739,12 @@ output_per_million = 1.15
 cache_read_per_million = 0.04
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "tencent/hunyuan-a13b-instruct"
 name = "Tencent: Hunyuan A13B Instruct"
@@ -6635,6 +8764,12 @@ attachment = false
 input_per_million = 0.14
 output_per_million = 0.5700000000000001
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "tencent/hy-mt2-1.8b"
@@ -6656,6 +8791,15 @@ input_per_million = 0.044
 output_per_million = 0.17700000000000002
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "tencent/hy-mt2-30b-a3b"
 name = "Tencent: Hy-MT2-30B-A3B"
@@ -6676,6 +8820,15 @@ input_per_million = 0.074
 output_per_million = 0.295
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "tencent/hy-mt2-7b"
 name = "Tencent: Hy-MT2-7B"
@@ -6695,6 +8848,15 @@ attachment = false
 input_per_million = 0.074
 output_per_million = 0.295
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "tencent/hy3"
@@ -6717,6 +8879,12 @@ output_per_million = 0.5279999999999999
 cache_read_per_million = 0.032999999999999995
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "tencent/hy3-preview"
 name = "Tencent: Hy3 preview"
@@ -6737,6 +8905,12 @@ input_per_million = 0.18
 output_per_million = 0.6
 cache_read_per_million = 0.06
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "tencent/hy4-preview"
@@ -6759,6 +8933,12 @@ output_per_million = 2.501
 cache_read_per_million = 0.041999999999999996
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "thedrummer/cydonia-24b-v4.1"
 name = "TheDrummer: Cydonia 24B V4.1"
@@ -6779,6 +8959,15 @@ input_per_million = 0.3
 output_per_million = 0.5
 cache_read_per_million = 0.15
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "thedrummer/skyfall-36b-v2"
@@ -6801,6 +8990,15 @@ output_per_million = 0.7999999999999999
 cache_read_per_million = 0.25
 source = "models.dev"
 
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
+
 [[model]]
 id = "thedrummer/unslopnemo-12b"
 name = "TheDrummer: UnslopNemo 12B"
@@ -6820,6 +9018,15 @@ attachment = false
 input_per_million = 0.39999999999999997
 output_per_million = 0.39999999999999997
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "thinkingmachines/inkling"
@@ -6847,6 +9054,12 @@ input_per_million = 1
 output_per_million = 4.05
 cache_read_per_million = 0.16999999999999998
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "thinkingmachines/inkling-small"
 name = "Thinking Machines: Inkling Small"
@@ -6873,6 +9086,12 @@ input_per_million = 0.5
 output_per_million = 1.2
 cache_read_per_million = 0.09999999999999999
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "thinkingmachines/inkling-small:free"
 name = "Thinking Machines: Inkling Small (free)"
@@ -6893,6 +9112,12 @@ billing_mode = "free"
 input_per_million = 0
 output_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "thinkingmachines/inkling:free"
@@ -6915,6 +9140,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "undi95/remm-slerp-l2-13b"
 name = "ReMM SLERP 13B"
@@ -6934,6 +9165,15 @@ attachment = false
 input_per_million = 0.44999999999999996
 output_per_million = 0.65
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "upstage/solar-pro-3"
@@ -6956,6 +9196,12 @@ output_per_million = 0.6
 cache_read_per_million = 0.015
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "upstage/solar-pro4"
 name = "Upstage: Solar Pro 4"
@@ -6977,6 +9223,12 @@ output_per_million = 0.12
 cache_read_per_million = 0.006
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "writer/palmyra-x5"
 name = "Writer: Palmyra X5"
@@ -6996,6 +9248,15 @@ attachment = false
 input_per_million = 0.6
 output_per_million = 6
 source = "models.dev"
+
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+effort = { support = "unsupported" }
+budget = { support = "unsupported" }
+modes = []
 
 [[model]]
 id = "x-ai/grok-4.20"
@@ -7018,6 +9279,12 @@ output_per_million = 2.5
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "x-ai/grok-4.20-multi-agent"
 name = "SpaceXAI: Grok 4.20 Multi-Agent"
@@ -7038,6 +9305,12 @@ input_per_million = 1.25
 output_per_million = 2.5
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "x-ai/grok-4.3"
@@ -7060,6 +9333,12 @@ output_per_million = 2.5
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "x-ai/grok-4.5"
 name = "SpaceXAI: Grok 4.5"
@@ -7080,6 +9359,12 @@ input_per_million = 2
 output_per_million = 6
 cache_read_per_million = 0.3
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "x-ai/grok-4.6"
@@ -7102,6 +9387,12 @@ output_per_million = 6
 cache_read_per_million = 0.5
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "x-ai/grok-build-0.1"
 name = "SpaceXAI: Grok Build 0.1"
@@ -7122,6 +9413,12 @@ input_per_million = 1
 output_per_million = 2
 cache_read_per_million = 0.19999999999999998
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "xiaomi/mimo-v2.5"
@@ -7144,6 +9441,12 @@ output_per_million = 0.28
 cache_read_per_million = 0.0028
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "xiaomi/mimo-v2.5-pro"
 name = "Xiaomi: MiMo-V2.5-Pro"
@@ -7164,6 +9467,12 @@ input_per_million = 0.435
 output_per_million = 0.87
 cache_read_per_million = 0.0036
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-4.5"
@@ -7186,6 +9495,12 @@ output_per_million = 2.2
 cache_read_per_million = 0.11
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-4.5-air"
 name = "Z.ai: GLM 4.5 Air"
@@ -7206,6 +9521,12 @@ input_per_million = 0.13
 output_per_million = 0.85
 cache_read_per_million = 0.024999999999999998
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-4.5v"
@@ -7228,6 +9549,12 @@ output_per_million = 1.7999999999999998
 cache_read_per_million = 0.11
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-4.6"
 name = "Z.ai: GLM 4.6"
@@ -7248,6 +9575,12 @@ input_per_million = 0.43
 output_per_million = 1.75
 cache_read_per_million = 0.08
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-4.6v"
@@ -7270,6 +9603,12 @@ output_per_million = 0.8999999999999999
 cache_read_per_million = 0.055
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-4.7"
 name = "Z.ai: GLM 4.7"
@@ -7290,6 +9629,12 @@ input_per_million = 0.39999999999999997
 output_per_million = 1.75
 cache_read_per_million = 0.08
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-4.7-flash"
@@ -7312,6 +9657,12 @@ output_per_million = 0.39999999999999997
 cache_read_per_million = 0.01
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-5"
 name = "Z.ai: GLM 5"
@@ -7332,6 +9683,12 @@ input_per_million = 0.6
 output_per_million = 1.92
 cache_read_per_million = 0.12
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-5-turbo"
@@ -7354,6 +9711,12 @@ output_per_million = 4
 cache_read_per_million = 0.24
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-5.1"
 name = "Z.ai: GLM 5.1"
@@ -7374,6 +9737,12 @@ input_per_million = 0.966
 output_per_million = 3.036
 cache_read_per_million = 0.1794
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-5.2"
@@ -7396,6 +9765,12 @@ output_per_million = 3.036
 cache_read_per_million = 0.1932
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-5.2:free"
 name = "Z.ai: GLM 5.2 (free)"
@@ -7417,6 +9792,12 @@ input_per_million = 0
 output_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-5.3"
 name = "Z.ai: GLM 5.3"
@@ -7437,6 +9818,12 @@ input_per_million = 1.4
 output_per_million = 4.4
 cache_read_per_million = 0.26
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
 
 [[model]]
 id = "z-ai/glm-5.3-flash"
@@ -7464,6 +9851,12 @@ input_per_million = 0.15
 output_per_million = 0.5
 cache_read_per_million = 0.03
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+
 [[model]]
 id = "z-ai/glm-5v-turbo"
 name = "Z.ai: GLM 5V Turbo"
@@ -7484,3 +9877,8 @@ input_per_million = 1.2
 output_per_million = 4
 cache_read_per_million = 0.24
 source = "models.dev"
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]

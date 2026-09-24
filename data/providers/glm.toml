@@ -1,4 +1,10 @@
 # Mainland metered chat API, separate from Coding Plan and Z.AI accounts.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "thinking_type", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://docs.z.ai/api-reference/llm/chat-completion"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland"]
 provider_id = "zhipu"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
@@ -34,3 +40,11 @@ reasoning = true
 temperature = true
 attachment = false
 open_weights = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }

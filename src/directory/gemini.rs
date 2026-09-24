@@ -55,6 +55,7 @@ fn decode_page(resp: &HttpResponse) -> Result<DecodedModelPage, LlmError> {
             None => {}
         }
         models.push(LiveModel {
+            inference_features: None,
             request_model: id,
             display_name: text(row, "displayName"),
             description: text(row, "description"),

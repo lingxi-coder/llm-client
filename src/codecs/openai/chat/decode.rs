@@ -1,16 +1,18 @@
 //! Response and error decoding.
 //!
-//! The error mapping is gate 31's subject: every provider's "the transcript no
-//! longer fits" must arrive as `ContextOverflow`, because that and only that
-//! sends the turn into reactive compaction (§13 step 3).
+//! Provider context-limit errors are normalized to `ContextOverflow` so the
+//! caller can choose how to reduce input or otherwise recover.
 
-use lingxi_agent_api::protocol::{
-    CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ReportedCost,
-    StopReason, ToolUseId, Usage,
+use crate::protocol::{
+    CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
+    ReportedCost, StopReason, ToolUseId, Usage,
 };
 use serde_json::Value;
 
-pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
+pub(super) fn response_with_usage_mode(
+    resp: &HttpResponse,
+    separate_reasoning: bool,
+) -> Result<CompletionResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
     if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
@@ -26,13 +28,18 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let refusal = message.get("refusal").and_then(Value::as_str);
 
     let mut content = Vec::new();
-    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str) {
-        if !reasoning.is_empty() {
-            content.push(ContentBlock::Thinking {
-                text: reasoning.to_owned(),
-                signature: None,
-            });
-        }
+    let reasoning = super::reasoning::display_text(message);
+    if !reasoning.is_empty() {
+        content.push(ContentBlock::Thinking {
+            text: reasoning,
+            signature: None,
+        });
+    }
+    if let Some(value) = super::reasoning::from_message(message)? {
+        content.push(ContentBlock::ProviderContent {
+            protocol: ProtocolFamily::OpenAiChat,
+            value,
+        });
     }
     if let Some(text) = message.get("content").and_then(Value::as_str) {
         if !text.is_empty() {
@@ -75,6 +82,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     }
 
     Ok(CompletionResponse {
+        inference: Default::default(),
         web_search: crate::codecs::web_search_decode::with_usage(
             crate::codecs::web_search_decode::chat_with_search(message, &body),
             body.get("usage"),
@@ -88,7 +96,14 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             stop_reason(choice.get("finish_reason").and_then(Value::as_str)),
             refusal.is_some(),
         ),
-        usage: body.get("usage").map(usage).unwrap_or_default(),
+        usage: crate::codecs::usage::report(
+            body.get("usage")
+                .map(|raw| normalize_usage(raw, separate_reasoning))
+                .as_ref(),
+            &crate::codecs::usage::OPENAI_CHAT,
+            usage,
+            true,
+        ),
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -113,37 +128,37 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let code = error
-        .and_then(|e| e.get("code"))
-        .and_then(Value::as_str)
-        .or_else(|| error.and_then(|e| e.get("type")).and_then(Value::as_str))
-        .unwrap_or_default();
+    let codes = ["code", "type"]
+        .into_iter()
+        .filter_map(|key| error.and_then(|e| e.get(key)).and_then(Value::as_str));
 
     // The provider's own code is more precise than the status, so it wins.
-    match code {
-        "insufficient_quota" => {
-            return LlmError::QuotaExceeded {
-                message: display(status, body, &message),
+    for code in codes {
+        match code {
+            "insufficient_quota" | "credit_balance_exhausted" => {
+                return LlmError::QuotaExceeded {
+                    message: display(status, body, &message),
+                }
             }
-        }
-        "context_length_exceeded" => {
-            return LlmError::ContextOverflow {
-                message: display(status, body, &message),
-                limit: None,
-                actual: None,
+            "context_length_exceeded" => {
+                return LlmError::ContextOverflow {
+                    message: display(status, body, &message),
+                    limit: None,
+                    actual: None,
+                }
             }
-        }
-        "invalid_api_key" | "invalid_authentication" => {
-            return LlmError::Authentication {
-                message: display(status, body, &message),
+            "invalid_api_key" | "invalid_authentication" => {
+                return LlmError::Authentication {
+                    message: display(status, body, &message),
+                }
             }
-        }
-        "model_not_found" => {
-            return LlmError::ModelUnavailable {
-                message: display(status, body, &message),
+            "model_not_found" => {
+                return LlmError::ModelUnavailable {
+                    message: display(status, body, &message),
+                }
             }
+            _ => {}
         }
-        _ => {}
     }
 
     match status {
@@ -262,4 +277,23 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
     resp.header("retry-after")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
+}
+
+/// Convert independently reported reasoning to the shared output-subset contract.
+pub(super) fn normalize_usage(raw: &Value, separate_reasoning: bool) -> Value {
+    let mut normalized = raw.clone();
+    if separate_reasoning {
+        if let Some(output) = raw.get("completion_tokens").and_then(Value::as_u64) {
+            let reasoning = raw
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            // An overflow must remain an invalid report, not look like a
+            // valid subtotal after silently dropping the extra tokens.
+            normalized["completion_tokens"] = output
+                .checked_add(reasoning)
+                .map_or(Value::Null, |total| serde_json::json!(total));
+        }
+    }
+    normalized
 }

@@ -3,7 +3,7 @@
 //! These name providers on purpose — they assert what the shipped data says.
 //! Gate 30 scans `src/` only.
 
-use lingxi_agent_api::protocol::{AuthStrategy, ProviderProfile};
+use lingxi_llm_client::protocol::{AuthStrategy, ProviderProfile};
 use lingxi_llm_client::{builtin_providers, LlmClient, LlmClientBuilder};
 use serde_json::json;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ fn client_of(profiles: &[ProviderProfile]) -> LlmClient {
     for strategy in AuthStrategy::ALL {
         b.register_authenticator(strategy, Arc::new(support::NoAuth));
     }
-    b.with_region(lingxi_agent_api::protocol::Region::International)
+    b.with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("every protocol has a codec")
 }
@@ -198,7 +198,7 @@ fn every_provider_is_listed_including_the_spares() {
         listed.len(),
         profiles
             .iter()
-            .filter(|p| p.supports_region(lingxi_agent_api::protocol::Region::International))
+            .filter(|p| p.supports_region(lingxi_llm_client::protocol::Region::International))
             .count()
     );
     assert!(
@@ -235,7 +235,7 @@ fn a_listed_model_carries_its_price_and_how_it_is_billed() {
     assert!(
         listed
             .iter()
-            .any(|m| m.billing_mode == lingxi_agent_api::protocol::BillingMode::Free),
+            .any(|m| m.billing_mode == lingxi_llm_client::protocol::BillingMode::Free),
         "the free tier is visible as free on the row itself"
     );
 }

@@ -1,10 +1,10 @@
 //! Response and error decoding for `generateContent`.
 
-use crate::transport::HttpResponse;
-use lingxi_agent_api::protocol::{
+use crate::protocol::{
     CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, StopReason,
     ToolUseId, Usage,
 };
+use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,22 +47,27 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     }
 
     Ok(CompletionResponse {
+        inference: Default::default(),
         web_search: crate::codecs::web_search_decode::gemini(&candidate),
         file_search: None,
         message: ConversationMessage {
             role: MessageRole::Assistant,
             content,
         },
-        // A candidate that produced a function call is a tool turn whatever
-        // `finishReason` says: this wire reports STOP for both.
         stop_reason: if prompt_feedback_is_blocking(&body) {
             StopReason::Refusal
-        } else if saw_tool_call {
-            StopReason::ToolUse
         } else {
-            stop_reason(candidate.get("finishReason").and_then(Value::as_str))
+            with_tool_stop_reason(
+                stop_reason(candidate.get("finishReason").and_then(Value::as_str)),
+                saw_tool_call,
+            )
         },
-        usage: body.get("usageMetadata").map(usage).unwrap_or_default(),
+        usage: crate::codecs::usage::report(
+            body.get("usageMetadata"),
+            &crate::codecs::usage::GEMINI,
+            usage,
+            true,
+        ),
         model: body
             .get("modelVersion")
             .and_then(Value::as_str)
@@ -208,6 +213,16 @@ pub fn stop_reason(s: Option<&str>) -> StopReason {
         Some("SAFETY") | Some("RECITATION") | Some("PROHIBITED_CONTENT") => StopReason::Refusal,
         Some(other) => StopReason::Other(other.to_owned()),
         None => StopReason::EndTurn,
+    }
+}
+
+/// Gemini reports STOP for both text and function calls. Only refine normal
+/// completion; truncation, refusal and other explicit outcomes remain intact.
+pub(super) fn with_tool_stop_reason(stop: StopReason, saw_tool_call: bool) -> StopReason {
+    if stop == StopReason::EndTurn && saw_tool_call {
+        StopReason::ToolUse
+    } else {
+        stop
     }
 }
 

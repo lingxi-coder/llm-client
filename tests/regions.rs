@@ -5,7 +5,7 @@ use lingxi_llm_client::protocol::{
 };
 use lingxi_llm_client::{
     builtin_providers, BuildError, HttpRequest, HttpResponse, LlmClient, LlmClientBuilder,
-    RequestOptions, StreamResponse, Transport, WebSocketSession,
+    RequestOptions, StreamResponse, Transport,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -185,16 +185,12 @@ impl RecordingHttp {
 }
 #[async_trait]
 impl Transport for RecordingHttp {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        Err(self.fail(req))
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
     }
-    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
-        Err(self.fail(req))
-    }
-    async fn open_responses_websocket_session(
-        &self,
-        req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
+}
+impl RecordingHttp {
+    async fn response(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
         Err(self.fail(req))
     }
 }
@@ -204,8 +200,7 @@ fn request(model: &str) -> CompletionRequest {
 
 #[tokio::test]
 async fn blocked_completion_stream_search_and_media_never_reach_transport() {
-    let mut denied = profile("intl", &[Region::International]);
-    denied.vision_delegate = Some("vision".into());
+    let denied = profile("intl", &[Region::International]);
     let http = Arc::new(RecordingHttp::default());
     let c = LlmClientBuilder::with_transport(http.clone(), &[denied])
         .with_region(Region::ChinaMainland)

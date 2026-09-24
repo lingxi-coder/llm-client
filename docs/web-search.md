@@ -106,7 +106,7 @@ GLM 使用 `enable: true`、`search_result: true`，国内默认引擎 `search_p
 
 Kimi 使用[当前 Responses API](https://platform.kimi.com/docs/api/responses)的服务端搜索，不需要客户端执行或回传搜索工具。`include: ["web_search_call.action.sources"]` 请求原生来源；来源映射为 `citations`，完整搜索动作仍在 metadata 中。搜索模式不接受 `temperature` 或统一的 thinking token budget。旧的 `$web_search` builtin 接口已进入弃用周期，未将其接到 `kimi` Chat 或 `kimi-code` 订阅连接上。
 
-新连接采用独立的 connection group，避免把普通聊天、订阅或另一地域账户作为搜索请求的自动备用连接。DeepSeek 与 Kimi 的 token 价格沿用仓库原有目录快照；按量计费的 `glm` 没有经过核实的美元单价，因此 `estimate_cost()` 返回 `None`，不会将 Coding Plan 的零价格误用于开放平台。搜索费仍不在 token 估算中。
+新连接采用独立的 connection group，避免把普通聊天、订阅或另一地域账户作为搜索请求的自动备用连接。DeepSeek 与 Kimi 的 token 价格沿用仓库原有目录快照；按量计费的 `glm` 没有经过核实的美元单价，因此 `estimate_cost()` 返回 `CostUnavailable`，不会将 Coding Plan 的零价格误用于开放平台。搜索费仍不在 token 估算中。
 
 ## 搜索结果与引用
 

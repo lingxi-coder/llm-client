@@ -1,5 +1,11 @@
 # Kimi's server-managed web search uses Responses, currently with Kimi K3.
 # Kept separate from Moonshot Chat and the Kimi Code subscription endpoint.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "unavailable", fast = "unavailable" }
+features = { thinking = "unknown", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unknown" }, fast = "unknown", sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"], requirements = ["No verified HTTP control mapping; product UI support does not establish API support."] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland"]
 provider_id = "kimi"
 base_url = "https://api.moonshot.cn/v1"
@@ -40,3 +46,10 @@ input_per_million = 3
 output_per_million = 15
 cache_read_per_million = 0.3
 source = "models.dev"
+
+[model.features]
+thinking = "unknown"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unknown" }

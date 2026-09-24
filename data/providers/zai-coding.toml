@@ -1,3 +1,9 @@
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://docs.z.ai/api-reference/llm/chat-completion"] }
+pricing_info = { currencies = [], units = ["subscription_quota"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["international"]
 provider_id = "zhipu"
 base_url = "https://api.z.ai/api/anthropic"
@@ -21,3 +27,11 @@ input_modalities = ["text"]
 output_modalities = ["text"]
 tool_call = true
 reasoning = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }

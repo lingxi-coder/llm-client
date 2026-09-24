@@ -1,3 +1,9 @@
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "priority", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unknown" }, fast = "supported", sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens"], sources = ["https://platform.minimax.io/docs/guides/pricing-paygo"] }
+
 regions = ["international"]
 provider_id = "minimax"
 base_url = "https://api.minimax.io/anthropic"
@@ -24,6 +30,66 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
+modes = []
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unknown" }
+
+
+[model.pricing]
+currency = "USD"
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+input_per_million = 0.3
+output_per_million = 1.2
+cache_read_per_million = 0.06
+cache_write_per_million = 0.375
+
+[[model.pricing.rules]]
+service_tier = "fast"
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read", "cache_write", "cache_write_1h", "reasoning"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model]]
+id = "MiniMax-M2.7-highspeed"
+name = "MiniMax M2.7 Highspeed"
+context_window = 1000000
+max_output = 204800
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+description = "Explicit highspeed model; independent from the priority admission tier."
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
+modes = []
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unknown" }
+
+
+[model.pricing]
+currency = "USD"
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+input_per_million = 0.6
+output_per_million = 2.4
+cache_read_per_million = 0.06
+cache_write_per_million = 0.375
+
+[[model.pricing.rules]]
+service_tier = "fast"
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read", "cache_write", "cache_write_1h", "reasoning"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
 [[model]]
 id = "MiniMax-M3"
 name = "MiniMax M3"
@@ -34,3 +100,48 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
+modes = ["adaptive", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unknown" }
+
+
+[model.pricing]
+currency = "USD"
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+input_per_million = 0.3
+output_per_million = 1.2
+cache_read_per_million = 0.06
+
+[[model.pricing.rules]]
+service_tier = "standard"
+max_input_tokens = 512000
+rates = { input_per_million = 0.3, output_per_million = 1.2, cache_read_per_million = 0.06 }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+min_input_tokens = 512001
+rates = { input_per_million = 0.6, output_per_million = 2.4, cache_read_per_million = 0.12 }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+max_input_tokens = 512000
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+min_input_tokens = 512001
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"

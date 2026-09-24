@@ -34,10 +34,10 @@
 //! - `web_search` — an explicit hosted-search adapter, independent of provider
 //!   identity and of whether individual models support search.
 
-use lingxi_agent_api::protocol::{
+use crate::protocol::{
     AuthStrategy, BillingMode, CapabilitySupport, ConnectionSpec, CredentialConfig, DirectoryRoute,
-    ModelCapabilities, ModelCapabilitySupport, ModelMetadata, ModelProfile, PeakSchedule,
-    PricingConfig, ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, Region, TokenPricing,
+    ModelCapabilitySupport, ModelMetadata, ModelProfile, PeakSchedule, PricingConfig,
+    ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, Region, TokenPricing,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -49,6 +49,12 @@ include!(concat!(env!("OUT_DIR"), "/presets.rs"));
 /// One preset file: the route, then the models.
 #[derive(Debug, Deserialize)]
 struct Preset {
+    #[serde(default)]
+    inference: crate::protocol::InferenceWire,
+    #[serde(default)]
+    features: crate::protocol::InferenceFeatures,
+    #[serde(default)]
+    pricing_info: crate::protocol::ProviderPricingInfo,
     #[serde(default = "Region::all")]
     regions: Vec<Region>,
     provider_id: ProviderId,
@@ -100,6 +106,8 @@ struct RoutePricing {
 /// would silently drive the compaction threshold.
 #[derive(Debug, Deserialize)]
 struct CatalogModel {
+    #[serde(default)]
+    features: crate::protocol::InferenceFeatures,
     id: String,
     /// Local selectors retained when a catalog wire ID is corrected.
     #[serde(default)]
@@ -189,7 +197,8 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
         p.protocol,
         ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
     );
-    Ok(ProviderProfile {
+    let mut profile = ProviderProfile {
+        inference: p.inference,
         regions: p.regions,
         provider_id: p.provider_id,
         profile_name: profile_name.to_owned(),
@@ -216,16 +225,16 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
         pricing: PricingConfig {
             billing_mode: p.billing_mode,
             peak: p.pricing.peak.clone(),
-            ..PricingConfig::default()
         },
         signing: None,
         azure: None,
         supports_websockets: false,
         supports_websocket_compression: false,
         websocket_connect_timeout_ms: None,
-        vision_delegate: None,
         connection: p.connection,
         info: ProviderInfo {
+            features: p.features,
+            pricing: p.pricing_info,
             display_name: p.display_name,
             description: p.description,
             console_url: p.console_url,
@@ -234,7 +243,12 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
             credential_hint: p.credential_hint,
         },
         extra: p.extra,
-    })
+    };
+    profile.info.features = profile.inference_features();
+    for model in &mut profile.models {
+        model.info.features = model.info.features.on_connection(&profile.info.features);
+    }
+    Ok(profile)
 }
 
 /// The presets a user has not replaced, merged under their own entries.
@@ -280,6 +294,7 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
     let vision = accepts("image");
     let documents = accepts("pdf") || accepts("file");
     let support = ModelCapabilitySupport {
+        streaming: CapabilitySupport::Supported,
         vision: if vision {
             CapabilitySupport::Supported
         } else {
@@ -297,6 +312,10 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
     };
     let capability_support = (support != ModelCapabilitySupport::default()).then_some(support);
     ModelProfile {
+        info: crate::protocol::ModelInfo {
+            features: m.features.clone(),
+            pricing: m.pricing.clone(),
+        },
         hidden: false,
         display_model: m.name.clone().unwrap_or_else(|| m.id.clone()),
         request_model: m.id.clone(),
@@ -320,15 +339,6 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
         },
         pricing: m.pricing.clone(),
         billing_mode: m.billing_mode,
-        capabilities: ModelCapabilities {
-            streaming: true,
-            tools: m.tool_call.unwrap_or(false),
-            vision,
-            documents,
-            reasoning: m.reasoning.unwrap_or(false),
-            structured_output: m.structured_output.unwrap_or(false),
-            signed_reasoning: false,
-        },
         capability_support,
     }
 }

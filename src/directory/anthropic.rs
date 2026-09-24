@@ -26,7 +26,7 @@ impl ModelDirectory for AnthropicMessagesDirectory {
                 .extra
                 .get("api_version")
                 .and_then(Value::as_str)
-                .unwrap_or(crate::codecs::anthropic::DEFAULT_API_VERSION)
+                .unwrap_or(crate::wire_options::DEFAULT_ANTHROPIC_API_VERSION)
                 .to_owned(),
         ));
         req
@@ -38,11 +38,12 @@ impl ModelDirectory for AnthropicMessagesDirectory {
             .iter()
             .map(|row| {
                 Ok(LiveModel {
+                    inference_features: inference_features(row),
                     request_model: required_id(row, "id")?,
                     display_name: text(row, "display_name"),
                     description: None,
-                    context_window: None,
-                    max_output_tokens: None,
+                    context_window: number(row, "max_input_tokens"),
+                    max_output_tokens: number(row, "max_tokens"),
                 })
             })
             .collect::<Result<Vec<_>, LlmError>>()?;
@@ -65,5 +66,59 @@ impl ModelDirectory for AnthropicMessagesDirectory {
             models,
             next_cursor,
         })
+    }
+}
+
+fn inference_features(row: &Value) -> Option<crate::protocol::InferenceFeatures> {
+    use crate::protocol::*;
+    let caps = row.get("capabilities")?.as_object()?;
+    let support = |value: &Value| match value.get("supported").and_then(Value::as_bool) {
+        Some(true) => CapabilitySupport::Supported,
+        Some(false) => CapabilitySupport::Unsupported,
+        None => CapabilitySupport::Unknown,
+    };
+    let mut features = InferenceFeatures::default();
+    if let Some(thinking) = caps.get("thinking") {
+        features.thinking = support(thinking);
+        if let Some(types) = thinking.get("types").and_then(Value::as_object) {
+            for (name, value) in types {
+                let Ok(mode) = serde_json::from_value::<ThinkingMode>(Value::String(name.clone()))
+                else {
+                    continue;
+                };
+                let fact = support(value);
+                if fact != CapabilitySupport::Unknown {
+                    features.mode_support.insert(
+                        mode,
+                        ThinkingModeSupport {
+                            support: fact,
+                            ..Default::default()
+                        },
+                    );
+                    if mode == ThinkingMode::Enabled {
+                        features.budget.support = fact;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(effort) = caps.get("effort") {
+        features.effort.support = support(effort);
+        for level in ReasoningEffort::ALL {
+            if let Some(value) = effort.get(level.as_str()) {
+                let fact = support(value);
+                if fact != CapabilitySupport::Unknown {
+                    features.effort.level_support.insert(level, fact);
+                }
+            }
+        }
+    }
+    if features == InferenceFeatures::default() {
+        None
+    } else {
+        features
+            .sources
+            .push("https://platform.claude.com/docs/en/api/models/list".into());
+        Some(features)
     }
 }

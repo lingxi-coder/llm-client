@@ -1,14 +1,15 @@
+#[path = "support/wire_api.rs"]
+mod wire_api;
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{stream, StreamExt};
-use lingxi_agent_api::protocol::{
+use lingxi_llm_client::files::{FilePurpose, FileService, ModelFileReference, UploadFile};
+use lingxi_llm_client::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
     ProviderFileSource, ProviderId, ProviderProfile, Secret, ToolChoice, VideoSource,
 };
-use lingxi_llm_client::client::files::{FilePurpose, FileService, ModelFileReference, UploadFile};
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BearerAuthenticator, HttpRequest, HttpResponse, LlmClientBuilder,
-    RequestOptions, StreamResponse, Transport, WebSocketSession, WireCodec,
+    RequestOptions, StreamResponse, Transport, WireCodec,
 };
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -44,11 +45,12 @@ impl QueueHttp {
 
 #[async_trait]
 impl Transport for QueueHttp {
-    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute_no_follow(request).await
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
     }
-
-    async fn execute_no_follow(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+}
+impl QueueHttp {
+    async fn response(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
         self.requests.lock().unwrap().push(request);
         self.replies
             .lock()
@@ -57,24 +59,6 @@ impl Transport for QueueHttp {
             .ok_or_else(|| LlmError::Transport {
                 message: "missing scripted response".into(),
             })
-    }
-
-    async fn open_stream(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
-        let response = self.execute_no_follow(request).await?;
-        Ok(StreamResponse {
-            status: response.status,
-            headers: response.headers,
-            body: stream::iter(vec![Ok(response.body)]).boxed(),
-        })
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "not used by file tests".into(),
-        })
     }
 }
 
@@ -95,8 +79,8 @@ fn profile(
             "display_model": model,
             "request_model": model,
             "billing_model": model,
-            "metadata": {"input_modalities": modalities, "attachments": true},
-            "capabilities": {"vision": true, "documents": true, "tools": true, "reasoning": false, "signed_reasoning": false, "streaming": true, "structured_output": false}
+            "metadata": {"inputModalities": modalities, "attachments": true},
+            "capability_support": {"vision": "supported", "documents": "supported", "tools": "supported", "reasoning": "unknown", "signed_reasoning": "unknown", "streaming": "supported", "structured_output": "unknown"}
         }]
     }))
     .unwrap()
@@ -114,7 +98,7 @@ fn upload(filename: &str, media_type: &str, bytes: &'static [u8]) -> UploadFile 
 async fn qwen_long_files_use_file_extract_and_fileid_references() {
     let profile = profile(
         "qwen",
-        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "open_ai_chat",
         "qwen-long",
         &["text", "file"],
@@ -155,13 +139,13 @@ async fn qwen_long_files_use_file_extract_and_fileid_references() {
     let requests = http.requests();
     assert_eq!(
         requests[0].url,
-        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/files"
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/files"
     );
     assert!(String::from_utf8_lossy(&requests[0].body).contains("file-extract"));
     assert!(requests[1].url.contains("purpose=file-extract"));
     assert_eq!(
         requests[2].url,
-        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/files/file-fe-abc"
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/files/file-fe-abc"
     );
     assert_eq!(requests[3].method, "DELETE");
 }
@@ -250,7 +234,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         std::sync::Arc::new(QueueHttp::default()),
         std::slice::from_ref(&p),
     )
-    .with_region(lingxi_agent_api::protocol::Region::International)
+    .with_region(lingxi_llm_client::protocol::Region::International)
     .build()
     .unwrap();
     let route = client.resolve("MiniMax-M3").unwrap();
@@ -258,7 +242,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         protocol: ProtocolFamily::AnthropicMessages,
         provider_id: ProviderId::new("minimax"),
         profile_name: p.profile_name.clone(),
-        endpoint_fingerprint: lingxi_llm_client::client::files::provider_file_endpoint_fingerprint(
+        endpoint_fingerprint: lingxi_llm_client::files::provider_file_endpoint_fingerprint(
             &p.base_url,
         ),
         account_scope: Some("account-2".into()),
@@ -268,6 +252,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         purpose: Some("video_understanding".into()),
     };
     let request = CompletionRequest {
+        service_tier: None,
         model: "MiniMax-M3".into(),
         web_search: None,
         file_search: None,
@@ -292,12 +277,34 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         ..RequestOptions::default()
     };
     let encoded = AnthropicMessagesCodec
-        .encode_request(&request, &p, &route, &options)
+        .encode_request(
+            lingxi_llm_client::EncodeRequest::new(&request),
+            &wire_api::context(&p, &route.request_model, &options),
+        )
         .unwrap();
     let body: Value = serde_json::from_slice(&encoded.body).unwrap();
     assert_eq!(body["messages"][0]["content"][0]["type"], "video");
     assert_eq!(
         body["messages"][0]["content"][0]["source"]["url"],
         "mm_file://1234567890123456789"
+    );
+}
+
+#[test]
+fn qwen_long_singapore_does_not_offer_model_file_references() {
+    let profile = profile(
+        "qwen",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "open_ai_chat",
+        "qwen-long",
+        &["text", "file"],
+    );
+    let http = QueueHttp::with_json(vec![]);
+    let service = FileService::new(&http, &profile, None, None, None);
+    assert_eq!(
+        service
+            .capabilities("qwen-long", "application/pdf")
+            .model_input,
+        ModelFileReference::Unsupported
     );
 }

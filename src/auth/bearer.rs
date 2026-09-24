@@ -2,9 +2,9 @@
 
 use super::Authenticator;
 use super::{required, set_header, AUTHORIZATION};
+use crate::protocol::{LlmError, ProviderProfile, Secret};
 use crate::transport::HttpRequest;
 use async_trait::async_trait;
-use lingxi_agent_api::protocol::{LlmError, ProviderProfile, Secret};
 
 /// A token that is already a bearer token — an exchanged or minted one, not a
 /// key the user typed.

@@ -3,5 +3,5 @@
 .env
 .env.*
 !.env.example
-
+.omx
 /tests/downstream-docs/target/

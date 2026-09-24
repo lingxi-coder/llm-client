@@ -1,26 +1,31 @@
 //! Request encoding for `generateContent`.
 
-use crate::client::route::ResolvedRoute;
-use crate::transport::HttpRequest;
-use crate::RequestOptions;
-use base64::Engine;
-use lingxi_agent_api::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
-    MessageRole, ProviderProfile, ToolChoice, ToolSpec, ToolUseId, VideoSource,
+use crate::codecs::json::{WireRequest, WireValue};
+use crate::codecs::{CodecContext, EncodeRequest};
+use crate::protocol::{
+    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
+    ProviderProfile, ToolChoice, ToolSpec, ToolUseId, VideoSource,
 };
+
+use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
-pub fn request(
-    req: &CompletionRequest,
+pub fn request<'a>(
+    wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
-    route: &ResolvedRoute,
-    opts: &RequestOptions,
-) -> Result<HttpRequest, LlmError> {
-    request_to(
-        req,
+    opts: &CodecContext,
+) -> Result<WireRequest<'a>, LlmError> {
+    crate::files::validate_direct_provider_file_inputs(
+        wire.blocks(),
         profile,
-        &super::generate_content_url(&profile.base_url, &route.request_model, opts.stream),
+        &opts.request_model,
+        opts.file_scope(),
+    )?;
+    request_to(
+        wire,
+        profile,
+        &super::generate_content_url(&profile.base_url, &opts.request_model, opts.stream),
         opts,
     )
 }
@@ -28,15 +33,16 @@ pub fn request(
 /// The body is identical wherever this wire is hosted, and it carries no
 /// stream flag — the URL says whether to stream. So the Vertex wrapper reuses
 /// this with a URL of its own and nothing else changes.
-pub(crate) fn request_to(
-    req: &CompletionRequest,
+pub(crate) fn request_to<'a>(
+    wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
     url: &str,
-    opts: &RequestOptions,
-) -> Result<HttpRequest, LlmError> {
+    opts: &CodecContext,
+) -> Result<WireRequest<'a>, LlmError> {
+    let req = wire.request();
     crate::codecs::reject_responses_continuation(
         req,
-        lingxi_agent_api::protocol::ProtocolFamily::GeminiGenerateContent,
+        crate::protocol::ProtocolFamily::GeminiGenerateContent,
     )?;
     if req.file_search.is_some() {
         return Err(LlmError::UnsupportedCapability {
@@ -45,10 +51,8 @@ pub(crate) fn request_to(
     }
     let names = tool_call_names(&req.messages);
     let mut body = Map::new();
-    body.insert(
-        "contents".to_owned(),
-        Value::Array(contents(&req.messages, &names, profile, opts)?),
-    );
+    let contents = contents(&req.messages, &names, profile, opts, wire)?;
+    body.insert("contents".to_owned(), Value::Null);
 
     if !req.system.is_empty() {
         body.insert(
@@ -86,34 +90,24 @@ pub(crate) fn request_to(
             ),
         );
     }
-    if let Some(thinking) = &req.thinking {
-        if let Some(budget) = thinking.budget_tokens {
-            generation.insert(
-                "thinkingConfig".to_owned(),
-                json!({"thinkingBudget": budget, "includeThoughts": true}),
-            );
-        }
-    }
     if !generation.is_empty() {
         body.insert("generationConfig".to_owned(), Value::Object(generation));
     }
 
     crate::codecs::web_search::apply(req, profile, &mut body)?;
-    crate::codecs::extras::merge_body(profile, &mut body);
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
-    crate::codecs::extras::merge_headers(profile, &mut headers);
+    crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::wire_options::merge_body(profile, &mut body);
+    // The inference adapter has validated both protobuf JSON spellings and
+    // emitted the canonical key, including unrecognized native tier values.
+    body.remove("service_tier");
+    crate::wire_options::merge_headers(profile, &mut headers);
 
-    Ok(HttpRequest {
-        method: "POST".to_owned(),
-        url: url.to_owned(),
+    Ok(WireRequest::new(
+        url.to_owned(),
         headers,
-        body: serde_json::to_vec(&Value::Object(body))
-            .map_err(|e| LlmError::InvalidRequest {
-                message: format!("request body is not serializable: {e}"),
-            })?
-            .into(),
-        timeout: None,
-    })
+        WireValue::from(Value::Object(body)).with("contents", WireValue::array(contents)),
+    ))
 }
 
 /// Match each result to the earlier call, retaining a provider-issued ID only
@@ -140,12 +134,13 @@ fn tool_call_names(
     names
 }
 
-fn contents(
+fn contents<'a>(
     messages: &[ConversationMessage],
     names: &BTreeMap<ToolUseId, (String, Option<String>)>,
     profile: &ProviderProfile,
-    opts: &RequestOptions,
-) -> Result<Vec<Value>, LlmError> {
+    opts: &CodecContext,
+    wire: EncodeRequest<'a>,
+) -> Result<Vec<WireValue<'a>>, LlmError> {
     let mut out = Vec::new();
     for m in messages {
         let role = match m.role {
@@ -160,12 +155,17 @@ fn contents(
         };
         let mut parts = Vec::new();
         for b in &m.content {
-            if let Some(part) = encode_part(b, names, profile, opts)? {
+            let b = wire.block(b);
+            if let Some(part) = inline(wire, b, opts)? {
                 parts.push(part);
+                continue;
+            }
+            if let Some(part) = encode_part(b, names, profile, opts)? {
+                parts.push(part.into());
             }
         }
         if !parts.is_empty() {
-            out.push(json!({"role": role, "parts": parts}));
+            out.push(WireValue::from(json!({"role":role})).with("parts", WireValue::array(parts)));
         }
     }
     Ok(out)
@@ -175,7 +175,7 @@ fn encode_part(
     b: &ContentBlock,
     names: &BTreeMap<ToolUseId, (String, Option<String>)>,
     profile: &ProviderProfile,
-    opts: &RequestOptions,
+    opts: &CodecContext,
 ) -> Result<Option<Value>, LlmError> {
     Ok(match b {
         ContentBlock::ProviderContent { .. } => {
@@ -252,8 +252,8 @@ fn encode_part(
                 let file = crate::codecs::validate_provider_file(file, profile, opts)?;
                 if !matches!(
                     file.protocol,
-                    lingxi_agent_api::protocol::ProtocolFamily::GeminiGenerateContent
-                        | lingxi_agent_api::protocol::ProtocolFamily::VertexGemini
+                    crate::protocol::ProtocolFamily::GeminiGenerateContent
+                        | crate::protocol::ProtocolFamily::VertexGemini
                 ) {
                     return Err(crate::codecs::provider_file_protocol_error());
                 }
@@ -289,8 +289,8 @@ fn encode_part(
                 let file = crate::codecs::validate_provider_file(file, profile, opts)?;
                 if !matches!(
                     file.protocol,
-                    lingxi_agent_api::protocol::ProtocolFamily::GeminiGenerateContent
-                        | lingxi_agent_api::protocol::ProtocolFamily::VertexGemini
+                    crate::protocol::ProtocolFamily::GeminiGenerateContent
+                        | crate::protocol::ProtocolFamily::VertexGemini
                 ) {
                     return Err(crate::codecs::provider_file_protocol_error());
                 }
@@ -310,20 +310,36 @@ fn encode_part(
                 json!({"fileData": {"mimeType": mime_type, "fileUri": uri}})
             }
         }),
-        ContentBlock::Video { source } => {
-            match source {
-                VideoSource::Attachment { .. } => {
-                    return Err(crate::codecs::unresolved_attachment_error())
-                }
-                VideoSource::ProviderFile { file } => {
-                    let _file = crate::codecs::validate_provider_file(file, profile, opts)?;
-                }
-                VideoSource::Base64 { .. } | VideoSource::Url { .. } => {}
+        ContentBlock::Video { source } => Some(match source {
+            VideoSource::Base64 { media_type, data } => {
+                json!({"inlineData": {"mimeType": media_type, "data": data}})
             }
-            return Err(LlmError::UnsupportedCapability {
-                message: "Gemini video content blocks are not supported by this codec".into(),
-            });
-        }
+            VideoSource::Url { url } => json!({"fileData": {"fileUri": url}}),
+            VideoSource::Attachment { .. } => {
+                return Err(crate::codecs::unresolved_attachment_error())
+            }
+            VideoSource::ProviderFile { file } => {
+                let file = crate::codecs::validate_provider_file(file, profile, opts)?;
+                let uri = file
+                    .uri
+                    .as_deref()
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "Gemini video file reference is missing its file URI".into(),
+                    })?;
+                let mime_type =
+                    file.media_type
+                        .as_deref()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Gemini video file reference is missing its media type".into(),
+                        })?;
+                if !mime_type.to_ascii_lowercase().starts_with("video/") {
+                    return Err(LlmError::InvalidRequest {
+                        message: "Gemini video file reference has a non-video media type".into(),
+                    });
+                }
+                json!({"fileData": {"mimeType": mime_type, "fileUri": uri}})
+            }
+        }),
     })
 }
 
@@ -348,4 +364,30 @@ fn encode_tool_choice(c: &ToolChoice) -> Value {
         }
     };
     json!({"functionCallingConfig": {"mode": mode}})
+}
+
+fn inline<'a>(
+    wire: EncodeRequest<'a>,
+    block: &ContentBlock,
+    _context: &CodecContext,
+) -> Result<Option<WireValue<'a>>, LlmError> {
+    let Some(media) = wire.inline_media(block)? else {
+        return Ok(None);
+    };
+    let attachment = media.attachment;
+    let (_kind, _title) = match block {
+        ContentBlock::Image { .. } => ("image", None),
+        ContentBlock::Document { title, .. } => ("document", title.as_deref()),
+        ContentBlock::Video { .. } => ("video", None),
+        _ => unreachable!("inline_media accepts only attachment blocks"),
+    };
+    let data = || WireValue::base64(media.bytes, String::new());
+    let _uri = || {
+        WireValue::base64(
+            media.bytes,
+            format!("data:{};base64,", attachment.media_type),
+        )
+    };
+    let source = WireValue::from(json!({"mimeType":attachment.media_type})).with("data", data());
+    Ok(Some(WireValue::from(json!({})).with("inlineData", source)))
 }

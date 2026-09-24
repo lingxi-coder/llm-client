@@ -12,9 +12,9 @@ mod bearer;
 pub use api_key::ApiKeyAuthenticator;
 pub use bearer::BearerAuthenticator;
 
+use crate::protocol::{LlmError, ProtocolFamily, ProviderProfile, Secret};
 use crate::transport::HttpRequest;
 use async_trait::async_trait;
-use lingxi_agent_api::protocol::{LlmError, ProtocolFamily, ProviderProfile, Secret};
 
 /// Attaches a credential to a request (header, query, signature).
 ///

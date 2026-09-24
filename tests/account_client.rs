@@ -1,9 +1,7 @@
 use async_trait::async_trait;
-use lingxi_llm_client::protocol::ProviderProfile;
 use lingxi_llm_client::{
     builtin_providers, AccountBalance, AccountIdentity, AccountMetric, AccountQuery, AccountScope,
     AccountScopeKind, AccountSnapshot, AccountUsageError, AccountUsageSource, LlmClientBuilder,
-    Transport,
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,14 +26,13 @@ struct BarrierSource(Arc<Barrier>);
 impl AccountUsageSource for BarrierSource {
     async fn fetch(
         &self,
-        profile: &ProviderProfile,
-        query: &AccountQuery,
-        _range: (u64, u64),
-        now: u64,
-        _http: &dyn Transport,
-    ) -> AccountSnapshot {
+        context: &lingxi_llm_client::AccountFetchContext<'_>,
+        _report: &mut lingxi_llm_client::AccountReport,
+    ) -> Result<(), lingxi_llm_client::AccountFailure> {
+        let _range = context.range;
+
         self.0.wait().await;
-        AccountSnapshot::unsupported(profile, query.identity, now)
+        Ok(())
     }
 }
 
@@ -47,16 +44,14 @@ impl AccountUsageSource for FakeSource {
 
     async fn fetch(
         &self,
-        profile: &ProviderProfile,
-        query: &AccountQuery,
-        range: (u64, u64),
-        now: u64,
-        _http: &dyn Transport,
-    ) -> AccountSnapshot {
+        context: &lingxi_llm_client::AccountFetchContext<'_>,
+        report: &mut lingxi_llm_client::AccountReport,
+    ) -> Result<(), lingxi_llm_client::AccountFailure> {
+        let range = context.range;
+
         assert_eq!(range, (100, 200));
-        let mut result = AccountSnapshot::unsupported(profile, query.identity, now);
-        result.profile_name = "wrong-profile".into();
-        result.balance = AccountMetric::available(
+
+        report.balance = Some(AccountMetric::available(
             AccountScope::new(AccountScopeKind::Account, None),
             "fake",
             vec![AccountBalance {
@@ -65,8 +60,8 @@ impl AccountUsageSource for FakeSource {
                 total: None,
                 is_available: None,
             }],
-        );
-        result
+        ));
+        Ok(())
     }
 }
 
@@ -79,7 +74,7 @@ fn client() -> lingxi_llm_client::LlmClient {
     let mut builder = LlmClientBuilder::new(&profiles).unwrap();
     builder.register_account_source("deepseek", AccountIdentity::AuthUser, Arc::new(FakeSource));
     builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap()
 }
@@ -146,7 +141,7 @@ async fn ambiguous_auth_source_requires_profile_binding() {
     let mut builder = LlmClientBuilder::new(&[first, second]).unwrap();
     builder.register_account_source("openai", AccountIdentity::AuthUser, Arc::new(FakeSource));
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::AuthUser);
@@ -173,7 +168,7 @@ async fn ambiguous_auth_source_requires_profile_binding() {
         Arc::new(FakeSource),
     );
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     assert!(matches!(
@@ -206,7 +201,7 @@ async fn bulk_queries_progress_concurrently_and_keep_profile_order() {
         );
     }
     let client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let queries = BTreeMap::from([
@@ -251,7 +246,7 @@ async fn replacing_a_profile_invalidates_its_signed_in_account_source() {
         Arc::new(FakeSource),
     );
     let mut client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let dir = account_config_dir();
@@ -310,13 +305,13 @@ async fn reloading_a_changed_profile_invalidates_its_signed_in_account_source() 
         Arc::new(FakeSource),
     );
     let mut client = builder
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     client.set_config_dir(&dir).unwrap();
     let mut other = LlmClientBuilder::new(std::slice::from_ref(&profile))
         .unwrap()
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     other.set_config_dir(&dir).unwrap();
@@ -338,5 +333,163 @@ async fn reloading_a_changed_profile_invalidates_its_signed_in_account_source() 
     ));
     drop(other);
     drop(client);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+struct QueryBoundSource(Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait]
+impl AccountUsageSource for QueryBoundSource {
+    fn requires_profile_binding(&self, query: &AccountQuery) -> bool {
+        query.credential.is_none()
+    }
+
+    async fn fetch(
+        &self,
+        context: &lingxi_llm_client::AccountFetchContext<'_>,
+        _report: &mut lingxi_llm_client::AccountReport,
+    ) -> Result<(), lingxi_llm_client::AccountFailure> {
+        let _range = context.range;
+
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn implicit_session_binding_expires_on_account_changes_but_token_queries_still_work() {
+    use lingxi_llm_client::protocol::{CredentialConfig, Region, Secret};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for action in ["replace", "readd", "remove", "restore", "switch", "reload"] {
+        let mut profile = builtin_providers()
+            .unwrap()
+            .into_iter()
+            .find(|p| p.profile_name == "openai")
+            .unwrap();
+        profile.connection.connection_id = Some("alice".into());
+        profile.credential = CredentialConfig::HostManaged {
+            key: "alice-login".into(),
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut builder = LlmClientBuilder::new(std::slice::from_ref(&profile)).unwrap();
+        builder.register_account_source(
+            "openai",
+            AccountIdentity::AuthUser,
+            Arc::new(QueryBoundSource(calls.clone())),
+        );
+        let mut client = builder.with_region(Region::International).build().unwrap();
+        let dir = account_config_dir();
+        let second_dir = account_config_dir();
+        client.set_config_dir(&dir).unwrap();
+        client.set_config_dir(&dir).unwrap();
+        let query = AccountQuery::new(AccountIdentity::AuthUser);
+        client.account_usage("openai", &query).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let mut replacement = profile.clone();
+        replacement.connection.connection_id = Some("bob".into());
+        replacement.credential = CredentialConfig::HostManaged {
+            key: "bob-login".into(),
+        };
+        match action {
+            "replace" => client.add_provider(replacement).unwrap(),
+            "readd" => client.add_provider(profile.clone()).unwrap(),
+            "remove" => {
+                client.remove_provider("openai").unwrap();
+                client.add_provider(profile.clone()).unwrap();
+            }
+            "restore" => client.restore_builtin("openai").unwrap(),
+            "switch" => client.set_config_dir(&second_dir).unwrap(),
+            "reload" => {
+                let mut other = LlmClientBuilder::new(std::slice::from_ref(&profile))
+                    .unwrap()
+                    .with_region(Region::International)
+                    .build()
+                    .unwrap();
+                other.set_config_dir(&dir).unwrap();
+                other.add_provider(replacement).unwrap();
+                client.set_config_dir(&dir).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        for _ in 0..2 {
+            assert!(
+                matches!(
+                    client.account_usage("openai", &query).await,
+                    Err(AccountUsageError::AmbiguousAccountSource(_))
+                ),
+                "{action}"
+            );
+            let token_query = AccountQuery {
+                credential: Some(Secret::new("bob-token".into())),
+                ..query.clone()
+            };
+            client.account_usage("openai", &token_query).await.unwrap();
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "only explicitly scoped queries may call the old source: {action}"
+        );
+        let rebound = Arc::new(AtomicUsize::new(0));
+        client
+            .register_profile_account_source(
+                "openai",
+                AccountIdentity::AuthUser,
+                Arc::new(QueryBoundSource(rebound.clone())),
+            )
+            .unwrap();
+        client.account_usage("openai", &query).await.unwrap();
+        assert_eq!(rebound.load(Ordering::SeqCst), 1);
+        let current = client.provider("openai").unwrap().clone();
+        client.add_provider(current).unwrap();
+        assert!(matches!(
+            client.account_usage("openai", &query).await,
+            Err(AccountUsageError::AmbiguousAccountSource(_))
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+        if second_dir.exists() {
+            std::fs::remove_dir_all(second_dir).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn model_only_and_other_provider_changes_preserve_implicit_session_binding() {
+    use lingxi_llm_client::protocol::Region;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let profile = builtin_providers()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "openai")
+        .unwrap();
+    let model = profile.models[0].request_model.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut builder = LlmClientBuilder::new(std::slice::from_ref(&profile)).unwrap();
+    builder.register_account_source(
+        "openai",
+        AccountIdentity::AuthUser,
+        Arc::new(QueryBoundSource(calls.clone())),
+    );
+    let mut client = builder.with_region(Region::International).build().unwrap();
+    let dir = account_config_dir();
+    client.set_config_dir(&dir).unwrap();
+    client
+        .set_tracked_models("openai", [model.clone()])
+        .unwrap();
+    client
+        .set_model_visibility("openai", &model, false)
+        .unwrap();
+    let other = builtin_providers()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "deepseek")
+        .unwrap();
+    client.add_provider(other).unwrap();
+    client.set_config_dir(&dir).unwrap();
+    client
+        .account_usage("openai", &AccountQuery::new(AccountIdentity::AuthUser))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     std::fs::remove_dir_all(dir).unwrap();
 }

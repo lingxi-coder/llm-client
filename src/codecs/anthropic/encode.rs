@@ -1,27 +1,33 @@
 //! Request encoding for the Messages API.
 
-use crate::client::route::ResolvedRoute;
-use crate::transport::HttpRequest;
-use crate::RequestOptions;
-use lingxi_agent_api::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
-    MessageRole, ProviderProfile, ToolChoice, ToolSpec, VideoSource,
+use crate::codecs::json::{WireRequest, WireValue};
+use crate::codecs::{CodecContext, EncodeRequest};
+use crate::protocol::{
+    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
+    ProviderProfile, ToolChoice, ToolSpec, VideoSource,
 };
+
 use serde_json::{json, Map, Value};
 
 /// This provider requires `max_tokens`; a request that does not set one still
 /// has to carry something.
 const DEFAULT_MAX_TOKENS: u64 = 4096;
 
-pub fn request(
-    req: &CompletionRequest,
+pub fn request<'a>(
+    wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
-    route: &ResolvedRoute,
-    opts: &RequestOptions,
-) -> Result<HttpRequest, LlmError> {
+    opts: &CodecContext,
+) -> Result<WireRequest<'a>, LlmError> {
+    let req = wire.request();
+    crate::files::validate_direct_provider_file_inputs(
+        wire.blocks(),
+        profile,
+        &opts.request_model,
+        opts.file_scope(),
+    )?;
     crate::codecs::reject_responses_continuation(
         req,
-        lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages,
+        crate::protocol::ProtocolFamily::AnthropicMessages,
     )?;
     if req.file_search.is_some() {
         return Err(LlmError::UnsupportedCapability {
@@ -31,7 +37,7 @@ pub fn request(
     let mut body = Map::new();
     body.insert(
         "model".to_owned(),
-        Value::String(route.request_model.clone()),
+        Value::String(opts.request_model.clone()),
     );
     body.insert(
         "max_tokens".to_owned(),
@@ -69,12 +75,13 @@ pub fn request(
         messages.push(encode_message(
             m,
             unsigned_thinking,
-            &route.request_model,
+            &opts.request_model,
             profile,
             opts,
+            wire,
         )?);
     }
-    body.insert("messages".to_owned(), Value::Array(messages));
+    body.insert("messages".to_owned(), Value::Null);
 
     if let Some(t) = req.temperature {
         body.insert("temperature".to_owned(), Value::from(t));
@@ -90,14 +97,6 @@ pub fn request(
                     .collect(),
             ),
         );
-    }
-    if let Some(thinking) = &req.thinking {
-        if let Some(budget) = thinking.budget_tokens {
-            body.insert(
-                "thinking".to_owned(),
-                json!({"type": "enabled", "budget_tokens": budget}),
-            );
-        }
     }
     if opts.stream {
         body.insert("stream".to_owned(), Value::Bool(true));
@@ -143,29 +142,25 @@ pub fn request(
     }
 
     crate::codecs::web_search::apply(req, profile, &mut body)?;
-    crate::codecs::extras::merge_body(profile, &mut body);
-    crate::codecs::extras::merge_headers(profile, &mut headers);
+    crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::wire_options::merge_body(profile, &mut body);
+    crate::wire_options::merge_headers(profile, &mut headers);
 
-    Ok(HttpRequest {
-        method: "POST".to_owned(),
-        url: format!("{}/v1/messages", profile.base_url.trim_end_matches('/')),
+    Ok(WireRequest::new(
+        format!("{}/v1/messages", profile.base_url.trim_end_matches('/')),
         headers,
-        body: serde_json::to_vec(&Value::Object(body))
-            .map_err(|e| LlmError::InvalidRequest {
-                message: format!("request body is not serializable: {e}"),
-            })?
-            .into(),
-        timeout: None,
-    })
+        WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages)),
+    ))
 }
 
-fn encode_message(
+fn encode_message<'a>(
     m: &ConversationMessage,
     unsigned_thinking: bool,
     model: &str,
     profile: &ProviderProfile,
-    opts: &RequestOptions,
-) -> Result<Value, LlmError> {
+    opts: &CodecContext,
+    wire: EncodeRequest<'a>,
+) -> Result<WireValue<'a>, LlmError> {
     let role = match m.role {
         MessageRole::Assistant => "assistant",
         // This wire has no system role in `messages`; a system block that got
@@ -180,9 +175,13 @@ fn encode_message(
     };
     let mut blocks = Vec::new();
     for b in &m.content {
-        blocks.push(encode_block(b, unsigned_thinking, model, profile, opts)?);
+        let b = wire.block(b);
+        blocks.push(match inline(wire, b, opts)? {
+            Some(media) => media,
+            None => encode_block(b, unsigned_thinking, model, profile, opts)?.into(),
+        });
     }
-    Ok(json!({"role": role, "content": blocks}))
+    Ok(WireValue::from(json!({"role":role})).with("content", WireValue::array(blocks)))
 }
 
 fn encode_block(
@@ -190,11 +189,11 @@ fn encode_block(
     unsigned_thinking: bool,
     model: &str,
     profile: &ProviderProfile,
-    opts: &RequestOptions,
+    opts: &CodecContext,
 ) -> Result<Value, LlmError> {
     Ok(match b {
         ContentBlock::ProviderContent { protocol, value } => {
-            if *protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages {
+            if *protocol != crate::protocol::ProtocolFamily::AnthropicMessages {
                 return Err(LlmError::UnsupportedCapability {
                     message: "native content cannot be replayed on a different protocol".to_owned(),
                 });
@@ -257,7 +256,7 @@ fn encode_block(
             }
             ImageSource::ProviderFile { file } => {
                 let file = crate::codecs::validate_provider_file(file, profile, opts)?;
-                if file.protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages {
+                if file.protocol != crate::protocol::ProtocolFamily::AnthropicMessages {
                     return Err(crate::codecs::provider_file_protocol_error());
                 }
                 json!({
@@ -299,9 +298,7 @@ fn encode_block(
                 }
                 DocumentSource::ProviderFile { file } => {
                     let file = crate::codecs::validate_provider_file(file, profile, opts)?;
-                    if file.protocol
-                        != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages
-                    {
+                    if file.protocol != crate::protocol::ProtocolFamily::AnthropicMessages {
                         return Err(crate::codecs::provider_file_protocol_error());
                     }
                     json!({
@@ -324,7 +321,7 @@ fn encode_block(
             let file = crate::codecs::validate_provider_file(file, profile, opts)?;
             if profile.provider_id.as_str() != "minimax"
                 || !model.eq_ignore_ascii_case("minimax-m3")
-                || file.protocol != lingxi_agent_api::protocol::ProtocolFamily::AnthropicMessages
+                || file.protocol != crate::protocol::ProtocolFamily::AnthropicMessages
                 || file.purpose.as_deref() != Some("video_understanding")
             {
                 return Err(LlmError::UnsupportedCapability {
@@ -340,11 +337,15 @@ fn encode_block(
 }
 
 fn encode_tool(t: &ToolSpec) -> Value {
-    json!({
+    let mut tool = json!({
         "name": t.name,
         "description": t.description,
         "input_schema": t.input_schema,
-    })
+    });
+    if t.strict {
+        tool["strict"] = json!(true);
+    }
+    tool
 }
 
 fn encode_tool_choice(c: &ToolChoice) -> Value {
@@ -354,4 +355,49 @@ fn encode_tool_choice(c: &ToolChoice) -> Value {
         ToolChoice::None => json!({"type": "none"}),
         ToolChoice::Tool { name } => json!({"type": "tool", "name": name}),
     }
+}
+
+fn inline<'a>(
+    wire: EncodeRequest<'a>,
+    block: &ContentBlock,
+    _context: &CodecContext,
+) -> Result<Option<WireValue<'a>>, LlmError> {
+    let Some(media) = wire.inline_media(block)? else {
+        return Ok(None);
+    };
+    let attachment = media.attachment;
+    let (kind, title) = match block {
+        ContentBlock::Image { .. } => ("image", None),
+        ContentBlock::Document { title, .. } => ("document", title.as_deref()),
+        ContentBlock::Video { .. } => ("video", None),
+        _ => unreachable!("inline_media accepts only attachment blocks"),
+    };
+    let data = || WireValue::base64(media.bytes, String::new());
+    let _uri = || {
+        WireValue::base64(
+            media.bytes,
+            format!("data:{};base64,", attachment.media_type),
+        )
+    };
+    Ok(Some({
+        if kind == "video" {
+            return Err(LlmError::UnsupportedCapability {
+                message: "video input requires a supported provider file".into(),
+            });
+        }
+        if kind == "document" && attachment.media_type.starts_with("image/") {
+            return Err(LlmError::InvalidRequest {
+                message: "Anthropic document blocks cannot use an image media type".into(),
+            });
+        }
+        let mut value = WireValue::from(json!({"type":kind})).with(
+            "source",
+            WireValue::from(json!({"type":"base64","media_type":attachment.media_type}))
+                .with("data", data()),
+        );
+        if kind == "document" {
+            value["title"] = json!(title.unwrap_or(&attachment.filename));
+        }
+        value
+    }))
 }

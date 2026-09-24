@@ -8,11 +8,11 @@ This document covers the Rust API in this repository. `lingxi-llm-client` is a l
 
 Every client must explicitly select `.with_region(Region::ChinaMainland)` or `.with_region(Region::International)` before `build()`, otherwise it returns `BuildError::MissingRegion`. Import `Region` from `lingxi_llm_client::protocol`; `client.region()` returns the selection. It is fixed for the client lifetime. To switch regions, build another client and reuse the same configuration directory if desired.
 
-`ProviderProfile.regions` declares usage regions, for example `regions = ["china_mainland"]` in TOML. Shared profiles declare `["china_mainland", "international"]`. Missing declarations in custom and legacy configurations default to both regions; an explicit `[]` permits neither. Models inherit their profile's regions; both `ProviderListing` and `ModelListing` expose `regions`.
+`ProviderProfile.regions` declares usage regions, for example `regions = ["china_mainland"]` in TOML. Shared profiles declare `["china_mainland", "international"]`. Missing region declarations in the current format default to both regions; an explicit `[]` permits neither. Models inherit their profile's regions; both `ProviderListing` and `ModelListing` expose `regions`.
 
 `providers()` and `models()` filter by region before applying their existing visibility and model-allowlist rules. Resolution, explicit profile/group references, completions, streams, search and failover chains all honor the region. Excluded models do not cause name ambiguity. Hidden spare accounts remain eligible for failover within the region. This is a product policy, not a network reachability guarantee, IP/language detection or URL rewriting.
 
-`provider()` and `profiles()` retain the complete configuration management view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Legacy saved profiles without `regions` remain available in both regions, including saved overrides of built-ins; restoring a built-in restores its explicit region declaration.
+`provider()` and `profiles()` retain the complete configuration management view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Current-format profiles without `regions` are available in both regions; restoring a built-in restores its explicit region declaration.
 
 Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, `glm`, `glm-coding`. `deepseek`, `deepseek-search` and `kimi-code` are shared. All remaining built-in profiles are international, including Qwen Hong Kong, Singapore, US and their search counterparts.
 
@@ -22,6 +22,7 @@ Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, 
 - [Getting started and lifecycle](#getting-started-and-lifecycle)
 - [Client and builder](#client-and-builder)
 - [Requests and messages](#requests-and-messages)
+- [Host tool execution and context recovery](#host-tool-execution-and-context-recovery)
 - [Web Search API](#web-search-api)
 - [Qwen knowledge-base File Search](#qwen-knowledge-base-file-search)
 - [Streaming responses](#streaming-responses)
@@ -61,10 +62,10 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
             "display_model": "My Model",
             "request_model": "my-model",
             "billing_model": "my-model",
-            "capabilities": {
-                "vision": false, "documents": false, "tools": true,
-                "reasoning": false, "signed_reasoning": false,
-                "streaming": true, "structured_output": false
+            "capability_support": {
+                "vision": "unknown", "documents": "unknown", "tools": "supported",
+                "reasoning": "unknown", "signed_reasoning": "unknown",
+                "streaming": "supported", "structured_output": "unknown"
             }
         }]
     }))?;
@@ -72,6 +73,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
     let request = CompletionRequest {
+        service_tier: None,
         model: "my-model".into(),
         web_search: None,
         file_search: None,
@@ -142,9 +144,13 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `codec_families()` | `Vec<ProtocolFamily>` | Lists codec protocol families |
 | `directory_shapes()` | `Vec<ProtocolFamily>` | Lists protocol shapes supported by directory parsers |
 | `directory_for(&ProviderProfile)` | `Option<Arc<dyn ModelDirectory>>` | Looks up a directory parser using `model_list` |
-| `estimate_cost(&ResolvedRoute, &Usage, Submission)` | `Result<Option<CostEstimate>, LlmError>` | Estimates cost from configured prices and the current clock |
-| `estimate_actual_cost(&ResolvedRoute, &CompletionResponse, &Usage, Submission)` | Same as above | Estimates cost using the connection that actually succeeded for a complete response |
-| `estimate_cost_for_profile(&ResolvedRoute, &str, &Usage, Submission)` | Same as above | Estimates cost using a specified successful connection, for streaming responses |
+| `estimate_local_tokens(&CompletionRequest)` | `Result<LocalTokenEstimate, LocalTokenCountError>` | Estimates locally visible input using the preferred route and exact model ID |
+| `estimate_local_tokens_in(&str, &CompletionRequest)` | Same as above | Estimates input after restricting resolution to a profile or connection group |
+| `price_quote(&str, Option<&str>, &PricingContext)` | `Result<PriceQuote, LlmError>` | Queries model/tier rates, sources and matching conditions |
+| `estimate_stream_cost(&ResolvedRoute, &ModelStream, Submission)` | `Result<CostEstimate, LlmError>` | Prices a stream using its executed connection, tier and dispatch time |
+| `estimate_cost(&ResolvedRoute, &Usage, &PricingContext)` | `Result<CostEstimate, LlmError>` | Estimates cost from configured prices and the current clock |
+| `estimate_actual_cost(&ResolvedRoute, &CompletionResponse, Submission)` | Same as above | Estimates cost using the connection that actually succeeded for a complete response |
+| `estimate_cost_for_profile(&ResolvedRoute, &str, &UsageReport, &InferenceReport, Submission)` | Same as above | Estimates cost using an executed connection and observed service tier |
 
 The configuration is copied at build time. Local configuration management APIs can update the client's effective configuration; reading data directly through a directory parser does not change the result of `models()`.
 
@@ -158,7 +164,6 @@ The configuration is copied at build time. Local configuration management APIs c
 | `fallback_credentials` | `BTreeMap<String, Secret<String>>` / empty | Provides separate credentials by fallback profile name; the first connection's key is not reused if one is missing |
 | `total_timeout` | `Option<Duration>` / `None` | Total limit for each request; when omitted, `complete()` defaults to 120 seconds and `stream()` has no total limit |
 | `file_account_scope` | `Option<String>` / `None` | Stable, non-secret provider-account identity used to bind and optionally reuse provider file references |
-| `stream` | `bool` / `false` | Controls encoding mode when calling a codec directly; high-level `complete()` forces non-streaming mode and `stream()` forces streaming mode |
 
 ### `CompletionRequest`
 
@@ -174,7 +179,8 @@ The configuration is copied at build time. Local configuration management APIs c
 | `tool_choice` | `ToolChoice` | `Auto`, `Any`, `None`, or `Tool { name }` |
 | `max_tokens` | `Option<u32>` | Output token limit, mapped by the protocol |
 | `temperature` | `Option<f32>` | Sampling temperature; the caller must confirm the provider's supported range |
-| `thinking` | `Option<ThinkingConfig>` | Thinking configuration, currently including `budget_tokens: Option<u32>` |
+| `thinking` | `Option<ThinkingConfig>` | Thinking mode, numeric/dynamic budget and effort; see [inference controls](inference.en.md) |
+| `service_tier` | `Option<ServiceTier>` | Standard / Fast; omitted preserves the endpoint default |
 | `stop_sequences` | `Vec<String>` | Stop sequences |
 | `metadata` | `serde_json::Value` | Additional data handled according to the codec implementation; this is not a general promise to pass through arbitrary parameters |
 
@@ -196,13 +202,80 @@ The configuration is copied at build time. Local configuration management APIs c
 | `Image` | `source: ImageSource`, supporting Base64 or URL |
 | `Document` | `source: DocumentSource` and optional `title`, supporting Base64, text, or URL |
 | `Video` | `source: VideoSource`; MiniMax M3 currently accepts an uploaded `video_understanding` file reference |
-| `ProviderContent` | `protocol`, `value`; preserves native Claude/DeepSeek search content for replay in the next turn |
+| `ProviderContent` | `protocol`, `value`; preserves native Responses reasoning, Chat reasoning, and Claude/DeepSeek search content for replay in the next turn |
 
-Base64 sources carry `media_type` and `data`; URL sources carry `url`. The library does not execute tools, automatically download attachments, or run `vision_delegate`. After a tool call is returned, the host executes the tool and adds its result with the same `tool_use_id` to the next turn's input.
+Base64 sources carry `media_type` and `data`; URL sources carry `url`. The library does not execute tools or automatically download attachments. After a tool call is returned, the host executes the tool and adds its result with the same `tool_use_id` to the next turn's input.
 
 ### `CompletionResponse`
 
-Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `file_search: Option<FileSearchResult>`, `stop_reason: StopReason`, `usage: Usage`, `model: String`, `response_id: Option<ResponseId>`, and `executed_profile: Option<String>`. High-level `complete()` sets the name of the connection that actually succeeded; this field is `None` when decoding directly through a codec. `StopReason` includes `EndTurn`, `ToolUse`, `MaxTokens`, `StopSequence`, `Refusal`, and `Other(String)`.
+`UsageReport` combines `Option<Usage>` with `Missing`, `Partial`, `Complete`, or `Invalid`. Old persisted usage-only objects are rejected. Actual-cost APIs accept only complete reports.
+
+Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `file_search: Option<FileSearchResult>`, `stop_reason: StopReason`, `usage: UsageReport`, `model: String`, `response_id: Option<ResponseId>`, and `executed_profile: Option<String>`. High-level `complete()` sets the name of the connection that actually succeeded; this field is `None` when decoding directly through a codec. `StopReason` includes `EndTurn`, `ToolUse`, `MaxTokens`, `StopSequence`, `Refusal`, and `Other(String)`.
+
+### Host tool execution and context recovery
+
+The following functions live in the calling application. `append_tool_results` takes `response.message` and an application-owned tool executor, preserves the entire assistant message (including signatures and opaque content), and pairs each result with its call ID. The host handles authorization and tool errors in the callback, then chooses whether to send another request. Continue with `response.executed_profile` when present so replay stays on the connection that actually responded.
+
+This example uses full-history replay (`previous_response_id: None`). Stateful continuation instead uses the returned response ID and only new input, scoped to the same connection. The context-recovery helper below illustrates a host policy of one retry: the caller supplies `reduce`, which must preserve valid tool-call/result pairs and replay signatures. It is not an automatic client behavior.
+
+```rust,no_run
+use lingxi_llm_client::protocol::{
+    CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage,
+    LlmError, MessageRole,
+};
+use lingxi_llm_client::{LlmClient, RequestOptions};
+
+fn append_tool_results(
+    request: &mut CompletionRequest,
+    assistant: ConversationMessage,
+    mut execute: impl FnMut(&str, &serde_json::Value) -> Result<String, String>,
+) -> bool {
+    let results: Vec<_> = assistant.tool_uses().map(|(id, name, input)| {
+        let (content, is_error) = match execute(name, input) {
+            Ok(output) => (output, false),
+            Err(error) => (error, true),
+        };
+        ContentBlock::ToolResult {
+            tool_use_id: id.clone(), content, is_error, blocks: None,
+        }
+    }).collect();
+    request.messages.push(assistant);
+    let has_results = !results.is_empty();
+    if has_results {
+        request.messages.push(ConversationMessage {
+            role: MessageRole::User, content: results,
+        });
+    }
+    has_results
+}
+
+async fn call_with_one_context_retry(
+    client: &LlmClient,
+    profile: &str,
+    request: CompletionRequest,
+    options: &RequestOptions,
+    reduce: impl FnOnce(CompletionRequest, &LlmError) -> CompletionRequest,
+) -> Result<CompletionResponse, LlmError> {
+    match client.complete_in(profile, &request, options).await {
+        Err(error @ (LlmError::ContextOverflow { .. } | LlmError::RequestTooLarge { .. })) => {
+            let reduced = reduce(request, &error);
+            client.complete_in(profile, &reduced, options).await
+        }
+        result => result,
+    }
+}
+```
+
+### Migrating from the shared Agent API
+
+The client now defines its own protocol types. Replace old `lingxi-agent-api` imports with `lingxi_llm_client::protocol`; applications keeping separate domain types need their own boundary conversions. There is no Rust type-identity compatibility layer.
+
+- `CompactTrigger` and `triggers_reactive_compaction()` are removed. Keep compaction state in the host and match communication errors as shown above.
+- `ProviderProfile::vision_delegate` and the two `MediaDelegation*` errors are removed. Media delegation and its outcomes belong to the host. Remove the field from both configuration and Rust struct literals.
+- `OAuthRefreshDead` is removed from `LlmError` and `LlmErrorKind`. Handle refresh failures in the host; an authenticator reporting a request authentication failure returns `Authentication`. Existing authentication strategies and authentication failover remain supported.
+- The unused `TokenEstimate` and `TokenEstimateSource` types are removed. Use `estimate_local_tokens()` / `estimate_local_tokens_in()` and their `LocalTokenEstimate` result for local estimates; `Usage` retains provider-reported consumption.
+
+Removed error variants are no longer accepted by the error deserializer. Hosts that persisted those errors should migrate them into their own error model. Provider management, account usage queries, pricing, and local token counting remain available.
 
 ## Web Search API
 
@@ -345,14 +418,18 @@ async fn read_stream(
 | `Start { model, response_id }` | Response starts; the response ID may be absent |
 | `TextDelta { block, text }` | Text increment |
 | `ReasoningDelta { block, text }` | Thinking increment |
+| `ProviderContent { block, protocol, value }` | Complete native reasoning data; retain as `ContentBlock::ProviderContent` at this output index and replay unchanged next turn. Reasoning deltas at the same index are display text and cannot replace this payload |
 | `ThoughtSignature { block, signature }` | Thinking signature; preserve it with its corresponding block |
 | `RedactedThinking { block, data }` | Opaque thinking data |
 | `ToolCallDelta { block, id, name, arguments_fragment }` | Tool argument fragment; accumulate by block before parsing JSON |
 | `WebSearch { result }` | Hosted search sources and provider-native metadata; may appear multiple times |
 | `FileSearch { result }` | Qwen-hosted knowledge-base retrieval hits; duplicate final output is suppressed |
-| `End { stop_reason, usage }` | End event emitted by the decoder |
+| `Inference { report }` | Observed service tier and effort, kept separate from requested values |
+| `End { stop_reason, usage, inference }` | End event emitted by the decoder |
 
-`observed_usage()` may return partial counts. Only `usage_is_complete()` establishes that counts are complete and consistent; the presence of `End` alone does not make them suitable for billing. If the underlying stream reaches EOF before a provider termination marker is observed, the decoder returns `StreamInterrupted`. End the turn after a read error. Content errors after `ModelStream` has been returned to the caller do not automatically switch connections, preventing duplicate generation or tool execution.
+OpenRouter-style Chat Completions `reasoning` / `reasoning_details` are retained as message-level replay data in `ProviderContent { protocol: OpenAiChat, value: {"type":"chat_reasoning", ...} }`. Buffered responses retain this block; streams emit one complete block before normal termination. Keep one such block in its assistant message, using reasoning deltas only for display. The encoder replays `reasoning_details` in their original order and rejects duplicate envelopes, non-assistant roles, and cross-protocol replay. The existing `reasoning_content` field remains controlled by `preserve_reasoning_content`.
+
+`observed_usage()` may return partial counts. Only `usage_is_complete()` establishes that counts are complete and consistent; the presence of `End` alone does not make them suitable for billing. If the underlying stream reaches EOF before a provider termination marker is observed, the decoder returns `StreamInterrupted`. End the turn after a read error. The client immediately releases the underlying response and pending frames; retaining the handle still permits reading observed usage and response headers. Content errors after `ModelStream` has been returned to the caller do not automatically switch connections, preventing duplicate generation or tool execution.
 
 Anthropic `message_start` counts are initial values. Even a numerically valid `output_tokens` there is not final usage; a later final usage report is needed. Save opaque `RedactedThinking` data by block and put it back unchanged in the next turn's message. Gemini prompt blocking and Responses refusal content retain `StopReason::Refusal`. Complete and streaming responses use the same semantics; truncation and provider errors retain their own terminal states.
 
@@ -370,19 +447,18 @@ Required fields are `provider_id`, `profile_name`, `base_url`, `protocol`, and `
 | `credential` | Description of the credential source, `None` by default; actual reading is the host's responsibility |
 | `model_list` | Omission means the same as `protocol`; `"none"` means unpublished; another protocol family string can also be specified |
 | `connection` | Grouping, order, visibility, and failover policy |
-| `pricing` | `billingMode`, `require_priced`, and optional `peak` |
+| `pricing` | `billingMode` and optional `peak` |
 | `signing` | Optional `region`, `service`, and `project`, for the host's signing implementation |
 | `azure` | Optional `api_version` and `deployment` |
 | `info` | Display name, description, console/API key/documentation links, and credential guidance |
 | `extra` | JSON data for protocol options, extra body fields and headers, and so on |
 | WebSocket fields such as `supports_websockets` | Configuration metadata; the high-level client currently still uses HTTP |
-| `visionDelegate` | serde field name; the Rust field is `vision_delegate`, and the client does not currently delegate automatically |
 
-`ModelProfile` must specify `display_model`, `request_model`, and `billing_model`; it may also include `aliases`, `description`, `metadata`, `capabilities`, `pricing`, and a model-level `billing_mode`. The three model names are used for display/matching, the request protocol, and pricing attribution, respectively. `metadata` holds directory data such as context window, output limit, and modalities.
+`ModelProfile` must specify `display_model`, `request_model`, and `billing_model`; it may also include `aliases`, `description`, `metadata`, `capability_support`, `pricing`, and a model-level `billing_mode`. The three model names are used for display/matching, the request protocol, and pricing attribution, respectively. `metadata` holds directory data such as context window, output limit, and modalities.
 
-`capabilities` retains compatible Boolean display values. A `false` in an older configuration may also have come from a default, so it alone cannot prove that the model does not support a capability. The new optional `capability_support` record uses three states: `unknown`, `supported`, and `unsupported`. Call `ModelProfile::capability_support_for(ModelCapability)` to read the effective support state. Explicit states take precedence; a missing or unknown field falls back to positive information in the older configuration: old `true` means supported, and old `false` means unknown. New models remain unknown when the live directory supplies no capability information. Capability information currently guides host decisions; the client does not add request rejection merely because support is unknown or an old Boolean is false.
+`capability_support` uses `unknown`, `supported`, and `unsupported`. `ModelProfile::capability_support_for(ModelCapability)` returns explicit support facts; missing fields remain unknown. The old Boolean capability fields and fallback logic have been removed. See `info.features` for inference controls, ranges and combination constraints.
 
-For example, `"capability_support": {"tools": "unsupported"}` declares only that tool calling is unsupported; other capabilities are judged from existing information. Old JSON needs no additional field. Callers constructing a Rust `ModelProfile` literal directly must add `capability_support: None` or provide an explicit support record.
+`"capability_support": {"tools": "unsupported"}` only declares tool calling unsupported; other capabilities remain unknown.
 
 `ModelProfile.hidden` defaults to `false`. When set to `true`, `models()` no longer lists the model, but it remains callable explicitly by model name or with `resolve_in()`. At runtime, `set_model_visibility(profile_name, request_model, visible)` can change and save this setting.
 
@@ -414,9 +490,9 @@ Use `resolve_in(model, Some(name))` to preview the same constrained route, then 
 
 The same name across groups returns `ResolveError::AmbiguousAcrossGroups`; a native name and a qualified reference pointing to different targets return `AmbiguousNativeAndQualified`; multiple matching models on one connection return `DuplicateOnProfile`; no match returns `UnknownModel`. Request methods convert resolution errors to `LlmError::ModelUnavailable`.
 
-`ResolvedRoute` includes `provider_id`, `profile_name`, `request_model`, `display_model`, `pricing_model`, `capabilities`, `connection_chain`, and `failover`. Do not treat an arbitrarily hand-constructed route as one already validated by the client.
+`ResolvedRoute` includes `provider_id`, `profile_name`, `request_model`, `display_model`, `pricing_model`, `capability_support`, `connection_chain`, and `failover`. Do not treat an arbitrarily hand-constructed route as one already validated by the client.
 
-When `connection.group` is omitted, its group name is `profile_name`. Connections are sorted by `(order, profile_name)`. Fallback connections must be in the same group, offer the same `request_model`, and have the same effective billing mode. Qualifying the starting connection does not disable failover within its group. When no connection is specified, visible connections are preferred; an explicitly named profile can still select a hidden connection, and hidden connections can participate in failover.
+When `connection.group` is omitted, its group name is `profile_name`. Connections are sorted by `(order, profile_name)`. Fallback connections must be in the same group, offer the same `request_model`, and have the same effective billing mode. A fallback with multiple matching model rows is skipped rather than guessing between row-specific overrides. Qualifying the starting connection does not disable failover within its group. When no connection is specified, visible connections are preferred; an explicitly named profile can still select a hidden connection, and hidden connections can participate in failover.
 
 **Failover is disabled by default.** All fields in `FailoverTriggers::default()` / `NONE` are false; explicitly assigning `FailoverTriggers::DEFAULT` enables all five categories. JSON example:
 
@@ -444,7 +520,7 @@ Merge this fragment into a complete `ProviderProfile`. `rateLimit` matches rate 
 
 ### Local persistence and multiple accounts
 
-After creating an `LlmClient`, call `set_config_dir(path)` to manage `providers.json` in that directory. The library immediately loads its profiles and fixes the directory as an absolute path, so later changes to the working directory do not change where it saves. A local configuration with the same name overrides the builder's initial configuration. Setting a directory again clears configuration loaded from the previous directory. When several clients write to the same directory, the library coordinates writes with `.providers.json.lock` and reads the latest configuration while holding the lock before applying the current change. External programs that edit the JSON directly must also observe this lock. `sync_provider(profile_name, credential).await` reads the model directory with that connection's own credential, updates existing models by `request_model`, adds new models, and saves the configuration. If the directory is missing, the request fails, or disk writing fails, the old file and in-memory configuration stay unchanged. Sync does not delete old models absent from the directory, or change existing models' `hidden`, pricing, capabilities, or aliases. When the directory explicitly reports an incompatible model, sync persists an exclusion record by profile and removes the model from that connection's cache, preventing old configuration, allowlist changes, or a restart from restoring it. An ID absent from a directory response is not treated as incompatible. A later explicit directory report that the ID is supported, or explicitly replacing, restoring the built-in version of, or deleting the profile, clears the corresponding exclusion records. If a Gemini row lacks `supportedGenerationMethods`, its support state remains unknown; the row is retained, but it does not clear an existing exclusion record.
+After creating an `LlmClient`, call `set_config_dir(path)` to manage `providers.json` in that directory. The library immediately loads its profiles and fixes the directory as an absolute path, so later changes to the working directory do not change where it saves. Account connection settings override the matching static definition. Model fields merge by provenance; see the [v2 migration guide](architecture-migration.en.md). Setting a directory again clears configuration loaded from the previous directory. When several clients write to the same directory, the library coordinates writes with `.providers.json.lock` and reads the latest configuration while holding the lock before applying the current change. External programs that edit the JSON directly must also observe this lock. `sync_provider(profile_name, credential).await` reads the model directory with that connection's own credential, updates existing models by `request_model`, adds new models, and saves the configuration. If the directory is missing, the request fails, or disk writing fails, the old file and in-memory configuration stay unchanged. Sync does not delete old models absent from the directory, or change existing models' `hidden`, pricing, capabilities, or aliases. When the directory explicitly reports an incompatible model, sync persists an exclusion record by profile and excludes the model from effective listings and routing, preventing old configuration, allowlist changes, or a restart from bypassing the exclusion. Full metadata for models still on the allowlist remains persisted and is reused when the directory explicitly restores compatibility. An ID absent from a directory response is not treated as incompatible. A later explicit directory report that the ID is supported, or explicitly replacing, restoring the built-in version of, or deleting the profile, clears the corresponding exclusion records. If a Gemini row lacks `supportedGenerationMethods`, its support state remains unknown; the row is retained, but it does not clear an existing exclusion record.
 
 File reads, file locks, and disk writes during sync run on Tokio's blocking thread pool. `sync_provider()` is the serial convenience entry point. To keep using the client during a directory network request, first call the synchronous `prepare_provider_sync()` to obtain an independent `ProviderSyncOperation`, then run its `fetch().await`, and finally commit with `apply_provider_sync(result).await`. Preparing an operation does not access disk and copies the credential and necessary configuration for that operation. The operation does not borrow the client, so the host can release its own client lock before waiting on the network.
 
@@ -509,6 +585,8 @@ Common protocol options include `credential_header` (the header containing the A
 
 OpenAI Chat profiles may set `extra.max_tokens_field` to `"max_completion_tokens"` for endpoints that require it; the default is `"max_tokens"`. This is a top-level `extra` option, not an `extra.body` field. Invalid or non-string values return `InvalidRequest`. Chat document URLs return `UnsupportedCapability` before sending; use Base64 content or a protocol supporting URLs.
 
+OpenAI Chat profiles can set `extra.reasoning_tokens_separate = true` when reasoning tokens are reported in addition to completion tokens. The built-in Grok Chat profile enables this; the client normalizes both buffered and streamed output counts to include reasoning. Other profiles keep the default subset convention. Direct codec callers should use `decode_response(response, &context)` and `stream_decoder(&context)` to apply profile-specific conventions.
+
 `extra.body.stream` cannot change the response mode chosen by `complete()` or `stream()`. Known credential headers, including `x-goog-api-key`, and the header named by `extra.credential_header` are rejected when loading or saving `extra.headers`. Pass credentials through request options.
 
 Vertex Claude uses `vertex-2023-10-16` in its request body. Bedrock encodes model IDs/ARNs as one path segment and selects streaming through the path without a body `stream` field.
@@ -535,14 +613,13 @@ The built-in authenticators are stateless unit structs. Both `new()` and `with_t
 | Behavior | Built-in implementation |
 | --- | --- |
 | HTTPS | Uses Rustls to validate certificates |
-| Redirects | Does not follow them by default; both `execute` and `execute_no_follow` preserve the original redirect response |
+| Redirects | Does not follow them by default; `send` preserves the original redirect response |
 | Retries | No automatic retry; explicitly configured failover at the high level can still apply |
 | Connection timeout | 30 seconds |
 | Stream read idle timeout | 60 seconds by default; `HttpTransport::with_read_timeout(Duration)` adjusts it at the client level |
 | Total timeout | `complete()` defaults to 120 seconds; `stream()` has no total limit by default, so an active long-running stream can continue; `RequestOptions.total_timeout` sets a total limit for either, including stream reads |
 | HTTP error status | Preserves status, response headers, and body for codec classification instead of discarding the error body early |
 | Network errors | Returns a semantic `LlmError`; its message omits the request URL, authentication headers, and body |
-| WebSocket | Unsupported; the extension method returns an unsupported-capability error |
 
 Reusing a client can reuse its connection pool. Dropping a response stream releases its resources. The total limit for a streaming request does not reset when a new chunk arrives. Custom `Transport` can still be injected when different network policies are needed.
 
@@ -554,16 +631,14 @@ Reusing a client can reuse its connection pool. Dropping a response stream relea
 
 | Method | Return type | Responsibility |
 | --- | --- | --- |
-| `execute(HttpRequest)` | `Result<HttpResponse, LlmError>` | Return a complete response, including non-2xx status, headers, and body, for codec classification |
-| `execute_no_follow(HttpRequest)` | Same as above | Calls `execute` by default; hosts that need to forbid redirects must override it |
-| `open_stream(HttpRequest)` | `Result<StreamResponse, LlmError>` | Preserve status and headers; the body is `BoxStream<'static, Result<Bytes, LlmError>>` |
-| `open_responses_websocket_session(HttpRequest)` | `Result<Box<dyn WebSocketSession>, LlmError>` | WebSocket extension entry point; the high-level client does not currently call it automatically |
+| `send(HttpRequest)` | `Result<StreamResponse, LlmError>` | Return raw response bytes, status and headers; never follow redirects or retry automatically |
 
 `HttpRequest` contains `method`, `url`, `headers: Vec<(String, String)>`, `body: Bytes`, and `timeout: Option<Duration>`. `HttpResponse` contains `status: u16`, `headers`, and `body`, and provides case-insensitive `header()`. `StreamResponse` also provides `header()`.
 
-A transport implementation should handle TLS, proxies, connection pooling, timeouts, network error classification, response resource release, and redirect policy. Built-in transport reads at most 64 KiB of the error body of a non-2xx response before passing it to the codec for classification. Reaching the limit, a connection interruption, or an error-body read timeout only truncates the body; it does not discard the status and headers already received. A successful response body must be read completely; an interruption or timeout while reading returns an error. Do not discard an HTTP error status prematurely as a generic network error without a response body.
+A transport implementation should handle TLS, proxies, connection pooling, timeouts, network error classification, response resource release, and redirect policy. The shared `HttpExecutor` reads at most 64 KiB of the error body of a non-2xx response before passing it to the codec for classification. Reaching the limit, a connection interruption, or an error-body read timeout only truncates the body; it does not discard the status and headers already received. A successful response body must be read completely; an interruption or timeout while reading returns an error. Do not discard an HTTP error status prematurely as a generic network error without a response body.
 
-`WebSocketSession: Send` has async `send(WsMessage)`, `recv() -> Result<Option<WsMessage>, LlmError>`, and `close()`; `WsMessage` is `Text(String)` or `Binary(Bytes)`. `UrlOpener::open(&str) -> Result<(), String>` is a separate host capability, not managed by the client builder.
+
+`HttpExecutor` collects responses, bounds bodies, and enforces monotonic deadlines even when an injected transport ignores timeout. Authentication, uploads, polling and streaming reads consume the same request budget. The codec creates its own SSE or EventStream decoder; `ModelStream` never infers framing from Content-Type.
 
 ## Model directory
 
@@ -589,7 +664,7 @@ async fn list_live_models(
     loop {
         let mut request = directory.list_request(profile, cursor.as_deref());
         ApiKeyAuthenticator.apply(&mut request, profile, Some(key)).await?;
-        let response = http.execute(request).await?;
+        let response = lingxi_llm_client::HttpExecutor::new(http).execute(request).await?;
         let page = directory.decode_page(&response)?;
         models.extend(page.models);
         cursor = page.next_cursor;
@@ -606,37 +681,67 @@ The cursor in `ModelPage { models, next_cursor }` is an opaque string; pass it b
 
 ## Usage and cost
 
-`Usage` has mutually exclusive billing buckets: `input_tokens` (uncached input), `output_tokens`, `cache_read_tokens`, and `cache_write_tokens`. `reasoning_tokens` is already included in output tokens and must not be added again. `Usage::total()` sums the four billing buckets. `cache_write_1h_tokens` is the one-hour TTL subset of `cache_write_tokens`, not another addend. Older JSON defaults it to zero; complete Rust struct literals must add it or use `..Usage::default()`. The current pricing schema cannot distinguish TTL rates, so nonzero one-hour writes return `CostUnavailable` instead of using the five-minute rate. Legacy aggregate-only cache reports without TTL details continue to use the configured generic cache-write rate. Gemini tool prompt tokens belong to the input bucket, and thought tokens to output.
+`Usage` has mutually exclusive billing buckets: `input_tokens` (uncached input), `output_tokens`, `cache_read_tokens`, and `cache_write_tokens`. `reasoning_tokens` is already included in output tokens and must not be added again. `Usage::total()` sums the four billing buckets. `cache_write_1h_tokens` is the one-hour TTL subset of `cache_write_tokens`, not another addend. Older JSON defaults it to zero; complete Rust struct literals must add it or use `..Usage::default()`. `cache_write_1h_per_million` prices one-hour writes separately; a missing rate with nonzero one-hour usage returns `CostUnavailable`. Legacy aggregate-only cache reports without TTL details continue to use the configured generic cache-write rate. Gemini tool prompt tokens belong to the input bucket, and thought tokens to output.
 
 `Usage.cost: Option<ReportedCost>` is the amount actually reported by the provider. `ReportedCost.nano_usd` is in billionths of a US dollar; `from_usd(f64)` rejects negative, non-finite, and overflowing values. A missing amount means unknown, not free.
 
 `Usage.server_tool_usage` separately preserves provider-reported hosted-tool counts, currently Web Search and File Search requests. These counts are not tokens and are never added to token totals or pricing buckets.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{LlmError, Submission, Usage};
+use lingxi_llm_client::protocol::{LlmError, PricingContext, Usage};
 use lingxi_llm_client::LlmClient;
 
 fn show_estimate(client: &LlmClient, model: &str, usage: &Usage) -> Result<(), LlmError> {
     let route = client.resolve(model)?;
-    match client.estimate_cost(&route, usage, Submission::Interactive)? {
-        Some(cost) => println!("estimated USD: {}", cost.total_usd),
-        None => println!("目录没有该模型的价格"),
-    }
+    let cost = client.estimate_cost(&route, usage, &PricingContext::default())?;
+    println!("estimated {}: {}", cost.currency, cost.total_cost);
     Ok(())
 }
 ```
 
-Import `CostEstimate` from `lingxi_llm_client::client::pricing`. It includes `pricing_model`, `submission`, five cost fields (input/output/cache_read/cache_write/reasoning), `total_usd`, and the pricing `source`.
+Import `CostEstimate` from `lingxi_llm_client::client::pricing`. It includes `pricing_model`, `submission`, five cost fields (input/output/cache_read/cache_write/reasoning), `total_cost`, and the pricing `source`.
 
-- Each `TokenPricing` rate is in USD per million tokens. Nonzero usage with a missing corresponding rate returns `CostUnavailable`. Rates in use must be nonnegative and finite; cost calculation overflow also returns `CostUnavailable`.
-- If the entire model has no pricing and `pricing.require_priced = false`, the result is `Ok(None)`; if true, the result is an error.
+- Each `TokenPricing` rate uses its `currency` per million tokens; the default currency is USD. Nonzero usage with a missing corresponding rate returns `CostUnavailable`. Rates in use must be nonnegative and finite; cost calculation overflow also returns `CostUnavailable`.
+- Missing prices or essential billing conditions return `CostUnavailable`; use `price_quote` to query price availability.
 - `Submission::Batch` uses explicit batch rates for each bucket. It does not assume a fixed discount or mean that the client submits batch jobs.
 - If reasoning has a separately configured price, reasoning tokens are taken out of the output bucket to avoid double billing; `reasoning_tokens > output_tokens` returns `CostUnavailable`.
-- `PeakSchedule` uses UTC windows (`HH:MM-HH:MM`, with `24:00` allowed as an end time) and optional weekday constraints; advanced callers can pass a time and rates explicitly to `pricing::estimate(...)`.
+- `PeakSchedule` uses UTC windows (`HH:MM-HH:MM`, with `24:00` allowed as an end time) and optional weekday constraints. Set `PricingContext.unix_seconds` to quote a specific time. All public estimates share the price-rule selector; `TokenPricing::at` and the public `pricing::estimate` entry point have been removed.
 
-Cost is a directory estimate, not a replacement for the provider's bill. `estimate_cost` is only for a pre-request estimate of the starting route. After failover, use `estimate_actual_cost(&route, &response, &response.usage, submission)`. For a streaming response, read `stream.executed_profile()`, aggregate `Usage` from stream events, and call `estimate_cost_for_profile(...)`. Both methods that price the actual connection still use directory prices, which may differ from the provider's bill.
+Cost is a directory estimate, not a replacement for the provider's bill. `estimate_cost` is only for a pre-request estimate of the starting route. After failover, use `estimate_actual_cost(&route, &response, submission)`. For streams, use `estimate_stream_cost(&route, &stream, submission)` to include the executed connection and actual service tier. Both methods that price the actual connection still use directory prices, which may differ from the provider's bill.
+
+### Local input token estimates
+
+```rust,no_run
+use lingxi_llm_client::{
+    protocol::CompletionRequest, LocalTokenCountError, LocalTokenEstimate, LlmClient,
+};
+
+fn estimate_input(
+    client: &LlmClient,
+    request: &CompletionRequest,
+) -> Result<LocalTokenEstimate, LocalTokenCountError> {
+    let estimate = client.estimate_local_tokens(request)?;
+    println!("{} tokens via {}", estimate.input_tokens, estimate.tokenizer);
+    if estimate.is_partial {
+        println!("not counted: {:?}", estimate.uncounted_components);
+    }
+    Ok(estimate)
+}
+```
+
+Both methods are synchronous. They make no network requests, read no credentials, resolve no remote URLs, and call no attachment resolver. `estimate_local_tokens` resolves the model in the client's selected region and uses the preferred route. `estimate_local_tokens_in(profile_or_group, request)` restricts resolution to a connection or connection group. Only the preferred route's model is counted; later failover connections are not predicted.
+
+The estimator counts input only: system and conversation text, text documents, tool names/descriptions/JSON schemas, tool calls, and text tool results. Structured input is serialized as compact JSON; message boundaries, tool wrappers, and provider request formatting use fixed overhead estimates. `max_tokens` is an output limit and is not added to input tokens. Generation settings such as temperature are not prompt text. `LocalTokenEstimate.is_estimate` is always `true` because provider message framing and hidden templates can differ. Treat this as a local estimate; provider-reported `Usage` remains authoritative for actual consumption.
+
+Default builds contain no tokenizer backend or embedded tokenizer assets. Enable `tokenizer-openai`, `tokenizer-deepseek`, `tokenizer-qwen`, `tokenizer-kimi`, `tokenizer-glm`, or the aggregate `tokenizers-all`. A known model whose backend is disabled returns `FeatureDisabled`; an unknown model returns `UnsupportedModel`.
+
+Local tokenizers are selected only when a bundled asset is explicitly matched to a model: OpenAI uses `tiktoken-rs` model mappings; DeepSeek `deepseek-v4-pro` and `deepseek-flash`; Qwen `qwen3.8-flash` and `qwen3.8-max`; Kimi `kimi-k3`; and Z.AI/Zhipu `glm-5`. Both the provider and model ID must match. Other models, Anthropic, Gemini, xAI, OpenRouter, and MiniMax M3 return `LocalTokenCountError::UnsupportedModel`. Official token counting for Anthropic, Gemini, and xAI uses online endpoints; OpenRouter usage comes from upstream providers. Unknown model IDs never fall back to character-ratio estimates.
+
+When input is unavailable locally or cannot be counted as text, the method still returns an estimate for visible text, sets `is_partial = true`, and lists every omission in `uncounted_components`: images, non-text or remote documents, video, provider files, hosted Web Search/File Search context, previous Responses server state, provider-specific structured blocks, signatures, and provider metadata. Encrypted thinking is never tokenized as plaintext: Anthropic and its hosted variants report it as an opaque-content omission; other built-in protocols skip this block because they do not send it. Text in text documents is counted. Remote resources are not downloaded and attachments are not read. Tokenizer mappings, sources, licenses, and SHA-256 hashes are recorded in [`data/tokenizers/README.md`](../data/tokenizers/README.md). The source archive includes XZ-compressed assets and licenses; each enabled feature embeds only its corresponding assets. The MiniMax M3 asset is excluded because its upstream license restricts use to non-commercial purposes.
 
 ## Account balances and token usage
+
+`AccountQuery.execution` defaults to a 60-second budget per account and 30 seconds per HTTP/RPC operation. The total budget starts when a batch slot is obtained and does not restart for pages or subsequent calls. Batch concurrency defaults to 4 and is adjustable with `with_account_concurrency(NonZeroUsize)`. Completed queries free slots immediately, while returned results retain profile order. `AccountFailure::Timeout` marks only unfinished fields; already committed metrics are preserved. Custom sources implement `fetch(&AccountFetchContext, &mut AccountReport)` and write each completed field before awaiting the next operation.
 
 `LlmClient::account_usage(profile_name, &AccountQuery)` reads one connection's account status. `accounts_usage(&BTreeMap<String, AccountQuery>)` reads every configured connection, including hidden ones, and returns an independent result per connection. A missing query yields `AccountUsageError::MissingQuery` only for that profile. `AccountQuery::new(AccountIdentity::ApiKey | AccountIdentity::AuthUser)` identifies the actual principal explicitly: a normal API key can use a Bearer header, so `ProviderProfile.auth` alone does not distinguish account types. The default history range is the past 30 days in UTC Unix seconds; `since_unix` and `until_unix` override it.
 
@@ -682,15 +787,15 @@ For ChatGPT/Codex, GitHub Copilot and Kimi Code user accounts, the host supplies
 
 Copilot can also receive the queried user's GitHub token in `AccountQuery.credential`; then one SDK source can query several users without profile-specific binding.
 
-Replacing, removing, or reloading a changed connection clears its profile-bound account source; switching configuration directories clears those bindings as well. After signing in again, call `LlmClient::register_profile_account_source` so an old session cannot be attributed to the new connection.
+Replacing, removing, or reloading a changed connection clears its profile-bound account source; switching configuration directories clears those bindings as well. The implicit binding of a provider-wide single-account session source also expires: subsequent queries requiring a session binding return `AmbiguousAccountSource`. Stateless sources and queries that explicitly supply the user token remain reusable. After signing in again, call `LlmClient::register_profile_account_source` so an old session cannot be attributed to the new connection.
 
 ## Error handling
 
-`LlmError` comes from the shared protocol; `kind()` returns an `LlmErrorKind` suitable for classification tables. Do not control flow by matching `message` text.
+`LlmError` is defined in the client's `protocol` module; `kind()` returns an `LlmErrorKind` suitable for classification tables. Do not control flow by matching `message` text.
 
 | Variant | Meaning / host response |
 | --- | --- |
-| `Authentication`, `OAuthRefreshDead`, `PermissionDenied` | Check credentials, refresh, or permissions |
+| `Authentication`, `PermissionDenied` | Check credentials, refresh, or permissions |
 | `InvalidRequest`, `UnsupportedCapability` | Adjust the request or configuration |
 | `RateLimited { retry_after, .. }`, `QuotaExceeded` | Rate limit/quota; back off or show the limit |
 | `ContextOverflow { limit, actual, .. }`, `RequestTooLarge` | Reduce history or request body |
@@ -698,29 +803,31 @@ Replacing, removing, or reloading a changed connection clears its profile-bound 
 | `ProviderInternal`, `Overloaded` | Provider internal failure/overload |
 | `Transport`, `TransportTimeout`, `TlsCert` | Network, timeout, or TLS problem |
 | `StreamInterrupted` | Stream content corrupted or unexpectedly interrupted |
+| `ProviderFileProcessing { file, .. }` | File readiness is unresolved; retain the account-scoped reference to resume polling later |
 | `CostUnavailable` | Insufficient pricing data |
-| `MediaDelegationUnavailable`, `MediaDelegationPartial` | Shared error types providing semantics for host media delegation |
 
-Except for the additional fields shown, these variants all contain `message: String`. `retry_after` is an optional `Duration`; built-in parsers currently support `Retry-After` in seconds. `triggers_reactive_compaction()` returns true only for `ContextOverflow` and `RequestTooLarge`; the library itself does not compact or retry.
+Except for the additional fields shown, these variants all contain `message: String`. `retry_after` is an optional `Duration`; built-in parsers currently support `Retry-After` in seconds. Hosts match `ContextOverflow` and `RequestTooLarge` directly and decide whether to reduce input and call again; the client does not automatically compact or retry these errors.
 
 ## Extension APIs
 
-The optional `directory::DecodedModelPage` adds compatibility metadata: `page: ModelPage`, `incompatible_model_ids`, and `explicitly_compatible_model_ids`. The existing `ModelPage` and `LiveModel` structures remain unchanged. `ModelDirectory::decode_page_with_exclusions()` calls the existing `decode_page()` by default and returns two empty ID sets.
+The optional `directory::DecodedModelPage` adds compatibility metadata: `page: ModelPage`, `incompatible_model_ids`, and `explicitly_compatible_model_ids`. `LiveModel.inference_features` carries explicit directory observations of inference controls. `ModelDirectory::decode_page_with_exclusions()` calls the existing `decode_page()` by default and returns two empty ID sets.
 
 | Interface | Required methods | Registration / use |
 | --- | --- | --- |
-| `WireCodec` | `family`, `encode_request`, `decode_response`, `stream_decoder`, `response_usage` | Builder's `register_codec`; later registration replaces an earlier codec for the same protocol family |
-| `StreamDecoder` | `decode_frame`, `finish`, `observed_usage`, `usage_is_complete`, `set_provider_metadata` | Codec creates a separate stateful decoder for each response |
+| `WireCodec` | `family`, `encode_request`, `encoded_body_len`, `decode_response`, `stream_decoder` | Builder's `register_codec`; later registration replaces an earlier codec for the same protocol family |
+| `StreamDecoder` | `push_bytes`, `finish`, `usage_report` | Codec creates a separate stateful decoder for each response |
 | `Authenticator` | Async `apply(&mut HttpRequest, &ProviderProfile, Option<&Secret<String>>)` | Builder registers by authentication strategy; called after encoding |
 | `ModelDirectory` | `shape`, `list_request`, `decode_page`; optional `decode_page_with_exclusions -> directory::DecodedModelPage` | Builder registers by directory shape; `DecodedModelPage` contains the original `ModelPage`, explicitly incompatible IDs, and explicitly compatible IDs; the default method preserves old decoding behavior and returns empty sets |
-| `FrameStream` | Async `next_frame() -> Result<Option<Bytes>, LlmError>` | Available for custom integrations; high-level `ModelStream` uses a byte stream |
 
 `ProtocolFamily` is a closed enum. A new provider using an existing compatible protocol only needs configuration; a new protocol family requires changes to the enum and a codec. A codec should turn non-success responses into semantic `LlmError` values, normalize token usage, and preserve thinking signatures and tool IDs.
 
 `framing::sse::SseFrameSplitter` provides `new()`, `push(&[u8])`, and `finish()`; it returns an error when an incomplete event exceeds 8 MiB. `framing::eventstream` parses AWS binary frames and limits the size of each frame. These are normally used directly only for custom transport/codec integrations.
 
-Source index: [client](../src/client/mod.rs), [shared requests/responses](../crates/agent-api/src/protocol/llm.rs), [configuration](../crates/agent-api/src/protocol/provider.rs), [transport](../src/transport.rs), [integration tests](../tests/). Generate item-by-item Rust API documentation locally with:
+Source index: [client](../src/client/mod.rs), [shared requests/responses](../src/protocol/llm.rs), [configuration](../src/protocol/provider.rs), [transport](../src/transport.rs), [integration tests](../tests/). Generate item-by-item Rust API documentation locally with:
 
 ```sh
-cargo doc --workspace --no-deps --open
+cargo doc --no-deps --open
 ```
+
+
+See [inference controls and service-tier pricing](inference.en.md) for `info.features`, `info.pricing`, `price_quote`, `estimate_cost`, and `estimate_stream_cost`.

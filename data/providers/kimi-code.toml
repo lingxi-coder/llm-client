@@ -1,6 +1,12 @@
 # A distinct membership-backed service: its keys, model ids, quotas and endpoint
 # are not interchangeable with the platform it is grouped with, which is why the
 # billing mode differs and the failover chain will not cross between them.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "thinking_type", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"] }
+pricing_info = { currencies = [], units = ["subscription_quota"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["china_mainland", "international"]
 provider_id = "kimi"
 base_url = "https://api.kimi.com/coding/v1"
@@ -35,11 +41,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled"]
+effort = { support = "supported", levels = ["low", "high", "max"], default = "max" }
 
 [[model]]
 id = "k3-256k"
@@ -60,11 +71,16 @@ attachment = false
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled"]
+effort = { support = "supported", levels = ["low", "high", "max"], default = "max" }
 
 [[model]]
 id = "kimi-for-coding"
@@ -86,11 +102,15 @@ attachment = true
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
 
 [[model]]
 id = "kimi-for-coding-highspeed"
@@ -112,8 +132,18 @@ attachment = true
 open_weights = true
 
 [model.pricing]
-input_per_million = 0
-output_per_million = 0
-cache_read_per_million = 0
-cache_write_per_million = 0
 source = "models.dev"
+
+[[model.pricing.quota]]
+service_tier = "standard"
+multiplier = 3.0
+unit = "kimi_code_usage"
+source = "https://www.kimi.com/code/docs/en/kimi-code/models.html"
+verified_at = "2026-09-24"
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]

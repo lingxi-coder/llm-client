@@ -10,16 +10,15 @@
 //! native ProviderContent blocks for replay.
 
 use super::decode;
-use crate::client::usage;
+use crate::codecs::usage;
 use crate::codecs::web_search_decode;
-use crate::codecs::StreamDecoder;
-use lingxi_agent_api::protocol::{
-    ContentBlock, LlmError, StopReason, StreamEvent, ToolUseId, Usage,
-};
+use crate::codecs::EventDecoder;
+use crate::protocol::{ContentBlock, LlmError, StopReason, StreamEvent, ToolUseId};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
 pub struct AnthropicStreamDecoder {
+    inference: crate::codecs::inference::StreamInference,
     /// Block index → the tool call opened there, so a later `input_json_delta`
     /// can name the call it belongs to.
     tools: Vec<(usize, ToolUseId, String)>,
@@ -38,7 +37,7 @@ pub struct AnthropicStreamDecoder {
     search_blocks: Vec<usize>,
 }
 
-impl StreamDecoder for AnthropicStreamDecoder {
+impl EventDecoder for AnthropicStreamDecoder {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         let text = std::str::from_utf8(frame).map_err(|_| LlmError::InvalidRequest {
             message: "stream frame is not valid UTF-8".to_owned(),
@@ -52,6 +51,7 @@ impl StreamDecoder for AnthropicStreamDecoder {
         })?;
 
         let mut out = Vec::new();
+        self.inference.observe(&root, &mut out);
         match root.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 let message = root.get("message").unwrap_or(&Value::Null);
@@ -127,19 +127,20 @@ impl StreamDecoder for AnthropicStreamDecoder {
         Ok(out)
     }
 
-    fn observed_usage(&self) -> Option<Usage> {
-        self.usage_raw.as_ref().map(decode::usage)
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        self.inference.report.clone()
     }
-
-    fn usage_is_complete(&self) -> bool {
-        self.final_output_count_reported
-            && self
-                .usage_raw
-                .as_ref()
-                .is_some_and(|raw| usage::is_complete(raw, &usage::ANTHROPIC))
+    fn set_response_headers(&mut self, headers: &[(String, String)]) {
+        self.inference.headers(headers);
     }
-
-    fn set_provider_metadata(&mut self, _meta: Value) {}
+    fn usage_report(&self) -> crate::protocol::UsageReport {
+        usage::report(
+            self.usage_raw.as_ref(),
+            &usage::ANTHROPIC,
+            decode::usage,
+            self.done && self.final_output_count_reported,
+        )
+    }
 }
 
 impl AnthropicStreamDecoder {
@@ -263,11 +264,17 @@ impl AnthropicStreamDecoder {
         self.done = true;
         out.push(StreamEvent::End {
             stop_reason: self.stop.clone().unwrap_or(StopReason::EndTurn),
-            usage: self
-                .usage_raw
-                .as_ref()
-                .map(decode::usage)
-                .unwrap_or_default(),
+            usage: self.usage_report(),
+            inference: self.inference.report.clone(),
         });
+    }
+}
+
+impl AnthropicStreamDecoder {
+    pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
+        Self {
+            inference: crate::codecs::inference::StreamInference::new(context),
+            ..Self::default()
+        }
     }
 }

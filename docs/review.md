@@ -2,7 +2,17 @@
 
 [English](review.en.md)
 
+当前架构和接口以[架构更新说明](architecture-migration.md)为准，最新检查与测量见[验收记录](architecture-validation.md)。下文保留各历史版本的审查记录；当前版本已不再读取 v1 配置和只有 usage 数值的旧响应。
+
 初次审查覆盖客户端路由与故障转移、认证与传输边界、内置 codec、流解析、模型目录、用量与价格计算，以及独立仓库的 API 文档构建。该轮修复保留现有接口形状，没有引入依赖。后续内置 HTTP 功能单独说明如下。
+
+## 独立客户端与 harness 边界
+
+客户端自行定义协议类型，不再依赖 Agent API。工具执行、权限、会话状态、上下文压缩、媒体委派和凭证刷新归宿主管理。工具调用 ID、响应 ID、签名和原生重放内容等通信数据继续通过 `lingxi_llm_client::protocol` 提供。
+
+已移除压缩辅助接口、媒体委派配置与错误、OAuth 刷新生命周期错误，以及未使用的旧 token 估算类型。旧 JSON 中的 `visionDelegate` 被忽略，保存时不再输出。provider 管理、账号查询、费用估算和现有本地 token 计数继续保留。源码兼容变化见 [迁移指南](api.md#从共享-agent-api-迁移)。
+
+CI 直接验证客户端完整打包，并以独立消费者编译中英文示例。下文旧测试数量及共享 crate 验证结果均对应各自历史版本。
 
 ## 已修复的问题
 
@@ -19,7 +29,7 @@
 | 中 | SSE 的 CR 行尾、跨 chunk CRLF 和无冒号 data 字段解析错误 | `src/framing/sse.rs`：规范化行尾，保留空 data 行 |
 | 中 | Gemini token 加法可能溢出；缓存读写合计超过输入仍被认为有效 | Gemini decode、`src/client/usage.rs`：防溢出并验证计数一致性 |
 | 中 | 非法费率、倍率或金额溢出仍返回成功估算 | `src/client/pricing.rs`：返回 `CostUnavailable` |
-| 中 | 峰值时间窗的大数字可能 panic；无法表示结束于午夜的窗口 | `crates/agent-api/src/protocol/provider.rs`：先验证再计算，支持结束时间 `24:00` |
+| 中 | 峰值时间窗的大数字可能 panic；无法表示结束于午夜的窗口 | `src/protocol/provider.rs`：先验证再计算，支持结束时间 `24:00` |
 | 中 | 失效的 Rustdoc 内部链接使严格文档构建失败 | 共享 protocol 文档：修正不存在的链接 |
 
 ## 文档与验证
@@ -30,10 +40,10 @@
 - 初次审查验证（不包含后续内置 HTTP 功能）：228 项单元/集成测试及 4 个文档示例通过；相较基线新增 24 项行为回归测试。格式检查、Clippy（警告视为错误）和严格 Rustdoc 构建通过，文档本地链接目标均存在。
 
 ```sh
-cargo test --workspace --locked
+cargo test --locked
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+cargo clippy --all-targets --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked
 ```
 
 ## 后续修复与仍需由宿主处理的边界
@@ -71,10 +81,10 @@ HTTP 实现依照 [reqwest 0.12 ClientBuilder 文档](https://docs.rs/reqwest/0.
 - 流式入口收到非成功 HTTP 状态后，即使错误体中断，也保留 HTTP 状态、已收集内容和 `Retry-After`，按原策略判断故障转移。已经返回成功流后的中断仍不会自动重放。
 - Anthropic 目录缺少布尔类型的 `has_more`，或声明 `has_more: true` 却缺少有效 `last_id` 时返回错误，避免静默接受不完整目录。
 - 客户端的持久化覆盖、缓存和跟踪状态收拢到内部 `ProviderStore`，与用于请求的有效 profile 快照分开。`prepare_provider_sync` 创建不借用客户端的操作，`fetch` 获取目录，`apply_provider_sync` 校验并提交；同步涉及的文件锁和文件 I/O 在 Tokio blocking 线程池执行。提交前核对新鲜的磁盘状态、连接配置和配置目录代次。
-- `lingxi-agent-api` 的默认 `agent` feature 保留原完整 API；LLM 客户端关闭该 feature，并通过 `lingxi_llm_client::protocol` 重导出协议。CI 单独验证最小 feature 集，避免工作区 feature 合并掩盖问题。
+- 当时共享协议使用独立的 `agent` feature；目前协议已迁入独立客户端，Agent 专用类型和 feature 检查已移除，见 [API 迁移说明](api.md#从共享-agent-api-迁移)。
 - 模型新增可选的三态能力信息，区分未知、支持和不支持。保留旧布尔字段：明确的新元数据优先，旧 `true` 可作为支持依据，旧 `false` 保持未知。新增目录模型未取得能力事实时保持未知；能力元数据仍供宿主判断，不引入新的运行时拒绝。
 
-迁移时，原有 JSON 配置可继续读取；Rust `ModelProfile` 字面量需补 `capability_support: None`。依赖未限定模型名的调用方如遇歧义，应改用显式 profile 的 `_in` 接口。直接使用 `lingxi-agent-api` 的旧导入仍然有效。
+迁移时，原有 JSON 配置可继续读取；Rust `ModelProfile` 字面量需补 `capability_support: None`。依赖未限定模型名的调用方如遇歧义，应改用显式 profile 的 `_in` 接口。当前接入使用 `lingxi_llm_client::protocol` 导入协议类型。
 
 配置同步的获取阶段可以取消而不写盘。提交进入文件写入阶段后，取消仍可能留下已更新的文件和未更新的内存快照；宿主在该情况下应重新加载配置。同步配置管理方法仍保持阻塞接口，异步宿主应选择合适的执行环境。
 

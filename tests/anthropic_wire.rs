@@ -9,12 +9,15 @@
 //! Gate 31 is here too: this wire has two distinct ways of saying "the
 //! transcript no longer fits", and both have to become `ContextOverflow`.
 
-use lingxi_agent_api::protocol::{
+#[path = "support/wire_api.rs"]
+mod wire_api;
+
+use lingxi_llm_client::codecs::anthropic::classify_error;
+use lingxi_llm_client::protocol::{
     CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
-    ModelCapabilities, ProviderId, ProviderProfile, StopReason, StreamEvent, ThinkingConfig,
+    ModelCapabilitySupport, ProviderId, ProviderProfile, StopReason, StreamEvent, ThinkingConfig,
     ToolChoice, ToolUseId, Usage,
 };
-use lingxi_llm_client::codecs::anthropic::classify_error;
 use lingxi_llm_client::{
     AnthropicMessagesCodec, HttpResponse, PricingModelRef, RequestOptions, ResolvedRoute, WireCodec,
 };
@@ -45,7 +48,7 @@ fn route() -> ResolvedRoute {
             request_model: "wire-m".to_owned(),
             display_model: "m".to_owned(),
         },
-        capabilities: ModelCapabilities::default(),
+        capability_support: ModelCapabilitySupport::default(),
         connection_chain: vec![],
         failover: FailoverTriggers::default(),
     }
@@ -53,6 +56,7 @@ fn route() -> ResolvedRoute {
 
 fn request(content: Vec<ContentBlock>) -> CompletionRequest {
     CompletionRequest {
+        service_tier: None,
         model: "m".to_owned(),
         web_search: None,
         file_search: None,
@@ -74,21 +78,23 @@ fn request(content: Vec<ContentBlock>) -> CompletionRequest {
 
 fn encode(req: &CompletionRequest, extra: Value) -> Result<Value, LlmError> {
     let http = AnthropicMessagesCodec.encode_request(
-        req,
-        &profile(extra),
-        &route(),
-        &RequestOptions::default(),
+        lingxi_llm_client::EncodeRequest::new(req),
+        &wire_api::context(
+            &profile(extra),
+            &route().request_model,
+            &RequestOptions::default(),
+        ),
     )?;
     Ok(serde_json::from_slice(&http.body).unwrap())
 }
 
 fn decode_stream(frames: &[&str]) -> Vec<StreamEvent> {
-    let mut d = AnthropicMessagesCodec.stream_decoder();
+    let mut d = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
     let mut out = Vec::new();
     for f in frames {
-        out.extend(d.decode_frame(f.as_bytes()).unwrap());
+        out.extend(wire_api::decode_frame(&mut *d, f.as_bytes()).unwrap());
     }
-    out.extend(d.finish().unwrap());
+    out.extend(wire_api::finish(&mut *d).unwrap());
     out
 }
 
@@ -111,7 +117,9 @@ fn a_signed_thinking_block_survives_the_round_trip() {
         .into(),
     };
 
-    let decoded = AnthropicMessagesCodec.decode_response(&resp).unwrap();
+    let decoded = AnthropicMessagesCodec
+        .decode_response(&resp, &wire_api::decode_context())
+        .unwrap();
     let signature = decoded.message.content.iter().find_map(|b| match b {
         ContentBlock::Thinking { signature, .. } => signature.clone(),
         _ => None,
@@ -309,11 +317,11 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
         thought_signature: None,
     }]);
     req.system = vec![
-        lingxi_agent_api::protocol::SystemBlock {
+        lingxi_llm_client::protocol::SystemBlock {
             text: "stable".to_owned(),
             cacheable: true,
         },
-        lingxi_agent_api::protocol::SystemBlock {
+        lingxi_llm_client::protocol::SystemBlock {
             text: "volatile".to_owned(),
             cacheable: false,
         },
@@ -321,10 +329,12 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
 
     let http = AnthropicMessagesCodec
         .encode_request(
-            &req,
-            &profile(Value::Null),
-            &route(),
-            &RequestOptions::default(),
+            lingxi_llm_client::EncodeRequest::new(&req),
+            &wire_api::context(
+                &profile(Value::Null),
+                &route().request_model,
+                &RequestOptions::default(),
+            ),
         )
         .unwrap();
     let body: Value = serde_json::from_slice(&http.body).unwrap();
@@ -350,12 +360,14 @@ fn max_tokens_is_always_present_because_the_wire_requires_it() {
 fn beta_headers_accumulate_instead_of_replacing_each_other() {
     let http = AnthropicMessagesCodec
         .encode_request(
-            &request(vec![]),
-            &profile(
-                json!({"betas": ["computer-use-2025-01-24", "structured-outputs-2025-12-15"]}),
+            lingxi_llm_client::EncodeRequest::new(&request(vec![])),
+            &wire_api::context(
+                &profile(
+                    json!({"betas": ["computer-use-2025-01-24", "structured-outputs-2025-12-15"]}),
+                ),
+                &route().request_model,
+                &RequestOptions::default(),
             ),
-            &route(),
-            &RequestOptions::default(),
         )
         .unwrap();
 
@@ -432,7 +444,7 @@ fn cache_reads_and_writes_are_counted_separately() {
     ]);
     match events.last() {
         Some(StreamEvent::End { usage, .. }) => assert_eq!(
-            *usage,
+            usage.usage.unwrap(),
             Usage {
                 input_tokens: 10,
                 output_tokens: 4,
@@ -467,7 +479,12 @@ fn one_hour_cache_writes_are_preserved_as_a_pricing_subset() {
             .unwrap()
             .into(),
     };
-    let buffered = AnthropicMessagesCodec.response_usage(&response).unwrap();
+    let buffered = wire_api::response_usage(
+        &AnthropicMessagesCodec,
+        &response,
+        &wire_api::decode_context(),
+    )
+    .unwrap();
     assert_eq!(buffered.cache_write_tokens, 100);
     assert_eq!(buffered.cache_write_1h_tokens, 10);
     assert_eq!(
@@ -476,19 +493,15 @@ fn one_hour_cache_writes_are_preserved_as_a_pricing_subset() {
         "the one-hour subset is not counted twice"
     );
 
-    let mut decoder = AnthropicMessagesCodec.stream_decoder();
-    decoder
-        .decode_frame(
-            br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":90,"ephemeral_1h_input_tokens":10}}}}"#,
-        )
+    let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *decoder , br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":90,"ephemeral_1h_input_tokens":10}}}}"#)
         .unwrap();
-    decoder
-        .decode_frame(
-            br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":90}}}"#,
-        )
+    wire_api::decode_frame(&mut *decoder , br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":90}}}"#)
         .unwrap();
-    let streamed = decoder.observed_usage().unwrap();
-    assert!(decoder.usage_is_complete());
+    let streamed = crate::wire_api::observed_usage(&decoder).unwrap();
+    assert!(!crate::wire_api::usage_is_complete(&decoder));
+    wire_api::decode_frame(&mut *decoder, br#"{"type":"message_stop"}"#).unwrap();
+    assert!(crate::wire_api::usage_is_complete(&decoder));
     assert_eq!(streamed.cache_write_tokens, 100);
     assert_eq!(streamed.cache_write_1h_tokens, 10);
     assert_eq!(
@@ -565,7 +578,8 @@ fn independent_cache_counter_overflow_makes_anthropic_usage_incomplete() {
 fn thinking_config_turns_the_budget_into_the_wire_shape() {
     let mut req = request(vec![]);
     req.thinking = Some(ThinkingConfig {
-        budget_tokens: Some(2048),
+        budget: Some(lingxi_llm_client::protocol::ThinkingBudget::Tokens(2048)),
+        ..ThinkingConfig::default()
     });
     let body = encode(&req, Value::Null).unwrap();
     assert_eq!(
@@ -597,14 +611,14 @@ fn a_tool_result_carries_its_error_flag() {
 /// Decode a stream and answer with both the final usage and whether the decoder
 /// considers the report complete.
 fn decode_usage(frames: &[&str]) -> (Usage, bool) {
-    let mut d = AnthropicMessagesCodec.stream_decoder();
+    let mut d = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
     for f in frames {
-        d.decode_frame(f.as_bytes()).unwrap();
+        wire_api::decode_frame(&mut *d, f.as_bytes()).unwrap();
     }
-    d.finish().unwrap();
+    wire_api::finish(&mut *d).unwrap();
     (
-        d.observed_usage().unwrap_or_default(),
-        d.usage_is_complete(),
+        crate::wire_api::observed_usage(&d).unwrap_or_default(),
+        crate::wire_api::usage_is_complete(&d),
     )
 }
 
@@ -659,22 +673,24 @@ fn a_counter_the_closing_frame_omits_keeps_what_the_seed_said() {
 fn a_stream_that_never_reported_its_output_is_not_a_complete_report() {
     // Cut off after the seed: the counts are still worth showing, but nothing
     // may be billed or budgeted from them.
-    let mut decoder = AnthropicMessagesCodec.stream_decoder();
-    decoder
-        .decode_frame(
-            br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#,
-        )
-        .unwrap();
+    let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(
+        &mut *decoder,
+        br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#,
+    )
+    .unwrap();
     assert!(matches!(
-        decoder.finish(),
+        wire_api::finish(&mut *decoder),
         Err(LlmError::StreamInterrupted { .. })
     ));
     assert_eq!(
-        decoder.observed_usage().unwrap().input_tokens,
+        crate::wire_api::observed_usage(&decoder)
+            .unwrap()
+            .input_tokens,
         10,
         "what was seen is still reported"
     );
-    assert!(!decoder.usage_is_complete());
+    assert!(!crate::wire_api::usage_is_complete(&decoder));
 
     let (_, complete) = decode_usage(&[
         r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10}}}"#,
@@ -688,63 +704,67 @@ fn a_stream_that_never_reported_its_output_is_not_a_complete_report() {
 fn provisional_seed_usage_needs_a_numeric_final_output_counter() {
     let seed = br#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":10,"output_tokens":1}}}"#;
 
-    let mut interrupted = AnthropicMessagesCodec.stream_decoder();
-    interrupted.decode_frame(seed).unwrap();
+    let mut interrupted = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *interrupted, seed).unwrap();
     assert!(matches!(
-        interrupted.finish(),
+        wire_api::finish(&mut *interrupted),
         Err(LlmError::StreamInterrupted { .. })
     ));
-    assert_eq!(interrupted.observed_usage().unwrap().output_tokens, 1);
+    assert_eq!(
+        crate::wire_api::observed_usage(&interrupted)
+            .unwrap()
+            .output_tokens,
+        1
+    );
     assert!(
-        !interrupted.usage_is_complete(),
+        !crate::wire_api::usage_is_complete(&interrupted),
         "message_start output_tokens is provisional even when both numbers look valid"
     );
 
-    let mut closed_without_delta = AnthropicMessagesCodec.stream_decoder();
-    closed_without_delta.decode_frame(seed).unwrap();
-    closed_without_delta
-        .decode_frame(br#"{"type":"message_stop"}"#)
-        .unwrap();
-    closed_without_delta.finish().unwrap();
+    let mut closed_without_delta =
+        AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *closed_without_delta, seed).unwrap();
+    wire_api::decode_frame(&mut *closed_without_delta, br#"{"type":"message_stop"}"#).unwrap();
+    wire_api::finish(&mut *closed_without_delta).unwrap();
     assert!(
-        !closed_without_delta.usage_is_complete(),
+        !crate::wire_api::usage_is_complete(&closed_without_delta),
         "a close marker alone must not upgrade the seed to final usage"
     );
 
-    let mut missing_counter = AnthropicMessagesCodec.stream_decoder();
-    missing_counter.decode_frame(seed).unwrap();
-    missing_counter
-        .decode_frame(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10}}"#)
+    let mut missing_counter = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *missing_counter, seed).unwrap();
+    wire_api::decode_frame(&mut *missing_counter , br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10}}"#)
         .unwrap();
-    missing_counter.finish().unwrap();
+    wire_api::finish(&mut *missing_counter).unwrap();
     assert!(
-        !missing_counter.usage_is_complete(),
+        !crate::wire_api::usage_is_complete(&missing_counter),
         "a final frame without its output counter is still incomplete"
     );
 
-    let mut malformed_counter = AnthropicMessagesCodec.stream_decoder();
-    malformed_counter.decode_frame(seed).unwrap();
-    malformed_counter
-        .decode_frame(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":"4"}}"#)
+    let mut malformed_counter = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *malformed_counter, seed).unwrap();
+    wire_api::decode_frame(&mut *malformed_counter , br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":"4"}}"#)
         .unwrap();
-    malformed_counter.finish().unwrap();
+    wire_api::finish(&mut *malformed_counter).unwrap();
     assert!(
-        !malformed_counter.usage_is_complete(),
+        !crate::wire_api::usage_is_complete(&malformed_counter),
         "a nonnumeric final output counter cannot be treated as a measurement"
     );
 
-    let mut final_without_close = AnthropicMessagesCodec.stream_decoder();
-    final_without_close.decode_frame(seed).unwrap();
-    final_without_close
-        .decode_frame(br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4}}"#)
+    let mut final_without_close =
+        AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    wire_api::decode_frame(&mut *final_without_close, seed).unwrap();
+    wire_api::decode_frame(&mut *final_without_close , br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":4}}"#)
         .unwrap();
-    final_without_close.finish().unwrap();
+    wire_api::finish(&mut *final_without_close).unwrap();
     assert_eq!(
-        final_without_close.observed_usage().unwrap().output_tokens,
+        crate::wire_api::observed_usage(&final_without_close)
+            .unwrap()
+            .output_tokens,
         4
     );
     assert!(
-        final_without_close.usage_is_complete(),
+        crate::wire_api::usage_is_complete(&final_without_close),
         "the final report remains usable when message_stop is missing"
     );
 }
@@ -813,4 +833,22 @@ fn only_the_derivable_half_of_a_cache_split_may_be_omitted() {
         !complete,
         "the remaining 70 cannot be attributed to a tariff"
     );
+}
+
+#[test]
+fn strict_tools_are_enabled_only_when_requested() {
+    for strict in [true, false] {
+        let mut req = request(vec![]);
+        req.tools.push(lingxi_llm_client::protocol::ToolSpec {
+            name: "lookup".into(),
+            description: "Lookup".into(),
+            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+            strict,
+        });
+        let body = encode(&req, Value::Null).unwrap();
+        assert_eq!(
+            body["tools"][0].get("strict"),
+            strict.then_some(&json!(true))
+        );
+    }
 }

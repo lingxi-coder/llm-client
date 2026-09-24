@@ -1,9 +1,8 @@
 use async_trait::async_trait;
-use lingxi_agent_api::protocol::{LlmError, ProviderProfile, Secret};
+use lingxi_llm_client::protocol::{LlmError, ProviderProfile, Secret};
 use lingxi_llm_client::{
     builtin_providers, AccountFailure, AccountIdentity, AccountMetric, AccountQuery,
     AccountScopeKind, HttpRequest, HttpResponse, LlmClientBuilder, StreamResponse, Transport,
-    WebSocketSession,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -29,11 +28,12 @@ impl ScriptedHttp {
 
 #[async_trait]
 impl Transport for ScriptedHttp {
-    async fn execute(&self, _request: HttpRequest) -> Result<HttpResponse, LlmError> {
-        panic!("account adapters must use the no-redirect transport path")
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
     }
-
-    async fn execute_no_follow(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+}
+impl ScriptedHttp {
+    async fn response(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
         let reply = {
             let mut replies = self.replies.lock().unwrap();
             let position = replies
@@ -49,44 +49,24 @@ impl Transport for ScriptedHttp {
             body: reply.2.into(),
         })
     }
-
-    async fn open_stream(&self, _request: HttpRequest) -> Result<StreamResponse, LlmError> {
-        unreachable!()
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _request: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        unreachable!()
-    }
 }
 
 struct RedirectFollowingHttp;
 
 #[async_trait]
 impl Transport for RedirectFollowingHttp {
-    async fn execute(&self, _: HttpRequest) -> Result<HttpResponse, LlmError> {
-        panic!("a credential-bearing request reached a redirect-following transport")
-    }
-
-    async fn open_stream(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
-        unreachable!()
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        unreachable!()
+    async fn send(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "transport cannot guarantee the required redirect policy".into(),
+        })
     }
 }
 
 #[tokio::test]
-async fn account_credentials_require_explicit_no_redirect_transport_support() {
+async fn account_transport_policy_rejections_remain_local_to_the_account() {
     let client =
         LlmClientBuilder::with_transport(Arc::new(RedirectFollowingHttp), &[profile("deepseek")])
-            .with_region(lingxi_agent_api::protocol::Region::International)
+            .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
     let result = client
@@ -111,7 +91,7 @@ fn profile(name: &str) -> ProviderProfile {
 
 fn client(http: Arc<ScriptedHttp>, profile: ProviderProfile) -> lingxi_llm_client::LlmClient {
     LlmClientBuilder::with_transport(http, &[profile])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap()
 }

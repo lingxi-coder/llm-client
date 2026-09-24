@@ -1,5 +1,11 @@
 # The international endpoint. A separate env var from its sibling: they are
 # separate accounts, and cross-wiring the keys silently bills the wrong one.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "thinking_type", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://docs.z.ai/api-reference/llm/chat-completion"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["international"]
 provider_id = "zhipu"
 base_url = "https://api.z.ai/api/paas/v4"
@@ -40,6 +46,15 @@ cache_read_per_million = 0.11
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
+
 [[model]]
 id = "glm-4.5-air"
 name = "GLM-4.5-Air"
@@ -64,6 +79,15 @@ output_per_million = 1.1
 cache_read_per_million = 0.03
 cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-4.5-flash"
@@ -90,6 +114,15 @@ cache_read_per_million = 0
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
+
 [[model]]
 id = "glm-4.5v"
 name = "GLM-4.5V"
@@ -112,6 +145,15 @@ open_weights = true
 input_per_million = 0.6
 output_per_million = 1.8
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-4.6"
@@ -138,6 +180,15 @@ cache_read_per_million = 0.11
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
+
 [[model]]
 id = "glm-4.6v"
 name = "GLM-4.6V"
@@ -160,6 +211,15 @@ open_weights = true
 input_per_million = 0.3
 output_per_million = 0.9
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-4.7"
@@ -186,6 +246,15 @@ cache_read_per_million = 0.11
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
+
 [[model]]
 id = "glm-4.7-flash"
 name = "GLM-4.7-Flash"
@@ -210,6 +279,15 @@ output_per_million = 0
 cache_read_per_million = 0
 cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-4.7-flashx"
@@ -236,6 +314,15 @@ cache_read_per_million = 0.01
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
+
 [[model]]
 id = "glm-5"
 name = "GLM-5"
@@ -259,6 +346,15 @@ output_per_million = 3.2
 cache_read_per_million = 0.2
 cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5-turbo"
@@ -285,6 +381,15 @@ cache_read_per_million = 0.24
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
+
 [[model]]
 id = "glm-5.1"
 name = "GLM-5.1"
@@ -309,6 +414,15 @@ output_per_million = 4.4
 cache_read_per_million = 0.26
 cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.2"
@@ -335,6 +449,15 @@ cache_read_per_million = 0.26
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "supported" }
+
 [[model]]
 id = "glm-5.3"
 name = "GLM-5.3"
@@ -359,6 +482,15 @@ output_per_million = 4.4
 cache_read_per_million = 0.26
 cache_write_per_million = 0
 source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "supported", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5.3-flash"
@@ -385,6 +517,15 @@ cache_read_per_million = 0.015
 cache_write_per_million = 0
 source = "models.dev"
 
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "supported", levels = ["low", "high", "max"] }
+
 [[model]]
 id = "glm-5v-turbo"
 name = "GLM-5V-Turbo"
@@ -408,3 +549,11 @@ output_per_million = 4
 cache_read_per_million = 0.24
 cache_write_per_million = 0
 source = "models.dev"
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "unknown" }

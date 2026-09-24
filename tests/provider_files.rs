@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
-use lingxi_agent_api::protocol::{LlmError, ProviderProfile, Secret};
-use lingxi_llm_client::client::files::{
+use lingxi_llm_client::files::{
     capabilities, capabilities_for_purpose, FilePurpose, FileService, ModelFileReference,
     UploadFile,
 };
+use lingxi_llm_client::protocol::{LlmError, ProviderProfile, Secret};
 use lingxi_llm_client::{
-    ApiKeyAuthenticator, HttpRequest, HttpResponse, StreamResponse, Transport, WebSocketSession,
+    ApiKeyAuthenticator, HttpRequest, HttpResponse, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -34,22 +34,7 @@ impl MockTransport {
 
 #[async_trait]
 impl Transport for MockTransport {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.requests.lock().unwrap().push(req);
-        self.responses
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| LlmError::Transport {
-                message: "mock has no response".into(),
-            })
-    }
-
-    async fn execute_no_follow(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute(req).await
-    }
-
-    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
+    async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
         self.requests.lock().unwrap().push(req);
         let response =
             self.responses
@@ -63,19 +48,6 @@ impl Transport for MockTransport {
             status: response.status,
             headers: response.headers,
             body: stream::iter(vec![Ok(response.body)]).boxed(),
-        })
-    }
-
-    async fn open_stream_no_follow(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
-        self.open_stream(req).await
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "mock websocket is unused".into(),
         })
     }
 }
@@ -96,16 +68,16 @@ fn profile(
             "display_model": "Test model",
             "request_model": "test-model",
             "billing_model": "test-model",
-            "capabilities": {
-                "vision": true,
-                "documents": true,
-                "tools": false,
-                "reasoning": false,
-                "signed_reasoning": false,
-                "streaming": true,
-                "structured_output": false
+            "capability_support": {
+                "vision": "supported",
+                "documents": "supported",
+                "tools": "unknown",
+                "reasoning": "unknown",
+                "signed_reasoning": "unknown",
+                "streaming": "supported",
+                "structured_output": "unknown"
             },
-            "metadata": {"input_modalities": media_types, "attachments": true}
+            "metadata": {"inputModalities": media_types, "attachments": true}
         }]
     }))
     .unwrap()
@@ -434,10 +406,10 @@ async fn provider_file_scope_mismatch_fails_before_network_access() {
     let auth = ApiKeyAuthenticator;
     let key = Secret::new("test-key".to_owned());
     let svc = service(&http, &profile, &auth, &key, Some("acct-b"));
-    let foreign = lingxi_llm_client::client::files::ProviderFileRef {
+    let foreign = lingxi_llm_client::files::ProviderFileRef {
         provider_id: profile.provider_id.clone(),
         profile_name: profile.profile_name.clone(),
-        endpoint_fingerprint: lingxi_llm_client::client::files::provider_file_endpoint_fingerprint(
+        endpoint_fingerprint: lingxi_llm_client::files::provider_file_endpoint_fingerprint(
             &profile.base_url,
         ),
         account_scope: Some("acct-a".into()),
@@ -472,10 +444,10 @@ async fn file_ids_are_encoded_as_one_path_segment() {
     let auth = ApiKeyAuthenticator;
     let key = Secret::new("test-key".to_owned());
     let svc = service(&http, &profile, &auth, &key, None);
-    let reference = lingxi_llm_client::client::files::ProviderFileRef {
+    let reference = lingxi_llm_client::files::ProviderFileRef {
         provider_id: profile.provider_id.clone(),
         profile_name: profile.profile_name.clone(),
-        endpoint_fingerprint: lingxi_llm_client::client::files::provider_file_endpoint_fingerprint(
+        endpoint_fingerprint: lingxi_llm_client::files::provider_file_endpoint_fingerprint(
             &profile.base_url,
         ),
         account_scope: None,
@@ -564,10 +536,10 @@ async fn uploaded_anthropic_file_marked_not_downloadable_is_not_fetched() {
     let auth = ApiKeyAuthenticator;
     let key = Secret::new("anthropic-secret".to_owned());
     let svc = service(&http, &profile, &auth, &key, Some("anthropic-account"));
-    let uploaded = lingxi_llm_client::client::files::ProviderFileRef {
+    let uploaded = lingxi_llm_client::files::ProviderFileRef {
         provider_id: profile.provider_id.clone(),
         profile_name: profile.profile_name.clone(),
-        endpoint_fingerprint: lingxi_llm_client::client::files::provider_file_endpoint_fingerprint(
+        endpoint_fingerprint: lingxi_llm_client::files::provider_file_endpoint_fingerprint(
             &profile.base_url,
         ),
         account_scope: Some("anthropic-account".into()),
@@ -666,4 +638,224 @@ fn capability_matrix_keeps_management_and_chat_references_distinct() {
         )
         .upload
     );
+}
+
+#[tokio::test]
+async fn gemini_list_and_get_preserve_display_name() {
+    let file = json!({"name":"files/report","displayName":"report.pdf","mimeType":"application/pdf","sizeBytes":"10"});
+    let http =
+        MockTransport::with_responses(vec![response(json!({"files":[file]})), response(file)]);
+    let profile = profile(
+        "google",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gemini_generate_content",
+        &["text", "file"],
+    );
+    let auth = ApiKeyAuthenticator;
+    let key = Secret::new("test-key".to_owned());
+    let svc = service(&http, &profile, &auth, &key, None);
+    let page = svc.list(None).await.unwrap();
+    assert_eq!(page.files[0].file.filename.as_deref(), Some("report.pdf"));
+    let metadata = svc.get(&page.files[0].file).await.unwrap();
+    assert_eq!(metadata.file.filename.as_deref(), Some("report.pdf"));
+}
+
+#[tokio::test]
+async fn gemini_short_processing_timeout_queries_before_waiting() {
+    for (timeout_ms, state) in [(100, "ACTIVE"), (1000, "ACTIVE"), (1000, "PROCESSING")] {
+        let file = |state| json!({"name":"files/video-1","uri":"https://generativelanguage.googleapis.com/v1beta/files/video-1","state":state});
+        let http = MockTransport::with_responses(vec![
+            HttpResponse {
+                status: 200,
+                headers: vec![(
+                    "x-goog-upload-url".into(),
+                    "https://generativelanguage.googleapis.com/upload/session/one".into(),
+                )],
+                body: Bytes::new(),
+            },
+            response(json!({"file":file("PROCESSING")})),
+            response(file(state)),
+        ]);
+        let profile = profile(
+            "google",
+            "https://generativelanguage.googleapis.com/v1beta",
+            "gemini_generate_content",
+            &["text", "video"],
+        );
+        let auth = ApiKeyAuthenticator;
+        let key = Secret::new("test-key".to_owned());
+        let svc = service(&http, &profile, &auth, &key, Some("scope"))
+            .with_gemini_processing_timeout(std::time::Duration::from_millis(timeout_ms));
+        let result = svc
+            .upload(
+                &UploadFile {
+                    filename: "clip.mp4".into(),
+                    media_type: "video/mp4".into(),
+                    bytes: Bytes::from_static(b"mp4"),
+                },
+                FilePurpose::ModelInput,
+            )
+            .await;
+        if state == "ACTIVE" {
+            assert!(result.is_ok(), "{result:?}");
+        } else {
+            let Err(LlmError::ProviderFileProcessing { file, .. }) = result else {
+                panic!("expected a resumable processing error, got {result:?}");
+            };
+            assert_eq!(file.file_id, "files/video-1");
+            assert_eq!(file.profile_name, profile.profile_name);
+            assert_eq!(file.account_scope.as_deref(), Some("scope"));
+        }
+        assert_eq!(
+            http.requests().iter().filter(|r| r.method == "GET").count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn gemini_file_lists_accept_omitted_or_null_empty_fields_but_reject_wrong_types() {
+    let p = profile(
+        "google",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gemini_generate_content",
+        &["text", "image"],
+    );
+    let auth = ApiKeyAuthenticator;
+    let key = Secret::new("test-key".into());
+    for raw in [
+        json!({}),
+        json!({"files":null}),
+        json!({"files":[]}),
+        json!({"nextPageToken":"next"}),
+    ] {
+        let http = MockTransport::with_responses(vec![response(raw.clone())]);
+        let page = service(&http, &p, &auth, &key, Some("account"))
+            .list(None)
+            .await
+            .unwrap();
+        assert!(page.files.is_empty());
+        assert_eq!(
+            page.next_cursor.as_deref(),
+            raw.get("nextPageToken").and_then(Value::as_str)
+        );
+    }
+    for raw in [
+        json!({"files":{}}),
+        json!({"files":false}),
+        json!({"files":"invalid"}),
+        json!({"files":false,"data":[]}),
+        Value::Null,
+        json!([]),
+        json!(false),
+        json!("invalid"),
+    ] {
+        let http = MockTransport::with_responses(vec![response(raw)]);
+        assert!(matches!(
+            service(&http, &p, &auth, &key, Some("account"))
+                .list(None)
+                .await,
+            Err(LlmError::ProviderInternal { .. })
+        ));
+    }
+    let p = profile(
+        "openai",
+        "https://api.openai.com/v1",
+        "open_ai_responses",
+        &["text", "file"],
+    );
+    let http = MockTransport::with_responses(vec![response(json!({}))]);
+    assert!(matches!(
+        service(&http, &p, &auth, &key, Some("account"))
+            .list(None)
+            .await,
+        Err(LlmError::ProviderInternal { .. })
+    ));
+}
+
+#[tokio::test]
+async fn gemini_video_processing_keeps_its_own_budget_after_a_short_upload() {
+    let file = |state| json!({"name":"files/video-1","uri":"https://generativelanguage.googleapis.com/v1beta/files/video-1","state":state});
+    let http = MockTransport::with_responses(vec![
+        HttpResponse {
+            status: 200,
+            headers: vec![(
+                "x-goog-upload-url".into(),
+                "https://generativelanguage.googleapis.com/upload/session/one".into(),
+            )],
+            body: Bytes::new(),
+        },
+        response(json!({"file":file("PROCESSING")})),
+        response(file("PROCESSING")),
+        response(file("ACTIVE")),
+    ]);
+    let p = profile(
+        "google",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gemini_generate_content",
+        &["text", "video"],
+    );
+    let auth = ApiKeyAuthenticator;
+    let key = Secret::new("test-key".into());
+    let svc = service(&http, &p, &auth, &key, Some("scope"))
+        .with_gemini_upload_timeout(std::time::Duration::from_secs(1))
+        .with_gemini_processing_timeout(std::time::Duration::from_secs(5));
+    let file = svc
+        .upload(
+            &UploadFile {
+                filename: "clip.mp4".into(),
+                media_type: "video/mp4".into(),
+                bytes: Bytes::from_static(b"mp4"),
+            },
+            FilePurpose::ModelInput,
+        )
+        .await
+        .unwrap();
+    assert_eq!(file.file_id, "files/video-1");
+    assert_eq!(
+        http.requests().iter().filter(|r| r.method == "GET").count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn gemini_upload_deadline_cancels_pending_authentication() {
+    struct PendingAuth;
+    #[async_trait]
+    impl lingxi_llm_client::Authenticator for PendingAuth {
+        async fn apply(
+            &self,
+            _: &mut HttpRequest,
+            _: &ProviderProfile,
+            _: Option<&Secret<String>>,
+        ) -> Result<(), LlmError> {
+            std::future::pending().await
+        }
+    }
+    let http = MockTransport::default();
+    let p = profile(
+        "google",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gemini_generate_content",
+        &["text", "video"],
+    );
+    let auth = PendingAuth;
+    let key = Secret::new("test-key".into());
+    let svc = FileService::new(&http, &p, Some(&auth), Some(&key), Some("scope"))
+        .with_gemini_upload_timeout(std::time::Duration::from_secs(1));
+    let upload = UploadFile {
+        filename: "clip.mp4".into(),
+        media_type: "video/mp4".into(),
+        bytes: Bytes::from_static(b"mp4"),
+    };
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        svc.upload(&upload, FilePurpose::ModelInput),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(Err(LlmError::TransportTimeout { .. }))),
+        "{result:?}"
+    );
+    assert!(http.requests().is_empty());
 }

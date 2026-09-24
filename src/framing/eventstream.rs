@@ -10,7 +10,7 @@
 //! The CRC is IEEE CRC32 (reflected, poly 0xEDB8_8320), computed from a
 //! hand-rolled table so this crate keeps its dependency list.
 
-use lingxi_agent_api::protocol::LlmError;
+use crate::protocol::LlmError;
 
 const fn make_crc_table() -> [u32; 256] {
     let mut table = [0u32; 256];
@@ -92,7 +92,25 @@ impl EventStreamSplitter {
     /// Feed a chunk; return every frame it completed. A partial frame is kept
     /// until a later chunk finishes it.
     pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<EventStreamMessage>, LlmError> {
+        let (messages, error) = self.feed_batch(chunk);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(messages),
+        }
+    }
+    pub(crate) fn feed_batch(
+        &mut self,
+        chunk: &[u8],
+    ) -> (Vec<EventStreamMessage>, Option<LlmError>) {
         let mut messages = Vec::new();
+        let error = self.feed_into(chunk, &mut messages).err();
+        (messages, error)
+    }
+    fn feed_into(
+        &mut self,
+        chunk: &[u8],
+        messages: &mut Vec<EventStreamMessage>,
+    ) -> Result<(), LlmError> {
         let mut unread = chunk;
 
         loop {
@@ -160,7 +178,7 @@ impl EventStreamSplitter {
                 break;
             }
         }
-        Ok(messages)
+        Ok(())
     }
 
     /// Anything left at end of stream means the stream stopped mid-frame.

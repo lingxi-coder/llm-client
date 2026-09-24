@@ -4,7 +4,11 @@
 
 `llm-client` 是一个独立的 Rust 库，用于在应用中调用不同的 LLM 服务。应用使用统一的请求和响应类型，通过 provider 配置选择模型与连接；客户端负责协议编码、HTTP 传输、流式解析和错误分类。它也提供模型目录、托管式 Web Search、用量与费用估算等能力。
 
+协议类型由本 crate 自身定义，可通过 `lingxi_llm_client::protocol` 使用。应用负责工具执行、权限、会话历史、凭证刷新和上下文压缩；接入示例见 [API 指南](docs/api.md#宿主工具执行与上下文恢复)。
+
 ## Features
+
+- [推理控制与 fast 定价](docs/inference.md)：查询模型能力，设置 budget、effort 和 fast，读取标准／fast 价格及实际档位。Effort 影响用量，不改变单价。
 
 - **统一多种模型协议**：内置 OpenAI Responses、Chat Completions、Anthropic Messages 和 Gemini 编解码器，以及 Azure、Bedrock、Vertex 等托管平台适配，减少应用内的协议适配代码。
 - **通过配置接入服务**：内置 provider 与模型配置；兼容已有协议的服务可通过 profile 接入。同一 provider 可配置多个账号连接，分别同步模型并管理可见性。
@@ -40,6 +44,8 @@
 Remote 设备间共享图片、附件引用和 provider 文件生命周期的说明见[文件附件指南](docs/file-attachments.zh.md)。
 
 构建 client 时必须通过 `with_region(Region::ChinaMainland)` 或 `with_region(Region::International)` 选择使用区域。provider/model 列表、模型解析和故障切换均按区域过滤；完整配置仍保留。自定义 profile 可通过 `regions` 声明可用区域，未声明时两区可用。详见[区域过滤](docs/api.md#region-区域过滤)。
+
+默认构建不包含 tokenizer；本地 token 计数按供应商开启 Cargo feature。公开接口与配置 v2 的变化见[架构与 API 迁移指南](docs/architecture-migration.md)。
 
 ## Getting Started
 
@@ -179,7 +185,7 @@ async fn search(
 | [目录维护与发布](docs/maintenance.md) | 内置 provider / 模型目录更新及 crate 发布步骤 |
 | [审查记录与已知边界](docs/review.md) | 已修复问题、设计决策与应用需要处理的边界 |
 
-在本仓库运行 `cargo doc --workspace --no-deps --open` 可查看 Rust 类型与方法文档。
+在本仓库运行 `cargo doc --no-deps --open` 可查看 Rust 类型与方法文档。
 
 ## Development
 
@@ -188,7 +194,7 @@ async fn search(
 ```sh
 git clone https://github.com/lingxi-coder/llm-client.git
 cd llm-client
-cargo build --workspace --locked
+cargo build --locked
 ```
 
 内置 provider 配置位于 `data/providers/*.toml`。接入已有协议时添加 profile；新增协议时实现并注册 `WireCodec`，需要模型目录同步时再实现 `ModelDirectory`。详见[扩展接口](docs/api.md#扩展接口)。
@@ -196,11 +202,10 @@ cargo build --workspace --locked
 提交改动前可运行：
 
 ```sh
-cargo test --workspace --locked
-cargo test -p lingxi-agent-api --no-default-features --locked
+cargo test --locked
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+cargo clippy --all-targets --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked
 ```
 
 测试使用模拟传输和本地回环 HTTP 服务，不需要真实 API key。

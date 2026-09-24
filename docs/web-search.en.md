@@ -106,7 +106,7 @@ GLM uses `enable: true` and `search_result: true`, with `search_pro` as the defa
 
 Kimi uses server-side search through its [current Responses API](https://platform.kimi.com/docs/api/responses); the client does not need to execute or return a search tool call. `include: ["web_search_call.action.sources"]` requests native sources. Sources are mapped to `citations`, and the complete search action remains in metadata. Search mode does not accept `temperature` or the common thinking token budget. The old `$web_search` built-in interface is being deprecated and is not connected to the `kimi` Chat or `kimi-code` subscription connections.
 
-The new connections use separate connection groups to avoid automatically falling back from a search request to ordinary chat, subscription, or another region's account. DeepSeek and Kimi token prices use the repository's existing catalog snapshot. The usage-billed `glm` has no verified price in US dollars, so `estimate_cost()` returns `None` rather than incorrectly applying the zero price of Coding Plan to the open platform. Search charges are still excluded from token estimates.
+The new connections use separate connection groups to avoid automatically falling back from a search request to ordinary chat, subscription, or another region's account. DeepSeek and Kimi token prices use the repository's existing catalog snapshot. The usage-billed `glm` has no verified price in US dollars, so `estimate_cost()` returns `CostUnavailable` rather than incorrectly applying the zero price of Coding Plan to the open platform. Search charges are still excluded from token estimates.
 
 ## Search results and citations
 

@@ -1,49 +1,41 @@
 [package]
 name = "lingxi-llm-client"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
 description = "Provider-neutral LLM client with wire codecs, provider profiles, route resolution and failover."
 repository = "https://github.com/lingxi-coder/llm-client"
 readme = "README.md"
 exclude = [".omx/**"]
 
+[features]
+default = []
+tokenizer-openai = ["dep:tiktoken-rs"]
+tokenizer-deepseek = ["dep:tokenizers", "dep:xz2"]
+tokenizer-qwen = ["dep:tokenizers", "dep:xz2"]
+tokenizer-kimi = ["dep:tokenizers", "dep:xz2"]
+tokenizer-glm = ["dep:tokenizers", "dep:xz2"]
+tokenizers-all = ["tokenizer-openai", "tokenizer-deepseek", "tokenizer-qwen", "tokenizer-kimi", "tokenizer-glm"]
+
 [dependencies]
-lingxi-agent-api = { workspace = true, default-features = false }
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-async-trait.workspace = true
-futures.workspace = true
-bytes.workspace = true
-base64 = "0.22"
-ring = "0.17.14"
-toml.workspace = true
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
-tokio = { version = "1", features = ["rt", "time"] }
-
-[dev-dependencies]
-lingxi-agent-api.workspace = true
-tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "time", "sync"] }
-
-[workspace]
-resolver = "2"
-members = ["crates/agent-api"]
-
-[workspace.package]
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.94"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/lingxi-coder/llm-client"
-
-[workspace.dependencies]
-lingxi-agent-api = { version = "0.1.0", path = "crates/agent-api", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 async-trait = "0.1"
 futures = "0.3"
 bytes = "1"
+chrono = { version = "0.4.44", default-features = false, features = ["std"] }
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+base64 = "0.22"
+ring = "0.17.14"
 toml = "0.8"
+url = "2"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt", "time"] }
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"], optional = true }
+tiktoken-rs = { version = "0.12", optional = true }
+xz2 = { version = "0.1.7", features = ["static"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "time", "sync", "test-util"] }

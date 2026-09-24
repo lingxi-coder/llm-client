@@ -1,5 +1,5 @@
 //! Native attribution metadata is retained alongside a convenience source list.
-use lingxi_agent_api::protocol::{StreamEvent, WebCitation, WebSearchResult};
+use crate::protocol::{StreamEvent, WebCitation, WebSearchResult};
 use serde_json::{json, Value};
 
 fn citations(value: &Value, out: &mut Vec<WebCitation>) {

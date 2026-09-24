@@ -3,7 +3,7 @@
 //! These name providers on purpose — they assert what the shipped data says.
 //! Gate 30 scans `src/` only.
 
-use lingxi_agent_api::protocol::{AuthStrategy, LlmError, ProtocolFamily, ProviderProfile};
+use lingxi_llm_client::protocol::{AuthStrategy, LlmError, ProtocolFamily, ProviderProfile};
 use lingxi_llm_client::{
     builtin_providers, AnthropicMessagesDirectory, GeminiDirectory, HttpResponse, LlmClient,
     LlmClientBuilder, ModelDirectory, ModelPage, OpenAiChatDirectory,
@@ -19,7 +19,7 @@ fn client_of(profiles: &[ProviderProfile]) -> LlmClient {
     for strategy in AuthStrategy::ALL {
         b.register_authenticator(strategy, Arc::new(support::NoAuth));
     }
-    b.with_region(lingxi_agent_api::protocol::Region::International)
+    b.with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .expect("every protocol has a codec")
 }
@@ -499,7 +499,7 @@ fn every_preset_either_publishes_a_directory_or_says_it_does_not() {
     let c = client_of(&profiles);
     let mut declared_none = vec![];
     for p in &profiles {
-        if p.model_list == lingxi_agent_api::protocol::DirectoryRoute::NotPublished {
+        if p.model_list == lingxi_llm_client::protocol::DirectoryRoute::NotPublished {
             declared_none.push(p.profile_name.as_str());
             assert!(c.directory_for(p).is_none());
             continue;
@@ -597,4 +597,25 @@ fn anthropic_directory_sends_the_selected_api_version() {
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].1, version.unwrap_or("2023-06-01"));
     }
+}
+
+#[test]
+fn grok_anthropic_uses_shared_openai_directory_at_versioned_path() {
+    let profiles = builtin_providers().unwrap();
+    let client = client_of(&profiles);
+    let profile = profiles
+        .iter()
+        .find(|p| p.profile_name == "grok-anthropic")
+        .unwrap();
+    let directory = client.directory_for(profile).unwrap();
+    assert_eq!(directory.shape(), ProtocolFamily::OpenAiChat);
+    assert_eq!(
+        directory.list_request(profile, None).url,
+        "https://api.x.ai/v1/models"
+    );
+    let page = directory
+        .decode_page(&ok(json!({"object":"list","data":[{"id":"grok-model"}]})))
+        .unwrap();
+    assert_eq!(page.models[0].request_model, "grok-model");
+    assert!(page.next_cursor.is_none());
 }

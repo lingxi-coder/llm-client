@@ -1,11 +1,11 @@
 //! Response and error decoding for the Responses API.
 
 use crate::codecs::openai::chat::classify_error as chat_classify;
-use crate::transport::HttpResponse;
-use lingxi_agent_api::protocol::{
+use crate::protocol::{
     CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ResponseId,
     StopReason, ToolUseId, Usage,
 };
+use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         decode_item(item, &mut content, &mut saw_tool_call);
     }
     Ok(CompletionResponse {
+        inference: Default::default(),
         web_search: crate::codecs::web_search_decode::with_usage(
             crate::codecs::web_search_decode::responses(&body),
             body.get("usage"),
@@ -52,7 +53,12 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         } else {
             stop_reason(&body)
         },
-        usage: body.get("usage").map(usage).unwrap_or_default(),
+        usage: crate::codecs::usage::report(
+            body.get("usage"),
+            &crate::codecs::usage::OPENAI_RESPONSES,
+            usage,
+            true,
+        ),
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -107,6 +113,10 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
             });
         }
         Some("reasoning") => {
+            out.push(ContentBlock::ProviderContent {
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                value: item.clone(),
+            });
             if let Some(summary) = item.get("summary").and_then(Value::as_array) {
                 for part in summary {
                     if let Some(text) = part.get("text").and_then(Value::as_str) {
@@ -175,11 +185,14 @@ pub fn usage(u: &Value) -> Usage {
             .unwrap_or(0)
     };
     let cache_read = detail("input_tokens_details", "cached_tokens");
+    let cache_write = detail("input_tokens_details", "cache_write_tokens");
     Usage {
-        input_tokens: n("input_tokens").saturating_sub(cache_read),
+        input_tokens: n("input_tokens")
+            .saturating_sub(cache_read)
+            .saturating_sub(cache_write),
         output_tokens: n("output_tokens"),
         cache_read_tokens: cache_read,
-        cache_write_tokens: 0,
+        cache_write_tokens: cache_write,
         cache_write_1h_tokens: 0,
         reasoning_tokens: detail("output_tokens_details", "reasoning_tokens"),
         cost: None,
@@ -187,7 +200,7 @@ pub fn usage(u: &Value) -> Usage {
     }
 }
 
-fn server_tool_usage(u: &Value) -> Option<lingxi_agent_api::protocol::ServerToolUsage> {
+fn server_tool_usage(u: &Value) -> Option<crate::protocol::ServerToolUsage> {
     let web_search_requests = u
         .pointer("/x_tools/web_search/count")
         .and_then(Value::as_u64);
@@ -195,7 +208,7 @@ fn server_tool_usage(u: &Value) -> Option<lingxi_agent_api::protocol::ServerTool
         .pointer("/x_tools/file_search/count")
         .and_then(Value::as_u64);
     (web_search_requests.is_some() || file_search_requests.is_some()).then_some(
-        lingxi_agent_api::protocol::ServerToolUsage {
+        crate::protocol::ServerToolUsage {
             web_search_requests,
             file_search_requests,
         },

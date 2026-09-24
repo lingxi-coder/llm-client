@@ -1,10 +1,7 @@
-use super::{
-    collect_error_body, HttpRequest, HttpResponse, StreamResponse, Transport, WebSocketSession,
-};
+use super::{HttpRequest, StreamResponse, Transport};
+use crate::protocol::LlmError;
 use async_trait::async_trait;
-use bytes::BytesMut;
 use futures::StreamExt;
-use lingxi_agent_api::protocol::LlmError;
 use std::time::Duration;
 
 /// Pooled HTTP/HTTPS transport backed by reqwest and rustls.
@@ -40,12 +37,12 @@ impl HttpTransport {
         Ok(Self { client })
     }
 
-    async fn send(&self, req: HttpRequest) -> Result<reqwest::Response, LlmError> {
+    async fn send_request(&self, req: HttpRequest) -> Result<reqwest::Response, LlmError> {
         let invalid = || LlmError::InvalidRequest {
             message: "invalid HTTP method, URL or headers".into(),
         };
         let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| invalid())?;
-        let url = reqwest::Url::parse(&req.url).map_err(|_| invalid())?;
+        let url = url::Url::parse(&req.url).map_err(|_| invalid())?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(invalid());
         }
@@ -111,75 +108,8 @@ fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmError {
 
 #[async_trait]
 impl Transport for HttpTransport {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        let response = self.send(req).await?;
-        let status = response.status().as_u16();
-        let headers = response_headers(&response);
-        let body = if (200..300).contains(&status) {
-            // A successful response is only useful with its complete body.
-            // Keep interrupted reads and request deadlines visible to callers.
-            response
-                .bytes()
-                .await
-                .map_err(|err| network_error(err, false))?
-        } else {
-            // Status and headers already establish the error category and may
-            // carry Retry-After. Preserve them if the provider closes early,
-            // and bound collection just like the streaming failover path.
-            collect_error_body(response.bytes_stream()).await
-        };
-        Ok(HttpResponse {
-            status,
-            headers,
-            body,
-        })
-    }
-
-    async fn execute_no_follow(&self, req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        self.execute(req).await
-    }
-
-    async fn execute_no_follow_bounded(
-        &self,
-        req: HttpRequest,
-        max_body_size: usize,
-    ) -> Result<HttpResponse, LlmError> {
-        let response = self.send(req).await?;
-        let status = response.status().as_u16();
-        let headers = response_headers(&response);
-        let body = if (200..300).contains(&status) {
-            if response
-                .content_length()
-                .is_some_and(|length| length > max_body_size as u64)
-            {
-                return Err(LlmError::Transport {
-                    message: "HTTP response body exceeds account limit".into(),
-                });
-            }
-            let mut chunks = response.bytes_stream();
-            let mut body = BytesMut::new();
-            while let Some(chunk) = chunks.next().await {
-                let chunk = chunk.map_err(|err| network_error(err, false))?;
-                if chunk.len() > max_body_size.saturating_sub(body.len()) {
-                    return Err(LlmError::Transport {
-                        message: "HTTP response body exceeds account limit".into(),
-                    });
-                }
-                body.extend_from_slice(&chunk);
-            }
-            body.freeze()
-        } else {
-            collect_error_body(response.bytes_stream()).await
-        };
-        Ok(HttpResponse {
-            status,
-            headers,
-            body,
-        })
-    }
-
-    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
-        let response = self.send(req).await?;
+    async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
+        let response = self.send_request(req).await?;
         Ok(StreamResponse {
             status: response.status().as_u16(),
             headers: response_headers(&response),
@@ -187,19 +117,6 @@ impl Transport for HttpTransport {
                 .bytes_stream()
                 .map(|chunk| chunk.map_err(|err| network_error(err, true)))
                 .boxed(),
-        })
-    }
-
-    async fn open_stream_no_follow(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
-        self.open_stream(req).await
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "built-in HTTP transport does not support WebSocket sessions".into(),
         })
     }
 }

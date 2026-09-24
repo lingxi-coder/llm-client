@@ -1,6 +1,6 @@
 //! Qwen Responses knowledge-base search decoding.
 
-use lingxi_agent_api::protocol::{FileSearchHit, FileSearchResult, StreamEvent};
+use crate::protocol::{FileSearchHit, FileSearchResult, StreamEvent};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 

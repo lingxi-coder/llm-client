@@ -1,3 +1,9 @@
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "enable_thinking", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "supported", dynamic = "unsupported" }, effort = { support = "unknown" }, fast = "unknown", sources = ["https://www.alibabacloud.com/help/en/model-studio/deep-thinking"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
 regions = ["international"]
 provider_id = "qwen"
 base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -22,6 +28,15 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://www.alibabacloud.com/help/en/model-studio/deep-thinking"]
+modes = ["enabled", "disabled"]
+budget = { support = "supported", dynamic = "unsupported" }
+effort = { support = "unknown" }
+
 [[model]]
 id = "qwen3.8-max"
 name = "Qwen3.8 Max"
@@ -32,3 +47,11 @@ output_modalities = ["text"]
 tool_call = true
 reasoning = true
 attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://www.alibabacloud.com/help/en/model-studio/deep-thinking"]
+modes = ["enabled", "disabled"]
+budget = { support = "supported", dynamic = "unsupported" }
+effort = { support = "unknown" }

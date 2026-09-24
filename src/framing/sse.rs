@@ -4,7 +4,7 @@
 //! HTTP layer already parses SSE can hand each event's data payload straight to
 //! a decoder and skip this.
 
-use lingxi_agent_api::protocol::LlmError;
+use crate::protocol::LlmError;
 
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -31,6 +31,13 @@ impl SseFrameSplitter {
     /// transport that splits mid-event loses nothing. Mixed line endings are
     /// accepted because providers mix them.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, LlmError> {
+        let (frames, error) = self.push_batch(bytes);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(frames),
+        }
+    }
+    pub(crate) fn push_batch(&mut self, bytes: &[u8]) -> (Vec<Vec<u8>>, Option<LlmError>) {
         // Normalize CR, LF and CRLF while preserving a CRLF pair split
         // across transport chunks. A CR already terminates its line.
         let mut frames = Vec::new();
@@ -51,12 +58,15 @@ impl SseFrameSplitter {
                 self.buffer.clear();
             } else if self.buffer.len() > MAX_EVENT_BYTES {
                 self.buffer.clear();
-                return Err(LlmError::StreamInterrupted {
-                    message: format!("SSE event exceeds the {MAX_EVENT_BYTES}-byte limit"),
-                });
+                return (
+                    frames,
+                    Some(LlmError::StreamInterrupted {
+                        message: format!("SSE event exceeds the {MAX_EVENT_BYTES}-byte limit"),
+                    }),
+                );
             }
         }
-        Ok(frames)
+        (frames, None)
     }
 
     /// Flush a trailing unterminated event at end of stream. A provider that

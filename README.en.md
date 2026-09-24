@@ -4,7 +4,11 @@
 
 `llm-client` is a standalone Rust library for calling different LLM services from an application. Applications use shared request and response types and choose models and connections through provider profiles; the client handles protocol encoding, HTTP transport, stream parsing, and error classification. It also supports model catalogs, provider-hosted Web Search, usage tracking, and cost estimation.
 
+Protocol types are defined by this crate and available through `lingxi_llm_client::protocol`. Applications own tool execution, permissions, conversation history, credential refresh, and context compaction; see the [API guide](docs/api.en.md#host-tool-execution-and-context-recovery).
+
 ## Features
+
+- [Reasoning controls and fast pricing](docs/inference.en.md): discover model capabilities, configure budgets/effort/fast, and quote standard or fast rates. Effort changes consumption, not unit prices.
 
 - **Multiple protocols, one API**: built-in codecs for OpenAI Responses, Chat Completions, Anthropic Messages, and Gemini, plus hosted adapters for platforms such as Azure, Bedrock, and Vertex, reduce protocol-specific application code.
 - **Configuration-driven integration**: built-in provider and model profiles; add services compatible with existing protocols through configuration. Configure multiple accounts for one provider, sync their catalogs separately, and control model visibility.
@@ -40,6 +44,8 @@ Qwen, Kimi, and MiniMax use separate profiles, regional API URLs, and credential
 See the [File Attachments Guide](docs/file-attachments.md) for sharing images across remote devices, resolver setup, and provider file lifetimes.
 
 Select a usage region with `with_region(Region::ChinaMainland)` or `with_region(Region::International)` before building a client. Provider/model lists, resolution and failover honor this region while keeping the complete configuration. Custom profiles declare `regions`; missing declarations allow both regions. See [region filtering](docs/api.en.md#region-filtering).
+
+Default builds use no tokenizers. Add provider-specific Cargo features when local token counting is needed; see the [architecture and API migration guide](docs/architecture-migration.en.md).
 
 ## Getting Started
 
@@ -176,10 +182,10 @@ See [Error Handling](docs/api.en.md#error-handling) for error details. An undecl
 | [File Attachments Guide](docs/file-attachments.md) | Stable attachment references, remote display, resolver setup, and provider file input |
 | [Web Search Guide](docs/web-search.en.md) | Support matrix, search options, citations, stream events, and context replay |
 | [Extension APIs](docs/api.en.md#extension-apis) | Adding protocols, model directories, and custom authentication |
-| [Catalog Maintenance and Publishing](docs/maintenance.en.md) | Updating built-in provider and model catalogs and publishing the crates |
+| [Catalog Maintenance and Publishing](docs/maintenance.en.md) | Updating built-in provider and model catalogs and publishing the crate |
 | [Review Notes and Known Boundaries](docs/review.en.md) | Resolved issues, design decisions, and responsibilities of the calling application |
 
-Run `cargo doc --workspace --no-deps --open` in this repository to browse Rust type and method documentation.
+Run `cargo doc --no-deps --open` in this repository to browse Rust type and method documentation.
 
 ## Development
 
@@ -188,7 +194,7 @@ Build the project from source when making changes:
 ```sh
 git clone https://github.com/lingxi-coder/llm-client.git
 cd llm-client
-cargo build --workspace --locked
+cargo build --locked
 ```
 
 Built-in provider profiles live in `data/providers/*.toml`. Add a profile for an existing protocol; implement and register `WireCodec` for a new protocol, and `ModelDirectory` if catalog sync is needed. See [Extension APIs](docs/api.en.md#extension-apis).
@@ -196,11 +202,10 @@ Built-in provider profiles live in `data/providers/*.toml`. Add a profile for an
 Before submitting changes, run:
 
 ```sh
-cargo test --workspace --locked
-cargo test -p lingxi-agent-api --no-default-features --locked
+cargo test --locked
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --locked
+cargo clippy --all-targets --locked -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked
 ```
 
 Tests use mocked transport and local loopback HTTP servers; no real API key is required.

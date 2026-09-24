@@ -2,9 +2,21 @@
 //! chain. Ported from the previous project's `registry.rs::resolve_in`.
 
 use super::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
-use super::LlmClient;
-use lingxi_agent_api::protocol::{LlmError, ModelProfile, ProviderProfile};
+use super::snapshot::RuntimeSnapshot;
+use crate::protocol::{LlmError, ModelProfile, ProviderProfile};
 use thiserror::Error;
+
+/// Borrow the exact rows from the immutable snapshot for the whole request.
+#[derive(Clone, Copy)]
+pub(super) struct ResolvedConnection<'a> {
+    pub profile: &'a ProviderProfile,
+    pub model: &'a ModelProfile,
+}
+
+pub(super) struct RequestRoute<'a> {
+    pub route: ResolvedRoute,
+    pub connections: Vec<ResolvedConnection<'a>>,
+}
 
 /// Why `resolve` could not produce a route. Each names what a user has to
 /// change, which is why they are distinct variants rather than one string.
@@ -41,7 +53,7 @@ impl From<ResolveError> for LlmError {
     }
 }
 
-impl LlmClient {
+impl RuntimeSnapshot {
     /// Which connection serves `model`, under what wire name, and which
     /// siblings may take over. Ported from the previous project's
     /// `registry.rs::resolve_in`.
@@ -59,6 +71,15 @@ impl LlmClient {
         requested: &str,
         profile: Option<&str>,
     ) -> Result<ResolvedRoute, ResolveError> {
+        self.resolve_request(requested, profile)
+            .map(|resolved| resolved.route)
+    }
+
+    pub(super) fn resolve_request(
+        &self,
+        requested: &str,
+        profile: Option<&str>,
+    ) -> Result<RequestRoute<'_>, ResolveError> {
         // A qualifier naming one connection means that connection, even when a
         // group shares the name. One preset is its own group's namesake and has
         // a sibling that serves a different wire model under the same display
@@ -79,18 +100,16 @@ impl LlmClient {
             None => true,
         };
 
-        let mut matches: Vec<(&ProviderProfile, &ModelProfile)> = Vec::new();
-        for p in self
-            .profiles
-            .iter()
-            .filter(|p| p.supports_region(self.region) && in_scope(p))
-        {
-            for m in &p.models {
-                if m.answers_to(requested) {
-                    matches.push((p, m));
-                }
-            }
-        }
+        let mut matches: Vec<(&ProviderProfile, &ModelProfile)> = self
+            .model_index
+            .get(requested)
+            .into_iter()
+            .flatten()
+            .filter_map(|(pi, mi)| {
+                let p = &self.profiles[*pi];
+                (p.supports_region(self.region) && in_scope(p)).then_some((p, &p.models[*mi]))
+            })
+            .collect();
 
         // Structured clients expose `profile/model` refs so two providers
         // serving the same model stay distinguishable, but a provider's protocol
@@ -106,22 +125,16 @@ impl LlmClient {
                     .profiles
                     .iter()
                     .any(|p| p.supports_region(self.region) && p.profile_name == qualifier);
-                for p in self
-                    .profiles
-                    .iter()
-                    .filter(|p| p.supports_region(self.region))
-                {
-                    if if names_a_connection {
-                        p.profile_name != qualifier
-                    } else {
-                        p.group() != qualifier
-                    } {
-                        continue;
-                    }
-                    for m in &p.models {
-                        if m.answers_to(bare) {
-                            qualified_matches.push((p, m));
+                for (pi, mi) in self.model_index.get(bare).into_iter().flatten() {
+                    let p = &self.profiles[*pi];
+                    if p.supports_region(self.region)
+                        && if names_a_connection {
+                            p.profile_name == qualifier
+                        } else {
+                            p.group() == qualifier
                         }
+                    {
+                        qualified_matches.push((p, &p.models[*mi]));
                     }
                 }
             }
@@ -224,24 +237,30 @@ impl LlmClient {
         let billing = model.billing_mode_on(&provider.pricing);
         let group = provider.group();
         let mut siblings: Vec<(&ProviderProfile, &ModelProfile)> = self
-            .profiles
-            .iter()
+            .groups
+            .get(group)
+            .into_iter()
+            .flatten()
+            .map(|index| &self.profiles[*index])
             .filter(|c| {
                 c.supports_region(self.region)
                     && c.group() == group
                     && c.profile_name != provider.profile_name
             })
             .filter_map(|c| {
-                c.models
-                    .iter()
-                    .find(|m| m.request_model == model.request_model)
-                    .map(|m| (c, m))
+                let mut candidates = c.models.iter().filter(|m| {
+                    m.request_model == model.request_model
+                        && m.billing_mode_on(&c.pricing) == billing
+                });
+                let model = candidates.next()?;
+                // A wire ID alone cannot choose between account-local rows
+                // with different overrides. Do not guess during failover.
+                candidates.next().is_none().then_some((c, model))
             })
-            .filter(|(c, m)| m.billing_mode_on(&c.pricing) == billing)
             .collect();
         siblings.sort_by(|(a, _), (b, _)| a.connection_sort_key().cmp(&b.connection_sort_key()));
 
-        Ok(ResolvedRoute {
+        let route = ResolvedRoute {
             provider_id: provider.provider_id.clone(),
             profile_name: provider.profile_name.clone(),
             request_model: model.request_model.clone(),
@@ -252,15 +271,22 @@ impl LlmClient {
                 request_model: model.request_model.clone(),
                 display_model: model.display_model.clone(),
             },
-            capabilities: model.capabilities,
+            capability_support: model.capability_support.unwrap_or_default(),
             connection_chain: siblings
-                .into_iter()
+                .iter()
                 .map(|(p, m)| ConnectionHop {
                     profile_name: p.profile_name.clone(),
                     request_model: m.request_model.clone(),
                 })
                 .collect(),
             failover: provider.connection.failover,
+        };
+        Ok(RequestRoute {
+            route,
+            connections: std::iter::once((provider, model))
+                .chain(siblings)
+                .map(|(profile, model)| ResolvedConnection { profile, model })
+                .collect(),
         })
     }
 }
@@ -274,4 +300,17 @@ fn sort_matches(matches: &mut [(&ProviderProfile, &ModelProfile)], prefer_visibl
         };
         visibility.then_with(|| a.connection_sort_key().cmp(&b.connection_sort_key()))
     });
+}
+
+impl super::LlmClient {
+    pub fn resolve(&self, model: &str) -> Result<ResolvedRoute, ResolveError> {
+        self.snapshot.resolve(model)
+    }
+    pub fn resolve_in(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<ResolvedRoute, ResolveError> {
+        self.snapshot.resolve_in(model, profile)
+    }
 }

@@ -6,24 +6,28 @@
 //! can tell one text block from the next without the codec replaying anything.
 
 use super::decode;
-use crate::client::usage;
+use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
-use crate::codecs::StreamDecoder;
-use lingxi_agent_api::protocol::{LlmError, StopReason, StreamEvent, ToolUseId, Usage};
+use crate::codecs::EventDecoder;
+use crate::protocol::{LlmError, ProtocolFamily, StopReason, StreamEvent, ToolUseId};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
 pub struct OpenAiStreamDecoder {
+    inference: crate::codecs::inference::StreamInference,
     started: bool,
+    separate_reasoning: bool,
     next_block: usize,
     text_block: Option<usize>,
     reasoning_block: Option<usize>,
+    native_reasoning: super::reasoning::ReasoningStream,
     /// Wire index → (block, id, name). A provider streams a tool call's
     /// arguments in fragments keyed by its own index, not by the call id, and
     /// the id only arrives on the first fragment.
     tools: Vec<ToolStream>,
-    /// The provider's usage object as sent. Kept raw so the report can be
-    /// checked for self-consistency: the buckets we publish are derived by
+    /// The provider's usage object, with independently counted reasoning
+    /// normalized into completion tokens when configured. The remaining raw
+    /// fields allow checking consistency: published buckets are derived by
     /// subtraction, and a saturated subtraction must not read as a measurement.
     ///
     /// This wire restates the whole object each time it reports, so the latest
@@ -46,7 +50,7 @@ struct ToolStream {
     name: String,
 }
 
-impl StreamDecoder for OpenAiStreamDecoder {
+impl EventDecoder for OpenAiStreamDecoder {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         let text = std::str::from_utf8(frame).map_err(|_| LlmError::InvalidRequest {
             message: "OpenAI stream frame is not valid UTF-8".to_owned(),
@@ -71,6 +75,7 @@ impl StreamDecoder for OpenAiStreamDecoder {
             return Err(decode::classify_error(500, &root, None));
         }
 
+        self.inference.observe(&root, &mut out);
         if !self.started {
             self.started = true;
             out.push(StreamEvent::Start {
@@ -86,7 +91,7 @@ impl StreamDecoder for OpenAiStreamDecoder {
         // Usage may arrive on its own frame after the last choice, so it is
         // recorded whenever seen rather than read at the end.
         if let Some(u) = root.get("usage").filter(|v| !v.is_null()) {
-            self.usage_raw = Some(u.clone());
+            self.usage_raw = Some(decode::normalize_usage(u, self.separate_reasoning));
             self.search
                 .emit(web_search_decode::with_usage(None, Some(u)), &mut out);
         }
@@ -105,16 +110,17 @@ impl StreamDecoder for OpenAiStreamDecoder {
 
         if let Some(delta) = choice.get("delta") {
             self.search.emit(web_search_decode::chat(delta), &mut out);
-            if let Some(r) = delta.get("reasoning_content").and_then(Value::as_str) {
+            let native_reasoning = self.native_reasoning.observe(delta)?;
+            let text = super::reasoning::display_text(delta);
+            if native_reasoning || !text.is_empty() {
                 let block = *self.reasoning_block.get_or_insert_with(|| {
                     let b = self.next_block;
                     self.next_block += 1;
                     b
                 });
-                out.push(StreamEvent::ReasoningDelta {
-                    block,
-                    text: r.to_owned(),
-                });
+                if !text.is_empty() {
+                    out.push(StreamEvent::ReasoningDelta { block, text });
+                }
             }
             if let Some(t) = delta.get("content").and_then(Value::as_str) {
                 if !t.is_empty() {
@@ -167,20 +173,30 @@ impl StreamDecoder for OpenAiStreamDecoder {
         Ok(out)
     }
 
-    fn observed_usage(&self) -> Option<Usage> {
-        self.usage_raw.as_ref().map(decode::usage)
+    fn inference_report(&self) -> crate::protocol::InferenceReport {
+        self.inference.report.clone()
     }
-
-    fn usage_is_complete(&self) -> bool {
-        self.usage_raw
-            .as_ref()
-            .is_some_and(|raw| usage::is_complete(raw, &usage::OPENAI_CHAT))
+    fn set_response_headers(&mut self, headers: &[(String, String)]) {
+        self.inference.headers(headers);
     }
-
-    fn set_provider_metadata(&mut self, _meta: Value) {}
+    fn usage_report(&self) -> crate::protocol::UsageReport {
+        usage::report(
+            self.usage_raw.as_ref(),
+            &usage::OPENAI_CHAT,
+            decode::usage,
+            self.done,
+        )
+    }
 }
 
 impl OpenAiStreamDecoder {
+    pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
+        Self {
+            inference: crate::codecs::inference::StreamInference::new(context),
+            separate_reasoning: super::separate_reasoning(&context.profile.extra),
+            ..Default::default()
+        }
+    }
     fn tool_fragment(&mut self, call: &Value, out: &mut Vec<StreamEvent>) {
         let wire_index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
         let function = call.get("function").unwrap_or(&Value::Null);
@@ -232,16 +248,22 @@ impl OpenAiStreamDecoder {
             return;
         }
         self.done = true;
+        if let Some(value) = self.native_reasoning.take() {
+            out.push(StreamEvent::ProviderContent {
+                block: self
+                    .reasoning_block
+                    .expect("native reasoning allocated a block"),
+                protocol: ProtocolFamily::OpenAiChat,
+                value,
+            });
+        }
         out.push(StreamEvent::End {
             stop_reason: decode::with_refusal_stop_reason(
                 self.stop.clone().unwrap_or(StopReason::EndTurn),
                 self.saw_refusal,
             ),
-            usage: self
-                .usage_raw
-                .as_ref()
-                .map(decode::usage)
-                .unwrap_or_default(),
+            usage: self.usage_report(),
+            inference: self.inference.report.clone(),
         });
     }
 }

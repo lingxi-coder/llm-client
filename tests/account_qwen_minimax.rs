@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use lingxi_agent_api::protocol::{LlmError, ProviderProfile, Secret};
+use lingxi_llm_client::protocol::{LlmError, ProviderProfile, Secret};
 use lingxi_llm_client::{
     builtin_providers, AccountIdentity, AccountMetric, AccountQuery, AlibabaAccessKey, HttpRequest,
-    HttpResponse, LlmClientBuilder, StreamResponse, Transport, WebSocketSession,
+    HttpResponse, LlmClientBuilder, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
 use std::collections::VecDeque;
@@ -29,11 +29,12 @@ impl QueueHttp {
 
 #[async_trait]
 impl Transport for QueueHttp {
-    async fn execute(&self, _: HttpRequest) -> Result<HttpResponse, LlmError> {
-        panic!("account calls must use no-redirect transport")
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.response(request).await.map(Into::into)
     }
-
-    async fn execute_no_follow(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+}
+impl QueueHttp {
+    async fn response(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
         self.requests.lock().unwrap().push(request);
         let body = self
             .replies
@@ -47,17 +48,6 @@ impl Transport for QueueHttp {
             headers: vec![],
             body: body.into(),
         })
-    }
-
-    async fn open_stream(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
-        unreachable!()
-    }
-
-    async fn open_responses_websocket_session(
-        &self,
-        _: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError> {
-        unreachable!()
     }
 }
 
@@ -99,7 +89,7 @@ async fn qwen_usage_reads_workspace_limits_and_signed_per_key_daily_costs() {
         })),
     ]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("qwen")])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);
@@ -250,7 +240,7 @@ async fn qwen_workspace_quota_reads_all_pages() {
         json!({"success":true,"output":{"total":101,"page_no":2,"page_size":100,"quotas":second_page}}),
     ]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("qwen")])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);
@@ -284,7 +274,7 @@ async fn minimax_usage_maps_only_explicit_quota_fields() {
         }]
     })]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("minimax-intl")])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);
@@ -322,7 +312,7 @@ async fn minimax_china_quota_uses_the_china_api_host() {
         "model_remains":[]
     })]));
     let client = LlmClientBuilder::with_transport(http.clone(), &[profile("minimax")])
-        .with_region(lingxi_agent_api::protocol::Region::International)
+        .with_region(lingxi_llm_client::protocol::Region::International)
         .build()
         .unwrap();
     let mut query = AccountQuery::new(AccountIdentity::ApiKey);

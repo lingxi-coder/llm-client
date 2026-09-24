@@ -3,10 +3,10 @@
 mod http;
 pub use http::HttpTransport;
 
+use crate::protocol::LlmError;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{stream::BoxStream, Stream, StreamExt};
-use lingxi_agent_api::protocol::LlmError;
 use std::time::{Duration, SystemTime};
 
 pub(crate) const MAX_ERROR_BODY_SIZE: usize = 64 * 1024;
@@ -76,7 +76,7 @@ impl HttpResponse {
 }
 
 /// A streamed response. The status and headers arrive whole, before the body,
-/// and the body arrives in frames.
+/// and the body arrives in arbitrary byte chunks.
 ///
 /// Returning the frames alone would be simpler and was what this trait did, but
 /// it put every response header out of reach on the one path an agent turn
@@ -103,64 +103,116 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WsMessage {
-    Text(String),
-    Binary(Bytes),
-}
-
-#[async_trait]
-pub trait WebSocketSession: Send {
-    async fn send(&mut self, msg: WsMessage) -> Result<(), LlmError>;
-    async fn recv(&mut self) -> Result<Option<WsMessage>, LlmError>;
-    async fn close(&mut self);
-}
-
-/// The shared transport. Use [`HttpTransport`] for built-in networking or
-/// inject a platform-specific implementation through [`crate::LlmClientBuilder::with_transport`].
+/// A raw HTTP transport. Implementations must not follow redirects or retry
+/// requests automatically. The body contains arbitrary byte chunks; dropping
+/// it must cancel the response read. Use [`HttpExecutor`] for collection and
+/// runtime-enforced deadlines, including with custom transports.
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
-    async fn execute(&self, req: HttpRequest) -> Result<HttpResponse, LlmError>;
+    async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
+}
 
-    /// Return redirects as 3xx responses without following them. Custom
-    /// transports must opt in explicitly before receiving account credentials.
-    async fn execute_no_follow(&self, _req: HttpRequest) -> Result<HttpResponse, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "transport does not implement no-redirect requests".into(),
-        })
-    }
+/// Shared request execution independent of the concrete HTTP backend.
+/// Limits are enforced while reading, rather than after buffering a response.
+#[derive(Clone, Copy)]
+pub struct HttpExecutor<'a> {
+    transport: &'a dyn Transport,
+    deadline: crate::runtime::Deadline,
+}
 
-    /// No-redirect request with a maximum successful response-body size.
-    /// The built-in transport enforces this while reading; custom transports
-    /// should do the same rather than relying on this post-read fallback.
-    async fn execute_no_follow_bounded(
-        &self,
-        req: HttpRequest,
-        max_body_size: usize,
-    ) -> Result<HttpResponse, LlmError> {
-        let response = self.execute_no_follow(req).await?;
-        if response.body.len() > max_body_size {
-            return Err(LlmError::Transport {
-                message: "HTTP response body exceeds account limit".into(),
-            });
+impl<'a> HttpExecutor<'a> {
+    pub fn new(transport: &'a dyn Transport) -> Self {
+        Self {
+            transport,
+            deadline: Default::default(),
         }
-        Ok(response)
     }
 
-    async fn open_stream(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
+    pub(crate) fn with_deadline(mut self, deadline: crate::runtime::Deadline) -> Self {
+        self.deadline = deadline;
+        self
+    }
 
-    /// Open a streaming request without following redirects. Custom transports
-    /// must opt in explicitly before sending credentialed requests.
-    async fn open_stream_no_follow(&self, _req: HttpRequest) -> Result<StreamResponse, LlmError> {
-        Err(LlmError::UnsupportedCapability {
-            message: "transport does not implement no-redirect streaming requests".into(),
+    pub async fn send(&self, mut request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        let deadline = self.deadline.cap(request.timeout);
+        request.timeout = deadline.remaining()?;
+        let response = deadline.run(self.transport.send(request)).await??;
+        let body = futures::stream::unfold(Some(response.body), move |state| async move {
+            let mut body = state?;
+            match deadline.run(body.next()).await {
+                Ok(Some(Ok(chunk))) => Some((Ok(chunk), Some(body))),
+                Ok(Some(Err(error))) | Err(error) => Some((Err(error), None)),
+                Ok(None) => None,
+            }
+        })
+        .boxed();
+        Ok(StreamResponse {
+            status: response.status,
+            headers: response.headers,
+            body,
         })
     }
 
-    async fn open_responses_websocket_session(
+    pub async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
+        self.collect(request, None).await
+    }
+
+    pub async fn execute_bounded(
         &self,
-        req: HttpRequest,
-    ) -> Result<Box<dyn WebSocketSession>, LlmError>;
+        request: HttpRequest,
+        limit: usize,
+    ) -> Result<HttpResponse, LlmError> {
+        self.collect(request, Some(limit)).await
+    }
+
+    async fn collect(
+        &self,
+        request: HttpRequest,
+        limit: Option<usize>,
+    ) -> Result<HttpResponse, LlmError> {
+        let response = self.send(request).await?;
+        Self::collect_response(response, limit).await
+    }
+
+    pub(crate) async fn collect_response(
+        response: StreamResponse,
+        limit: Option<usize>,
+    ) -> Result<HttpResponse, LlmError> {
+        let body = if (200..300).contains(&response.status) {
+            let mut chunks = response.body;
+            let mut body = BytesMut::new();
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk.map_err(|error| match error {
+                    LlmError::StreamInterrupted { message } => LlmError::Transport { message },
+                    other => other,
+                })?;
+                if limit.is_some_and(|limit| chunk.len() > limit.saturating_sub(body.len())) {
+                    return Err(LlmError::Transport {
+                        message: "HTTP response body exceeds operation limit".into(),
+                    });
+                }
+                body.extend_from_slice(&chunk);
+            }
+            body.freeze()
+        } else {
+            collect_error_body(response.body).await
+        };
+        Ok(HttpResponse {
+            status: response.status,
+            headers: response.headers,
+            body,
+        })
+    }
+}
+
+impl From<HttpResponse> for StreamResponse {
+    fn from(response: HttpResponse) -> Self {
+        Self {
+            status: response.status,
+            headers: response.headers,
+            body: futures::stream::once(async move { Ok(response.body) }).boxed(),
+        }
+    }
 }
 
 pub trait Clock: Send + Sync + 'static {
@@ -177,12 +229,5 @@ impl Clock for SystemClock {
     }
 }
 
-pub trait UrlOpener: Send + Sync + 'static {
-    fn open(&self, url: &str) -> Result<(), String>;
-}
-
-// Gate 3.
 const _: Option<&dyn Transport> = None;
-const _: Option<&dyn WebSocketSession> = None;
 const _: Option<&dyn Clock> = None;
-const _: Option<&dyn UrlOpener> = None;

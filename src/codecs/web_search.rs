@@ -1,7 +1,5 @@
 //! Explicit endpoint adapters: compatible JSON alone does not imply search.
-use lingxi_agent_api::protocol::{
-    CompletionRequest, LlmError, ProtocolFamily, ProviderProfile, ToolChoice,
-};
+use crate::protocol::{CompletionRequest, LlmError, ProtocolFamily, ProviderProfile, ToolChoice};
 use serde_json::{json, Map, Value};
 
 /// Add the configured hosted tool after ordinary tools, before profile extras.
@@ -129,8 +127,15 @@ pub(crate) fn apply(
     let tool = match adapter {
         "openai_responses" | "xai" | "kimi" | "qwen" => {
             if adapter == "kimi" {
-                if req.temperature.is_some() || req.thinking.is_some() {
-                    return Err(unsupported("Kimi Responses search does not support temperature or a thinking token budget"));
+                if req.temperature.is_some()
+                    || req
+                        .thinking
+                        .as_ref()
+                        .is_some_and(|t| *t != crate::protocol::ThinkingConfig::default())
+                {
+                    return Err(unsupported(
+                        "Kimi Responses search does not support temperature or reasoning controls",
+                    ));
                 }
                 body.insert("include".into(), json!(["web_search_call.action.sources"]));
             }

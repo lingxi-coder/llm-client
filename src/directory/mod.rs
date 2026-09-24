@@ -34,9 +34,9 @@ pub use anthropic::AnthropicMessagesDirectory;
 pub use gemini::GeminiDirectory;
 pub use openai::OpenAiChatDirectory;
 
+use crate::protocol::{LlmError, ProtocolFamily, ProviderProfile};
 use crate::transport::{HttpRequest, HttpResponse};
 use bytes::Bytes;
-use lingxi_agent_api::protocol::{LlmError, ProtocolFamily, ProviderProfile};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,6 +48,7 @@ use std::time::Duration;
 /// provider-stated price would be a second source with no test behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveModel {
+    pub inference_features: Option<crate::protocol::InferenceFeatures>,
     /// The id as it goes on the wire — what a request's `model` field carries,
     /// and what a catalog row is matched against.
     pub request_model: String,
@@ -172,7 +173,7 @@ fn get(url: String, profile: &ProviderProfile) -> HttpRequest {
     let mut headers = vec![("accept".to_owned(), "application/json".to_owned())];
     // A profile's attribution headers belong on every request it makes, not
     // only on completions. Credentials are refused there (`wire_extras`).
-    crate::codecs::extras::merge_headers(profile, &mut headers);
+    crate::wire_options::merge_headers(profile, &mut headers);
     HttpRequest {
         method: "GET".to_owned(),
         url,
