@@ -56,6 +56,7 @@ fn route() -> ResolvedRoute {
 
 fn request(content: Vec<ContentBlock>) -> CompletionRequest {
     CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         web_search: None,
@@ -318,10 +319,12 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
     }]);
     req.system = vec![
         lingxi_llm_client::protocol::SystemBlock {
+            cache_control: None,
             text: "stable".to_owned(),
             cacheable: true,
         },
         lingxi_llm_client::protocol::SystemBlock {
+            cache_control: None,
             text: "volatile".to_owned(),
             cacheable: false,
         },
@@ -840,6 +843,9 @@ fn strict_tools_are_enabled_only_when_requested() {
     for strict in [true, false] {
         let mut req = request(vec![]);
         req.tools.push(lingxi_llm_client::protocol::ToolSpec {
+            tool_type: None,
+            defer_loading: None,
+            extra: serde_json::Value::Null,
             name: "lookup".into(),
             description: "Lookup".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),

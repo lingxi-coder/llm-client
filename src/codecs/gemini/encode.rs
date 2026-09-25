@@ -97,6 +97,7 @@ pub(crate) fn request_to<'a>(
     crate::codecs::web_search::apply(req, profile, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     // The inference adapter has validated both protobuf JSON spellings and
     // emitted the canonical key, including unrecognized native tier values.
@@ -221,6 +222,7 @@ fn encode_part(
         ContentBlock::ToolResult {
             tool_use_id,
             content,
+            is_error,
             ..
         } => {
             let (name, provider_id) =
@@ -232,7 +234,12 @@ fn encode_part(
                          and this wire keys results by function name"
                     ),
                     })?;
-            let mut response = json!({"name": name, "response": {"result": content}});
+            let payload = if *is_error {
+                json!({"error":content})
+            } else {
+                json!({"result":content})
+            };
+            let mut response = json!({"name": name, "response": payload});
             if let Some(id) = provider_id {
                 response["id"] = Value::String(id.clone());
             }

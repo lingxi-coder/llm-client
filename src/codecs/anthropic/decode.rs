@@ -24,9 +24,10 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         .and_then(Value::as_array)
         .unwrap_or(&Vec::new())
     {
-        if let Some(block) = decode_block(b) {
-            content.push(block);
-        }
+        let block = decode_block(b).ok_or_else(|| LlmError::ProviderInternal {
+            message: "provider response contains a malformed content block".to_owned(),
+        })?;
+        content.push(block);
     }
     Ok(CompletionResponse {
         inference: Default::default(),
@@ -51,13 +52,15 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        response_id: None,
+        response_id: body
+            .get("id")
+            .and_then(Value::as_str)
+            .map(crate::protocol::ResponseId::new),
         executed_profile: None,
     })
 }
 
-/// An unknown block type is dropped, not an error: this provider adds block
-/// types over time and a client is expected to tolerate them.
+/// Preserve unrecognized native blocks so later turns can replay them.
 pub fn decode_block(v: &Value) -> Option<ContentBlock> {
     if crate::codecs::web_search_decode::is_anthropic_search_block(v)
         || v.get("citations")
@@ -101,7 +104,11 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
             provider_id: None,
             thought_signature: None,
         }),
-        _ => None,
+        Some(_) => Some(ContentBlock::ProviderContent {
+            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+            value: v.clone(),
+        }),
+        None => None,
     }
 }
 
@@ -261,7 +268,12 @@ pub fn usage(u: &Value) -> Usage {
 }
 
 fn retry_after(resp: &HttpResponse) -> Option<Duration> {
-    resp.header("retry-after")
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
+    resp.header("retry-after-ms")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .and_then(|v| Duration::try_from_secs_f64(v / 1000.0).ok())
+        .or_else(|| {
+            resp.header("retry-after")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .and_then(|v| Duration::try_from_secs_f64(v).ok())
+        })
 }

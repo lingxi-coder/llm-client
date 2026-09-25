@@ -110,6 +110,25 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
+
+    /// Open a reusable Responses connection without generating a response.
+    /// Hosts may inject their native WebSocket stack alongside HTTP.
+    async fn connect_websocket(
+        &self,
+        _handshake: HttpRequest,
+    ) -> Result<Box<dyn WebSocketConnection>, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "this transport does not support WebSocket connections".into(),
+        })
+    }
+}
+
+/// One reusable connection. Each body item is one complete JSON text message.
+/// Implementations must not reconnect or resend a generation automatically.
+#[async_trait]
+pub trait WebSocketConnection: Send {
+    async fn send(&mut self, payload: Bytes) -> Result<StreamResponse, LlmError>;
+    async fn close(&mut self) -> Result<(), LlmError>;
 }
 
 /// Shared request execution independent of the concrete HTTP backend.

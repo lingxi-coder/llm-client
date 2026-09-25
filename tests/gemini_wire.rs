@@ -56,6 +56,7 @@ fn route() -> ResolvedRoute {
 
 fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         web_search: None,
@@ -236,6 +237,7 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
 fn the_system_prompt_is_a_system_instruction() {
     let mut req = request(vec![user("hi")]);
     req.system = vec![SystemBlock {
+        cache_control: None,
         text: "be brief".to_owned(),
         cacheable: true,
     }];
@@ -260,6 +262,9 @@ fn the_system_prompt_is_a_system_instruction() {
 fn tools_are_wrapped_in_function_declarations() {
     let mut req = request(vec![user("hi")]);
     req.tools.push(ToolSpec {
+        tool_type: None,
+        defer_loading: None,
+        extra: serde_json::Value::Null,
         name: "read".to_owned(),
         description: "read a file".to_owned(),
         input_schema: json!({"type": "object"}),

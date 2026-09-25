@@ -250,6 +250,7 @@ fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
     assert_eq!(decoded.stop_reason, StopReason::Other("pause_turn".into()));
     assert_eq!(decoded.message.text(), "News");
     let req = CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "m".into(),
         web_search: None,

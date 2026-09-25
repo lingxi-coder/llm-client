@@ -252,6 +252,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         purpose: Some("video_understanding".into()),
     };
     let request = CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "MiniMax-M3".into(),
         web_search: None,

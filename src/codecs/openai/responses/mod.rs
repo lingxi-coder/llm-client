@@ -14,7 +14,7 @@
 //! - the stream ends at `response.completed` with no `[DONE]`, though
 //!   compatible gateways may append one anyway.
 
-mod decode;
+pub(crate) mod decode;
 pub(crate) mod encode;
 mod stream;
 

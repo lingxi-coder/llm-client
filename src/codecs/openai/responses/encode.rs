@@ -158,6 +158,7 @@ pub fn request<'a>(
 
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     crate::wire_options::merge_headers(profile, &mut headers);
 
@@ -345,13 +346,13 @@ fn flush<'a>(role: &str, parts: &mut Vec<WireValue<'a>>, input: &mut Vec<WireVal
 }
 
 fn encode_tool(t: &ToolSpec) -> Value {
-    json!({
-        "type": "function",
-        "name": t.name,
-        "description": t.description,
-        "parameters": t.input_schema,
-        "strict": t.strict,
-    })
+    crate::codecs::request_controls::tool_extensions(
+        t,
+        json!({
+            "type": "function", "name": t.name, "description": t.description,
+            "parameters": t.input_schema, "strict": t.strict,
+        }),
+    )
 }
 
 fn encode_tool_choice(c: &ToolChoice) -> Value {

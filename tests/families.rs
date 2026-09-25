@@ -52,6 +52,7 @@ fn route() -> ResolvedRoute {
 
 fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
     CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         web_search: None,
@@ -166,6 +167,7 @@ fn the_conversation_is_a_flat_list_of_items() {
 fn the_system_prompt_is_instructions_not_a_message() {
     let mut req = request(vec![user("hi")]);
     req.system = vec![SystemBlock {
+        cache_control: None,
         text: "be brief".to_owned(),
         cacheable: true,
     }];
@@ -190,6 +192,7 @@ fn a_declared_stateful_endpoint_receives_the_typed_continuation_id() {
     let mut req = request(vec![user("only the new turn")]);
     req.previous_response_id = Some(ResponseId::new("resp_previous"));
     req.system = vec![SystemBlock {
+        cache_control: None,
         text: "repeat this every turn".to_owned(),
         cacheable: false,
     }];
@@ -426,7 +429,7 @@ fn an_incomplete_function_call_retains_its_truncation_reason() {
     assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
     assert!(matches!(
         decoded.message.content.as_slice(),
-        [ContentBlock::ToolUse { .. }]
+        [ContentBlock::ProviderContent { .. }]
     ));
 
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());

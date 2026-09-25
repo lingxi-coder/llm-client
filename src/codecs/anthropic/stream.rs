@@ -35,6 +35,7 @@ pub struct AnthropicStreamDecoder {
     stop: Option<StopReason>,
     done: bool,
     search_blocks: Vec<usize>,
+    native_blocks: std::collections::BTreeMap<usize, (Value, String)>,
 }
 
 impl EventDecoder for AnthropicStreamDecoder {
@@ -67,13 +68,31 @@ impl EventDecoder for AnthropicStreamDecoder {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
-                    response_id: None,
+                    response_id: message
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(crate::protocol::ResponseId::new),
                 });
             }
             Some("content_block_start") => self.block_start(&root, &mut out),
             Some("content_block_delta") => self.block_delta(&root, &mut out),
             Some("content_block_stop") => {
                 let index = root["index"].as_u64().unwrap_or_default() as usize;
+                if let Some((mut value, arguments)) = self.native_blocks.remove(&index) {
+                    if !arguments.is_empty() {
+                        value["input"] = serde_json::from_str(&arguments).map_err(|_| {
+                            LlmError::InvalidRequest {
+                                message: "provider returned malformed native tool arguments".into(),
+                            }
+                        })?;
+                    }
+                    out.push(StreamEvent::ProviderContent {
+                        block: index,
+                        protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+                        value,
+                    });
+                }
+                out.push(StreamEvent::BlockEnd { block: index });
                 if self.search_blocks.contains(&index) {
                     if let Some(result) =
                         web_search_decode::result(serde_json::json!({"events":[root]}))
@@ -158,6 +177,16 @@ impl AnthropicStreamDecoder {
             .and_then(Value::as_u64)
             .unwrap_or_default() as usize;
         let block = root.get("content_block").unwrap_or(&Value::Null);
+        if block
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| {
+                !matches!(kind, "text" | "thinking" | "redacted_thinking" | "tool_use")
+            })
+        {
+            self.native_blocks
+                .insert(index, (block.clone(), String::new()));
+        }
         if web_search_decode::is_anthropic_search_block(block) {
             self.search_blocks.push(index);
             if let Some(result) = web_search_decode::result(serde_json::json!({"events":[root]})) {
@@ -199,6 +228,23 @@ impl AnthropicStreamDecoder {
             .and_then(Value::as_u64)
             .unwrap_or_default() as usize;
         let delta = root.get("delta").unwrap_or(&Value::Null);
+        if let Some((value, arguments)) = self.native_blocks.get_mut(&index) {
+            match delta["type"].as_str() {
+                Some("input_json_delta") => {
+                    arguments.push_str(delta["partial_json"].as_str().unwrap_or_default())
+                }
+                Some("signature_delta") => value["signature"] = delta["signature"].clone(),
+                Some("connector_text_delta") => {
+                    let mut text = value["connector_text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    text.push_str(delta["connector_text"].as_str().unwrap_or_default());
+                    value["connector_text"] = Value::String(text);
+                }
+                _ => {}
+            }
+        }
         if self.search_blocks.contains(&index)
             || (delta["type"].as_str() == Some("citations_delta")
                 && delta["citation"]["type"].as_str() == Some("web_search_result_location"))
@@ -206,6 +252,16 @@ impl AnthropicStreamDecoder {
             if let Some(result) = web_search_decode::result(serde_json::json!({"events":[root]})) {
                 out.push(StreamEvent::WebSearch { result });
             }
+        }
+        if matches!(
+            delta["type"].as_str(),
+            Some("citations_delta" | "connector_text_delta")
+        ) {
+            out.push(StreamEvent::NativeDelta {
+                block: index,
+                protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+                delta: delta.clone(),
+            });
         }
         match delta.get("type").and_then(Value::as_str) {
             Some("text_delta") => out.push(StreamEvent::TextDelta {
@@ -227,14 +283,16 @@ impl AnthropicStreamDecoder {
             // The signature arrives after the thinking it signs, as its own
             // delta. It has to reach the transcript or the next turn cannot
             // replay the block (gate 18).
-            Some("signature_delta") => out.push(StreamEvent::ThoughtSignature {
-                block: index,
-                signature: delta
-                    .get("signature")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            }),
+            Some("signature_delta") if !self.native_blocks.contains_key(&index) => {
+                out.push(StreamEvent::ThoughtSignature {
+                    block: index,
+                    signature: delta
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                })
+            }
             Some("input_json_delta") => {
                 let Some((_, id, name)) = self.tools.iter().find(|(i, _, _)| *i == index) else {
                     return;

@@ -516,6 +516,7 @@ async fn truncated_stream_is_reported_as_interrupted() {
 
 fn completion() -> CompletionRequest {
     CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "test-model".into(),
         web_search: None,

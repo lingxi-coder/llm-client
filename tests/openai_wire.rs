@@ -48,6 +48,7 @@ fn route() -> ResolvedRoute {
 
 fn request() -> CompletionRequest {
     CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         web_search: None,
@@ -543,6 +544,9 @@ fn with_tools(choice: ToolChoice) -> CompletionRequest {
     let mut req = request();
     req.tool_choice = choice;
     req.tools.push(ToolSpec {
+        tool_type: None,
+        defer_loading: None,
+        extra: serde_json::Value::Null,
         name: "read".to_owned(),
         description: "read a file".to_owned(),
         input_schema: json!({"type": "object"}),
@@ -883,6 +887,9 @@ fn chat_preserves_explicit_tool_strictness() {
     for strict in [true, false] {
         let mut req = request();
         req.tools.push(ToolSpec {
+            tool_type: None,
+            defer_loading: None,
+            extra: serde_json::Value::Null,
             name: "lookup".into(),
             description: "Lookup".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),

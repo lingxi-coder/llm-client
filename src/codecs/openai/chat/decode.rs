@@ -41,13 +41,21 @@ pub(super) fn response_with_usage_mode(
             value,
         });
     }
-    if let Some(text) = message.get("content").and_then(Value::as_str) {
-        if !text.is_empty() {
-            content.push(ContentBlock::Text {
-                text: text.to_owned(),
-                thought_signature: None,
-            });
-        }
+    let text = match message.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|part| part["type"].as_str() == Some("text"))
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    if !text.is_empty() {
+        content.push(ContentBlock::Text {
+            text,
+            thought_signature: None,
+        });
     }
     if let Some(text) = refusal.filter(|text| !text.is_empty()) {
         content.push(ContentBlock::Text {
@@ -64,7 +72,9 @@ pub(super) fn response_with_usage_mode(
         let arguments = function
             .get("arguments")
             .and_then(Value::as_str)
-            .unwrap_or("{}");
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "provider tool call has no arguments string".into(),
+            })?;
         content.push(ContentBlock::ToolUse {
             id: ToolUseId::new(call.get("id").and_then(Value::as_str).unwrap_or_default()),
             name: function
@@ -72,10 +82,9 @@ pub(super) fn response_with_usage_mode(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            // Arguments arrive as a JSON *string*; a provider that streamed a
-            // truncated fragment leaves it unparseable, and the tool's own
-            // schema validation is where that should surface.
-            input: serde_json::from_str(arguments).unwrap_or(Value::Null),
+            input: serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
+                message: "provider returned malformed tool arguments".into(),
+            })?,
             provider_id: None,
             thought_signature: None,
         });
@@ -132,9 +141,25 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
         .into_iter()
         .filter_map(|key| error.and_then(|e| e.get(key)).and_then(Value::as_str));
 
+    let retry_after = retry_after.or_else(|| {
+        let (_, rest) = message.split_once("try again in ")?;
+        let seconds: f64 = rest.split('s').next()?.parse().ok()?;
+        std::time::Duration::try_from_secs_f64(seconds).ok()
+    });
     // The provider's own code is more precise than the status, so it wins.
     for code in codes {
         match code {
+            "rate_limit_exceeded" | "rate_limit_error" | "websocket_connection_limit_reached" => {
+                return LlmError::RateLimited {
+                    message: display(status, body, &message),
+                    retry_after,
+                };
+            }
+            "invalid_prompt" => {
+                return LlmError::InvalidRequest {
+                    message: display(status, body, &message),
+                };
+            }
             "insufficient_quota" | "credit_balance_exhausted" => {
                 return LlmError::QuotaExceeded {
                     message: display(status, body, &message),
@@ -280,8 +305,22 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
 }
 
 /// Convert independently reported reasoning to the shared output-subset contract.
-pub(super) fn normalize_usage(raw: &Value, separate_reasoning: bool) -> Value {
+pub(crate) fn normalize_usage(raw: &Value, separate_reasoning: bool) -> Value {
     let mut normalized = raw.clone();
+    if raw
+        .pointer("/prompt_tokens_details/cached_tokens")
+        .is_none()
+    {
+        if let Some(cached) = raw.get("cached_tokens") {
+            if !normalized
+                .get("prompt_tokens_details")
+                .is_some_and(Value::is_object)
+            {
+                normalized["prompt_tokens_details"] = serde_json::json!({});
+            }
+            normalized["prompt_tokens_details"]["cached_tokens"] = cached.clone();
+        }
+    }
     if separate_reasoning {
         if let Some(output) = raw.get("completion_tokens").and_then(Value::as_u64) {
             let reasoning = raw

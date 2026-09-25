@@ -222,6 +222,7 @@ pub fn request<'a>(
     crate::codecs::web_search::apply(req, profile, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     if req.max_tokens.is_some() {
         // The selected typed field is authoritative. A profile body extra must
@@ -330,7 +331,7 @@ fn encode_message<'a>(
                     .into(),
                 ),
             },
-            ContentBlock::Document { source, .. } => {
+            ContentBlock::Document { source, title } => {
                 if let DocumentSource::ProviderFile { file } = source {
                     let file = crate::codecs::validate_provider_file(file, profile, opts)?;
                     if file.protocol != crate::protocol::ProtocolFamily::OpenAiChat {
@@ -360,7 +361,7 @@ fn encode_message<'a>(
                 parts.push(
                     (json!({
                         "type": "file",
-                        "file": { "file_data": file_data },
+                        "file": { "file_data": file_data, "filename": title.as_deref().unwrap_or("document") },
                     }))
                     .into(),
                 );
@@ -570,7 +571,7 @@ fn inline<'a>(
         return Ok(None);
     };
     let attachment = media.attachment;
-    let (kind, _title) = match block {
+    let (kind, title) = match block {
         ContentBlock::Image { .. } => ("image", None),
         ContentBlock::Document { title, .. } => ("document", title.as_deref()),
         ContentBlock::Video { .. } => ("video", None),
@@ -601,8 +602,11 @@ fn inline<'a>(
                     message: "OpenAI Chat Completions accepts only PDF file input".into(),
                 });
             }
-            WireValue::from(json!({"type":"file"}))
-                .with("file", WireValue::from(json!({})).with("file_data", uri()))
+            WireValue::from(json!({"type":"file"})).with(
+                "file",
+                WireValue::from(json!({"filename":title.unwrap_or("document")}))
+                    .with("file_data", uri()),
+            )
         }
         _ => {
             return Err(LlmError::UnsupportedCapability {

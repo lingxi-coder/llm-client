@@ -9,6 +9,7 @@
 pub(crate) mod inference;
 mod input;
 mod json;
+mod request_controls;
 pub use input::{CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode};
 pub mod anthropic;
 pub(crate) mod file_search_decode;
@@ -89,6 +90,23 @@ pub trait WireCodec: Send + Sync + 'static {
         })
     }
     fn family(&self) -> ProtocolFamily;
+    /// Extract accounting facts independently of content or HTTP-status errors.
+    /// Custom codecs may override this when their usage envelope differs.
+    fn response_usage(
+        &self,
+        response: &HttpResponse,
+        context: &CodecContext,
+    ) -> crate::protocol::UsageReport {
+        usage::response_report(response, context)
+    }
+    /// Infer the actual execution tier even when semantic decoding fails.
+    fn response_inference(
+        &self,
+        response: &HttpResponse,
+        context: &CodecContext,
+    ) -> crate::protocol::InferenceReport {
+        inference::response(response, context.profile())
+    }
     fn encode_request(
         &self,
         req: EncodeRequest<'_>,

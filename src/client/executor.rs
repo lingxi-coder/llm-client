@@ -14,7 +14,7 @@ use crate::protocol::{
     AuthStrategy, CompletionRequest, CompletionResponse, ContentBlock, LlmError, ProtocolFamily,
     ProviderFileSource, ProviderProfile,
 };
-use crate::transport::{collect_error_body, HttpExecutor, HttpRequest, HttpResponse, Transport};
+use crate::transport::{HttpRequest, HttpResponse, Transport};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -66,13 +66,13 @@ fn projected_anthropic_file_request<'a>(
 /// One connection to try: the head of the route, then each sibling in order.
 /// The chain holds only the siblings, so the head is prepended here rather than
 /// special-cased inside the walk.
-struct PreparedAttempt {
-    inference: crate::protocol::InferenceReport,
-    http: HttpRequest,
-    context: CodecContext,
-    codec: Arc<dyn WireCodec>,
-    files: Vec<PreparedProviderFileUse>,
-    cleanup: Option<Arc<files::AutomaticFileCleanup>>,
+pub(super) struct PreparedAttempt {
+    pub(super) inference: crate::protocol::InferenceReport,
+    pub(super) http: HttpRequest,
+    pub(super) context: CodecContext,
+    pub(super) codec: Arc<dyn WireCodec>,
+    pub(super) files: Vec<PreparedProviderFileUse>,
+    pub(super) cleanup: Option<Arc<files::AutomaticFileCleanup>>,
 }
 
 fn deadline_elapsed() -> LlmError {
@@ -106,7 +106,7 @@ fn ephemeral_file_scope() -> String {
     )
 }
 
-fn missing_provider_file_uses(
+pub(super) fn missing_provider_file_uses(
     resp: &HttpResponse,
     prepared_file_uses: &[PreparedProviderFileUse],
 ) -> Vec<PreparedProviderFileUse> {
@@ -161,7 +161,7 @@ fn attempts<'a>(connections: &[Attempt<'a>], continuation: bool) -> Vec<Attempt<
 }
 
 pub(super) struct RequestExecutor<'a> {
-    clock: &'a dyn crate::transport::Clock,
+    clock: &'a Arc<dyn crate::transport::Clock>,
     http: &'a Arc<dyn Transport>,
     codecs: &'a std::collections::BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
     authenticators:
@@ -175,7 +175,7 @@ pub(super) enum RequestOutput {
 impl<'client> RequestExecutor<'client> {
     pub(super) fn new(client: &'client LlmClient) -> Self {
         Self {
-            clock: client.clock.as_ref(),
+            clock: &client.clock,
             http: &client.http,
             codecs: &client.codecs,
             authenticators: &client.authenticators,
@@ -183,7 +183,7 @@ impl<'client> RequestExecutor<'client> {
         }
     }
 
-    async fn prepare_before_deadline(
+    pub(super) async fn prepare_before_deadline(
         &self,
         route: &ResolvedRoute,
         attempt: &Attempt<'_>,
@@ -212,7 +212,7 @@ impl<'client> RequestExecutor<'client> {
         Ok(prepared)
     }
 
-    async fn resolve_before_deadline<'a>(
+    pub(super) async fn resolve_before_deadline<'a>(
         &self,
         req: &'a CompletionRequest,
         opts: &RequestOptions,
@@ -232,6 +232,12 @@ impl<'client> RequestExecutor<'client> {
         mode: RequestMode,
     ) -> Result<PreparedAttempt, LlmError> {
         let profile = attempt.profile;
+        if mode == RequestMode::CountTokens && profile.protocol != ProtocolFamily::AnthropicMessages
+        {
+            return Err(LlmError::UnsupportedCapability {
+                message: "exact token counting is unavailable for this protocol".into(),
+            });
+        }
         if req.request.previous_response_id.is_some()
             && profile.protocol != ProtocolFamily::OpenAiResponses
         {
@@ -414,70 +420,45 @@ impl<'client> RequestExecutor<'client> {
         started: Instant,
         mode: RequestMode,
     ) -> Result<RequestOutput, (LlmError, Option<HttpResponse>, Vec<PreparedProviderFileUse>)> {
-        let PreparedAttempt {
-            inference: mut requested,
-            http,
-            context,
-            codec,
-            files,
-            cleanup,
-        } = self
+        let prepared = self
             .prepare_before_deadline(route, attempt, req, opts, started, mode)
             .await
             .map_err(|e| (e, None, Vec::new()))?;
+        let files = prepared.files.clone();
         let deadline = opts
             .total_timeout
             .and_then(|timeout| started.checked_add(timeout));
-        requested.executed_at = self
-            .clock
-            .now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|time| time.as_secs());
-        let response = HttpExecutor::new(self.http.as_ref())
-            .with_deadline(crate::runtime::Deadline::at(deadline))
-            .send(http)
+        let call = super::prepared::PreparedCall::new(
+            prepared,
+            self.http.clone(),
+            self.clock.clone(),
+            deadline,
+            attempt.profile.clone(),
+            attempt.model.clone(),
+            mode,
+        );
+        let received = call
+            .dispatch_once()
             .await
             .map_err(|e| (e, None, files.clone()))?;
-        if !(200..300).contains(&response.status) {
-            let response = HttpResponse {
-                status: response.status,
-                headers: response.headers,
-                body: collect_error_body(response.body).await,
-            };
-            let error = codec
-                .decode_response(&response, &context)
-                .err()
-                .unwrap_or_else(|| LlmError::ProviderInternal {
-                    message: format!("request failed with HTTP {}", response.status),
-                });
-            return Err((error, Some(response), files));
-        }
-        if mode == RequestMode::Stream {
-            return Ok(RequestOutput::Stream(Box::new(ModelStream::new(
-                response,
-                codec.stream_decoder(&context),
-                attempt.profile.profile_name.clone(),
-                cleanup,
-                deadline,
-                requested,
-            ))));
-        }
-        let response = HttpExecutor::collect_response(response, None)
+        let received = if mode == RequestMode::Stream {
+            match received.into_stream() {
+                Ok(stream) => return Ok(RequestOutput::Stream(Box::new(stream))),
+                Err(received) => *received,
+            }
+        } else {
+            received
+        };
+        let collected = received
+            .collect()
             .await
             .map_err(|e| (e, None, files.clone()))?;
-        let mut decoded = codec
-            .decode_response(&response, &context)
-            .map_err(|e| (e, Some(response), files))?;
-        decoded.executed_profile = Some(attempt.profile.profile_name.clone());
-        decoded.inference.executed_at = requested.executed_at;
-        decoded.inference.requested_effort = requested.requested_effort;
-        decoded.inference.requested_service_tier = requested.requested_service_tier;
-        decoded.inference.requested_raw_service_tier = requested.requested_raw_service_tier;
-        if let Some(cleanup) = cleanup {
-            cleanup.finish(deadline).await;
-        }
-        Ok(RequestOutput::Complete(Box::new(decoded)))
+        let outcome = collected
+            .decode()
+            .map(|r| RequestOutput::Complete(Box::new(r)))
+            .map_err(|e| (e, Some(collected.response().clone()), files));
+        collected.finish().await;
+        outcome
     }
     pub(super) async fn run(
         &self,
@@ -487,24 +468,7 @@ impl<'client> RequestExecutor<'client> {
         mode: RequestMode,
     ) -> Result<RequestOutput, LlmError> {
         let RequestRoute { route, connections } = resolved;
-        let default_timeout = if req
-            .messages
-            .iter()
-            .flat_map(|m| &m.content)
-            .any(|b| matches!(b, ContentBlock::Video { .. }))
-        {
-            files::GEMINI_VIDEO_FILE_TIMEOUT
-        } else {
-            DEFAULT_REQUEST_TIMEOUT
-        };
-        let opts = RequestOptions {
-            total_timeout: if mode == RequestMode::Complete {
-                Some(opts.total_timeout.unwrap_or(default_timeout))
-            } else {
-                opts.total_timeout
-            },
-            ..opts.clone()
-        };
+        let opts = execution_options(req, opts, mode);
         let started = Instant::now();
         let prepared_request = self.resolve_before_deadline(req, &opts, started).await?;
         let mut last = None;
@@ -551,6 +515,31 @@ impl<'client> RequestExecutor<'client> {
         Err(last.unwrap_or_else(|| LlmError::ModelUnavailable {
             message: format!("no connection served {:?}", req.model),
         }))
+    }
+}
+
+pub(super) fn execution_options(
+    req: &CompletionRequest,
+    opts: &RequestOptions,
+    mode: RequestMode,
+) -> RequestOptions {
+    let default_timeout = if req
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, ContentBlock::Video { .. }))
+    {
+        files::GEMINI_VIDEO_FILE_TIMEOUT
+    } else {
+        DEFAULT_REQUEST_TIMEOUT
+    };
+    RequestOptions {
+        total_timeout: if mode != RequestMode::Stream {
+            Some(opts.total_timeout.unwrap_or(default_timeout))
+        } else {
+            opts.total_timeout
+        },
+        ..opts.clone()
     }
 }
 

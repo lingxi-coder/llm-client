@@ -75,6 +75,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
     let request = CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "my-model".into(),
         web_search: None,
@@ -854,3 +855,41 @@ cargo doc --no-deps --open
 
 
 See [inference controls and service-tier pricing](inference.en.md) for `info.features`, `info.pricing`, `price_quote`, `estimate_cost`, and `estimate_stream_cost`.
+
+## Host-owned retries and accounting
+
+Applications that own admission, cancellation and durable accounting can call
+`prepare_on(profile, request, options, mode)`. The profile must be an exact
+connection name, not a group. Preparation pins the selected model row, encodes
+and authenticates the request, and may upload attachments; it does not send a
+generation request. `PreparedCall` cannot be cloned. Inspect `request()` and
+capture `pricing_snapshot()` before consuming it with `dispatch_once()`.
+Every retry or failover requires a new prepared call.
+
+Inspect `ReceivedCall::status()` before choosing `into_stream()` or `collect()`.
+The collected usage and inference reports are available before `decode()`, even
+on unsuccessful HTTP responses or malformed answer content. Call `finish()` to
+complete attachment cleanup. `ModelStream::next_batch()` exposes observations
+from each received transport chunk, including usage-only chunks, without
+waiting for another chunk after decoding. Retain these observations before
+yielding control or validating an application's output schema.
+
+`count_tokens_exact_in` uses the Anthropic counting endpoint. Unsupported wires
+return `None`; errors remain errors. Counting never generates an answer.
+`FrozenPricing::estimate` uses the selected prices and confirmed execution
+facts, retains currency, and rejects partial usage or an unknown Fast tier.
+It does not own an application ledger.
+
+For Responses WebSocket, inject a `Transport` implementing `connect_websocket`.
+Establish the connection before admission with `PreparedCall::connect_websocket`,
+then consume the prepared call with `dispatch_websocket_once`. This sends one
+`response.create`; it never reconnects or falls back. The `websocket` module
+provides continuation-state helpers. The host owns connection lifetime and
+must settle an attempted send before starting a fallback attempt. The default
+HTTP transport does not provide WebSocket connections.
+
+`CompletionRequest::controls` carries sampling and structured-output controls,
+Anthropic context hints, and Responses storage, continuation and metadata
+options. System cache controls preserve TTL and scope. Native content is
+protocol-tagged and cannot be replayed on another wire. Streams expose native
+annotation deltas and block-end events; these are not application tool calls.

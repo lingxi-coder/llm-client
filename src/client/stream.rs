@@ -9,6 +9,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// One synchronous decoder observation. Events may be empty while usage changed.
+/// A terminal error is retained beside the last usage rather than replacing it.
+pub struct StreamBatch {
+    pub events: Vec<Result<StreamEvent, LlmError>>,
+    pub usage: crate::protocol::UsageReport,
+    pub inference: crate::protocol::InferenceReport,
+    pub finished: bool,
+}
+
 /// A provider-neutral event stream: the transport's frames run through the
 /// codec's decoder. Dropping it drops the underlying byte stream, which is how
 /// a cancelled turn disconnects (§15).
@@ -23,6 +32,7 @@ pub struct ModelStream {
     executed_profile: String,
     automatic_file_cleanup: Option<Arc<AutomaticFileCleanup>>,
     automatic_file_cleanup_deadline: Option<Instant>,
+    pub(super) pricing: Option<super::FrozenPricing>,
 }
 
 impl ModelStream {
@@ -41,6 +51,7 @@ impl ModelStream {
             ready.push_back(Ok(StreamEvent::Inference { report: initial }));
         }
         Self {
+            pricing: None,
             requested_inference,
             frames: resp.body,
             decoder,
@@ -82,6 +93,60 @@ impl ModelStream {
     #[must_use]
     pub fn headers(&self) -> &[(String, String)] {
         &self.headers
+    }
+
+    /// Frozen selected prices; ordinary client streams and prepared calls set this.
+    pub fn pricing_snapshot(&self) -> Option<&super::FrozenPricing> {
+        self.pricing.as_ref()
+    }
+
+    /// Read at most one transport chunk and immediately return its observation.
+    /// No await occurs after decoding and before returning accounting facts.
+    pub async fn next_batch(&mut self) -> Option<StreamBatch> {
+        let mut events: Vec<_> = self.ready.drain(..).collect();
+        if events.is_empty() {
+            if self.finished {
+                if let Some(cleanup) = self.automatic_file_cleanup.take() {
+                    cleanup.finish(self.automatic_file_cleanup_deadline).await;
+                }
+                return None;
+            }
+            events = match self.frames.next().await {
+                Some(Ok(chunk)) => self.decoder.push_bytes(&chunk),
+                Some(Err(error)) => {
+                    self.finish_transport();
+                    vec![Err(error)]
+                }
+                None => {
+                    let events = self.decoder.finish();
+                    self.finish_transport();
+                    events
+                }
+            };
+        }
+        for event in &mut events {
+            if let Ok(
+                StreamEvent::Inference { report }
+                | StreamEvent::End {
+                    inference: report, ..
+                },
+            ) = event
+            {
+                self.add_requested(report);
+            }
+        }
+        if events
+            .iter()
+            .any(|e| matches!(e, Ok(StreamEvent::End { .. }) | Err(_)))
+        {
+            self.finish_transport();
+        }
+        Some(StreamBatch {
+            events,
+            usage: self.usage_report(),
+            inference: self.inference_report(),
+            finished: self.finished,
+        })
     }
 
     /// The next event, or `None` at the end. One frame can decode to several

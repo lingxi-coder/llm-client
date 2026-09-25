@@ -25,6 +25,58 @@
 
 use serde_json::Value;
 
+/// Read usage before response validation, including unsuccessful HTTP envelopes.
+pub(crate) fn response_report(
+    response: &crate::transport::HttpResponse,
+    context: &super::CodecContext,
+) -> crate::protocol::UsageReport {
+    use crate::protocol::ProtocolFamily as P;
+    let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+    let body = body
+        .get("response")
+        .filter(|v| v.is_object())
+        .unwrap_or(&body);
+    match context.profile().protocol {
+        P::AnthropicMessages | P::BedrockClaude | P::VertexClaude | P::FoundryClaude => report(
+            body.get("usage"),
+            &ANTHROPIC,
+            super::anthropic::decode::usage,
+            true,
+        ),
+        P::GeminiGenerateContent | P::VertexGemini => report(
+            body.get("usageMetadata"),
+            &GEMINI,
+            super::gemini::decode::usage,
+            true,
+        ),
+        P::OpenAiResponses => report(
+            body.get("usage"),
+            &OPENAI_RESPONSES,
+            super::openai::responses::decode::usage,
+            true,
+        ),
+        P::OpenAiChat | P::AzureOpenAi => {
+            let normalized = body.get("usage").map(|raw| {
+                super::openai::chat::decode::normalize_usage(
+                    raw,
+                    context
+                        .profile()
+                        .extra
+                        .get("reasoning_tokens_separate")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+            });
+            report(
+                normalized.as_ref(),
+                &OPENAI_CHAT,
+                super::openai::chat::decode::usage,
+                true,
+            )
+        }
+    }
+}
+
 /// A counter's value, if the report actually states it as a number.
 ///
 /// `None` means the field was absent, null, or not a number — all of which are
@@ -220,8 +272,11 @@ pub(crate) fn is_complete(raw: &Value, shape: &ReportShape) -> bool {
 pub(crate) const ANTHROPIC: ReportShape = ReportShape {
     input: "input_tokens",
     output: "output_tokens",
-    total: &[],
-    subsets: &[("/output_tokens_details/thinking_tokens", false)],
+    total: &["total_tokens"],
+    subsets: &[
+        ("/output_tokens_details/thinking_tokens", false),
+        ("/reasoning_output_tokens", false),
+    ],
     independent_counters: &["cache_read_input_tokens", "cache_creation_input_tokens"],
     thoughts: None,
     thoughts_are_extra: false,

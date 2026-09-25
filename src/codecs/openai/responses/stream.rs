@@ -55,6 +55,10 @@ impl EventDecoder for ResponsesStreamDecoder {
             message: "stream frame is not valid JSON".to_owned(),
         })?;
 
+        if let Some(u) = root.pointer("/response/usage").filter(|v| !v.is_null()) {
+            self.usage_raw = Some(u.clone());
+        }
+
         let index = |r: &Value| {
             r.get("output_index")
                 .and_then(Value::as_u64)
@@ -77,6 +81,9 @@ impl EventDecoder for ResponsesStreamDecoder {
                 }
             }
             Some("response.output_item.done") => {
+                out.push(StreamEvent::BlockEnd {
+                    block: index(&root),
+                });
                 let item = &root["item"];
                 self.emit_reasoning(index(&root), item, &mut out);
                 self.saw_refusal |= decode::has_refusal(item);
@@ -161,6 +168,10 @@ impl EventDecoder for ResponsesStreamDecoder {
                         arguments_fragment: delta(&root),
                         provider_id: None,
                     });
+                } else {
+                    return Err(LlmError::InvalidRequest {
+                        message: "tool argument delta has no preceding call identity".into(),
+                    });
                 }
             }
             Some("response.completed" | "response.incomplete") => {
@@ -198,7 +209,17 @@ impl EventDecoder for ResponsesStreamDecoder {
                 } else {
                     serde_json::json!({"error": root})
                 };
-                return Err(decode::classify_error(500, &envelope, None));
+                let status = envelope
+                    .get("status")
+                    .and_then(Value::as_u64)
+                    .and_then(|s| u16::try_from(s).ok())
+                    .unwrap_or(500);
+                let retry_after = envelope
+                    .pointer("/headers/retry-after")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .and_then(|s| std::time::Duration::try_from_secs_f64(s).ok());
+                return Err(decode::classify_error(status, &envelope, retry_after));
             }
             // Unknown types (`response.in_progress`, `…output_text.done`, and
             // whatever is added next) are ignored.

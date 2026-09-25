@@ -75,6 +75,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
     let request = CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: "my-model".into(),
         web_search: None,
@@ -850,3 +851,31 @@ cargo doc --no-deps --open
 
 
 详见[推理控制与服务档位价格](inference.md)：`info.features`、`info.pricing`、`price_quote`、`estimate_cost` 和 `estimate_stream_cost`。
+
+## 宿主管理重试与账务
+
+需要自行管理准入、取消和持久化账务的应用，可以调用
+`prepare_on(profile, request, options, mode)`。profile 必须是具体连接名，不能是连接组。
+准备阶段固定所选模型行、编码并认证请求，可能上传附件，但不会发送生成请求。
+`PreparedCall` 不可克隆；宿主可先检查 `request()`、保存 `pricing_snapshot()`，
+再通过 `dispatch_once()` 消耗该调用。每次重试或故障转移都需要新的 prepared call。
+
+先检查 `ReceivedCall::status()`，再选择 `into_stream()` 或 `collect()`。
+即使 HTTP 失败或回答内容损坏，收集结果的 usage、inference 仍可在 `decode()` 前读取。
+调用 `finish()` 完成附件清理。`ModelStream::next_batch()` 按已收到的传输块返回观察值，
+包括只有 usage 的块；解码后不会为了等待下一个块再次挂起。宿主应先保存这些观察值，
+再让出执行权或验证应用自己的输出 schema。
+
+`count_tokens_exact_in` 使用 Anthropic 精确计数接口。不支持的协议返回 `None`，
+错误仍作为错误返回，计数不会生成回答。`FrozenPricing::estimate` 使用固定价格和已确认
+的执行事实，保留币种，并拒绝不完整 usage 或未知 Fast 档位；它不负责应用账本。
+
+Responses WebSocket 需要注入实现 `connect_websocket` 的 `Transport`。
+通过 `PreparedCall::connect_websocket` 在准入前建立连接，再用
+`dispatch_websocket_once` 发送一次 `response.create`。客户端不会自动重连或回退 HTTP。
+`websocket` 模块提供续接状态辅助函数，连接生命周期属于宿主；已经尝试发送的调用必须
+结算后才能发起回退调用。默认 HTTP transport 不提供 WebSocket 连接。
+
+`CompletionRequest::controls` 提供采样、结构化输出、Anthropic context hint，以及
+Responses 存储、续接和元数据选项。系统缓存控制保留 TTL 与 scope。原生内容携带协议
+标识，不能跨协议重放。流式接口也提供原生注解 delta 和块结束事件；它们不是应用工具调用。

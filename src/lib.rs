@@ -39,6 +39,7 @@ pub mod protocol;
 mod runtime;
 pub mod token_count;
 pub mod transport;
+pub mod websocket;
 mod wire_options;
 
 pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator};
@@ -51,10 +52,11 @@ pub use client::{
     AccountFetchContext, AccountIdentity, AccountMetric, AccountQuery, AccountQuotaWindow,
     AccountReport, AccountScope, AccountScopeKind, AccountSelector, AccountSnapshot,
     AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
-    AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, ChatService, LlmClient,
-    LlmClientBuilder, LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission,
-    ModelStream, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, RequestOptions,
-    ResolveError, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
+    AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, ChatService,
+    CollectedResponse, FrozenPricing, LlmClient, LlmClientBuilder, LocalTokenCountError,
+    LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream, PreparedCall, ProviderStoreError,
+    ProviderSyncOperation, ProviderSyncResult, ReceivedCall, RequestOptions, ResolveError,
+    StreamBatch, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;

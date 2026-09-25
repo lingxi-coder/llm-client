@@ -7,6 +7,8 @@ use crate::protocol::{
 pub enum RequestMode {
     Complete,
     Stream,
+    /// Exact provider-side input counting, without generating a response.
+    CountTokens,
 }
 
 /// A connection snapshot containing only the data used to encode a request.
@@ -16,6 +18,7 @@ pub struct CodecContext {
     pub(crate) profile: ProviderProfile,
     pub(crate) request_model: String,
     pub(crate) stream: bool,
+    mode: RequestMode,
     pub(crate) file_account_scope: Option<String>,
 }
 impl CodecContext {
@@ -84,6 +87,7 @@ impl CodecContext {
             profile: connection,
             request_model: request_model.to_owned(),
             stream: mode == RequestMode::Stream,
+            mode,
             file_account_scope: None,
         }
     }
@@ -98,11 +102,7 @@ impl CodecContext {
         &self.request_model
     }
     pub fn mode(&self) -> RequestMode {
-        if self.stream {
-            RequestMode::Stream
-        } else {
-            RequestMode::Complete
-        }
+        self.mode
     }
     pub fn file_scope(&self) -> Option<&str> {
         self.file_account_scope.as_deref()

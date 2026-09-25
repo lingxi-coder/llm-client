@@ -47,6 +47,10 @@ impl EventDecoder for GeminiStreamDecoder {
             message: "stream frame is not valid JSON".to_owned(),
         })?;
 
+        if let Some(u) = root.get("usageMetadata").filter(|v| !v.is_null()) {
+            self.usage_raw = Some(u.clone());
+        }
+
         if root.get("error").is_some_and(|error| !error.is_null()) {
             return Err(decode::classify_error(500, &root, None));
         }

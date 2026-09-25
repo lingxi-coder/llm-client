@@ -60,3 +60,5 @@ pub(crate) const AUTOMATIC_FILE_CACHE_TTL: Duration = Duration::from_secs(23 * 6
 /// The Anthropic request preflight reserves this many encoded bytes per
 /// automatic file ID before the upload happens.
 pub(crate) const MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES: usize = 512;
+
+pub mod gemini_wire;

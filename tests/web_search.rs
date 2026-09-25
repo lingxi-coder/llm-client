@@ -60,6 +60,9 @@ fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmErro
 }
 fn client_tool() -> ToolSpec {
     ToolSpec {
+        tool_type: None,
+        defer_loading: None,
+        extra: serde_json::Value::Null,
         name: "lookup_local".into(),
         description: "Read local data".into(),
         input_schema: json!({"type":"object","properties":{}}),

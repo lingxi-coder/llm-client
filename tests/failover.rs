@@ -563,6 +563,7 @@ fn openai_openrouter_client(
 
 fn request(model: &str) -> CompletionRequest {
     CompletionRequest {
+        controls: Default::default(),
         service_tier: None,
         model: model.to_owned(),
         web_search: None,

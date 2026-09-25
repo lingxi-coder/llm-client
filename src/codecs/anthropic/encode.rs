@@ -55,7 +55,9 @@ pub fn request<'a>(
                     .iter()
                     .map(|b| {
                         let mut block = json!({"type": "text", "text": b.text});
-                        if b.cacheable {
+                        if let Some(cache) = &b.cache_control {
+                            block["cache_control"] = cache.wire_value();
+                        } else if b.cacheable {
                             block["cache_control"] = json!({"type": "ephemeral"});
                         }
                         block
@@ -126,7 +128,7 @@ pub fn request<'a>(
     ];
     // Beta headers accumulate, comma-joined. Overwriting would silently drop
     // one when a request needs two.
-    let betas: Vec<String> = profile
+    let mut betas: Vec<String> = profile
         .extra
         .get("betas")
         .and_then(Value::as_array)
@@ -137,20 +139,51 @@ pub fn request<'a>(
                 .collect()
         })
         .unwrap_or_default();
+    for tool in &req.tools {
+        let beta = match tool.tool_type.as_deref() {
+            Some("computer_use_20250124" | "computer_20250124") => Some("computer-use-2025-01-24"),
+            Some("computer_20241022") => Some("computer-use-2024-10-22"),
+            _ => None,
+        };
+        if let Some(beta) = beta {
+            if !betas.iter().any(|b| b == beta) {
+                betas.push(beta.into());
+            }
+        }
+    }
     if !betas.is_empty() {
         headers.push(("anthropic-beta".to_owned(), betas.join(",")));
     }
 
     crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     crate::wire_options::merge_headers(profile, &mut headers);
 
-    Ok(WireRequest::new(
+    let mut encoded = WireRequest::new(
         format!("{}/v1/messages", profile.base_url.trim_end_matches('/')),
         headers,
         WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages)),
-    ))
+    );
+    if opts.mode() == crate::RequestMode::CountTokens {
+        encoded.http.url = format!(
+            "{}/v1/messages/count_tokens",
+            profile.base_url.trim_end_matches('/')
+        );
+        for key in [
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "stream",
+            "stop_sequences",
+            "output_config",
+            "context_hint",
+        ] {
+            encoded.body.remove(key);
+        }
+    }
+    Ok(encoded)
 }
 
 fn encode_message<'a>(
@@ -345,7 +378,7 @@ fn encode_tool(t: &ToolSpec) -> Value {
     if t.strict {
         tool["strict"] = json!(true);
     }
-    tool
+    crate::codecs::request_controls::tool_extensions(t, tool)
 }
 
 fn encode_tool_choice(c: &ToolChoice) -> Value {

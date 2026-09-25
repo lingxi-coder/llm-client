@@ -8,6 +8,10 @@
 
 pub use crate::account;
 mod executor;
+mod frozen_pricing;
+pub use frozen_pricing::FrozenPricing;
+mod prepared;
+pub use prepared::{CollectedResponse, PreparedCall, ReceivedCall};
 mod requests;
 pub use crate::files;
 mod attachments;
@@ -37,7 +41,7 @@ pub use chat::ChatService;
 pub use options::RequestOptions;
 pub use resolve::ResolveError;
 pub use store::{ProviderStoreError, ProviderSyncOperation, ProviderSyncResult};
-pub use stream::ModelStream;
+pub use stream::{ModelStream, StreamBatch};
 pub use token_count::{LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission};
 
 use crate::auth::Authenticator;

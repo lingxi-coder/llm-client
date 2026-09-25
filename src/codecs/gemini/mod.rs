@@ -10,7 +10,7 @@
 //!   not 413.** Left as `InvalidRequest` it would end the turn terminally
 //!   instead of triggering compaction (gate 31).
 
-mod decode;
+pub(crate) mod decode;
 pub(crate) mod encode;
 mod stream;
 

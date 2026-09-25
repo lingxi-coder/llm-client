@@ -261,6 +261,16 @@ impl Usage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// The provider completed this output block.
+    BlockEnd {
+        block: usize,
+    },
+    /// Provider-owned annotation or extension delta, preserved for host rendering.
+    NativeDelta {
+        block: usize,
+        protocol: ProtocolFamily,
+        delta: serde_json::Value,
+    },
     /// Provider-reported inference settings; may arrive before final usage.
     Inference {
         report: super::InferenceReport,
@@ -331,6 +341,8 @@ pub enum StreamEvent {
 pub struct SystemBlock {
     pub text: String,
     pub cacheable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<super::CacheControl>,
 }
 
 /// A tool as advertised on the wire.
@@ -341,6 +353,12 @@ pub struct ToolSpec {
     pub input_schema: Value,
     #[serde(default)]
     pub strict: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub extra: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,6 +437,8 @@ pub struct FileSearchConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionRequest {
     pub model: String,
+    #[serde(default)]
+    pub controls: super::RequestControls,
     /// Absent by default. Requires an explicit search adapter on the profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<WebSearchConfig>,
@@ -743,6 +763,7 @@ mod tests {
     fn response_ids_round_trip_as_opaque_strings() {
         let id = ResponseId::new("resp_abc");
         let req = CompletionRequest {
+            controls: Default::default(),
             service_tier: None,
             model: "m".to_owned(),
             web_search: None,

@@ -14,7 +14,7 @@
 //! - **unknown event and delta types are ignored**: this provider's streaming
 //!   contract requires a client to tolerate types it has never seen.
 
-mod decode;
+pub(crate) mod decode;
 pub(crate) mod encode;
 pub(crate) mod stream;
 

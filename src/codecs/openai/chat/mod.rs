@@ -7,7 +7,7 @@
 //! specific is keyed off the `ProviderProfile` the caller passes in, never off
 //! a hard-coded provider name.
 
-mod decode;
+pub(crate) mod decode;
 pub(crate) mod encode;
 mod reasoning;
 mod stream;

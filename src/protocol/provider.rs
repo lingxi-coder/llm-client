@@ -127,7 +127,7 @@ mod directory_route_tests {
     }
 }
 
-/// Closed set of 8.
+/// Supported credential schemes; hosts register cloud authenticators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthStrategy {
@@ -137,18 +137,20 @@ pub enum AuthStrategy {
     CopilotBearer,
     ChatGptOAuth,
     GcpToken,
+    AwsSigV4,
     AzureToken,
     None,
 }
 
 impl AuthStrategy {
-    pub const ALL: [AuthStrategy; 8] = [
+    pub const ALL: [AuthStrategy; 9] = [
         AuthStrategy::ApiKey,
         AuthStrategy::Bearer,
         AuthStrategy::OAuthBearer,
         AuthStrategy::CopilotBearer,
         AuthStrategy::ChatGptOAuth,
         AuthStrategy::GcpToken,
+        AuthStrategy::AwsSigV4,
         AuthStrategy::AzureToken,
         AuthStrategy::None,
     ];
