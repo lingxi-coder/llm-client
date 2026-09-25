@@ -190,8 +190,9 @@ impl<'client> RequestExecutor<'client> {
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         started: Instant,
-        mode: RequestMode,
+        preparation: (RequestMode, bool),
     ) -> Result<PreparedAttempt, LlmError> {
+        let (mode, authenticate) = preparation;
         let remaining = remaining_timeout(started, opts.total_timeout)?;
         let mut attempt_opts = opts.clone();
         attempt_opts.total_timeout = remaining;
@@ -204,7 +205,14 @@ impl<'client> RequestExecutor<'client> {
                 deadline.checked_sub(reserve).unwrap_or(deadline)
             })
         });
-        let preparation = self.prepare(route, attempt, req, &attempt_opts, request_deadline, mode);
+        let preparation = self.prepare(
+            route,
+            attempt,
+            req,
+            &attempt_opts,
+            request_deadline,
+            (mode, authenticate),
+        );
         let mut prepared = within_deadline(preparation, remaining).await??;
         // Authentication may have awaited a token refresh. The transport
         // receives only the time still available after that work.
@@ -229,8 +237,9 @@ impl<'client> RequestExecutor<'client> {
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         request_deadline: Option<Instant>,
-        mode: RequestMode,
+        preparation: (RequestMode, bool),
     ) -> Result<PreparedAttempt, LlmError> {
+        let (mode, authenticate) = preparation;
         let profile = attempt.profile;
         if mode == RequestMode::CountTokens && profile.protocol != ProtocolFamily::AnthropicMessages
         {
@@ -387,6 +396,9 @@ impl<'client> RequestExecutor<'client> {
                 .with_bindings(&prepared.bindings),
             &context,
         )?;
+        if let Some(finalizer) = &opts.finalizer {
+            finalizer.finalize(&mut http, profile)?;
+        }
         if anthropic_request_limit && http.body.len() > ANTHROPIC_MAX_REQUEST_BODY_BYTES {
             return Err(LlmError::RequestTooLarge {
                 message: format!(
@@ -399,8 +411,10 @@ impl<'client> RequestExecutor<'client> {
 
         http.timeout = opts.total_timeout;
 
-        if let Some(auth) = authenticator {
-            auth.apply(&mut http, profile, credential).await?;
+        if authenticate {
+            if let Some(auth) = authenticator {
+                auth.apply(&mut http, profile, credential).await?;
+            }
         }
         Ok(PreparedAttempt {
             inference,
@@ -421,7 +435,7 @@ impl<'client> RequestExecutor<'client> {
         mode: RequestMode,
     ) -> Result<RequestOutput, (LlmError, Option<HttpResponse>, Vec<PreparedProviderFileUse>)> {
         let prepared = self
-            .prepare_before_deadline(route, attempt, req, opts, started, mode)
+            .prepare_before_deadline(route, attempt, req, opts, started, (mode, true))
             .await
             .map_err(|e| (e, None, Vec::new()))?;
         let files = prepared.files.clone();

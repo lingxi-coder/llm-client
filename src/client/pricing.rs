@@ -23,7 +23,7 @@ pub struct CostEstimate {
 }
 
 /// Compute token charges only after the pricing engine selects a quote.
-pub(super) fn estimate(
+pub fn estimate(
     quote: &PriceQuote,
     usage: &Usage,
     pricing_model: &PricingModelRef,

@@ -409,3 +409,194 @@ async fn chat_array_text_is_preserved_and_missing_arguments_are_rejected() {
         }
     }
 }
+
+struct BodySigner;
+#[async_trait]
+impl lingxi_llm_client::Authenticator for BodySigner {
+    async fn apply(
+        &self,
+        req: &mut HttpRequest,
+        _: &ProviderProfile,
+        _: Option<&lingxi_llm_client::protocol::Secret<String>>,
+    ) -> Result<(), LlmError> {
+        req.headers.push((
+            "signed-body".into(),
+            String::from_utf8(req.body.to_vec()).unwrap(),
+        ));
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn draft_is_signed_only_after_final_exact_bytes_and_dispatch_marker_can_reject() {
+    use lingxi_llm_client::protocol::AuthStrategy;
+    let http = http(200, "{}", false);
+    let mut profiles = profiles("open_ai_chat");
+    profiles[0].auth = AuthStrategy::Bearer;
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &profiles);
+    builder.register_authenticator(AuthStrategy::Bearer, Arc::new(BodySigner));
+    let client = builder.with_region(Region::International).build().unwrap();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    assert!(!draft
+        .request()
+        .headers
+        .iter()
+        .any(|(k, _)| k == "signed-body"));
+    let bytes = lingxi_llm_client::exact_json::serialize(
+        &json!({"text":"display"}),
+        &[("/text".into(), vec![0xd800, 65, 0xd83d, 0xde00])]
+            .into_iter()
+            .collect(),
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(bytes.clone()).unwrap(),
+        "{\"text\":\"\\ud800A😀\"}"
+    );
+    draft.request_mut().body = bytes.clone().into();
+    let call = draft.seal().await.unwrap();
+    assert_eq!(
+        call.request()
+            .headers
+            .iter()
+            .find(|(k, _)| k == "signed-body")
+            .unwrap()
+            .1
+            .as_bytes(),
+        bytes
+    );
+    let result = call
+        .dispatch_once_with(|| {
+            Err(LlmError::InvalidRequest {
+                message: "budget rejected".into(),
+            })
+        })
+        .await;
+    assert!(result.is_err());
+    assert_eq!(http.sends.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn finalizer_runs_before_authentication_and_exact_override_rejects_wrong_leaf() {
+    use lingxi_llm_client::protocol::AuthStrategy;
+    #[derive(Debug)]
+    struct Finalizer;
+    impl lingxi_llm_client::client::options::RequestFinalizer for Finalizer {
+        fn finalize(&self, req: &mut HttpRequest, _: &ProviderProfile) -> Result<(), LlmError> {
+            req.body = bytes::Bytes::from_static(b"{\"final\":true}");
+            Ok(())
+        }
+    }
+    let http = http(200, "{}", false);
+    let mut profiles = profiles("open_ai_chat");
+    profiles[0].auth = AuthStrategy::Bearer;
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &profiles);
+    builder.register_authenticator(AuthStrategy::Bearer, Arc::new(BodySigner));
+    let client = builder.with_region(Region::International).build().unwrap();
+    let call = client
+        .prepare_on(
+            "primary",
+            &request(),
+            &RequestOptions {
+                finalizer: Some(Arc::new(Finalizer)),
+                ..Default::default()
+            },
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        call.request()
+            .headers
+            .iter()
+            .find(|(k, _)| k == "signed-body")
+            .unwrap()
+            .1,
+        "{\"final\":true}"
+    );
+    call.dispatch_once_with(|| {
+        assert_eq!(http.sends.load(Ordering::SeqCst), 0);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(http.sends.load(Ordering::SeqCst), 1);
+    assert!(lingxi_llm_client::exact_json::serialize(
+        &json!({"x":1}),
+        &[("/x".into(), vec![65])].into_iter().collect()
+    )
+    .is_err());
+}
+
+#[test]
+fn host_can_preserve_native_slash_id_precedence_without_duplicating_resolution() {
+    let mut profiles = profiles("open_ai_chat");
+    profiles[1].models[0].request_model = "primary/wire".into();
+    profiles[1].models[0].display_model = "native".into();
+    let catalog = lingxi_llm_client::client::RoutingCatalog::new(profiles, Region::International);
+    assert!(catalog.resolve_in("primary/wire", None).is_err());
+    assert_eq!(
+        catalog
+            .resolve_in_prefer_native("primary/wire", None)
+            .unwrap()
+            .profile_name,
+        "secondary"
+    );
+}
+
+#[tokio::test]
+async fn final_body_controls_and_exact_utf16_cannot_silently_price_fast_as_standard() {
+    let http = http(
+        200,
+        r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#,
+        false,
+    );
+    let client = LlmClientBuilder::with_transport(http, &profiles("open_ai_chat"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    draft
+        .set_json_body(
+            json!({"model":"wire","service_tier":"priority","text":"display"}),
+            &[("/text".into(), vec![0xd800])].into_iter().collect(),
+        )
+        .unwrap();
+    let received = draft
+        .seal()
+        .await
+        .unwrap()
+        .dispatch_once()
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_eq!(
+        received.inference_report().requested_service_tier,
+        Some(lingxi_llm_client::protocol::ServiceTier::Fast)
+    );
+    assert!(received
+        .pricing_snapshot()
+        .estimate(
+            received.usage_report(),
+            received.inference_report(),
+            lingxi_llm_client::protocol::Submission::Interactive
+        )
+        .is_err());
+}

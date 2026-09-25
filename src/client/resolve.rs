@@ -80,6 +80,14 @@ impl RuntimeSnapshot {
         requested: &str,
         profile: Option<&str>,
     ) -> Result<RequestRoute<'_>, ResolveError> {
+        self.resolve_request_with_precedence(requested, profile, false)
+    }
+    fn resolve_request_with_precedence(
+        &self,
+        requested: &str,
+        profile: Option<&str>,
+        prefer_native: bool,
+    ) -> Result<RequestRoute<'_>, ResolveError> {
         // A qualifier naming one connection means that connection, even when a
         // group shares the name. One preset is its own group's namesake and has
         // a sibling that serves a different wire model under the same display
@@ -140,6 +148,9 @@ impl RuntimeSnapshot {
             }
         }
 
+        if prefer_native && !matches.is_empty() {
+            qualified_matches.clear();
+        }
         if profile.is_none() && !matches.is_empty() && !qualified_matches.is_empty() {
             let mut native_route = matches.clone();
             let mut qualified_route = qualified_matches.clone();
@@ -312,5 +323,35 @@ impl super::LlmClient {
         profile: Option<&str>,
     ) -> Result<ResolvedRoute, ResolveError> {
         self.snapshot.resolve_in(model, profile)
+    }
+}
+
+/// Immutable model resolution without creating a network client or credentials.
+/// Useful to hosts that attach their own display metadata and retry policies.
+pub struct RoutingCatalog(super::snapshot::RuntimeSnapshot);
+impl RoutingCatalog {
+    /// Preserve an explicit host naming policy: exact native IDs precede UI
+    /// qualifiers. The default resolver continues to reject ambiguous inputs.
+    pub fn resolve_in_prefer_native(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<ResolvedRoute, ResolveError> {
+        self.0
+            .resolve_request_with_precedence(model, profile, true)
+            .map(|resolved| resolved.route)
+    }
+
+    pub fn new(profiles: Vec<ProviderProfile>, region: crate::protocol::Region) -> Self {
+        Self(super::snapshot::RuntimeSnapshot::new(
+            region, profiles, None,
+        ))
+    }
+    pub fn resolve_in(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<ResolvedRoute, ResolveError> {
+        self.0.resolve_in(model, profile)
     }
 }

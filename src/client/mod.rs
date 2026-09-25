@@ -11,7 +11,7 @@ mod executor;
 mod frozen_pricing;
 pub use frozen_pricing::FrozenPricing;
 mod prepared;
-pub use prepared::{CollectedResponse, PreparedCall, ReceivedCall};
+pub use prepared::{CollectedResponse, PreparedCall, ReceivedCall, RequestDraft};
 mod requests;
 pub use crate::files;
 mod attachments;
@@ -39,7 +39,7 @@ pub use account::{
 };
 pub use chat::ChatService;
 pub use options::RequestOptions;
-pub use resolve::ResolveError;
+pub use resolve::{ResolveError, RoutingCatalog};
 pub use store::{ProviderStoreError, ProviderSyncOperation, ProviderSyncResult};
 pub use stream::{ModelStream, StreamBatch};
 pub use token_count::{LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission};
@@ -827,3 +827,6 @@ mod tests {
         ));
     }
 }
+
+mod session;
+pub use session::ResponsesSession;

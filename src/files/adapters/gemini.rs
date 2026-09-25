@@ -51,6 +51,65 @@ impl FileService<'_> {
         &self,
         file: &UploadFile,
     ) -> Result<ProviderFileRef, LlmError> {
+        let (value, started, processing_timeout, is_video) =
+            self.upload_gemini_response(file).await?;
+        let file_value = value.get("file").unwrap_or(&value);
+        let mut metadata = decode_metadata(self.profile, self.account_scope, file_value)?;
+        metadata.file.media_type = Some(file.media_type.clone());
+        metadata.file.filename = Some(file.filename.clone());
+        match file_value.get("state").and_then(Value::as_str) {
+            Some("FAILED") => {
+                return Err(provider_shape("Gemini file processing failed"));
+            }
+            Some("PROCESSING") => {
+                let processing_deadline = Instant::now()
+                    .checked_add(processing_timeout)
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "Gemini processing timeout is too large".into(),
+                    })?;
+                let processing_deadline = if is_video {
+                    processing_deadline.min(started + GEMINI_VIDEO_FILE_TIMEOUT)
+                } else {
+                    processing_deadline
+                };
+                let processing_deadline = self
+                    .gemini_request_deadline
+                    .map_or(processing_deadline, |deadline| {
+                        processing_deadline.min(deadline)
+                    });
+                let effective_processing_timeout =
+                    processing_deadline.saturating_duration_since(Instant::now());
+                metadata.file = self
+                    .wait_for_gemini_file_active(
+                        &metadata.file,
+                        processing_deadline,
+                        effective_processing_timeout,
+                    )
+                    .await?;
+                metadata.file.media_type = Some(file.media_type.clone());
+                metadata.file.filename = Some(file.filename.clone());
+            }
+            Some("ACTIVE") | None => {} // Older APIs and transports may omit the state.
+            Some(_) => {
+                return Err(gemini_processing_unresolved(
+                    &metadata.file,
+                    provider_shape("Gemini file upload returned an unknown processing state"),
+                ));
+            }
+        }
+        if metadata.file.uri.as_deref().is_none_or(str::is_empty) {
+            return Err(gemini_processing_unresolved(
+                &metadata.file,
+                provider_shape("Gemini file upload omitted the model-input URI"),
+            ));
+        }
+        Ok(metadata.file)
+    }
+
+    async fn upload_gemini_response(
+        &self,
+        file: &UploadFile,
+    ) -> Result<(Value, Instant, Duration, bool), LlmError> {
         let started = Instant::now();
         let is_video = file.media_type.to_ascii_lowercase().starts_with("video/");
         let upload_timeout = self.gemini_upload_timeout.unwrap_or(if is_video {
@@ -116,9 +175,12 @@ impl FileService<'_> {
             .execute(req)
             .await?;
         status_result(&start, "Gemini file upload start")?;
-        let upload_url = start
-            .header("x-goog-upload-url")
-            .ok_or_else(|| provider_shape("Gemini upload start omitted x-goog-upload-url"))?;
+        let upload_url =
+            start
+                .header("x-goog-upload-url")
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Gemini upload start response missing x-goog-upload-url header".into(),
+                })?;
         if !same_origin(upload_url, &self.profile.base_url) {
             return Err(LlmError::PermissionDenied {
                 message: "Gemini returned an upload URL outside the configured API origin".into(),
@@ -145,57 +207,77 @@ impl FileService<'_> {
             .execute(upload_req)
             .await?;
         let value = json_success(&response, "Gemini file upload")?;
-        let file_value = value.get("file").unwrap_or(&value);
-        let mut metadata = decode_metadata(self.profile, self.account_scope, file_value)?;
-        metadata.file.media_type = Some(file.media_type.clone());
-        metadata.file.filename = Some(file.filename.clone());
-        match file_value.get("state").and_then(Value::as_str) {
-            Some("FAILED") => {
-                return Err(provider_shape("Gemini file processing failed"));
-            }
-            Some("PROCESSING") => {
-                let processing_deadline = Instant::now()
-                    .checked_add(processing_timeout)
-                    .ok_or_else(|| LlmError::InvalidRequest {
-                        message: "Gemini processing timeout is too large".into(),
-                    })?;
-                let processing_deadline = if is_video {
-                    processing_deadline.min(started + GEMINI_VIDEO_FILE_TIMEOUT)
-                } else {
-                    processing_deadline
-                };
-                let processing_deadline = self
-                    .gemini_request_deadline
-                    .map_or(processing_deadline, |deadline| {
-                        processing_deadline.min(deadline)
-                    });
-                let effective_processing_timeout =
-                    processing_deadline.saturating_duration_since(Instant::now());
-                metadata.file = self
-                    .wait_for_gemini_file_active(
-                        &metadata.file,
-                        processing_deadline,
-                        effective_processing_timeout,
-                    )
+        Ok((value, started, processing_timeout, is_video))
+    }
+
+    /// Upload without waiting for processing. FAILED/PROCESSING remain data;
+    /// applications may use `poll_gemini_active` separately.
+    pub async fn upload_gemini_unpolled(
+        &self,
+        file: &UploadFile,
+    ) -> Result<crate::files::gemini_wire::GeminiFile, LlmError> {
+        if self.profile.protocol != ProtocolFamily::GeminiGenerateContent {
+            return Err(LlmError::InvalidRequest {
+                message: "file upload requires a gemini provider profile".into(),
+            });
+        }
+        let (value, _, _, _) = self.upload_gemini_response(file).await?;
+        crate::files::gemini_wire::parse_upload_response(&value)
+    }
+
+    /// Explicit readiness polling, using the caller's cadence and total budget.
+    pub async fn poll_gemini_active(
+        &self,
+        name: &str,
+        interval: Duration,
+        max_wait: Duration,
+    ) -> Result<crate::files::gemini_wire::GeminiFile, LlmError> {
+        if self.profile.protocol != ProtocolFamily::GeminiGenerateContent {
+            return Err(LlmError::InvalidRequest {
+                message: "file upload requires a gemini provider profile".into(),
+            });
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(max_wait)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "file processing timeout too large".into(),
+            })?;
+        loop {
+            let mut request =
+                crate::files::gemini_wire::file_status_request(&self.profile.base_url, name);
+            if let Some(auth) = self.authenticator {
+                auth.apply(&mut request, self.profile, self.credential)
                     .await?;
-                metadata.file.media_type = Some(file.media_type.clone());
-                metadata.file.filename = Some(file.filename.clone());
             }
-            Some("ACTIVE") | None => {} // Older APIs and transports may omit the state.
-            Some(_) => {
-                return Err(gemini_processing_unresolved(
-                    &metadata.file,
-                    provider_shape("Gemini file upload returned an unknown processing state"),
-                ));
+            // max_wait bounds poll scheduling; allow a poll exactly at the
+            // deadline, matching explicit split-phase lifecycle semantics.
+            request.timeout = Some(FILE_TIMEOUT);
+            let response = crate::transport::HttpExecutor::new(self.http)
+                .execute(request)
+                .await?;
+            status_result(&response, "Gemini file status")?;
+            let value: Value = serde_json::from_slice(&response.body)
+                .map_err(|e| provider_shape(&e.to_string()))?;
+            let file = crate::files::gemini_wire::parse_file_status(&value)?;
+            match file.state.as_str() {
+                "ACTIVE" => return Ok(file),
+                "FAILED" => {
+                    return Err(LlmError::InvalidRequest {
+                        message: format!("gemini file processing failed: {name}"),
+                    })
+                }
+                _ => {}
             }
+            if tokio::time::Instant::now() + interval > deadline {
+                return Err(LlmError::Transport {
+                    message: format!(
+                        "gemini file did not become ACTIVE within {}s",
+                        max_wait.as_secs()
+                    ),
+                });
+            }
+            async_delay(interval).await;
         }
-        if metadata.file.uri.as_deref().is_none_or(str::is_empty) {
-            return Err(gemini_processing_unresolved(
-                &metadata.file,
-                provider_shape("Gemini file upload omitted the model-input URI"),
-            ));
-        }
-        Ok(metadata.file)
     }
 
     pub(in crate::files) async fn wait_for_gemini_file_active(

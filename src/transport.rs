@@ -108,7 +108,7 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 /// it must cancel the response read. Use [`HttpExecutor`] for collection and
 /// runtime-enforced deadlines, including with custom transports.
 #[async_trait]
-pub trait Transport: Send + Sync + 'static {
+pub trait Transport: Send + Sync {
     async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
 
     /// Open a reusable Responses connection without generating a response.
@@ -156,6 +156,13 @@ impl<'a> HttpExecutor<'a> {
         let deadline = self.deadline.cap(request.timeout);
         request.timeout = deadline.remaining()?;
         let response = deadline.run(self.transport.send(request)).await??;
+        Ok(Self::bound_response(response, deadline))
+    }
+
+    pub(crate) fn bound_response(
+        response: StreamResponse,
+        deadline: crate::runtime::Deadline,
+    ) -> StreamResponse {
         let body = futures::stream::unfold(Some(response.body), move |state| async move {
             let mut body = state?;
             match deadline.run(body.next()).await {
@@ -165,11 +172,11 @@ impl<'a> HttpExecutor<'a> {
             }
         })
         .boxed();
-        Ok(StreamResponse {
+        StreamResponse {
             status: response.status,
             headers: response.headers,
             body,
-        })
+        }
     }
 
     pub async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {

@@ -879,3 +879,29 @@ Responses WebSocket 需要注入实现 `connect_websocket` 的 `Transport`。
 `CompletionRequest::controls` 提供采样、结构化输出、Anthropic context hint，以及
 Responses 存储、续接和元数据选项。系统缓存控制保留 TTL 与 scope。原生内容携带协议
 标识，不能跨协议重放。流式接口也提供原生注解 delta 和块结束事件；它们不是应用工具调用。
+
+### 宿主请求定稿与会话
+
+需要在签名前追加请求策略时，使用 `prepare_draft_on`。返回的 `RequestDraft`
+不能发送请求；通过 `request_mut()` 完成修改后，`seal()` 才执行最终鉴权，返回
+不可修改、不可克隆的 `PreparedCall`。草稿使用显式的 `total_timeout`；没有配置时
+不额外增加默认总超时。`prepare_on` 和普通完成接口仍保留各自的默认超时。
+`RequestOptions::finalizer` 可统一执行编码后、签名前的同步转换。
+`exact_json::serialize` 能保留指定 JSON 字符串的完整 UTF-16 码元，包括孤立代理项。
+AWS SigV4 的纯签名算法位于 `auth::sigv4`；凭据来源和刷新仍由宿主负责。
+
+`dispatch_once_with` 和 `dispatch_websocket_once_with` 在物理发送前调用同步钩子。
+钩子拒绝时不发送请求；客户端不在钩子之后刷新凭据或重试。借用平台传输栈的应用
+可使用 `dispatch_once_using`，响应流仍独立拥有其读取资源。
+
+`ResponsesSession` 管理连接复用、预热、续接和响应观察。先调用 `prepare` 完成连接
+及增量请求计算，再 `seal`、执行宿主准入，最后 `dispatch`。握手 426 可以在没有
+生成请求的前提下选择 HTTP；发送后的失败只影响下一次尝试，不能再次发送当前调用。
+取消未完成的响应会清除续接状态，使下一次尝试重新建立连接。
+
+`FileService::upload_gemini_unpolled` 与 `poll_gemini_active` 支持显式上传/轮询分离。
+上传仍校验返回地址的同源性；临时上传 URL 使用自身能力，不重复附加 API key。
+`RoutingCatalog` 提供不依赖网络的模型解析；`resolve_in_prefer_native` 可显式保留
+应用已有的“原生模型 ID 优先于 UI 限定引用”规则。
+`FrozenPricing::capture`、`with_token_pricing` 和 `quote` 支持派发前冻结价格及预算
+报价；实际账单估算仍应使用带完整 usage 和实际执行信息的 `estimate`。

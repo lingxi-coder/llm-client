@@ -31,6 +31,7 @@ pub mod client;
 pub mod codecs;
 pub mod configuration;
 pub mod directory;
+pub mod exact_json;
 pub mod files;
 pub mod framing;
 pub mod images;
@@ -55,8 +56,8 @@ pub use client::{
     AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, ChatService,
     CollectedResponse, FrozenPricing, LlmClient, LlmClientBuilder, LocalTokenCountError,
     LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream, PreparedCall, ProviderStoreError,
-    ProviderSyncOperation, ProviderSyncResult, ReceivedCall, RequestOptions, ResolveError,
-    StreamBatch, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
+    ProviderSyncOperation, ProviderSyncResult, ReceivedCall, RequestDraft, RequestOptions,
+    ResolveError, ResponsesSession, StreamBatch, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;

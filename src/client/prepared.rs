@@ -48,22 +48,7 @@ impl LlmClient {
             .await?
             .collect()
             .await?;
-        let result = if !(200..300).contains(&collected.response.status) {
-            Err(collected
-                .decode()
-                .err()
-                .unwrap_or_else(|| LlmError::ProviderInternal {
-                    message: "token count failed".into(),
-                }))
-        } else {
-            serde_json::from_slice::<serde_json::Value>(&collected.response.body)
-                .ok()
-                .and_then(|v| v.get("input_tokens").and_then(serde_json::Value::as_u64))
-                .map(Some)
-                .ok_or_else(|| LlmError::ProviderInternal {
-                    message: "token count response has no numeric input_tokens".into(),
-                })
-        };
+        let result = collected.decode_token_count().map(Some);
         collected.finish().await;
         result
     }
@@ -78,6 +63,22 @@ impl LlmClient {
         options: &RequestOptions,
         mode: RequestMode,
     ) -> Result<PreparedCall, LlmError> {
+        let options = super::executor::execution_options(request, options, mode);
+        self.prepare_draft_on(profile, request, &options, mode)
+            .await?
+            .seal()
+            .await
+    }
+
+    /// Resolve, encode and prepare attachments without signing the generation
+    /// request. The host can finish request policy before sealing the draft.
+    pub async fn prepare_draft_on(
+        &self,
+        profile: &str,
+        request: &CompletionRequest,
+        options: &RequestOptions,
+        mode: RequestMode,
+    ) -> Result<RequestDraft, LlmError> {
         let resolved = self
             .snapshot
             .resolve_request(&request.model, Some(profile))?;
@@ -92,26 +93,145 @@ impl LlmClient {
                 message: "prepare_on requires an exact connection name, not a group".into(),
             });
         }
-        let options = super::executor::execution_options(request, options, mode);
+        let options = options.clone();
         let started = Instant::now();
         let executor = RequestExecutor::new(self);
         let request = executor
             .resolve_before_deadline(request, &options, started)
             .await?;
         let prepared = executor
-            .prepare_before_deadline(&resolved.route, selected, &request, &options, started, mode)
+            .prepare_before_deadline(
+                &resolved.route,
+                selected,
+                &request,
+                &options,
+                started,
+                (mode, false),
+            )
             .await?;
-        Ok(PreparedCall {
-            prepared,
-            http: self.http.clone(),
-            clock: self.clock.clone(),
-            deadline: options
-                .total_timeout
-                .and_then(|timeout| started.checked_add(timeout)),
-            profile: selected.profile.clone(),
-            model: selected.model.clone(),
-            mode,
+        Ok(RequestDraft {
+            semantic_body: None,
+            authenticator: self.authenticators.get(&selected.profile.auth).cloned(),
+            credential: options.credential.clone(),
+            call: PreparedCall {
+                prepared,
+                http: self.http.clone(),
+                clock: self.clock.clone(),
+                deadline: options
+                    .total_timeout
+                    .and_then(|timeout| started.checked_add(timeout)),
+                profile: selected.profile.clone(),
+                model: selected.model.clone(),
+                mode,
+            },
         })
+    }
+}
+
+/// Mutable generation request before its final authentication step. It cannot
+/// dispatch. Sealing consumes the draft and produces an immutable single-use call.
+pub struct RequestDraft {
+    semantic_body: Option<(bytes::Bytes, serde_json::Value)>,
+    call: PreparedCall,
+    authenticator: Option<Arc<dyn crate::Authenticator>>,
+    credential: Option<crate::protocol::Secret<String>>,
+}
+impl RequestDraft {
+    pub async fn connect_websocket(
+        &self,
+    ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
+        self.connect_websocket_using(self.call.http.as_ref()).await
+    }
+    pub async fn connect_websocket_using(
+        &self,
+        transport: &dyn crate::Transport,
+    ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
+        let mut handshake = self.call.prepared.http.clone();
+        handshake.method = "GET".into();
+        handshake.body = Default::default();
+        if self.call.profile.auth != crate::protocol::AuthStrategy::None {
+            if let Some(auth) = &self.authenticator {
+                crate::runtime::Deadline::at(self.call.deadline)
+                    .run(auth.apply(&mut handshake, &self.call.profile, self.credential.as_ref()))
+                    .await??;
+            }
+        }
+        self.call
+            .connect_websocket_request(handshake, transport)
+            .await
+    }
+    pub fn request(&self) -> &HttpRequest {
+        &self.call.prepared.http
+    }
+    pub fn request_mut(&mut self) -> &mut HttpRequest {
+        &mut self.call.prepared.http
+    }
+    /// Set exact JSON bytes while retaining a safe semantic view for final
+    /// inference facts, including when strings contain lone UTF-16 surrogates.
+    pub fn set_json_body(
+        &mut self,
+        value: serde_json::Value,
+        overrides: &std::collections::BTreeMap<String, Vec<u16>>,
+    ) -> Result<(), LlmError> {
+        let bytes: bytes::Bytes = crate::exact_json::serialize(&value, overrides)?.into();
+        self.call.prepared.http.body = bytes.clone();
+        self.semantic_body = Some((bytes, value));
+        Ok(())
+    }
+    pub fn profile(&self) -> &ProviderProfile {
+        &self.call.profile
+    }
+    pub fn model(&self) -> &ModelProfile {
+        &self.call.model
+    }
+    pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
+        if self.call.profile.protocol == crate::protocol::ProtocolFamily::AnthropicMessages
+            && self.call.prepared.http.body.len() > 32_000_000
+        {
+            return Err(LlmError::RequestTooLarge {
+                message: "final Anthropic body exceeds 32000000 bytes".into(),
+            });
+        }
+        if self.call.profile.auth != crate::protocol::AuthStrategy::None {
+            if let Some(auth) = &self.authenticator {
+                crate::runtime::Deadline::at(self.call.deadline)
+                    .run(auth.apply(
+                        &mut self.call.prepared.http,
+                        &self.call.profile,
+                        self.credential.as_ref(),
+                    ))
+                    .await??;
+            }
+        }
+        let body = serde_json::from_slice::<serde_json::Value>(&self.call.prepared.http.body)
+            .ok()
+            .or_else(|| {
+                self.semantic_body
+                    .as_ref()
+                    .filter(|(bytes, _)| bytes == &self.call.prepared.http.body)
+                    .map(|(_, value)| value.clone())
+            });
+        if let Some(body) = body {
+            use crate::protocol::ServiceTier;
+            let raw = body
+                .get("service_tier")
+                .or_else(|| body.get("speed"))
+                .and_then(serde_json::Value::as_str);
+            self.call.prepared.inference.requested_service_tier = match raw {
+                Some("fast" | "priority") => Some(ServiceTier::Fast),
+                Some("standard" | "default") => Some(ServiceTier::Standard),
+                _ => None,
+            };
+            self.call.prepared.inference.requested_raw_service_tier = raw
+                .filter(|v| !matches!(*v, "fast" | "priority" | "standard" | "default"))
+                .map(str::to_owned);
+        } else {
+            // Unknown final wire controls cannot silently use Standard prices.
+            self.call.prepared.inference.requested_raw_service_tier =
+                Some("unavailable-final-request-controls".into());
+        }
+        crate::runtime::Deadline::at(self.call.deadline).remaining()?;
+        Ok(self.call)
     }
 }
 
@@ -120,6 +240,15 @@ impl PreparedCall {
     /// the synchronous dispatch marker. No generation is sent by this method.
     pub async fn connect_websocket(
         &self,
+    ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
+        self.connect_websocket_request(self.prepared.http.clone(), self.http.as_ref())
+            .await
+    }
+
+    async fn connect_websocket_request(
+        &self,
+        mut handshake: HttpRequest,
+        transport: &dyn crate::Transport,
     ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
         if self.profile.protocol != crate::protocol::ProtocolFamily::OpenAiResponses
             || !self.profile.supports_websockets
@@ -133,7 +262,6 @@ impl PreparedCall {
                 message: "WebSocket compression is not supported".into(),
             });
         }
-        let mut handshake = self.prepared.http.clone();
         handshake.method = "GET".into();
         handshake.body = Default::default();
         if let Some(milliseconds) = self.profile.websocket_connect_timeout_ms {
@@ -141,15 +269,25 @@ impl PreparedCall {
         }
         crate::runtime::Deadline::at(self.deadline)
             .cap(handshake.timeout)
-            .run(self.http.connect_websocket(handshake))
+            .run(transport.connect_websocket(handshake))
             .await?
     }
 
     /// Send one request on an already-open connection. Connection failures are
     /// returned to the host; this never reconnects or falls back to HTTP.
     pub async fn dispatch_websocket_once(
+        self,
+        connection: &mut dyn crate::transport::WebSocketConnection,
+    ) -> Result<ReceivedCall, LlmError> {
+        self.dispatch_websocket_once_with(connection, || Ok(()))
+            .await
+    }
+
+    /// WebSocket counterpart of `dispatch_once_with`; no reconnect or fallback.
+    pub async fn dispatch_websocket_once_with(
         mut self,
         connection: &mut dyn crate::transport::WebSocketConnection,
+        on_dispatch: impl FnOnce() -> Result<(), LlmError> + Send,
     ) -> Result<ReceivedCall, LlmError> {
         use futures::StreamExt;
         if self.mode != RequestMode::Stream
@@ -166,10 +304,15 @@ impl PreparedCall {
             .duration_since(UNIX_EPOCH)
             .ok()
             .map(|t| t.as_secs());
-        let mut response = crate::runtime::Deadline::at(self.deadline)
-            .cap(self.prepared.http.timeout)
-            .run(connection.send(body))
-            .await??;
+        let deadline = crate::runtime::Deadline::at(self.deadline).cap(self.prepared.http.timeout);
+        deadline.remaining()?;
+        on_dispatch()?;
+        let response = deadline.run(connection.send(body)).await??;
+        let mut response = HttpExecutor::bound_response(response, deadline);
+        // Some native stacks retain the successful upgrade status on frames.
+        if response.status == 101 {
+            response.status = 200;
+        }
         response.body = response
             .body
             .map(|frame| {
@@ -229,14 +372,37 @@ impl PreparedCall {
 
     /// Send at most one generation request. No authentication, upload, retry or
     /// connection fallback occurs between entry and invoking the transport.
-    pub async fn dispatch_once(mut self) -> Result<ReceivedCall, LlmError> {
+    pub async fn dispatch_once(self) -> Result<ReceivedCall, LlmError> {
+        self.dispatch_once_with(|| Ok(())).await
+    }
+
+    /// Run a synchronous host admission marker immediately before invoking
+    /// the transport. A rejected marker causes no send; this never retries.
+    pub async fn dispatch_once_with(
+        self,
+        on_dispatch: impl FnOnce() -> Result<(), LlmError> + Send,
+    ) -> Result<ReceivedCall, LlmError> {
+        let http = self.http.clone();
+        self.dispatch_once_using(http.as_ref(), on_dispatch).await
+    }
+
+    /// Execute through an explicitly supplied host transport. The request is
+    /// still consumed once; response streams own their resources independently.
+    pub async fn dispatch_once_using(
+        mut self,
+        transport: &dyn crate::Transport,
+        on_dispatch: impl FnOnce() -> Result<(), LlmError> + Send,
+    ) -> Result<ReceivedCall, LlmError> {
         self.prepared.inference.executed_at = self
             .clock
             .now()
             .duration_since(UNIX_EPOCH)
             .ok()
             .map(|t| t.as_secs());
-        let response = HttpExecutor::new(self.http.as_ref())
+        // Validate the deadline before marking a physical attempt dispatched.
+        crate::runtime::Deadline::at(self.deadline).remaining()?;
+        on_dispatch()?;
+        let response = HttpExecutor::new(transport)
             .with_deadline(crate::runtime::Deadline::at(self.deadline))
             .send(self.prepared.http.clone())
             .await?;
@@ -349,6 +515,29 @@ impl CollectedResponse {
     pub fn model(&self) -> &ModelProfile {
         &self.call.model
     }
+    /// Decode an exact count response without interpreting it as a completion.
+    pub fn decode_token_count(&self) -> Result<u64, LlmError> {
+        if self.call.mode != RequestMode::CountTokens {
+            return Err(LlmError::InvalidRequest {
+                message: "response is not a token-count request".into(),
+            });
+        }
+        if !(200..300).contains(&self.response.status) {
+            return Err(self
+                .decode()
+                .err()
+                .unwrap_or_else(|| LlmError::ProviderInternal {
+                    message: "token count failed".into(),
+                }));
+        }
+        serde_json::from_slice::<serde_json::Value>(&self.response.body)
+            .ok()
+            .and_then(|v| v.get("input_tokens").and_then(serde_json::Value::as_u64))
+            .ok_or_else(|| LlmError::ProviderInternal {
+                message: "token count response has no numeric input_tokens".into(),
+            })
+    }
+
     /// Decode only after the caller has retained usage_report(). This is
     /// synchronous; malformed tool JSON cannot erase the retained observation.
     pub fn decode(&self) -> Result<CompletionResponse, LlmError> {

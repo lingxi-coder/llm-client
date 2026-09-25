@@ -893,3 +893,37 @@ Anthropic context hints, and Responses storage, continuation and metadata
 options. System cache controls preserve TTL and scope. Native content is
 protocol-tagged and cannot be replayed on another wire. Streams expose native
 annotation deltas and block-end events; these are not application tool calls.
+
+### Host finalization and reusable sessions
+
+Use `prepare_draft_on` when host policy must modify a request before signing.
+`RequestDraft` cannot dispatch. Finish changes through `request_mut()`, then call
+`seal()` to authenticate the final bytes and obtain an immutable, non-cloneable
+`PreparedCall`. Drafts use the explicit `total_timeout`, with no implicit total
+deadline; `prepare_on` and ordinary completion calls keep their default timeout
+behavior. `RequestOptions::finalizer` applies a synchronous post-encoding,
+pre-authentication transformation. `exact_json::serialize` preserves exact UTF-16
+code units, including lone surrogates. `auth::sigv4` contains the pure AWS signer;
+the host still owns credential acquisition and refresh.
+
+`dispatch_once_with` and `dispatch_websocket_once_with` run a synchronous hook
+immediately before sending. Rejection sends nothing; no credential refresh or
+retry happens after the hook. `dispatch_once_using` supports a borrowed platform
+transport while returned streams independently own their read resources.
+
+`ResponsesSession` owns connection reuse, prewarming, continuation and response
+observation. Call `prepare` to connect and compute the incremental request, then
+`seal`, perform host admission and `dispatch`. A handshake 426 may select HTTP
+before any generation is sent. A send-stage failure only affects the next
+attempt: it never resends the current call. Cancelling an unfinished response
+invalidates continuation and requires a new connection.
+
+`FileService::upload_gemini_unpolled` and `poll_gemini_active` expose separate
+upload and readiness phases. Upload URLs must share the configured origin; the
+second leg uses the temporary upload capability without repeating the API key.
+`RoutingCatalog` resolves models without networking, with an explicit
+`resolve_in_prefer_native` policy for applications whose native model IDs take
+precedence over UI-qualified names. `FrozenPricing::capture`,
+`with_token_pricing` and `quote` support captured declarations and admission
+quotes; actual estimates still require complete usage and execution facts via
+`estimate`.

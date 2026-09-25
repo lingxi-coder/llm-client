@@ -10,6 +10,8 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Optional host policy applied before signing the final wire bytes.
+    pub finalizer: Option<std::sync::Arc<dyn RequestFinalizer>>,
     /// The secret this request authenticates with, if the profile needs one.
     ///
     /// Passed in rather than looked up: this crate does not hold, fetch or
@@ -33,4 +35,15 @@ pub struct RequestOptions {
     /// deadline and relies on the transport's idle-read timeout. Automatic
     /// Qwen cleanup uses only the remaining budget, then retries in the background.
     pub total_timeout: Option<Duration>,
+}
+
+/// Per-request transformation of the encoded request, before authentication.
+/// Implementations must not dispatch requests or fetch credentials. The final
+/// bytes are authenticated once and immutable after preparation.
+pub trait RequestFinalizer: std::fmt::Debug + Send + Sync {
+    fn finalize(
+        &self,
+        request: &mut crate::HttpRequest,
+        profile: &crate::protocol::ProviderProfile,
+    ) -> Result<(), crate::protocol::LlmError>;
 }

@@ -8,6 +8,52 @@ pub struct FrozenPricing {
     pub(super) model: ModelProfile,
 }
 impl FrozenPricing {
+    /// Capture one exact model row from a provider configuration.
+    pub fn capture(
+        profile: &ProviderProfile,
+        display_model: &str,
+        request_model: &str,
+    ) -> Result<Self, LlmError> {
+        let mut models = profile
+            .models
+            .iter()
+            .filter(|m| m.display_model == display_model && m.request_model == request_model);
+        let model = models.next().ok_or_else(|| LlmError::ModelUnavailable {
+            message: "pricing row is missing".into(),
+        })?;
+        if models.next().is_some() {
+            return Err(LlmError::InvalidRequest {
+                message: "pricing row is ambiguous".into(),
+            });
+        }
+        Ok(Self {
+            profile: profile.clone(),
+            model: model.clone(),
+        })
+    }
+    /// Apply an explicit caller-provided price declaration before dispatch.
+    pub fn with_token_pricing(mut self, pricing: TokenPricing) -> Self {
+        self.model.pricing = Some(pricing);
+        self.model.billing_mode = Some(BillingMode::PerToken);
+        self
+    }
+    /// Quote selected rates for budget policy without claiming actual usage.
+    pub fn quote(&self, context: &PricingContext) -> Result<PriceQuote, LlmError> {
+        let prices = self
+            .model
+            .pricing
+            .as_ref()
+            .ok_or_else(|| LlmError::CostUnavailable {
+                message: "model prices are unpublished".into(),
+            })?;
+        Ok(price_query::quote(
+            prices,
+            self.model.billing_mode_on(&self.profile.pricing),
+            self.profile.pricing.peak.as_ref(),
+            context,
+        ))
+    }
+
     pub fn profile_name(&self) -> &str {
         &self.profile.profile_name
     }
