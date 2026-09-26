@@ -26,17 +26,17 @@ The repository includes these connection presets in [`data/providers/`](data/pro
 
 | Service | Built-in profiles |
 | --- | --- |
-| OpenAI | `openai` |
-| Anthropic | `anthropic` |
-| Google Gemini | `gemini` |
-| DeepSeek | `deepseek`, `deepseek-search` |
-| Kimi | `kimi`, `kimi-intl`, `kimi-code`, `kimi-search`, `kimi-search-intl` |
-| Qwen / Model Studio | `qwen`, `qwen-intl`, `qwen-us`, `qwen-hk`, `qwen-search`, `qwen-search-intl`, `qwen-search-us`, `qwen-search-hk` |
-| MiniMax | `minimax`, `minimax-intl` |
-| Z.AI / GLM | `zai`, `zai-coding`, `glm`, `glm-coding` |
-| xAI Grok | `grok`, `grok-responses`, `grok-anthropic` |
-| OpenRouter | `openrouter` |
-| GitHub Copilot | `github-copilot` |
+| <img src="docs/assets/providers/openai.png" width="20" height="20" alt="OpenAI icon"> [OpenAI](https://developers.openai.com/api/docs) | `openai` |
+| <img src="docs/assets/providers/anthropic.png" width="20" height="20" alt="Anthropic icon"> [Anthropic](https://platform.claude.com/docs) | `anthropic` |
+| <img src="docs/assets/providers/gemini.png" width="20" height="20" alt="Google Gemini icon"> [Google Gemini](https://ai.google.dev/gemini-api/docs) | `gemini` |
+| <img src="docs/assets/providers/deepseek.png" width="20" height="20" alt="DeepSeek icon"> [DeepSeek](https://api-docs.deepseek.com) | `deepseek`, `deepseek-search` |
+| <img src="docs/assets/providers/kimi.png" width="20" height="20" alt="Kimi icon"> [Kimi](https://platform.kimi.com/docs) | `kimi`, `kimi-intl`, `kimi-code`, `kimi-search`, `kimi-search-intl` |
+| <img src="docs/assets/providers/qwen.png" width="20" height="20" alt="Qwen / Model Studio icon"> [Qwen / Model Studio](https://help.aliyun.com/en/model-studio/) | `qwen`, `qwen-intl`, `qwen-us`, `qwen-hk`, `qwen-search`, `qwen-search-intl`, `qwen-search-us`, `qwen-search-hk` |
+| <img src="docs/assets/providers/minimax.png" width="20" height="20" alt="MiniMax icon"> [MiniMax](https://platform.minimax.io/docs) | `minimax`, `minimax-intl` |
+| <img src="docs/assets/providers/zai.svg" width="20" height="20" alt="Z.AI / GLM icon"> [Z.AI / GLM](https://docs.z.ai/) | `zai`, `zai-coding`, `glm`, `glm-coding` |
+| <img src="docs/assets/providers/xai.svg" width="20" height="20" alt="xAI Grok icon"> [xAI Grok](https://docs.x.ai/) | `grok`, `grok-responses`, `grok-anthropic` |
+| <img src="docs/assets/providers/openrouter.png" width="20" height="20" alt="OpenRouter icon"> [OpenRouter](https://openrouter.ai/docs) | `openrouter` |
+| <img src="docs/assets/providers/github-copilot.svg" width="20" height="20" alt="GitHub Copilot icon"> [GitHub Copilot](https://docs.github.com/en/copilot) | `github-copilot` |
 
 Some services have multiple profiles for different protocols, endpoints, or account types. Azure, Bedrock, and Vertex have protocol adapters for custom profiles; they are not built-in connection presets in the table. Available models and capabilities depend on the profile, your account permissions, and the service.
 
@@ -47,6 +47,62 @@ See the [File Attachments Guide](docs/file-attachments.md) for sharing images ac
 Select a usage region with `with_region(Region::ChinaMainland)` or `with_region(Region::International)` before building a client. Provider/model lists, resolution and failover honor this region while keeping the complete configuration. Custom profiles declare `regions`; missing declarations allow both regions. See [region filtering](docs/api.en.md#region-filtering).
 
 Default builds include no tokenizer backends or assets. See [local input token estimates](#6-estimate-input-tokens-offline) for opt-in features. Changes to public extension APIs, usage reports, and configuration v2 are covered in the [architecture and API migration guide](docs/architecture-migration.en.md).
+
+### Capability support
+
+The tables describe **implemented client adapters and services** in this working tree, not every upstream feature or every model. Provider names mean that an integration exists; availability still depends on the profile, model, region and account. Unlisted providers are not claimed as supported. Native services use their own APIs and routes; Chat compatibility alone does not enable them. Real-account validation is still pending. Each guide below links to the relevant official API documentation.
+
+#### Chat and tools
+
+| Capability | Purpose | Providers / scope | Documentation |
+| --- | --- | --- | --- |
+| Chat, streaming and function tools | Normalize text, tool calls and usage events; the application executes tools | All built-in providers, subject to the selected model | [API](docs/api.en.md) |
+| Reasoning and service tiers | Control thinking budgets, effort and fast; inspect the executed tier | Capability queries cover all built-in providers; budget, effort and fast are declared separately per model | [Reasoning](docs/inference.en.md) |
+| JSON and schema output | Constrain output and validate JSON/schema or deserialize into Rust types | OpenAI, Anthropic, Gemini; OpenRouter by upstream model; verify JSON Object and Schema separately for other compatible services | [Output contracts](docs/services.en.md) |
+| Web search and citations | Search the web on the provider and return sources and citations | OpenAI, Anthropic, Gemini, OpenRouter, GLM/Z.AI, MiniMax, Kimi Search, Qwen Search, DeepSeek Search; xAI requires a custom Responses search profile | [Search matrix](docs/web-search.en.md) |
+| Explicit prompt caching | Reuse tool, system or message prefixes to reduce repeated input costs | Anthropic / Messages adapter; MiniMax supports five-minute explicit breakpoints only. Server-side automatic caching is separate | [Prompt cache](docs/services.en.md) |
+| Remote context cache | Create, read, update and delete reusable context cache resources | Gemini (independent cachedContents service) | [Gemini Cache](docs/gemini-context-cache.en.md) |
+| Gateway response caching | Reuse complete responses and read explicit server-reported HIT/MISS | OpenRouter Chat, Responses, Messages, and Embeddings | [OpenRouter Cache](docs/services.en.md) |
+| Stateful continuation | Continue an existing response with an account-bound reference | OpenAI Responses; Gemini Interactions uses a separate API | [Responses](docs/services.en.md) · [Interactions](docs/interactions.en.md) |
+| Hosted code execution and containers | Run model-generated code in remote containers and manage container files | OpenAI Responses | [Code Interpreter](docs/services.en.md) · [Containers](docs/openai-containers.en.md) |
+| Remote MCP and tool search | Connect remote MCP servers or discover deferred function tools | OpenAI Responses: MCP; Anthropic: Tool Search; Gemini Interactions: tool requests subject to model/agent restrictions | [OpenAI MCP](docs/openai-hosted-extended.en.md) · [Anthropic Tool Search](docs/anthropic-tools.en.md) · [Gemini](docs/interactions.en.md) |
+
+#### Retrieval, files and jobs
+
+| Capability | Purpose | Providers / scope | Documentation |
+| --- | --- | --- | --- |
+| Files and multimodal attachments | Manage uploads and file lifetimes; resolve application attachments into model inputs | OpenAI, Anthropic, Gemini, Qwen, MiniMax, xAI and others, by model/media/purpose; file management does not imply Chat file-reference support | [Attachments](docs/file-attachments.md) |
+| Text embeddings | Turn text into vectors for semantic search, clustering and similarity | Built-in routes for OpenAI, Gemini, OpenRouter and GLM; Qwen requires an explicit workspace endpoint | [Embeddings](docs/services.en.md) |
+| Multimodal embeddings | Embed a combination of text and media | Gemini Embedding 2 | [Gemini Embedding](docs/gemini-embedding.en.md) |
+| Knowledge bases and file retrieval | Manage remote indexes/documents and retrieve relevant content for RAG | OpenAI Vector Stores, Gemini File Search, GLM Knowledge Base, Qwen Beijing workspaces, xAI Collections; operation coverage varies | [OpenAI](docs/retrieval.en.md) · [Gemini](docs/gemini-file-search.en.md) · [GLM](docs/glm-knowledge.en.md) · [Qwen](docs/qwen-knowledge.en.md) · [xAI](docs/xai-collections.en.md) |
+| Retrieval reranking | Reorder candidate documents by relevance to a query | Qwen Beijing workspaces, OpenRouter | [Qwen](docs/qwen-rerank.en.md) · [OpenRouter](docs/openrouter-rerank.en.md) |
+| Batch jobs | Submit many requests offline, inspect status and read individual results | OpenAI, Anthropic, Gemini, Qwen, Kimi, OpenRouter, xAI, mainland GLM; models, regions and cancellation differ | [OpenAI](docs/batches.en.md) · [Anthropic](docs/anthropic-batch.en.md) · [Gemini](docs/gemini-batch.en.md) · [Qwen](docs/qwen-batch.en.md) · [Kimi](docs/kimi-batch.en.md) · [OpenRouter](docs/openrouter-batch.en.md) · [xAI](docs/xai-batch.en.md) · [GLM](docs/glm-batch.en.md) |
+| Background and asynchronous inference | Submit long-running inference, fetch results and resume streams where supported | OpenAI Background, Gemini Interactions, xAI Deferred, GLM Async; xAI results are consumed once | [OpenAI](docs/background.en.md) · [Gemini](docs/interactions.en.md) · [xAI](docs/deferred.en.md) · [GLM](docs/glm-async.en.md) |
+
+#### Images and speech
+
+| Capability | Purpose | Providers / scope | Documentation |
+| --- | --- | --- | --- |
+| Image generation | Generate images from prompts or supported reference images | OpenAI, Gemini, Qwen, xAI, MiniMax, GLM/Z.AI, OpenRouter; Wan requires a custom workspace route | [Images](docs/images.en.md) |
+| Image editing and native tasks | Edit source images, apply masks, or submit and query native generation tasks | Editing: OpenAI, Gemini, Qwen, xAI, OpenRouter; masks: OpenAI; tasks: Qwen, GLM/Z.AI, custom Wan | [Images](docs/images.en.md) |
+| Speech recognition (ASR / STT) | Transcribe recordings, with timestamps or speaker information where available | OpenAI, MiniMax, OpenRouter, xAI, GLM/Z.AI cloud; Qwen asynchronous file transcription; separate self-hosted GLM-ASR adapter | [OpenAI](docs/audio.en.md) · [MiniMax](docs/minimax-audio.en.md) · [OpenRouter](docs/openrouter-audio.en.md) · [xAI](docs/xai-audio.en.md) · [GLM Cloud](docs/glm-cloud-audio.en.md) · [Qwen](docs/qwen-asr.en.md) · [GLM Self-hosted](docs/glm-audio.en.md) |
+| Audio translation | Translate speech in an audio file into English text | OpenAI Whisper | [Audio](docs/audio.en.md) |
+| Speech synthesis (TTS) | Convert text to audio bytes, streams or temporary URLs | OpenAI, Gemini, MiniMax, OpenRouter, xAI, Qwen, mainland GLM; MiniMax also has asynchronous long-text TTS | [OpenAI](docs/audio.en.md) · [Gemini](docs/gemini-speech.en.md) · [MiniMax](docs/minimax-tts.en.md) · [Async TTS](docs/minimax-async-tts.en.md) · [OpenRouter](docs/openrouter-audio.en.md) · [xAI](docs/xai-audio.en.md) · [Qwen](docs/qwen-tts.en.md) · [GLM](docs/glm-cloud-audio.en.md) |
+| Chat audio | Send audio in Chat and receive native audio deltas | OpenRouter, validated against model input/output modalities | [Chat Audio](docs/openrouter-chat-audio.en.md) |
+| Realtime bidirectional sessions | Exchange low-latency audio, text and tool events; the application owns audio devices | OpenAI Realtime, Gemini Live, xAI Voice, mainland GLM; built-in WebSocket transport requires realtime-websocket | [OpenAI](docs/realtime.en.md) · [Gemini](docs/gemini-live.en.md) · [xAI](docs/xai-realtime.en.md) · [GLM](docs/glm-realtime.en.md) |
+
+#### Configuration and usage
+
+| Capability | Purpose | Providers / scope | Documentation |
+| --- | --- | --- | --- |
+| Model catalogs, regions and account routing | Manage visible models, separate accounts, region filtering and optional failover | All built-in providers; remote catalog sync depends on the profile's directory API | [API](docs/api.en.md) · [Shared client](docs/client-reuse.en.md) |
+| Usage and cost reports | Read token/cache usage and the executed connection; estimate costs from known prices | Mapped usage across built-in providers; missing usage/prices are not treated as zero | [Reasoning and pricing](docs/inference.en.md) |
+| Account limits and balances | Query balances, historical usage, quota windows or plan entitlements | DeepSeek, Kimi, OpenRouter, Qwen, MiniMax; OpenAI, Anthropic, xAI admin APIs; Codex, Copilot and Kimi Code require host RPC integration. Credentials and permissions vary | [Account queries](docs/api.en.md#account-balances-and-token-usage) |
+| Offline token estimates | Estimate visible text input without networking and report uncounted content | Opt-in OpenAI, DeepSeek, Qwen, Kimi and GLM tokenizer backends; mapped models only | [Local estimates](docs/api.en.md) |
+
+For model-level official evidence and unknown/unsupported states, see [OpenAI / Gemini](docs/capability-matrix-openai-gemini.en.md), [China providers](docs/capability-matrix-china.en.md), and [Anthropic / xAI / OpenRouter / Copilot](docs/capability-matrix-west.en.md). Evidence does not imply implementation or live validation; remaining work is tracked in the [implementation status](docs/implementation-plan.md).
+
+Provider icons above come from official sites, with local copies and attribution in [icon sources](docs/assets/providers/README.md).
 
 ## Getting Started
 

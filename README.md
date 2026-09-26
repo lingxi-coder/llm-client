@@ -26,17 +26,17 @@
 
 | 服务 | 内置 profile |
 | --- | --- |
-| OpenAI | `openai` |
-| Anthropic | `anthropic` |
-| Google Gemini | `gemini` |
-| DeepSeek | `deepseek`、`deepseek-search` |
-| Kimi | `kimi`、`kimi-intl`、`kimi-code`、`kimi-search`、`kimi-search-intl` |
-| Qwen / Model Studio | `qwen`、`qwen-intl`、`qwen-us`、`qwen-hk`、`qwen-search`、`qwen-search-intl`、`qwen-search-us`、`qwen-search-hk` |
-| MiniMax | `minimax`、`minimax-intl` |
-| Z.AI / GLM | `zai`、`zai-coding`、`glm`、`glm-coding` |
-| xAI Grok | `grok`、`grok-responses`、`grok-anthropic` |
-| OpenRouter | `openrouter` |
-| GitHub Copilot | `github-copilot` |
+| <img src="docs/assets/providers/openai.png" width="20" height="20" alt="OpenAI icon"> [OpenAI](https://developers.openai.com/api/docs) | `openai` |
+| <img src="docs/assets/providers/anthropic.png" width="20" height="20" alt="Anthropic icon"> [Anthropic](https://platform.claude.com/docs) | `anthropic` |
+| <img src="docs/assets/providers/gemini.png" width="20" height="20" alt="Google Gemini icon"> [Google Gemini](https://ai.google.dev/gemini-api/docs) | `gemini` |
+| <img src="docs/assets/providers/deepseek.png" width="20" height="20" alt="DeepSeek icon"> [DeepSeek](https://api-docs.deepseek.com) | `deepseek`、`deepseek-search` |
+| <img src="docs/assets/providers/kimi.png" width="20" height="20" alt="Kimi icon"> [Kimi](https://platform.kimi.com/docs) | `kimi`、`kimi-intl`、`kimi-code`、`kimi-search`、`kimi-search-intl` |
+| <img src="docs/assets/providers/qwen.png" width="20" height="20" alt="Qwen / Model Studio icon"> [Qwen / Model Studio](https://help.aliyun.com/en/model-studio/) | `qwen`、`qwen-intl`、`qwen-us`、`qwen-hk`、`qwen-search`、`qwen-search-intl`、`qwen-search-us`、`qwen-search-hk` |
+| <img src="docs/assets/providers/minimax.png" width="20" height="20" alt="MiniMax icon"> [MiniMax](https://platform.minimax.io/docs) | `minimax`、`minimax-intl` |
+| <img src="docs/assets/providers/zai.svg" width="20" height="20" alt="Z.AI / GLM icon"> [Z.AI / GLM](https://docs.z.ai/) | `zai`、`zai-coding`、`glm`、`glm-coding` |
+| <img src="docs/assets/providers/xai.svg" width="20" height="20" alt="xAI Grok icon"> [xAI Grok](https://docs.x.ai/) | `grok`、`grok-responses`、`grok-anthropic` |
+| <img src="docs/assets/providers/openrouter.png" width="20" height="20" alt="OpenRouter icon"> [OpenRouter](https://openrouter.ai/docs) | `openrouter` |
+| <img src="docs/assets/providers/github-copilot.svg" width="20" height="20" alt="GitHub Copilot icon"> [GitHub Copilot](https://docs.github.com/en/copilot) | `github-copilot` |
 
 部分服务提供多个 profile，以适配不同协议、端点或账号类型。Azure、Bedrock 和 Vertex 提供协议适配器，可按需创建自定义 profile；它们不在上述内置连接列表中。具体模型及能力以 profile 配置、账号权限和服务端实际支持为准。
 
@@ -47,6 +47,62 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 构建 client 时必须通过 `with_region(Region::ChinaMainland)` 或 `with_region(Region::International)` 选择使用区域。provider/model 列表、模型解析和故障切换均按区域过滤；完整配置仍保留。自定义 profile 可通过 `regions` 声明可用区域，未声明时两区可用。详见[区域过滤](docs/api.md#region-区域过滤)。
 
 默认构建不包含 tokenizer 后端及资产；按需启用方式见[离线估算输入 token](#6-离线估算输入-token)。公开扩展接口、用量报告和配置 v2 的变化见[架构与 API 迁移指南](docs/architecture-migration.md)。
+
+### 能力支持表
+
+下表描述当前工作区**已实现的客户端适配与服务**，不代表供应商的全部能力或旗下每个模型。列出 Provider 表示已有接入，实际可用性仍取决于 profile、模型、区域和账户；未列出的 Provider 不作支持承诺。独立服务使用各自 API 和路由，不能仅凭 Chat 协议兼容推断支持。真实账户验收仍待完成。下列接入文档内含对应的官方 API 链接。
+
+#### 对话与工具
+
+| 能力 | 用途 | 支持的 Provider／范围 | 文档 |
+| --- | --- | --- | --- |
+| 对话、流式输出与函数工具 | 统一文本、工具调用与用量事件；工具由应用执行 | 全部内置 Provider，具体模型需支持请求能力 | [API](docs/api.md) |
+| 推理与服务档位 | 调节思考预算、effort 和 fast；读取实际执行档位 | 全部内置 Provider 可查询能力；budget、effort、fast 按模型分别声明，不互相等同 | [推理与定价](docs/inference.md) |
+| JSON 与 Schema 输出 | 约束输出格式，并校验 JSON/schema 或反序列化为 Rust 类型 | OpenAI、Anthropic、Gemini；OpenRouter 按上游模型；其他兼容服务须核实 JSON Object / Schema 各自支持 | [输出契约](docs/services.md) |
+| 联网搜索与引用 | 由服务端搜索网页，返回来源与引用 | OpenAI、Anthropic、Gemini、OpenRouter、GLM/Z.AI、MiniMax、Kimi Search、Qwen Search、DeepSeek Search；xAI 需自定义 Responses 搜索 profile | [搜索矩阵](docs/web-search.md) |
+| 显式提示缓存 | 复用工具、system 或消息前缀，减少重复输入开销 | Anthropic / Messages 适配；MiniMax 仅五分钟显式断点。服务端自动缓存另计 | [提示缓存](docs/services.md) |
+| 远端上下文缓存 | 创建、读取、更新和删除可复用的上下文缓存资源 | Gemini（独立 cachedContents 服务） | [Gemini Cache](docs/gemini-context-cache.md) |
+| 网关响应缓存 | 复用完整响应，读取服务端明确返回的 HIT/MISS | OpenRouter Chat、Responses、Messages、Embeddings | [OpenRouter Cache](docs/services.md) |
+| 状态续接 | 用账户绑定引用接续已有响应，避免重复发送历史 | OpenAI Responses；Gemini Interactions 使用独立接口 | [Responses](docs/services.md) · [Interactions](docs/interactions.md) |
+| 服务端代码执行与容器 | 让模型在远端容器执行代码，并管理容器文件 | OpenAI Responses | [Code Interpreter](docs/services.md) · [Containers](docs/openai-containers.md) |
+| Remote MCP 与工具搜索 | 连接远端 MCP，或按需发现延迟加载的函数工具 | OpenAI Responses：MCP；Anthropic：Tool Search；Gemini Interactions：受模型／agent 限制的工具请求 | [OpenAI MCP](docs/openai-hosted-extended.md) · [Anthropic Tool Search](docs/anthropic-tools.md) · [Gemini](docs/interactions.md) |
+
+#### 检索、文件与任务
+
+| 能力 | 用途 | 支持的 Provider／范围 | 文档 |
+| --- | --- | --- | --- |
+| 文件与多模态附件 | 管理上传及文件生命周期，将应用附件转成模型可接受的输入 | OpenAI、Anthropic、Gemini、Qwen、MiniMax、xAI 等，按模型／媒体／用途区分；文件管理不等于 Chat 可引用 | [附件](docs/file-attachments.zh.md) |
+| 文本向量 Embeddings | 把文本转换为向量，用于语义检索、聚类和相似度比较 | OpenAI、Gemini、OpenRouter、GLM 内置路由；Qwen 需显式工作空间 endpoint | [Embeddings](docs/services.md) |
+| 多模态向量 | 将文本和媒体组合编码为向量 | Gemini Embedding 2 | [Gemini Embedding](docs/gemini-embedding.md) |
+| 知识库与文件检索 | 管理远端索引／文档，并检索相关内容供 RAG 使用 | OpenAI Vector Stores、Gemini File Search、GLM 知识库、Qwen 北京工作空间、xAI Collections；各服务操作范围不同 | [OpenAI](docs/retrieval.md) · [Gemini](docs/gemini-file-search.md) · [GLM](docs/glm-knowledge.md) · [Qwen](docs/qwen-knowledge.md) · [xAI](docs/xai-collections.md) |
+| 检索重排 Rerank | 按查询相关度重新排列候选文档 | Qwen 北京工作空间、OpenRouter | [Qwen](docs/qwen-rerank.md) · [OpenRouter](docs/openrouter-rerank.md) |
+| 批量任务 Batch | 离线提交大量请求，查询状态并读取逐项结果 | OpenAI、Anthropic、Gemini、Qwen、Kimi、OpenRouter、xAI、GLM 大陆；模型、区域和取消能力各异 | [OpenAI](docs/batches.md) · [Anthropic](docs/anthropic-batch.md) · [Gemini](docs/gemini-batch.md) · [Qwen](docs/qwen-batch.md) · [Kimi](docs/kimi-batch.md) · [OpenRouter](docs/openrouter-batch.md) · [xAI](docs/xai-batch.md) · [GLM](docs/glm-batch.md) |
+| 后台与异步推理 | 提交长时间推理后查询结果；支持范围内恢复事件流 | OpenAI Background、Gemini Interactions、xAI Deferred、GLM Async；xAI 结果仅可消费一次 | [OpenAI](docs/background.md) · [Gemini](docs/interactions.md) · [xAI](docs/deferred.md) · [GLM](docs/glm-async.md) |
+
+#### 图像与语音
+
+| 能力 | 用途 | 支持的 Provider／范围 | 文档 |
+| --- | --- | --- | --- |
+| 图像生成 | 根据提示词或参考图生成图片 | OpenAI、Gemini、Qwen、xAI、MiniMax、GLM/Z.AI、OpenRouter；Wan 需自定义工作空间路由 | [Images](docs/images.md) |
+| 图像编辑与异步任务 | 修改原图、使用蒙版，或提交并查询原生生成任务 | 编辑：OpenAI、Gemini、Qwen、xAI、OpenRouter；蒙版：OpenAI；异步：Qwen、GLM/Z.AI、自定义 Wan | [Images](docs/images.md) |
+| 语音识别 ASR / STT | 将录音转为文本，按接口读取时间戳或说话人信息 | OpenAI、MiniMax、OpenRouter、xAI、GLM/Z.AI 云端；Qwen 文件异步转写；另有自托管 GLM-ASR 适配 | [OpenAI](docs/audio.md) · [MiniMax](docs/minimax-audio.md) · [OpenRouter](docs/openrouter-audio.md) · [xAI](docs/xai-audio.md) · [GLM Cloud](docs/glm-cloud-audio.md) · [Qwen](docs/qwen-asr.md) · [GLM Self-hosted](docs/glm-audio.md) |
+| 语音翻译 | 将音频中的讲话翻译为英文文本 | OpenAI Whisper | [Audio](docs/audio.md) |
+| 语音合成 TTS | 把文本合成为音频字节、流或临时 URL | OpenAI、Gemini、MiniMax、OpenRouter、xAI、Qwen、GLM 大陆；MiniMax 另有异步长文本 TTS | [OpenAI](docs/audio.md) · [Gemini](docs/gemini-speech.md) · [MiniMax](docs/minimax-tts.md) · [Async TTS](docs/minimax-async-tts.md) · [OpenRouter](docs/openrouter-audio.md) · [xAI](docs/xai-audio.md) · [Qwen](docs/qwen-tts.md) · [GLM](docs/glm-cloud-audio.md) |
+| Chat 音频 | 在 Chat 中传入音频并接收原生音频增量 | OpenRouter，按模型输入／输出模态校验 | [Chat Audio](docs/openrouter-chat-audio.md) |
+| 实时双向会话 | 低延迟交换语音、文本和工具事件；应用管理音频设备 | OpenAI Realtime、Gemini Live、xAI Voice、GLM 大陆；内置 WebSocket 后端需启用 realtime-websocket | [OpenAI](docs/realtime.md) · [Gemini](docs/gemini-live.md) · [xAI](docs/xai-realtime.md) · [GLM](docs/glm-realtime.md) |
+
+#### 配置与用量
+
+| 能力 | 用途 | 支持的 Provider／范围 | 文档 |
+| --- | --- | --- | --- |
+| 模型目录、区域与多账户路由 | 管理可见模型、独立账号连接、区域过滤和按需故障转移 | 全部内置 Provider；服务端目录同步取决于 profile 的目录接口 | [API](docs/api.md) · [共享 Client](docs/client-reuse.md) |
+| 用量与费用报告 | 读取 token、缓存用量和实际执行连接，并按已知价格估算费用 | 全部内置 Provider 的已映射用量；缺失用量／价格不会被当作零 | [推理与定价](docs/inference.md) |
+| 账户额度与余额 | 查询余额、历史用量、额度窗口或套餐权益 | DeepSeek、Kimi、OpenRouter、Qwen、MiniMax；OpenAI、Anthropic、xAI 管理接口；Codex、Copilot、Kimi Code 需宿主 RPC 接入，凭证与权限各异 | [账户查询](docs/api.md#账户额度与账户-token-用量) |
+| 离线 token 估算 | 不联网估算可见文本输入，列出未计数内容 | OpenAI、DeepSeek、Qwen、Kimi、GLM 五种可选 tokenizer 后端，仅覆盖已映射模型 | [本地估算](docs/api.md) |
+
+逐模型的官方证据及未知／不支持状态见 [OpenAI / Gemini](docs/capability-matrix-openai-gemini.md)、[中国厂商](docs/capability-matrix-china.md)与 [Anthropic / xAI / OpenRouter / Copilot](docs/capability-matrix-west.md)；证据矩阵不等同于实现或实测结论，待补齐内容见[实施状态](docs/implementation-plan.md)。
+
+上方 Provider 图标取自官方站点，以本地资源展示；出处与处理说明见[图标来源](docs/assets/providers/README.md)。
 
 ## Getting Started
 

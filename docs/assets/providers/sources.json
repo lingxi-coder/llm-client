@@ -1,0 +1,79 @@
+[
+  {
+    "name": "openai",
+    "file": "openai.png",
+    "page": "https://developers.openai.com",
+    "source": "https://developers.openai.com/favicon.png",
+    "conversion": "None"
+  },
+  {
+    "name": "anthropic",
+    "file": "anthropic.png",
+    "page": "https://www.anthropic.com",
+    "source": "https://cdn.prod.website-files.com/67ce28cfec624e2b733f8a52/681d52619fec35886a7f1a70_favicon.png",
+    "conversion": "None"
+  },
+  {
+    "name": "gemini",
+    "file": "gemini.png",
+    "page": "https://gemini.google.com",
+    "source": "https://www.gstatic.com/lamda/images/gemini_sparkle_4g_512_lt_f94943af3be039176192d.png",
+    "conversion": "None"
+  },
+  {
+    "name": "deepseek",
+    "file": "deepseek.png",
+    "page": "https://www.deepseek.com",
+    "source": "https://www.deepseek.com/favicon.ico",
+    "conversion": "ICO to PNG"
+  },
+  {
+    "name": "kimi",
+    "file": "kimi.png",
+    "page": "https://www.kimi.com",
+    "source": "https://www.kimi.com/pwa-192.png",
+    "conversion": "None"
+  },
+  {
+    "name": "qwen",
+    "file": "qwen.png",
+    "page": "https://qwen.ai",
+    "source": "https://img.alicdn.com/imgextra/i4/O1CN01OXv3EM1FN8t9W4P79_!!6000000000474-2-tps-80-80.png",
+    "conversion": "None"
+  },
+  {
+    "name": "minimax",
+    "file": "minimax.png",
+    "page": "https://www.minimax.io",
+    "source": "https://www.minimax.io/favicon.ico",
+    "conversion": "ICO to PNG"
+  },
+  {
+    "name": "zai",
+    "file": "zai.svg",
+    "page": "https://chat.z.ai",
+    "source": "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    "conversion": "None"
+  },
+  {
+    "name": "xai",
+    "file": "xai.svg",
+    "page": "https://docs.x.ai",
+    "source": "https://docs.x.ai/_next/static/media/favicon-light.1u6watcuoe8mg.svg?dpl=9b1a7568f162e4dba4d1ef9e34f1e92e07f42e55",
+    "conversion": "None"
+  },
+  {
+    "name": "openrouter",
+    "file": "openrouter.png",
+    "page": "https://openrouter.ai",
+    "source": "https://openrouter.ai/favicon/glyph.png",
+    "conversion": "None"
+  },
+  {
+    "name": "github-copilot",
+    "file": "github-copilot.svg",
+    "page": "https://github.com/features/copilot",
+    "source": "https://github.com/features/copilot",
+    "conversion": "Official inline octicon-copilot SVG; currentColor fixed to #59636e for standalone rendering"
+  }
+]
