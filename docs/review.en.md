@@ -85,7 +85,7 @@ This round kept the existing separation among codecs, authenticators, transport,
 
 During migration, existing JSON configurations remain readable; Rust `ModelProfile` literals need `capability_support: None`. Callers relying on unqualified model names should switch to the explicit-profile `_in` methods if they encounter ambiguity. Current integrations import protocol types from `lingxi_llm_client::protocol`.
 
-The fetch phase of configuration sync can be canceled without writing to disk. Once the commit enters the file-writing phase, cancellation can still leave updated files and an outdated in-memory snapshot; the host should reload configuration in that case. Synchronous configuration-management methods remain blocking interfaces, so async hosts should choose an appropriate execution environment.
+The cancellation limitation recorded in this review has since been removed by the [shared client and configuration-manager update](client-reuse.en.md). Management methods are now async; after file writing starts, the worker finishes installing and publishing a successful commit even if its caller stops awaiting it.
 
 Verification for this round: 335 unit/integration tests and 12 doctests passed; formatting, Clippy (warnings treated as errors), and strict Rustdoc passed. Builds/tests for both the default and minimal feature sets of the shared protocol passed, as did strict Rustdoc with minimal features. Offline packaging and an in-package build of the shared crate passed; the client package file list excluded local `.omx` runtime state. Only mock transport and loopback HTTP were used in this round; no real provider was called and live rates were not verified.
 

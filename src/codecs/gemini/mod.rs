@@ -12,13 +12,14 @@
 
 mod decode;
 pub(crate) mod encode;
+mod native;
 mod stream;
 
 pub use decode::classify_error;
 
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::codecs::{StreamDecoder, WireCodec};
-use crate::protocol::{CompletionResponse, LlmError, ProtocolFamily};
+use crate::protocol::{ChatResponse, LlmError, ProtocolFamily};
 use crate::transport::{HttpRequest, HttpResponse};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -27,17 +28,20 @@ pub struct GeminiCodec;
 impl WireCodec for GeminiCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        encode::validate_audio_input(req)?;
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
+        encode::validate_hosted_tool_request(req, context.profile(), context.request_model())
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::GeminiGenerateContent
@@ -60,15 +64,13 @@ impl WireCodec for GeminiCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
-        let _ = context;
-        decode::response(resp).map(|mut response| {
+    ) -> Result<ChatResponse, LlmError> {
+        decode::response(resp, context.profile().protocol).map(|mut response| {
             response.inference = crate::codecs::inference::response(resp, context.profile());
             response
         })
     }
     fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
-        let _ = context;
         Box::new(crate::codecs::stream::SseDecoder::new(
             stream::GeminiStreamDecoder::configured(context),
         ))

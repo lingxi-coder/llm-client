@@ -2,14 +2,18 @@
 
 use crate::codecs::openai::chat::classify_error as chat_classify;
 use crate::protocol::{
-    CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ResponseId,
-    StopReason, ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ResponseId, StopReason,
+    ToolUseId, Usage,
 };
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
 
-pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
+pub(crate) fn response_with_approval_support(
+    resp: &HttpResponse,
+    openai_approval_semantics: bool,
+    openai_tool_search_semantics: bool,
+) -> Result<ChatResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
     if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
@@ -33,25 +37,40 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
         saw_refusal |= has_refusal(item);
         decode_item(item, &mut content, &mut saw_tool_call);
     }
-    Ok(CompletionResponse {
+    Ok(ChatResponse {
         inference: Default::default(),
+        response_cache: None,
         web_search: crate::codecs::web_search_decode::with_usage(
             crate::codecs::web_search_decode::responses(&body),
             body.get("usage"),
         ),
         file_search: crate::codecs::file_search_decode::responses(&body),
+        openrouter_container: None,
+        anthropic_container: None,
+        anthropic_usage: None,
         message: ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content,
         },
-        stop_reason: if body.get("status").and_then(Value::as_str) == Some("incomplete") {
-            stop_reason(&body)
+        stop_reason: if openai_tool_search_semantics && has_client_tool_search_call(&body) {
+            StopReason::Other("requires_action".into())
+        } else if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+            stop_reason_with_approval_support(
+                &body,
+                openai_approval_semantics,
+                openai_tool_search_semantics,
+            )
         } else if saw_tool_call {
             StopReason::ToolUse
         } else if saw_refusal {
             StopReason::Refusal
         } else {
-            stop_reason(&body)
+            stop_reason_with_approval_support(
+                &body,
+                openai_approval_semantics,
+                openai_tool_search_semantics,
+            )
         },
         usage: crate::codecs::usage::report(
             body.get("usage"),
@@ -65,6 +84,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: body.get("id").and_then(Value::as_str).map(ResponseId::new),
+        continuation: None,
         executed_profile: None,
     })
 }
@@ -109,6 +129,8 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                     .to_owned(),
                 input: serde_json::from_str(arguments).unwrap_or(Value::Null),
                 provider_id: None,
+                caller: None,
+                toolset_name: None,
                 thought_signature: None,
             });
         }
@@ -128,7 +150,11 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                 }
             }
         }
-        _ => {}
+        Some(_) => out.push(ContentBlock::ProviderContent {
+            protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+            value: item.clone(),
+        }),
+        None => {}
     }
 }
 
@@ -157,7 +183,21 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
 
 /// `incomplete` carries the reason in its own object; `completed` is an end of
 /// turn.
-pub fn stop_reason(response: &Value) -> StopReason {
+pub(crate) fn stop_reason_with_approval_support(
+    response: &Value,
+    openai_approval_semantics: bool,
+    openai_tool_search_semantics: bool,
+) -> StopReason {
+    if openai_tool_search_semantics && has_client_tool_search_call(response)
+        || openai_approval_semantics
+            && response["output"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["type"] == "mcp_approval_request")
+            })
+    {
+        return StopReason::Other("requires_action".into());
+    }
     match response.get("status").and_then(Value::as_str) {
         Some("incomplete") => match response
             .get("incomplete_details")
@@ -169,8 +209,20 @@ pub fn stop_reason(response: &Value) -> StopReason {
             Some(other) => StopReason::Other(other.to_owned()),
             None => StopReason::Other("incomplete".to_owned()),
         },
-        _ => StopReason::EndTurn,
+        Some("completed") | None => StopReason::EndTurn,
+        Some(status) => StopReason::Other(status.to_owned()),
     }
+}
+
+pub(super) fn has_client_tool_search_call(response: &Value) -> bool {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.iter().any(is_client_tool_search_call))
+}
+
+pub(super) fn is_client_tool_search_call(item: &Value) -> bool {
+    item["type"] == "tool_search_call" && item["execution"] == "client"
 }
 
 /// Same folding as the chat wire, different key names: `input_tokens` already
@@ -204,15 +256,26 @@ fn server_tool_usage(u: &Value) -> Option<crate::protocol::ServerToolUsage> {
     let web_search_requests = u
         .pointer("/x_tools/web_search/count")
         .and_then(Value::as_u64);
+    let web_extractor_requests = u
+        .pointer("/x_tools/web_extractor/count")
+        .and_then(Value::as_u64);
     let file_search_requests = u
         .pointer("/x_tools/file_search/count")
         .and_then(Value::as_u64);
-    (web_search_requests.is_some() || file_search_requests.is_some()).then_some(
-        crate::protocol::ServerToolUsage {
-            web_search_requests,
-            file_search_requests,
-        },
-    )
+    let code_interpreter_requests = u
+        .pointer("/x_tools/code_interpreter/count")
+        .and_then(Value::as_u64);
+    (web_search_requests.is_some()
+        || web_extractor_requests.is_some()
+        || file_search_requests.is_some()
+        || code_interpreter_requests.is_some())
+    .then_some(crate::protocol::ServerToolUsage {
+        web_search_requests,
+        web_fetch_requests: None,
+        web_extractor_requests,
+        file_search_requests,
+        code_interpreter_requests,
+    })
 }
 
 fn retry_after(resp: &HttpResponse) -> Option<Duration> {

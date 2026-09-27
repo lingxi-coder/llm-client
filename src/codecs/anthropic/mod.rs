@@ -11,8 +11,9 @@
 //!   when a request needs two.
 //! - **`max_tokens` is required**, so it has a default here rather than being
 //!   omitted.
-//! - **unknown event and delta types are ignored**: this provider's streaming
-//!   contract requires a client to tolerate types it has never seen.
+//! - **unknown events and deltas are retained as observational frames**:
+//!   they are not request content. Native blocks become replayable only when
+//!   their complete contents can be reconstructed at the block boundary.
 
 mod decode;
 pub(crate) mod encode;
@@ -22,7 +23,7 @@ pub use decode::classify_error;
 
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::codecs::{StreamDecoder, WireCodec};
-use crate::protocol::{CompletionResponse, LlmError, ProtocolFamily};
+use crate::protocol::{ChatResponse, LlmError, ProtocolFamily};
 use crate::transport::{HttpRequest, HttpResponse};
 
 /// The API version header this codec speaks. A profile may override it through
@@ -35,17 +36,33 @@ pub struct AnthropicMessagesCodec;
 impl WireCodec for AnthropicMessagesCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::anthropic_client_toolsets::validate(req, context)?;
+        crate::codecs::anthropic_tool_search::validate(req, context)?;
+        crate::codecs::cache::validate(req, context)?;
+        crate::codecs::anthropic_conversation::validate(req, context)?;
+        crate::codecs::anthropic_mcp::validate(req, context)?;
+        crate::codecs::anthropic_web_fetch::validate(req, context)?;
+        crate::codecs::anthropic_code_execution::validate(req, context)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())
+            .and_then(|()| {
+                crate::codecs::openrouter_server_tools::validate(
+                    req,
+                    context.profile(),
+                    None,
+                    false,
+                )
+                .map(|_| ())
+            })
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::AnthropicMessages
@@ -68,9 +85,16 @@ impl WireCodec for AnthropicMessagesCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
-        let _ = context;
-        decode::response(resp).map(|mut response| {
+    ) -> Result<ChatResponse, LlmError> {
+        let retain_openrouter_container =
+            crate::codecs::openrouter_server_tools::is_official_profile(context.profile());
+        decode::response(
+            resp,
+            retain_openrouter_container,
+            crate::codecs::anthropic_code_execution::is_official_profile(context.profile())
+                || crate::codecs::anthropic_code_execution::supports_execution(context),
+        )
+        .map(|mut response| {
             response.inference = crate::codecs::inference::response(resp, context.profile());
             response
         })

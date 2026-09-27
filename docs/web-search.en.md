@@ -2,7 +2,7 @@
 
 [简体中文](web-search.md)
 
-`LlmClient::web_search()` and `web_search_stream()` enable provider-hosted search for a single request without implementing a search function or registering a client-side `ToolSpec`. You can also set `CompletionRequest.web_search` and then call `client.chat().complete()` / `client.chat().stream()`; it defaults to `None`, preserving the original request behavior. The server decides whether to search; enabling search does not guarantee a search on every request.
+`ChatService::web_search()` and `web_search_stream()` enable provider-hosted search for a single request without implementing a search function or registering a client-side `ToolSpec`. You can also set `ChatRequest.hosted_tools` and then call `client.chat().complete()` / `client.chat().stream()`; it defaults to an empty list. The server decides whether to search; enabling search does not guarantee a search on every request.
 
 ## Quick start
 
@@ -10,11 +10,11 @@ The built-in `openai`, `anthropic`, `gemini`, `openrouter`, `zai`, `glm`, `kimi-
 
 ```rust
 use lingxi_llm_client::protocol::WebSearchConfig;
-# let mut request: lingxi_llm_client::protocol::CompletionRequest = serde_json::from_value(serde_json::json!({"model": "gpt-4.1", "messages": []})).unwrap();
-request.web_search = Some(WebSearchConfig::default());
+# let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model": "gpt-4.1", "messages": []})).unwrap();
+request.set_hosted_web_search(Some(WebSearchConfig::default()));
 ```
 
-When you know which connection owns the credentials, use `client.chat().complete_in("openai", &request, &options)`. You can also pass the configuration separately to `client.web_search_in("openai", &request, WebSearchConfig::default(), &options)`; the streaming equivalent is `web_search_stream_in()`. `request.model` can be the connection's native model ID. The search methods do not modify `request` and override any `web_search` configuration already in it. The connection-agnostic `complete()`, `web_search()`, and `web_search_stream()` remain available, but return an ambiguity error when a native model ID and `profile/model` could be interpreted differently. The provider validates whether search is available for a particular model, account, and deployment. A profile declaration only indicates which search interface the connection uses; it does not mean every model in its catalog supports search.
+When you know which connection owns the credentials, use `client.chat().complete_in("openai", &request, &options)`. You can also pass the configuration separately to `client.chat().web_search_in("openai", &request, WebSearchConfig::default(), &options)`; the streaming equivalent is `web_search_stream_in()`. `request.model` can be the connection's native model ID. The search methods do not modify `request` and replace any hosted Web Search configuration already in it. The connection-agnostic `complete()`, `web_search()`, and `web_search_stream()` remain available, but return an ambiguity error when a native model ID and `profile/model` could be interpreted differently. The provider validates whether search is available for a particular model, account, and deployment. A profile declaration only indicates which search interface the connection uses; it does not mean every model in its catalog supports search.
 
 To restrict sources or the number of searches:
 
@@ -30,7 +30,7 @@ let search = WebSearchConfig {
 
 | `extra.web_search` | Protocol | Encoding | Supported additional options |
 | --- | --- | --- | --- |
-| `openai_responses` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains`, up to 100 |
+| `openai_responses` | `open_ai_responses` | `tools: [{type: "web_search"}]` | Official OpenAI routes accept up to 100 `allowed_domains` and 100 `blocked_domains` separately; custom compatible routes declare `allowed_domains` only |
 | `qwen` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains`, up to 100; no `blocked_domains` |
 | `openai_chat` | `open_ai_chat` | `web_search_options: {}` | None; requires a dedicated search model |
 | `anthropic` | `anthropic_messages`, `foundry_claude`, `vertex_claude` | `web_search_20250305` | `allowed_domains` or `blocked_domains`; positive `max_uses` |
@@ -42,7 +42,7 @@ let search = WebSearchConfig {
 | `deepseek` | `anthropic_messages` | Basic Anthropic-compatible search format | None; unconfirmed filtering and usage limits are rejected |
 | `xai` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains` or `blocked_domains`, up to 5 |
 
-Example models, connection URLs, and credential sources for built-in profiles are listed below. For a custom profile, `extra.web_search` must match its protocol. Serialized `WebSearchConfig` is also part of the JSON interface, for example `{"model":"glm/glm-4.7","messages":[...],"web_search":{"allowed_domains":["example.com"]}}`. Domain parameters must contain only domain names, without a scheme, path, or spaces. An empty configuration `{}` is equivalent to `WebSearchConfig::default()`.
+Example models, connection URLs, and credential sources for built-in profiles are listed below. For a custom profile, `extra.web_search` must match its protocol. Serialized `WebSearchConfig` is also part of the JSON interface, for example `{"model":"glm/glm-4.7","messages":[...],"hosted_tools":[{"type":"web_search","config":{"allowed_domains":["example.com"]}}]}`. Domain parameters must contain only domain names, without a scheme, path, or spaces. An empty configuration `{}` is equivalent to `WebSearchConfig::default()`.
 
 The common options accept only domain names without a protocol prefix or path; allowlists and blocklists cannot be set together. Unsupported options return `UnsupportedCapability`, and malformed values return `InvalidRequest`. Regular tools and search tools are merged, so existing tools are preserved. The Gemini, Chat search, GLM, Kimi, Qwen, and DeepSeek search adapters require `ToolChoice::Auto`; MiniMax accepts only `Auto` / `None`. Other interfaces retain choices such as `None` and `Any`. `None` forbids tool execution for the current request.
 
@@ -75,13 +75,13 @@ These connections use different APIs and do not automatically modify the existin
 | `kimi-search/kimi-k3` | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` | Responses API; current official documentation lists only K3 |
 
 ```rust
-use lingxi_llm_client::protocol::{CompletionRequest, ConversationMessage, WebSearchConfig};
-let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, WebSearchConfig};
+let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
     "model": "kimi-search/kimi-k3",
     "messages": []
 })).unwrap();
 request.messages.push(ConversationMessage::user_text("搜索今天的科技新闻并注明来源"));
-request.web_search = Some(WebSearchConfig::default());
+request.set_hosted_web_search(Some(WebSearchConfig::default()));
 ```
 
 DeepSeek's official [Claude Code integration documentation](https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/claude_code/) states that its Anthropic endpoint supports native search, while its [Responses compatibility table](https://api-docs.deepseek.com/guides/responses_api/) explicitly lists `web_search` as ignored. Therefore, search is integrated only through a separate Anthropic connection here. Sending `web_search_20250305` is an inference based on Claude tool compatibility: DeepSeek does not separately document a tool version or advanced options, and this has not yet been verified with real credentials. The existing `deepseek` Chat connection continues to reject common search options. The DeepSeek search connection permits replay of unsigned thinking blocks; other Anthropic connections still require the original signatures.
@@ -141,7 +141,7 @@ Search failures may also arrive with HTTP 200, such as Claude's `max_uses_exceed
 
 Search may be billed separately. The existing `estimate_cost()` estimates token costs only and excludes search call charges; do not treat it as the total bill when search is enabled. Retain search usage metadata and any reported charges returned by the provider, and use the provider's bill as the source of truth.
 
-Old JSON requests and responses still deserialize; the new optional fields default to absent. Rust struct literals must add `web_search: None`. Downstream code that exhaustively matches `StreamEvent` / `ContentBlock` must handle the new variants.
+`hosted_tools` defaults to an empty list; old request fields `web_search` and `file_search` are rejected. Rust struct literals must include `hosted_tools: vec![]`.
 
 ## Official documentation
 

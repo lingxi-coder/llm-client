@@ -12,9 +12,11 @@ Every client must explicitly select `.with_region(Region::ChinaMainland)` or `.w
 
 `ProviderProfile.regions` declares usage regions, for example `regions = ["china_mainland"]` in TOML. Shared profiles declare `["china_mainland", "international"]`. Missing region declarations in the current format default to both regions; an explicit `[]` permits neither. Models inherit their profile's regions; both `ProviderListing` and `ModelListing` expose `regions`.
 
+A profile that only exposes independent services such as Embeddings may set `chat_enabled = false` and leave Chat `models` empty. It does not participate in Chat model resolution or directory refresh, while its independent services still use their own routes, credentials, and region. Declaring Chat models on such a profile fails at build time.
+
 `providers()` and `models()` filter by region before applying their existing visibility and model-allowlist rules. Resolution, explicit profile/group references, completions, streams, search and failover chains all honor the region. Excluded models do not cause name ambiguity. Hidden spare accounts remain eligible for failover within the region. This is a product policy, not a network reachability guarantee, IP/language detection or URL rewriting.
 
-`provider()` and `profiles()` retain the complete configuration management view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Current-format profiles without `regions` are available in both regions; restoring a built-in restores its explicit region declaration.
+`snapshot.provider()` and `snapshot.profiles()` retain the complete configuration view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Current-format profiles without `regions` are available in both regions; restoring a built-in restores its explicit region declaration.
 
 Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, `glm`, `glm-coding`. `deepseek`, `deepseek-search` and `kimi-code` are shared. All remaining built-in profiles are international, including Qwen Hong Kong, Singapore, US and their search counterparts.
 
@@ -49,7 +51,7 @@ See the [README](../README.en.md#1-create-an-application-and-add-dependencies) f
 
 ```rust,no_run
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice,
+    ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice,
 };
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 
@@ -74,12 +76,14 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
     let client = LlmClientBuilder::new(&[profile])?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
-    let request = CompletionRequest {
+    let request = ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "my-model".into(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage::user_text("你好")],
         tools: vec![],
@@ -118,7 +122,8 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `register_profile_account_source(profile_name, AccountIdentity, Arc<dyn AccountUsageSource>)` | `&mut Self` | Binds a signed-in account source to one connection, ahead of provider-wide sources |
 | `add_profile(ProviderProfile)` | `&mut Self` | Appends a connection configuration |
 | `codec_families()` | `Vec<ProtocolFamily>` | Lists registered protocol families |
-| `build(self)` | `Result<LlmClient, BuildError>` | Consumes the builder and validates the configuration |
+| `build(self)` | `Result<LlmClient, BuildError>` | Validates configuration and returns a shareable request handle |
+| `build_managed(self)` | `Result<(LlmClient, ClientConfigManager), BuildError>` | Also returns the separate asynchronous configuration manager |
 
 `BuildError` includes `MissingRegion`, `DuplicateProfile { profile_name }`, `MissingCodec { profile_name, family }`, `MissingAuthenticator { profile_name, strategy }`, and `InvalidPeakSchedule { profile_name, reason }`. `AuthStrategy::None` needs no authenticator; a missing directory parser does not prevent the build. The build rejects invalid or empty peak pricing windows. A successful build does not mean the credentials are valid, the address is reachable, or the provider supports every request parameter.
 
@@ -129,12 +134,12 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | Method | Return value | Behavior |
 | --- | --- | --- |
 | `models()` | `Vec<ModelListing>` | List visible models in the current region, filtering out models whose metadata declares `image` output |
-| `complete(&CompletionRequest, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | Route by model and return a complete response |
-| `complete_in(&str, &CompletionRequest, &RequestOptions).await` | Same | Restrict the starting profile or connection group |
-| `stream(&CompletionRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Route by model and open a stream |
-| `stream_in(&str, &CompletionRequest, &RequestOptions).await` | Same | Open a stream on the specified profile or group |
+| `complete(&ChatRequest, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | Route by model and return a complete response |
+| `complete_in(&str, &ChatRequest, &RequestOptions).await` | Same | Restrict the starting profile or connection group |
+| `stream(&ChatRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Route by model and open a stream |
+| `stream_in(&str, &ChatRequest, &RequestOptions).await` | Same | Open a stream on the specified profile or group |
 
-For hosted search, set `CompletionRequest.web_search` or `file_search` before calling Chat, or use the `LlmClient::web_search*` convenience methods. `ChatService` has no `web_search*` methods. Configuration, account queries, routing inspection, token estimation, and pricing remain on `LlmClient`; image generation and editing use `client.images()`.
+For hosted search, set `ChatRequest.hosted_tools` before calling Chat, or use the `ChatService::web_search*` convenience methods. Account queries, routing inspection, token estimation, and pricing are available on both `LlmClient` and `ClientSnapshot`; configuration management belongs to `ClientConfigManager`. Image generation and editing use `client.images()` or `snapshot.images()`.
 
 ### `LlmClient`
 
@@ -142,17 +147,20 @@ For hosted search, set `CompletionRequest.web_search` or `file_search` before ca
 | --- | --- | --- |
 | `chat()` | `ChatService<'_>` | Conversation model listing, completions, and streams |
 | `images()` | `ImageService<'_>` | Independent image catalog, generation, editing, and native tasks |
+| `embeddings()` | `EmbeddingService<'_>` | Embedding catalog and vector requests |
+| `retrieval()` | `RetrievalService<'_>` | Retrieval stores, ingestion, and search |
+| `batches()` | `BatchService<'_>` | Native batch submission, queries, and output |
 
 | Method | Return value | Behavior |
 | --- | --- | --- |
-| `complete(&CompletionRequest, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | Resolves the route, encodes, authenticates, sends, and decodes a complete response |
-| `complete_in(&str, &CompletionRequest, &RequestOptions).await` | Same as above | Explicitly selects the starting profile or connection group; model resolution, credentials, and execution use the same route |
-| `stream(&CompletionRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Opens an HTTP stream and returns a unified event interface |
-| `stream_in(&str, &CompletionRequest, &RequestOptions).await` | Same as above | Opens a stream on the specified profile or connection group |
-| `web_search(&CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | Enables provider-hosted search for this request and returns the answer and sources |
-| `web_search_stream(&CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Enables search for this request and returns streaming events |
-| `web_search_in(&str, &CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | Runs search on the specified profile or connection group |
-| `web_search_stream_in(&str, &CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Streams search on the specified profile or connection group |
+| `complete(&ChatRequest, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | Resolves the route, encodes, authenticates, sends, and decodes a complete response |
+| `complete_in(&str, &ChatRequest, &RequestOptions).await` | Same as above | Explicitly selects the starting profile or connection group; model resolution, credentials, and execution use the same route |
+| `stream(&ChatRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Opens an HTTP stream and returns a unified event interface |
+| `stream_in(&str, &ChatRequest, &RequestOptions).await` | Same as above | Opens a stream on the specified profile or connection group |
+| `web_search(&ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | Enables provider-hosted search for this request and returns the answer and sources |
+| `web_search_stream(&ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Enables search for this request and returns streaming events |
+| `web_search_in(&str, &ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | Runs search on the specified profile or connection group |
+| `web_search_stream_in(&str, &ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | Streams search on the specified profile or connection group |
 | `resolve(&str)` | `Result<ResolvedRoute, ResolveError>` | Resolves a model and failover chain from the configuration |
 | `resolve_in(&str, Option<&str>)` | Same as above | Explicitly restricts the starting connection or connection group |
 | `region()` | `Region` | Returns the usage region selected at construction |
@@ -160,20 +168,35 @@ For hosted search, set `CompletionRequest.web_search` or `file_search` before ca
 | `providers()` | `Vec<ProviderListing>` | Returns connections in the selected region, including hidden connections and those without credentials |
 | `account_usage(&str, &AccountQuery).await` | `Result<AccountSnapshot, AccountUsageError>` | Reads one connection's account limits and usage |
 | `accounts_usage(&BTreeMap<String, AccountQuery>).await` | `Vec<(String, Result<AccountSnapshot, AccountUsageError>)>` | Reads every connection with independent results |
-| `register_profile_account_source(&str, AccountIdentity, Arc<dyn AccountUsageSource>)` | `Result<(), ProviderStoreError>` | Rebinds a signed-in session after a connection changes |
-| `profiles()` | `&[ProviderProfile]` | Reads the configuration used by the client |
+| `clone()` | `LlmClient` | Shares runtime resources and the live configuration publication slot |
+| `snapshot()` | `ClientSnapshot` | Pins services and queries to one published state |
 | `codec_families()` | `Vec<ProtocolFamily>` | Lists codec protocol families |
 | `directory_shapes()` | `Vec<ProtocolFamily>` | Lists protocol shapes supported by directory parsers |
 | `directory_for(&ProviderProfile)` | `Option<Arc<dyn ModelDirectory>>` | Looks up a directory parser using `model_list` |
-| `estimate_local_tokens(&CompletionRequest)` | `Result<LocalTokenEstimate, LocalTokenCountError>` | Estimates locally visible input using the preferred route and exact model ID |
-| `estimate_local_tokens_in(&str, &CompletionRequest)` | Same as above | Estimates input after restricting resolution to a profile or connection group |
+| `estimate_local_tokens(&ChatRequest)` | `Result<LocalTokenEstimate, LocalTokenCountError>` | Estimates locally visible input using the preferred route and exact model ID |
+| `estimate_local_tokens_in(&str, &ChatRequest)` | Same as above | Estimates input after restricting resolution to a profile or connection group |
 | `price_quote(&str, Option<&str>, &PricingContext)` | `Result<PriceQuote, LlmError>` | Queries model/tier rates, sources and matching conditions |
 | `estimate_stream_cost(&ResolvedRoute, &ModelStream, Submission)` | `Result<CostEstimate, LlmError>` | Prices a stream using its executed connection, tier and dispatch time |
 | `estimate_cost(&ResolvedRoute, &Usage, &PricingContext)` | `Result<CostEstimate, LlmError>` | Estimates cost from configured prices and the current clock |
-| `estimate_actual_cost(&ResolvedRoute, &CompletionResponse, Submission)` | Same as above | Estimates cost using the connection that actually succeeded for a complete response |
+| `estimate_actual_cost(&ResolvedRoute, &ChatResponse, Submission)` | Same as above | Estimates cost using the connection that actually succeeded for a complete response |
 | `estimate_cost_for_profile(&ResolvedRoute, &str, &UsageReport, &InferenceReport, Submission)` | Same as above | Estimates cost using an executed connection and observed service tier |
 
-The configuration is copied at build time. Local configuration management APIs can update the client's effective configuration; reading data directly through a directory parser does not change the result of `models()`.
+Build a long-lived client and clone it for concurrent tasks. Each live operation captures its configuration at entry (when first polled for async calls); retaining a service handle does not pin that configuration. Configuration commits publish a new state without waiting for network requests. Reading a directory parser directly does not change `models()`.
+
+### `ClientSnapshot` and `ClientConfigManager`
+
+`client.snapshot()` is cheap to clone and retains one configuration version, account-source bindings, and cache generation. `snapshot.revision()` returns its publication version for diagnostics. It exposes the same service, routing, account, token, and pricing operations as the client, plus borrowing `profiles() -> &[ProviderProfile]` and `provider(&str) -> Option<&ProviderProfile>`. Bind the snapshot to a local variable before retaining borrowed references. Use one snapshot across preflight, execution, and pricing; live pricing uses the state at the time of the query and cannot recover historical prices.
+
+`ClientConfigManager` owns configuration loading, mutations, sync, and account-source rebinding. Its methods are async `&self` operations; the manager is not `Clone`, but can be shared with `Arc` for concurrent management callers. Dropping it leaves request handles usable with the last published state.
+
+| Management method | Async result |
+| --- | --- |
+| `deleted_builtin_profiles()` | `Result<BTreeSet<String>, ProviderStoreError>` |
+| `tracked_models(&str)` | `Result<Option<BTreeSet<String>>, ProviderStoreError>` |
+| `configured_models(&str)` | `Result<Vec<ConfiguredModel>, ProviderStoreError>` |
+| `register_profile_account_source(&str, AccountIdentity, Arc<dyn AccountUsageSource>)` | `Result<(), ProviderStoreError>` |
+
+For configuration mutation and sync APIs, see [local persistence](#local-persistence-and-multiple-accounts); for lifecycle and benchmark details, see [client reuse](client-reuse.en.md).
 
 ## Requests and messages
 
@@ -183,18 +206,20 @@ The configuration is copied at build time. Local configuration management APIs c
 | --- | --- | --- |
 | `credential` | `Option<Secret<String>>` / `None` | Valid credential for this request; does not read environment variables or static keys from the configuration |
 | `fallback_credentials` | `BTreeMap<String, Secret<String>>` / empty | Provides separate credentials by fallback profile name; the first connection's key is not reused if one is missing |
+| `account_scope` | `Option<String>` / `None` | Stable, non-secret account identity for Responses continuation; omitted means no reusable reference |
 | `total_timeout` | `Option<Duration>` / `None` | Total limit for each request; when omitted, `complete()` defaults to 120 seconds (two hours for video requests) and `stream()` has no total limit |
 | `file_account_scope` | `Option<String>` / `None` | Stable, non-secret provider-account identity used to bind and optionally reuse provider file references |
 
-### `CompletionRequest`
+### `ChatRequest`
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `model` | `String` | Display name, wire ID, alias, or qualified model reference in the configuration |
-| `web_search` | `Option<WebSearchConfig>` | `None` disables search by default; `Some` enables hosted search on the selected connection |
-| `file_search` | `Option<FileSearchConfig>` | `None` disables it by default; Qwen Responses knowledge-base search configuration |
-| `previous_response_id` | `Option<ResponseId>` | Previous response ID for Responses continuation |
-| `system` | `Vec<SystemBlock>` | System prompt blocks: `text` and `cacheable` |
+| `output_format` | `OutputFormat` | Text, JSON object or JSON Schema output contract |
+| `prompt_cache` | `PromptCachePolicy` | Automatic TTL and explicit request block breakpoints; see [services](services.en.md) |
+| `hosted_tools` | `Vec<HostedTool>` | Provider-executed search, retrieval, and Code Interpreter, separate from host-executed `tools` |
+| `continuation` | `Option<ContinuationRef>` | Responses continuation bound to its connection, model and account |
+| `system` | `Vec<SystemBlock>` | System prompt block text; breakpoints belong to `prompt_cache` |
 | `messages` | `Vec<ConversationMessage>` | Current input and history maintained by the caller |
 | `tools` | `Vec<ToolSpec>` | Tool names, descriptions, JSON Schemas, and `strict` flags |
 | `tool_choice` | `ToolChoice` | `Auto`, `Any`, `None`, or `Tool { name }` |
@@ -205,13 +230,13 @@ The configuration is copied at build time. Local configuration management APIs c
 | `stop_sequences` | `Vec<String>` | Stop sequences |
 | `metadata` | `serde_json::Value` | Additional data handled according to the codec implementation; this is not a general promise to pass through arbitrary parameters |
 
-`CompletionRequest` does not implement `Default`. When deserializing with serde, `model` and `messages` are required; other fields have defaults or may be omitted. Protocols express tool choice, thinking, and multimodal content differently. The unified types do not guarantee that every service accepts every combination.
+`ChatRequest` does not implement `Default`. When deserializing with serde, `model` and `messages` are required; other fields have defaults or may be omitted. Protocols express tool choice, thinking, and multimodal content differently. The unified types do not guarantee that every service accepts every combination.
 
-`previous_response_id` applies only to `OpenAiResponses` endpoints configured with `extra.supports_previous_response_id = true`. The caller saves the response ID and sends only the new input needed; the client does not save sessions automatically. Continuation requests do not traverse failover connections because response IDs are endpoint-side state.
+`continuation` applies only to `OpenAiResponses` endpoints configured with `extra.supports_previous_response_id = true`. The caller supplies a stable `RequestOptions.account_scope`, saves `response.continuation`, then sends only new input. The reference checks the original provider, profile, endpoint, model, account and retrieval workspace. Continuation requests do not fail over or resubmit automatically. After a streamed terminal event, use `ModelStream::continuation()`.
 
 ### Messages and content blocks
 
-`ConversationMessage { role, content }` has the roles `User`, `Assistant`, and `System`. Convenience methods include `user_text(text)`, `assistant(blocks)`, `text()`, and `tool_uses()`; `text()` concatenates only text blocks, excluding thinking content.
+`ConversationMessage { role, content }` has the roles `User`, `Assistant`, and `System`. Convenience methods include `user_text(text)`, `assistant(blocks)`, `text()`, and `tool_uses()`; `text()` concatenates only text blocks, excluding thinking content. Each `tool_uses()` item is `(id, toolset_name, name, input)`; dispatch client-toolset calls using the `(toolset_name, name)` pair.
 
 | `ContentBlock` variant | Fields / purpose |
 | --- | --- |
@@ -227,11 +252,11 @@ The configuration is copied at build time. Local configuration management APIs c
 
 Base64 sources carry `media_type` and `data`; URL sources carry `url`. The library does not execute tools or automatically download attachments. After a tool call is returned, the host executes the tool and adds its result with the same `tool_use_id` to the next turn's input.
 
-### `CompletionResponse`
+### `ChatResponse`
 
 `UsageReport` combines `Option<Usage>` with `Missing`, `Partial`, `Complete`, or `Invalid`. Old persisted usage-only objects are rejected. Actual-cost APIs accept only complete reports.
 
-Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `file_search: Option<FileSearchResult>`, `stop_reason: StopReason`, `usage: UsageReport`, `model: String`, `response_id: Option<ResponseId>`, `inference: InferenceReport`, and `executed_profile: Option<String>`. High-level `complete()` sets the name of the connection that actually succeeded; this field is `None` when decoding directly through a codec. `StopReason` includes `EndTurn`, `ToolUse`, `MaxTokens`, `StopSequence`, `Refusal`, and `Other(String)`.
+Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `file_search: Option<FileSearchResult>`, `stop_reason: StopReason`, `usage: UsageReport`, `model: String`, `response_id: Option<ResponseId>`, `continuation: Option<ContinuationRef>`, `inference: InferenceReport`, and `executed_profile: Option<String>`. High-level `complete()` sets the name of the connection that actually succeeded; this field is `None` when decoding directly through a codec. `StopReason` includes `EndTurn`, `ToolUse`, `MaxTokens`, `StopSequence`, `Refusal`, and `Other(String)`.
 
 `inference` preserves requested reasoning effort and service tier, provider-reported tier, and local execution time. Requested values do not confirm the actual tier; see [reasoning and pricing](inference.en.md).
 
@@ -239,33 +264,37 @@ Returns `message: ConversationMessage`, `web_search: Option<WebSearchResult>`, `
 
 The following functions live in the calling application. `append_tool_results` takes `response.message` and an application-owned tool executor, preserves the entire assistant message (including signatures and opaque content), and pairs each result with its call ID. The host handles authorization and tool errors in the callback, then chooses whether to send another request. Continue with `response.executed_profile` when present so replay stays on the connection that actually responded.
 
-This example uses full-history replay (`previous_response_id: None`). Stateful continuation instead uses the returned response ID and only new input, scoped to the same connection. The context-recovery helper below illustrates a host policy of one retry: the caller supplies `reduce`, which must preserve valid tool-call/result pairs and replay signatures. It is not an automatic client behavior.
+This executor example returns text only. Tools requiring structured results, such as Browser tab management, should populate `ToolResult.blocks` and preserve `toolset_name`; see [client toolsets](anthropic-client-toolsets.en.md).
+
+This example uses full-history replay (`continuation: None`). Stateful continuation instead uses the returned `ContinuationRef`, the same `account_scope` and only new input, scoped to the same connection. The context-recovery helper below illustrates a host policy of one retry: the caller supplies `reduce`, which must preserve valid tool-call/result pairs and replay signatures. It is not an automatic client behavior.
 
 ```rust,no_run
 use lingxi_llm_client::protocol::{
-    CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage,
+    ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
     LlmError, MessageRole,
 };
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 fn append_tool_results(
-    request: &mut CompletionRequest,
+    request: &mut ChatRequest,
     assistant: ConversationMessage,
-    mut execute: impl FnMut(&str, &serde_json::Value) -> Result<String, String>,
+    mut execute: impl FnMut(Option<&str>, &str, &serde_json::Value) -> Result<String, String>,
 ) -> bool {
-    let results: Vec<_> = assistant.tool_uses().map(|(id, name, input)| {
-        let (content, is_error) = match execute(name, input) {
+    let results: Vec<_> = assistant.tool_uses().map(|(id, toolset_name, name, input)| {
+        let (content, is_error) = match execute(toolset_name, name, input) {
             Ok(output) => (output, false),
             Err(error) => (error, true),
         };
         ContentBlock::ToolResult {
             tool_use_id: id.clone(), content, is_error, blocks: None,
+            toolset_name: toolset_name.map(str::to_owned),
         }
     }).collect();
     request.messages.push(assistant);
     let has_results = !results.is_empty();
     if has_results {
         request.messages.push(ConversationMessage {
+            anthropic: None,
             role: MessageRole::User, content: results,
         });
     }
@@ -275,10 +304,10 @@ fn append_tool_results(
 async fn call_with_one_context_retry(
     client: &LlmClient,
     profile: &str,
-    request: CompletionRequest,
+    request: ChatRequest,
     options: &RequestOptions,
-    reduce: impl FnOnce(CompletionRequest, &LlmError) -> CompletionRequest,
-) -> Result<CompletionResponse, LlmError> {
+    reduce: impl FnOnce(ChatRequest, &LlmError) -> ChatRequest,
+) -> Result<ChatResponse, LlmError> {
     match client.chat().complete_in(profile, &request, options).await {
         Err(error @ (LlmError::ContextOverflow { .. } | LlmError::RequestTooLarge { .. })) => {
             let reduced = reduce(request, &error);
@@ -302,10 +331,10 @@ Removed error variants are no longer accepted by the error deserializer. Hosts t
 
 ## Web Search API
 
-`web_search()` and `web_search_stream()` accept an ordinary `CompletionRequest`, a `WebSearchConfig` for this search, and `RequestOptions`. Both methods only clone the request and set `web_search`, then use the same routing, authentication, and failover logic as `complete()` / `stream()`; the original request is unchanged. The passed configuration overrides any existing `web_search` in the request. Setting `request.web_search = Some(config)` and calling the ordinary methods has the same effect. Here, “API” means Rust client methods; this library does not provide a separate HTTP search service.
+`web_search()` and `web_search_stream()` accept an ordinary `ChatRequest`, a `WebSearchConfig` for this search, and `RequestOptions`. Both methods only clone the request and set the hosted Web Search tool, then use the same routing, authentication, and failover logic as `complete()` / `stream()`; the original request is unchanged. The passed configuration replaces the hosted Web Search setting and preserves other hosted tools. Setting `request.set_hosted_web_search(Some(config))` and calling the ordinary methods has the same effect. Here, “API” means Rust client methods; this library does not provide a separate HTTP search service.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, ConversationMessage, LlmError, Secret, WebSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, LlmError, Secret, WebSearchConfig};
 use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
@@ -313,7 +342,7 @@ async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
-    let request: CompletionRequest = serde_json::from_value(serde_json::json!({
+    let request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "glm/glm-4.7",
         "messages": [{"role": "user", "content": [{"type": "text", "text": "查找 Rust 最新版本，给出来源"}]}]
     }))?;
@@ -322,7 +351,7 @@ async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
         ..RequestOptions::default()
     };
     let config = WebSearchConfig::default();
-    let response = client.web_search(&request, config, &options).await?;
+    let response = client.chat().web_search(&request, config, &options).await?;
     println!("{}", response.message.text());
     if let Some(search) = response.web_search {
         for source in search.citations {
@@ -348,11 +377,11 @@ The fields of `WebSearchConfig` and the return value are described below; omitti
 Streaming call:
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, LlmError, StreamEvent, WebSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError, StreamEvent, WebSearchConfig};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
-async fn search_stream(client: &LlmClient, request: &CompletionRequest, options: &RequestOptions) -> Result<(), LlmError> {
-    let mut stream = client.web_search_stream(request, WebSearchConfig::default(), options).await?;
+async fn search_stream(client: &LlmClient, request: &ChatRequest, options: &RequestOptions) -> Result<(), LlmError> {
+    let mut stream = client.chat().web_search_stream(request, WebSearchConfig::default(), options).await?;
     while let Some(event) = stream.next().await {
         match event? {
             StreamEvent::TextDelta { text, .. } => print!("{text}"),
@@ -377,19 +406,19 @@ Search events may arrive in multiple frames; the same URL may appear both among 
 Qwen Responses profiles accept one knowledge-base ID and the Model Studio workspace ID. This currently applies to the supported Qwen Max / Flash Responses models; the built-in Beijing, Singapore, US, and Hong Kong Qwen Search profiles declare `extra.file_search = "qwen"`. The client sends File Search requests to the workspace-specific regional domain. Ordinary model requests continue to use the profile's configured base URL.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, FileSearchConfig, Secret};
+use lingxi_llm_client::protocol::{ChatRequest, FileSearchConfig, Secret};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 // Build client with Region::ChinaMainland; international calls need the corresponding profile and credentials.
 async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
+    let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "qwen3.8-max",
         "messages": [{"role":"user","content":[{"type":"text","text":"Answer using the knowledge base"}]}]
     }))?;
-    request.file_search = Some(FileSearchConfig {
+    request.set_hosted_file_search(Some(FileSearchConfig {
         knowledge_base_id: "kb-123".into(),
         workspace_id: "ws-example".into(),
-    });
+    }));
     let options = RequestOptions {
         credential: Some(Secret::new(api_key)),
         ..RequestOptions::default()
@@ -409,12 +438,12 @@ async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std
 ## Streaming responses
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, LlmError, StreamEvent};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError, StreamEvent};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 async fn read_stream(
     client: &LlmClient,
-    request: &CompletionRequest,
+    request: &ChatRequest,
     options: &RequestOptions,
 ) -> Result<(), LlmError> {
     let mut stream = client.chat().stream(request, options).await?;
@@ -444,7 +473,7 @@ async fn read_stream(
 | `ProviderContent { block, protocol, value }` | Complete native reasoning data; retain as `ContentBlock::ProviderContent` at this output index and replay unchanged next turn. Reasoning deltas at the same index are display text and cannot replace this payload |
 | `ThoughtSignature { block, signature }` | Thinking signature; preserve it with its corresponding block |
 | `RedactedThinking { block, data }` | Opaque thinking data |
-| `ToolCallDelta { block, id, name, arguments_fragment }` | Tool argument fragment; accumulate by block before parsing JSON |
+| `ToolCallDelta { block, id, provider_id, caller, toolset_name, name, arguments_fragment }` | Tool argument fragment; accumulate by block before parsing JSON. Dispatch Anthropic client-toolset members using `(toolset_name, name)` |
 | `WebSearch { result }` | Hosted search sources and provider-native metadata; may appear multiple times |
 | `FileSearch { result }` | Qwen-hosted knowledge-base retrieval hits; duplicate final output is suppressed |
 | `Inference { report }` | Observed service tier and effort, kept separate from requested values |
@@ -478,6 +507,8 @@ Required fields are `provider_id`, `profile_name`, `base_url`, `protocol`, and `
 | WebSocket fields such as `supports_websockets` | Configuration metadata; the high-level client currently still uses HTTP |
 
 `ModelProfile` must specify `display_model`, `request_model`, and `billing_model`; it may also include `aliases`, `description`, `metadata`, `capability_support`, `pricing`, and a model-level `billing_mode`. The three model names are used for display/matching, the request protocol, and pricing attribution, respectively. `metadata` holds directory data such as context window, output limit, and modalities.
+
+`ModelProfile.foundry` stores `FoundryDeployment { hosting, model_id }` for Foundry tool validation against the hosting option and underlying model. The wire still sends the `request_model` deployment name. `ModelField::Foundry` supports persisted override, clear, and inherit; pricing and deployment names never imply this identity. See the [Foundry guide](anthropic-foundry.en.md).
 
 `capability_support` uses `unknown`, `supported`, and `unsupported`. `ModelProfile::capability_support_for(ModelCapability)` returns explicit support facts; missing fields remain unknown. The old Boolean capability fields and fallback logic have been removed. See `info.features` for inference controls, ranges and combination constraints.
 
@@ -539,39 +570,39 @@ Merge this fragment into a complete `ProviderProfile`. `rateLimit` matches rate 
 
 ### Built-in configurations and extra parameters
 
-`builtin_providers() -> Result<Vec<ProviderProfile>, PresetError>` returns a static directory compiled into the library. `merge_providers(user)` retains user entries and appends presets that are not overridden by a user entry with the same name. The entire profile is overridden; fields are not merged. The builder still rejects duplicate names in user input. `PresetError` distinguishes parsing failure (`Invalid`) from an empty model list (`NoModels`).
+`builtin_catalog() -> Result<&'static [ProviderProfile], PresetError>` returns the read-only built-in directory, parsed once per process. `builtin_providers() -> Result<Vec<ProviderProfile>, PresetError>` copies that cached directory for editing; merge operations reuse the same parsed catalog. `merge_providers(user)` retains user entries and appends presets that are not overridden by a user entry with the same name. The entire profile is overridden; fields are not merged. The builder still rejects duplicate names in user input. `PresetError` distinguishes parsing failure (`Invalid`) from an empty model list (`NoModels`).
 
 ### Local persistence and multiple accounts
 
-After creating an `LlmClient`, call `set_config_dir(path)` to manage `providers.json` in that directory. The library immediately loads its profiles and fixes the directory as an absolute path, so later changes to the working directory do not change where it saves. Account connection settings override the matching static definition. Model fields merge by provenance; see the [v2 migration guide](architecture-migration.en.md). Setting a directory again clears configuration loaded from the previous directory. When several clients write to the same directory, the library coordinates writes with `.providers.json.lock` and reads the latest configuration while holding the lock before applying the current change. External programs that edit the JSON directly must also observe this lock. `sync_provider(profile_name, credential).await` reads the model directory with that connection's own credential, updates existing models by `request_model`, adds new models, and saves the configuration. If the directory is missing, the request fails, or disk writing fails, the old file and in-memory configuration stay unchanged. Sync does not delete old models absent from the directory, or change existing models' `hidden`, pricing, capabilities, or aliases. When the directory explicitly reports an incompatible model, sync persists an exclusion record by profile and excludes the model from effective listings and routing, preventing old configuration, allowlist changes, or a restart from bypassing the exclusion. Full metadata for models still on the allowlist remains persisted and is reused when the directory explicitly restores compatibility. An ID absent from a directory response is not treated as incompatible. A later explicit directory report that the ID is supported, or explicitly replacing, restoring the built-in version of, or deleting the profile, clears the corresponding exclusion records. If a Gemini row lacks `supportedGenerationMethods`, its support state remains unknown; the row is retained, but it does not clear an existing exclusion record.
+Create `(client, config)` using `build_managed()`, then call `config.set_config_dir(path).await?` to manage `providers.json` in that directory. The library immediately loads its profiles and fixes the directory as an absolute path, so later changes to the working directory do not change where it saves. Account connection settings override the matching static definition. Model fields merge by provenance; see the [v3 configuration guide](architecture-migration.en.md). Setting a directory again clears configuration loaded from the previous directory. When several clients write to the same directory, the library coordinates writes with `.providers.json.lock` and reads the latest configuration while holding the lock before applying the current change. External programs that edit the JSON directly must also observe this lock. `sync_provider(profile_name, credential).await` reads the model directory with that connection's own credential, updates existing models by `request_model`, adds new models, and saves the configuration. If the directory is missing, the request fails, or disk writing fails, the old file and in-memory configuration stay unchanged. Sync does not delete old models absent from the directory, or change existing models' `hidden`, pricing, capabilities, or aliases. When the directory explicitly reports an incompatible model, sync persists an exclusion record by profile and excludes the model from effective listings and routing, preventing old configuration, allowlist changes, or a restart from bypassing the exclusion. Full metadata for models still on the allowlist remains persisted and is reused when the directory explicitly restores compatibility. An ID absent from a directory response is not treated as incompatible. A later explicit directory report that the ID is supported, or explicitly replacing, restoring the built-in version of, or deleting the profile, clears the corresponding exclusion records. If a Gemini row lacks `supportedGenerationMethods`, its support state remains unknown; the row is retained, but it does not clear an existing exclusion record.
 
-File reads, file locks, and disk writes during sync run on Tokio's blocking thread pool. `sync_provider()` is the serial convenience entry point. To keep using the client during a directory network request, first call the synchronous `prepare_provider_sync()` to obtain an independent `ProviderSyncOperation`, then run its `fetch().await`, and finally commit with `apply_provider_sync(result).await`. Preparing an operation does not access disk and copies the credential and necessary configuration for that operation. The operation does not borrow the client, so the host can release its own client lock before waiting on the network.
+All configuration-management APIs run asynchronously through `ClientConfigManager`. File reads, file locks, and disk writes run on Tokio's blocking thread pool. `config.sync_provider(...).await` is the convenience entry point. For separately scheduled fetches, use `config.prepare_provider_sync(...).await`, `operation.fetch().await`, then `config.apply_provider_sync(result).await`. Preparing copies the credential and required configuration; fetching holds no management lock, and client requests remain independently available throughout.
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, ProviderStoreError};
+use lingxi_llm_client::{ClientConfigManager, ProviderStoreError};
 use lingxi_llm_client::protocol::Secret;
 
 async fn refresh(
-    client: &mut LlmClient,
+    config: &ClientConfigManager,
     credential: &Secret<String>,
 ) -> Result<usize, ProviderStoreError> {
-    let operation = client.prepare_provider_sync("primary", Some(credential))?;
-    // operation 已拥有获取目录所需的数据，可独立调度；不再借用 client。
+    let operation = config.prepare_provider_sync("primary", Some(credential)).await?;
+    // Fetch owns its inputs and does not hold the configuration manager lock.
     let result = operation.fetch().await?;
-    client.apply_provider_sync(result).await
+    config.apply_provider_sync(result).await
 }
 ```
 
-Before fetching the directory, the operation checks the connection configuration on disk; at commit time it validates again and merges the latest configuration while holding the file lock. The result is also bound to the configuration directory generation from preparation; after switching directories, even switching back to the original path, an old result is rejected. Dropping an uncommitted fetch operation does not modify the configuration. The commit checks for cancellation before entering the write, but cancellation after writing starts can still leave an updated file and an outdated client snapshot. If this cancellation occurs, call `set_config_dir()` again to reload persisted state. Synchronous configuration management methods such as `add_provider()` remain blocking interfaces; a host calling them from an async task should schedule them in an appropriate blocking execution environment.
+Before fetching the directory, the operation checks the connection configuration on disk; at commit time it validates again and merges the latest configuration while holding the file lock. The result is also bound to the configuration directory generation from preparation; after switching directories, even switching back to the original path, an old result is rejected. Dropping an uncommitted fetch operation does not modify the configuration. The worker checks for cancellation before writing. Once writing starts, it finishes installing and publishing a successful commit even if the caller stops awaiting it. Validation or write failures leave the previous published state intact. Configuration commits never wait for client network requests.
 
 Directory observations have no version numbers. Concurrent fetch results for the same profile are applied in the order their `apply_provider_sync()` calls commit. Freshness validation checks only the connection configuration and configuration directory generation. If the host needs the most recently initiated refresh to take precedence, it should refresh that profile serially or discard stale results before committing.
 
 | Operation | API | Persistence behavior |
 | --- | --- | --- |
-| Add / modify | `add_provider(profile)` | Adds or replaces the whole profile by `profile_name` and writes to disk; also usable for one account among multiple accounts |
-| Query | `provider(profile_name)`, `profiles()`, `providers()`, `deleted_builtin_profiles()` | Reads configuration, listing summaries, and names of soft-deleted built-in entries |
-| Delete | `remove_provider(profile_name)` | Removes a custom profile from the file; records a soft deletion for a built-in profile so it remains disabled after restart |
-| Restore built-in entry | `restore_builtin(profile_name)` | Clears the soft-deletion marker and saves the library's preset, even if the builder had a custom override with the same name |
+| Add / modify | `config.add_provider(profile).await?` | Adds or replaces the whole profile by `profile_name` and writes to disk; also usable for one account among multiple accounts |
+| Query | `snapshot.provider(profile_name)`, `snapshot.profiles()`, `client.providers()`, `config.deleted_builtin_profiles().await?` | Reads configuration, listing summaries, and owned names of soft-deleted built-in entries |
+| Delete | `config.remove_provider(profile_name).await?` | Removes a custom profile from the file; records a soft deletion for a built-in profile so it remains disabled after restart |
+| Restore built-in entry | `config.restore_builtin(profile_name).await?` | Clears the soft-deletion marker and saves the library's preset, even if the builder had a custom override with the same name |
 
 Deletion affects one connection account, not other accounts in the same group. To disable an entire provider, delete its profiles one by one. Re-adding a configuration with a soft-deleted name also clears the soft-deletion marker. If the host passes a custom profile to the builder again at every startup, the host must also remove it from its own input.
 
@@ -584,18 +615,18 @@ use lingxi_llm_client::protocol::{ProviderProfile, Secret};
 use lingxi_llm_client::LlmClientBuilder;
 
 # async fn example(primary: ProviderProfile, spare: ProviderProfile) -> Result<(), Box<dyn std::error::Error>> {
-let mut client = LlmClientBuilder::new(&[])?
+let (client, config) = LlmClientBuilder::new(&[])?
         .with_region(lingxi_llm_client::protocol::Region::International)
-        .build()?;
-client.set_config_dir("./config")?;
-client.set_tracked_models("acme", ["model-id".to_owned()])?;
-client.add_provider(primary)?;
-client.add_provider(spare)?;
-client.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
-client.set_model_visibility("primary", "model-id", false)?;
-assert!(client.provider("primary").is_some());
-client.untrack_model("acme", "model-id")?;
-client.remove_provider("primary")?;
+        .build_managed()?;
+config.set_config_dir("./config").await?;
+config.set_tracked_models("acme", ["model-id".to_owned()]).await?;
+config.add_provider(primary).await?;
+config.add_provider(spare).await?;
+config.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
+config.set_model_visibility("primary", "model-id", false).await?;
+assert!(client.snapshot().provider("primary").is_some());
+config.untrack_model("acme", "model-id").await?;
+config.remove_provider("primary").await?;
 # Ok(())
 # }
 ```
@@ -736,12 +767,12 @@ Cost is a directory estimate, not a replacement for the provider's bill. `estima
 
 ```rust,no_run
 use lingxi_llm_client::{
-    protocol::CompletionRequest, LocalTokenCountError, LocalTokenEstimate, LlmClient,
+    protocol::ChatRequest, LocalTokenCountError, LocalTokenEstimate, LlmClient,
 };
 
 fn estimate_input(
     client: &LlmClient,
-    request: &CompletionRequest,
+    request: &ChatRequest,
 ) -> Result<LocalTokenEstimate, LocalTokenCountError> {
     let estimate = client.estimate_local_tokens(request)?;
     println!("{} tokens via {}", estimate.input_tokens, estimate.tokenizer);
@@ -810,7 +841,7 @@ For ChatGPT/Codex, GitHub Copilot and Kimi Code user accounts, the host supplies
 
 Copilot can also receive the queried user's GitHub token in `AccountQuery.credential`; then one SDK source can query several users without profile-specific binding.
 
-Replacing, removing, or reloading a changed connection clears its profile-bound account source; switching configuration directories clears those bindings as well. The implicit binding of a provider-wide single-account session source also expires: subsequent queries requiring a session binding return `AmbiguousAccountSource`. Stateless sources and queries that explicitly supply the user token remain reusable. After signing in again, call `LlmClient::register_profile_account_source` so an old session cannot be attributed to the new connection.
+For newly published state, replacing, removing, or reloading a changed connection clears its profile-bound account source; switching configuration directories clears those bindings as well. The implicit binding of a provider-wide single-account session source also expires: subsequent queries requiring a session binding return `AmbiguousAccountSource`. Stateless sources and queries that explicitly supply the user token remain reusable. After signing in again, await `config.register_profile_account_source(...)` so an old session cannot be attributed to the new connection. Existing snapshots and in-flight account queries retain their original connection and account-source binding together.
 
 ## Error handling
 
@@ -854,3 +885,10 @@ cargo doc --no-deps --open
 
 
 See [inference controls and service-tier pricing](inference.en.md) for `info.features`, `info.pricing`, `price_quote`, `estimate_cost`, and `estimate_stream_cost`.
+
+Qwen Audio Generation uses the independent `qwen_audio_generation(scope)` entry on `LlmClient` and `ClientSnapshot`, with an explicit Beijing workspace and per-call credentials. See [Qwen Audio Generation](qwen-audio-generation.en.md).
+
+`realtime::QwenLiveTranslateSession` exposes standalone3.5/3.8 audiovisual translation over explicit Beijing/Singapore workspace routes and an injected realtime transport. See [Qwen LiveTranslate](qwen-translate.en.md).
+
+
+`realtime::OpenAiLiveSession` provides a standalone GPT-Live primary WebSocket session with explicit tool delegation and session closure. See [OpenAI GPT-Live](openai-live.en.md).

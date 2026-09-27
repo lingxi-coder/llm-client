@@ -43,7 +43,7 @@ impl Repository {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         let result = match version {
-            2 => serde_json::from_value(value)?,
+            3 => serde_json::from_value(value)?,
             _ => return Err(ProviderStoreError::UnsupportedVersion(version as u32)),
         };
         validate(&result)?;

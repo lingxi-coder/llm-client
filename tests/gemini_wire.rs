@@ -9,7 +9,7 @@ mod wire_api;
 
 use lingxi_llm_client::codecs::gemini::classify_error;
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
+    ChatRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
     ModelCapabilitySupport, ProviderId, ProviderProfile, StopReason, StreamEvent, SystemBlock,
     ToolChoice, ToolSpec, ToolUseId, Usage,
 };
@@ -54,13 +54,15 @@ fn route() -> ResolvedRoute {
     }
 }
 
-fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
-    CompletionRequest {
+fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
+    ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages,
         tools: vec![],
@@ -75,6 +77,7 @@ fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
 
 fn user(text: &str) -> ConversationMessage {
     ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
@@ -89,7 +92,7 @@ fn body(http: &lingxi_llm_client::HttpRequest) -> Value {
 
 fn encode(
     codec: &dyn WireCodec,
-    req: &CompletionRequest,
+    req: &ChatRequest,
     p: &ProviderProfile,
     stream: bool,
 ) -> lingxi_llm_client::HttpRequest {
@@ -115,6 +118,7 @@ fn the_assistants_role_on_this_wire_is_model() {
     let req = request(vec![
         user("hi"),
         ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
@@ -163,22 +167,27 @@ fn streaming_and_non_streaming_are_different_urls_not_a_body_flag() {
 fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
     let req = request(vec![
         ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: ToolUseId::new("call-1"),
                 name: "read_file".to_owned(),
                 input: json!({"path": "a"}),
                 provider_id: None,
+                caller: None,
+                toolset_name: None,
                 thought_signature: None,
             }],
         },
         ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
                 content: "contents".to_owned(),
                 is_error: false,
                 blocks: None,
+                toolset_name: None,
             }],
         },
     ]);
@@ -203,12 +212,14 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
 #[test]
 fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
     let req = request(vec![ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("orphan"),
             content: "x".to_owned(),
             is_error: false,
             blocks: None,
+            toolset_name: None,
         }],
     }]);
 
@@ -237,7 +248,6 @@ fn the_system_prompt_is_a_system_instruction() {
     let mut req = request(vec![user("hi")]);
     req.system = vec![SystemBlock {
         text: "be brief".to_owned(),
-        cacheable: true,
     }];
     let b = body(&encode(
         &GeminiCodec,
@@ -264,6 +274,8 @@ fn tools_are_wrapped_in_function_declarations() {
         description: "read a file".to_owned(),
         input_schema: json!({"type": "object"}),
         strict: false,
+        defer_loading: false,
+        allowed_callers: vec![],
     });
     let b = body(&encode(
         &GeminiCodec,
@@ -591,7 +603,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
     let calls: Vec<_> = decoded
         .message
         .tool_uses()
-        .map(|(id, _, _)| id.clone())
+        .map(|(id, _, _, _)| id.clone())
         .collect();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].as_str(), "call-a");
@@ -603,6 +615,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
 
     let mut req = request(vec![user("read both"), decoded.message]);
     req.messages.push(ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: calls
             .iter()
@@ -611,6 +624,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
                 content: "ok".into(),
                 is_error: false,
                 blocks: None,
+                toolset_name: None,
             })
             .collect(),
     });
@@ -872,4 +886,101 @@ fn prompt_blocking_remains_authoritative_after_a_streamed_tool_call() {
             ..
         })
     ));
+}
+
+#[test]
+fn gemini_and_vertex_encode_typed_audio_and_validate_base64() {
+    for (codec, protocol, endpoint) in [
+        (
+            &GeminiCodec as &dyn WireCodec,
+            "gemini_generate_content",
+            "https://generativelanguage.googleapis.com/v1beta",
+        ),
+        (
+            &VertexGeminiCodec as &dyn WireCodec,
+            "vertex_gemini",
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
+        ),
+    ] {
+        let p = profile(protocol, endpoint, Value::Null);
+        let context = wire_api::context(&p, "wire-m", &RequestOptions::default());
+        for format in [
+            "wav", "mp3", "aiff", "aac", "ogg", "flac", "mpeg", "m4a", "l16", "opus", "alaw",
+            "mulaw", "webm",
+        ] {
+            let mut req = request(vec![user("transcribe")]);
+            req.messages[0].content.push(ContentBlock::Audio {
+                format: format.into(),
+                data: "AAEC".into(),
+            });
+            let http = codec
+                .encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context)
+                .unwrap();
+            assert_eq!(
+                body(&http)["contents"][0]["parts"][1]["inlineData"],
+                json!({"mimeType": format!("audio/{format}"), "data": "AAEC"})
+            );
+        }
+        for data in [
+            "",
+            "AA",
+            "AB==",
+            "AA==AAAA",
+            "AA-_",
+            "AA==\n",
+            "data:audio/wav;base64,AA==",
+        ] {
+            let req = request(vec![ConversationMessage {
+                anthropic: None,
+                role: MessageRole::User,
+                content: vec![ContentBlock::Audio {
+                    format: "wav".into(),
+                    data: data.into(),
+                }],
+            }]);
+            assert!(
+                matches!(
+                    codec.encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context),
+                    Err(LlmError::InvalidRequest { .. })
+                ),
+                "{protocol}: {data:?}"
+            );
+        }
+        let mut req = request(vec![ConversationMessage {
+            anthropic: None,
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Audio {
+                format: "wav".into(),
+                data: "AA==".into(),
+            }],
+        }]);
+        assert!(codec
+            .encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context)
+            .is_err());
+        req.messages[0].role = MessageRole::User;
+        req.metadata = json!({"openrouter_chat_audio": {"voice":"alloy"}});
+        assert!(matches!(
+            codec.encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context),
+            Err(LlmError::UnsupportedCapability { .. })
+        ));
+    }
+}
+
+#[test]
+fn gemini_audio_limit_counts_the_complete_json_body() {
+    let p = profile(
+        "gemini_generate_content",
+        "https://generativelanguage.googleapis.com/v1beta",
+        Value::Null,
+    );
+    let mut req = request(vec![user(&"x".repeat(20_000_000))]);
+    req.messages[0].content.push(ContentBlock::Audio {
+        format: "wav".into(),
+        data: "AA==".into(),
+    });
+    let context = wire_api::context(&p, "wire-m", &RequestOptions::default());
+    let error = GeminiCodec
+        .encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context)
+        .unwrap_err();
+    assert!(matches!(error, LlmError::RequestTooLarge { message } if message.contains("20 MB")));
 }

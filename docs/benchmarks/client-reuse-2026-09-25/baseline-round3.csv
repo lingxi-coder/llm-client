@@ -1,0 +1,12 @@
+operation,concurrency,samples,p50_ns,p95_ns,allocations_per_sample,allocated_bytes_per_sample
+builtin_cold_parse_owned,1,1,19138375,19138375,113067.00,34237122.00
+builtin_warm_owned,1,1024,15550666,18047084,113067.00,34237122.00
+build_one_profile_mock_transport,1,1024,3333,4000,84.00,9526.00
+baseline_arc_clone_drop,1,1024,4,5,0.00,0.00
+live_resolve,1,1024,458,542,11.00,168.00
+shared_prepare,1,1024,9542,11500,95.00,34130.00
+shared_complete,1,1024,20750,24708,199.00,42767.00
+shared_prepare,16,16384,10459,14500,95.00,34130.00
+shared_complete,16,16384,22583,38750,199.00,42767.00
+shared_prepare,64,65536,10583,20750,95.00,34130.00
+shared_complete,64,65536,22667,46083,199.00,42767.00

@@ -7,9 +7,9 @@ mod wire_api;
 use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 use lingxi_llm_client::framing::eventstream::crc32;
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
-    ModelCapabilitySupport, ProtocolFamily, ProviderId, ProviderProfile, ResponseId, StopReason,
-    StreamEvent, SystemBlock, ToolChoice, ToolUseId, Usage,
+    ChatRequest, ContentBlock, ContinuationRef, ConversationMessage, FailoverTriggers, LlmError,
+    MessageRole, ModelCapabilitySupport, ProtocolFamily, ProviderId, ProviderProfile, ResponseId,
+    StopReason, StreamEvent, SystemBlock, ToolChoice, ToolUseId, Usage,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, GeminiCodec, LlmClientBuilder, PricingModelRef,
@@ -32,6 +32,20 @@ fn profile(protocol: &str, base: &str) -> ProviderProfile {
     .unwrap()
 }
 
+fn continuation() -> ContinuationRef {
+    ContinuationRef {
+        response_id: ResponseId::new("resp_previous"),
+        provider_id: ProviderId::new("acme"),
+        profile_name: "acme".into(),
+        endpoint_fingerprint: lingxi_llm_client::files::provider_file_endpoint_fingerprint(
+            "https://api.acme.test/v1",
+        ),
+        account_scope: "account-1".into(),
+        request_model: "wire-m".into(),
+        workspace_id: None,
+    }
+}
+
 fn route() -> ResolvedRoute {
     ResolvedRoute {
         provider_id: ProviderId::new("acme"),
@@ -50,13 +64,15 @@ fn route() -> ResolvedRoute {
     }
 }
 
-fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
-    CompletionRequest {
+fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
+    ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages,
         tools: vec![],
@@ -71,6 +87,7 @@ fn request(messages: Vec<ConversationMessage>) -> CompletionRequest {
 
 fn user(text: &str) -> ConversationMessage {
     ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
@@ -111,22 +128,27 @@ fn the_conversation_is_a_flat_list_of_items() {
     let req = request(vec![
         user("hi"),
         ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: ToolUseId::new("call-1"),
                 name: "read".to_owned(),
                 input: json!({"path": "a"}),
                 provider_id: None,
+                caller: None,
+                toolset_name: None,
                 thought_signature: None,
             }],
         },
         ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
                 content: "contents".to_owned(),
                 is_error: false,
                 blocks: None,
+                toolset_name: None,
             }],
         },
     ]);
@@ -167,7 +189,6 @@ fn the_system_prompt_is_instructions_not_a_message() {
     let mut req = request(vec![user("hi")]);
     req.system = vec![SystemBlock {
         text: "be brief".to_owned(),
-        cacheable: true,
     }];
     let b = body(
         &OpenAiResponsesCodec
@@ -188,10 +209,9 @@ fn the_system_prompt_is_instructions_not_a_message() {
 #[test]
 fn a_declared_stateful_endpoint_receives_the_typed_continuation_id() {
     let mut req = request(vec![user("only the new turn")]);
-    req.previous_response_id = Some(ResponseId::new("resp_previous"));
+    req.continuation = Some(continuation());
     req.system = vec![SystemBlock {
         text: "repeat this every turn".to_owned(),
-        cacheable: false,
     }];
     let mut p = profile("open_ai_responses", "https://api.acme.test/v1");
     p.extra = json!({"supports_previous_response_id": true});
@@ -212,7 +232,7 @@ fn a_declared_stateful_endpoint_receives_the_typed_continuation_id() {
 #[test]
 fn a_responses_profile_must_opt_in_before_it_can_receive_a_continuation_id() {
     let mut req = request(vec![user("next")]);
-    req.previous_response_id = Some(ResponseId::new("resp_previous"));
+    req.continuation = Some(continuation());
     let err = OpenAiResponsesCodec
         .encode_request(
             lingxi_llm_client::EncodeRequest::new(&req),
@@ -229,7 +249,7 @@ fn a_responses_profile_must_opt_in_before_it_can_receive_a_continuation_id() {
 #[test]
 fn non_responses_wires_refuse_a_continuation_id_instead_of_dropping_it() {
     let mut req = request(vec![user("next")]);
-    req.previous_response_id = Some(ResponseId::new("resp_previous"));
+    req.continuation = Some(continuation());
     for (codec, family) in [
         (&OpenAiChatCodec as &dyn WireCodec, "open_ai_chat"),
         (
@@ -742,6 +762,7 @@ fn bedrock_unwraps_event_stream_frames_into_the_anthropic_decoder() {
         r#"{"type":"message_start","message":{"model":"wire-m","usage":{"input_tokens":3}}}"#,
         r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
         r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#,
+        r#"{"type":"content_block_stop","index":0}"#,
         r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#,
         r#"{"type":"message_stop"}"#,
     ] {
@@ -1003,6 +1024,7 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
     use lingxi_llm_client::protocol::DocumentSource;
     let text = "hello 世界";
     let req = request(vec![ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::Text {
@@ -1049,6 +1071,7 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
 fn responses_document_urls_use_file_url() {
     use lingxi_llm_client::protocol::DocumentSource;
     let req = request(vec![ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::Url {
@@ -1247,12 +1270,14 @@ fn responses_reasoning_round_trips_before_tool_outputs() {
         let req = request(vec![
             decoded.message,
             ConversationMessage {
+                anthropic: None,
                 role: MessageRole::User,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: ToolUseId::new("call_1"),
                     content: "result".into(),
                     is_error: false,
                     blocks: None,
+                    toolset_name: None,
                 }],
             },
         ]);
@@ -1331,12 +1356,14 @@ fn responses_tool_results_preserve_structured_and_text_outputs() {
         ]),
     ] {
         let req = request(vec![ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call_1"),
                 content: "fallback".into(),
                 is_error: false,
                 blocks: blocks.clone(),
+                toolset_name: None,
             }],
         }]);
         let http = OpenAiResponsesCodec

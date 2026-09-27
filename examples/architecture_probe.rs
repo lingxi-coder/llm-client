@@ -34,14 +34,14 @@ fn main() {
     let mut builder = LlmClientBuilder::with_transport(Arc::new(Http), &[p]);
     builder.with_attachment_resolver(Arc::new(Source(Bytes::from(vec![b'x'; size]))));
     let client = builder.with_region(Region::International).build().unwrap();
-    let req:CompletionRequest=serde_json::from_value(serde_json::json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":{"attachment_id":"probe","revision":"1","filename":"probe.pdf","media_type":"application/pdf","size_bytes":size}}}]}]})).unwrap();
+    let req:ChatRequest=serde_json::from_value(serde_json::json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":{"attachment_id":"probe","revision":"1","filename":"probe.pdf","media_type":"application/pdf","size_bytes":size}}}]}]})).unwrap();
     let options = RequestOptions {
         file_account_scope: Some("probe-account".into()),
         ..Default::default()
     };
     futures::executor::block_on(async {
         for _ in 0..2 {
-            client.complete(&req, &options).await.unwrap();
+            client.chat().complete(&req, &options).await.unwrap();
         }
     });
     println!("32 MiB PDF: upload then cached completion");

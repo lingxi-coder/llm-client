@@ -1,6 +1,93 @@
 //! Provider file inputs and results.
 use super::*;
 
+/// A one-shot file input whose bytes are yielded directly to the HTTP
+/// transport. The declared size is checked against the exact stream length.
+pub struct UploadFileStream {
+    filename: String,
+    media_type: String,
+    size_bytes: u64,
+    body: BoxStream<'static, Result<Bytes, LlmError>>,
+}
+
+impl UploadFileStream {
+    /// Construct an upload stream. The stream is consumed once by
+    /// [`FileService::upload_stream`](super::FileService::upload_stream).
+    pub fn new<S>(
+        filename: impl Into<String>,
+        media_type: impl Into<String>,
+        size_bytes: u64,
+        body: S,
+    ) -> Self
+    where
+        S: futures::Stream<Item = Result<Bytes, LlmError>> + Send + 'static,
+    {
+        Self {
+            filename: filename.into(),
+            media_type: media_type.into(),
+            size_bytes,
+            body: body.boxed(),
+        }
+    }
+
+    /// Build a one-chunk stream from bytes for callers that already have the
+    /// entire file in memory.
+    pub fn from_bytes(
+        filename: impl Into<String>,
+        media_type: impl Into<String>,
+        bytes: impl Into<Bytes>,
+    ) -> Self {
+        let bytes = bytes.into();
+        let size_bytes = bytes.len() as u64;
+        Self::new(
+            filename,
+            media_type,
+            size_bytes,
+            stream::once(async move { Ok(bytes) }),
+        )
+    }
+
+    pub fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        String,
+        String,
+        u64,
+        BoxStream<'static, Result<Bytes, LlmError>>,
+    ) {
+        (self.filename, self.media_type, self.size_bytes, self.body)
+    }
+}
+
+/// Result of a streamed upload. A transport interruption after dispatch is
+/// represented separately because the provider may have accepted the file.
+#[derive(Debug, thiserror::Error)]
+pub enum FileUploadError {
+    #[error(transparent)]
+    Llm(#[from] LlmError),
+    #[error("file upload outcome is unknown during {operation}: {source}")]
+    OutcomeUnknown {
+        operation: &'static str,
+        #[source]
+        source: Box<LlmError>,
+        /// A scoped reference when the provider supplied one before the
+        /// interruption; currently absent when upload bytes are in flight.
+        reference: Option<Box<ProviderFileRef>>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadFile {
     pub filename: String,
@@ -12,6 +99,9 @@ pub struct UploadFile {
 /// selected by this library; callers do not need to know wire spellings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FilePurpose {
+    /// JSONL input for a provider Batch API job. The wire representation is
+    /// adapter-specific; xAI's Batch upload omits the optional `purpose` field.
+    Batch,
     /// Attach this file to a model request where the provider documents it.
     ModelInput,
     /// Upload a file for Moonshot's text/OCR extraction service.
@@ -113,8 +203,9 @@ impl FileCapabilities {
 pub struct ProviderFileRef {
     pub provider_id: ProviderId,
     pub profile_name: String,
-    /// Deterministic, non-secret fingerprint of the full configured base URL.
-    /// The URL itself, including any userinfo or query parameters, is not kept.
+    /// Deterministic, non-secret fingerprint of the configured file endpoint.
+    /// Foundry uses its canonical resource base. The URL itself, including
+    /// userinfo or query parameters, is not kept.
     pub endpoint_fingerprint: String,
     pub account_scope: Option<String>,
     pub protocol: ProtocolFamily,
@@ -124,7 +215,11 @@ pub struct ProviderFileRef {
     pub filename: Option<String>,
     pub media_type: Option<String>,
     pub size_bytes: Option<u64>,
+    /// Provider-reported expiry, retained in its original timestamp format.
     pub expires_at: Option<String>,
+    /// Provider-reported processing status, retained verbatim for local
+    /// readiness checks. It is not sent as model-input data.
+    pub processing_status: Option<String>,
     pub downloadable: Option<bool>,
     /// Provider purpose used when creating the file. Some APIs require it for
     /// later list/delete calls.
@@ -143,6 +238,8 @@ impl ProviderFileRef {
             account_scope: self.account_scope.clone(),
             file_id: self.file_id.clone(),
             uri: self.uri.clone(),
+            expires_at: self.expires_at.clone(),
+            processing_status: self.processing_status.clone(),
             media_type: self.media_type.clone(),
             purpose: self.purpose.clone(),
         }

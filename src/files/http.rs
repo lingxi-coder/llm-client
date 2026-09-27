@@ -26,21 +26,47 @@ pub(crate) fn multipart_body(
     boundary: &str,
     expires_in_seconds: Option<u64>,
 ) -> Result<Bytes, LlmError> {
+    let (prefix, suffix) = multipart_parts(
+        adapter,
+        purpose,
+        &file.filename,
+        &file.media_type,
+        boundary,
+        expires_in_seconds,
+    );
     let mut body = BytesMut::new();
+    body.extend_from_slice(&prefix);
+    body.extend_from_slice(&file.bytes);
+    body.extend_from_slice(&suffix);
+    Ok(body.freeze())
+}
+
+/// Construct only the small multipart framing around a caller-owned file
+/// stream. Both buffered and streaming uploads use this field builder so
+/// purpose and expiration wire forms cannot drift.
+pub(crate) fn multipart_parts(
+    adapter: Adapter,
+    purpose: FilePurpose,
+    filename: &str,
+    media_type: &str,
+    boundary: &str,
+    expires_in_seconds: Option<u64>,
+) -> (Bytes, Bytes) {
+    let mut prefix = BytesMut::new();
     if let Some(seconds) = expires_in_seconds {
         match adapter {
             Adapter::Anthropic => {
                 append_field(
-                    &mut body,
+                    &mut prefix,
                     boundary,
                     "expires_in_seconds",
                     &seconds.to_string(),
                 );
             }
             Adapter::OpenAi => {
-                append_field(&mut body, boundary, "expires_after[anchor]", "created_at");
+                append_field(&mut prefix, boundary, "expires_after[anchor]", "created_at");
                 append_field(
-                    &mut body,
+                    &mut prefix,
                     boundary,
                     "expires_after[seconds]",
                     &seconds.to_string(),
@@ -49,45 +75,145 @@ pub(crate) fn multipart_body(
             // xAI's raw multipart API takes a scalar number of seconds, and
             // requires this field to precede the file part.
             Adapter::Xai => {
-                append_field(&mut body, boundary, "expires_after", &seconds.to_string());
+                append_field(&mut prefix, boundary, "expires_after", &seconds.to_string());
             }
             _ => {}
         }
     }
     match (adapter, purpose) {
+        (Adapter::OpenAi, FilePurpose::Batch) => {
+            append_field(&mut prefix, boundary, "purpose", "batch")
+        }
+        // xAI's documented Batch file example uploads only the `file` part.
+        // Its optional `purpose` metadata is an OpenAI compatibility echo.
+        (Adapter::Xai, FilePurpose::Batch) => {}
         (Adapter::OpenAi, FilePurpose::ModelInput) => {
-            append_field(&mut body, boundary, "purpose", "user_data")
+            append_field(&mut prefix, boundary, "purpose", "user_data")
         }
         (Adapter::Xai, FilePurpose::ModelInput) => {
-            append_field(&mut body, boundary, "purpose", "assistants")
+            append_field(&mut prefix, boundary, "purpose", "assistants")
         }
         (Adapter::Moonshot, FilePurpose::Extraction) => {
-            append_field(&mut body, boundary, "purpose", "file-extract")
+            append_field(&mut prefix, boundary, "purpose", "file-extract")
         }
         (Adapter::Qwen, FilePurpose::ModelInput | FilePurpose::Extraction) => {
-            append_field(&mut body, boundary, "purpose", "file-extract")
+            append_field(&mut prefix, boundary, "purpose", "file-extract")
         }
         (Adapter::MiniMax, purpose) => {
             if let Some(value) = purpose_name(adapter, purpose) {
-                append_field(&mut body, boundary, "purpose", value);
+                append_field(&mut prefix, boundary, "purpose", value);
             }
         }
         (Adapter::Zai, FilePurpose::Auxiliary) => {
-            append_field(&mut body, boundary, "purpose", "agent")
+            append_field(&mut prefix, boundary, "purpose", "agent")
         }
         (Adapter::Zhipu, FilePurpose::Auxiliary) => {
-            append_field(&mut body, boundary, "purpose", "agent")
+            append_field(&mut prefix, boundary, "purpose", "agent")
         }
         _ => {}
     }
-    let safe_filename = sanitize_filename(&file.filename);
-    body.extend_from_slice(format!(
+    let safe_filename = sanitize_filename(filename);
+    prefix.extend_from_slice(format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe_filename}\"\r\nContent-Type: {}\r\n\r\n",
-        file.media_type
+        media_type
     ).as_bytes());
-    body.extend_from_slice(&file.bytes);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    Ok(body.freeze())
+    (
+        prefix.freeze(),
+        Bytes::from(format!("\r\n--{boundary}--\r\n")),
+    )
+}
+
+pub(crate) fn multipart_batch_parts(
+    filename: &str,
+    media_type: &str,
+    boundary: &str,
+) -> (Bytes, Bytes) {
+    multipart_parts(
+        Adapter::OpenAi,
+        FilePurpose::Batch,
+        filename,
+        media_type,
+        boundary,
+        None,
+    )
+}
+
+struct ExactUploadState {
+    input: BoxStream<'static, Result<Bytes, LlmError>>,
+    remaining: u64,
+}
+
+/// Validate byte count while forwarding each input chunk. The stream does not
+/// finish successfully until it observes EOF at the declared size.
+pub(crate) fn exact_upload_stream(
+    input: BoxStream<'static, Result<Bytes, LlmError>>,
+    size_bytes: u64,
+) -> BoxStream<'static, Result<Bytes, LlmError>> {
+    stream::try_unfold(
+        ExactUploadState {
+            input,
+            remaining: size_bytes,
+        },
+        |mut state| async move {
+            match state.input.next().await {
+                Some(Ok(chunk)) => {
+                    let chunk_size = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+                    if chunk_size > state.remaining {
+                        return Err(LlmError::StreamInterrupted {
+                            message: "file upload stream exceeds its declared size".into(),
+                        });
+                    }
+                    state.remaining -= chunk_size;
+                    Ok(Some((chunk, state)))
+                }
+                Some(Err(error)) => Err(error),
+                None if state.remaining != 0 => Err(LlmError::StreamInterrupted {
+                    message: "file upload stream ended before its declared size".into(),
+                }),
+                None => Ok(None),
+            }
+        },
+    )
+    .boxed()
+}
+
+struct MultipartUploadState {
+    prefix: Option<Bytes>,
+    file: BoxStream<'static, Result<Bytes, LlmError>>,
+    file_finished: bool,
+    suffix: Option<Bytes>,
+}
+
+/// Emit the closing boundary only after the exact-size input stream reaches
+/// EOF. An overlong, short, or failed stream therefore cannot produce a
+/// syntactically complete multipart upload.
+pub(crate) fn multipart_upload_stream(
+    prefix: Bytes,
+    input: BoxStream<'static, Result<Bytes, LlmError>>,
+    size_bytes: u64,
+    suffix: Bytes,
+) -> BoxStream<'static, Result<Bytes, LlmError>> {
+    stream::try_unfold(
+        MultipartUploadState {
+            prefix: Some(prefix),
+            file: exact_upload_stream(input, size_bytes),
+            file_finished: false,
+            suffix: Some(suffix),
+        },
+        |mut state| async move {
+            if let Some(prefix) = state.prefix.take() {
+                return Ok(Some((prefix, state)));
+            }
+            if !state.file_finished {
+                match state.file.next().await {
+                    Some(chunk) => return Ok(Some((chunk?, state))),
+                    None => state.file_finished = true,
+                }
+            }
+            Ok(state.suffix.take().map(|suffix| (suffix, state)))
+        },
+    )
+    .boxed()
 }
 
 pub(crate) fn validate_media_type(value: &str) -> Result<(), LlmError> {

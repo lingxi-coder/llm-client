@@ -1,3 +1,8 @@
+embeddings = { mode = "enabled", value = { api = "open_ai", endpoint = "https://api.openai.com/v1/embeddings", models_endpoint = "https://api.openai.com/v1/models", auth = { type = "bearer" }, max_inputs = 2048 } }
+retrieval = { mode = "enabled", value = { api = "open_ai", endpoint = "https://api.openai.com/v1/vector_stores", auth = { type = "bearer" } } }
+batches = { mode = "enabled", value = { api = "open_ai", endpoint = "https://api.openai.com/v1/batches", files_endpoint = "https://api.openai.com/v1/files", auth = { type = "bearer" } } }
+background = { mode = "enabled", value = { endpoint = "https://api.openai.com/v1/responses", auth = { type = "bearer" } } }
+audio = { mode = "enabled", value = { transcriptions_endpoint = "https://api.openai.com/v1/audio/transcriptions", translations_endpoint = "https://api.openai.com/v1/audio/translations", speech_endpoint = "https://api.openai.com/v1/audio/speech", auth = { type = "bearer" } } }
 # First-party OpenAI speaks the Responses API; the Chat Completions wire is what
 # the compatible providers use, not this one.
 
@@ -29,7 +34,7 @@ credential_hint = "sk-"
 # OpenAI stores Responses objects and accepts their ids to continue a chain.
 # This is opt-in because several otherwise Responses-compatible endpoints
 # accept the field but ignore it.
-extra = { supports_previous_response_id = true, web_search = "openai_responses" }
+extra = { supports_previous_response_id = true, web_search = "openai_responses", code_interpreter = "openai_responses", remote_mcp = "openai_responses" }
 
 [[model]]
 id = "chatgpt-image-latest"

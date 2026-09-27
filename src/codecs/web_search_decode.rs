@@ -10,12 +10,21 @@ fn citations(value: &Value, out: &mut Vec<WebCitation>) {
                 Some("url_citation") => Some(value.get("url_citation").unwrap_or(value)),
                 Some("web_search_result_location" | "web_search_result" | "url") => Some(value),
                 _ if value.get("link").is_some() => Some(value),
+                _ if value.get("maps").is_some() => value.get("maps"),
+                _ if value.get("retrievedUrl").is_some()
+                    && value.get("urlRetrievalStatus").and_then(Value::as_str)
+                        == Some("URL_RETRIEVAL_STATUS_SUCCESS") =>
+                {
+                    Some(value)
+                }
                 _ => value.get("web"),
             };
             if let Some(source) = source {
                 if let Some(url) = source
                     .get("url")
                     .or_else(|| source.get("uri"))
+                    .or_else(|| source.get("googleMapsUri"))
+                    .or_else(|| source.get("retrievedUrl"))
                     .or_else(|| source.get("link"))
                     .and_then(Value::as_str)
                 {
@@ -157,15 +166,19 @@ pub(crate) fn is_anthropic_search_block(block: &Value) -> bool {
 }
 
 pub(crate) fn gemini(candidate: &Value) -> Option<WebSearchResult> {
-    candidate
-        .get("groundingMetadata")
-        .filter(|m| !m.is_null())
-        .and_then(|m| result(json!({"groundingMetadata":m})))
+    let mut metadata = serde_json::Map::new();
+    for key in ["groundingMetadata", "urlContextMetadata"] {
+        if let Some(value) = candidate.get(key).filter(|value| !value.is_null()) {
+            metadata.insert(key.to_owned(), value.clone());
+        }
+    }
+    result(metadata.into())
 }
 
 /// Array records are per-frame additions; repeated terminal records are suppressed.
-/// Non-array metadata (Gemini groundingMetadata) is a native snapshot; changed
-/// snapshots are emitted intact so chunk indices and grounding supports stay aligned.
+/// Non-array metadata (including Gemini grounding and URL Context data) is a
+/// native snapshot; changed snapshots are emitted intact so source references
+/// and grounding supports stay aligned.
 #[derive(Debug, Default)]
 pub(crate) struct SearchStream {
     seen: Vec<(String, Value)>,

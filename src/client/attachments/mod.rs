@@ -5,14 +5,14 @@ use super::{AttachmentResolver, MAX_ATTACHMENT_BYTES};
 use crate::{
     auth::Authenticator,
     protocol::{
-        AttachmentRef, CompletionRequest, ContentBlock, DocumentSource, ImageSource, LlmError,
+        AttachmentRef, ChatRequest, ContentBlock, DocumentSource, ImageSource, LlmError,
         ProtocolFamily, ProviderProfile, VideoSource,
     },
     transport::Transport,
 };
 use bytes::Bytes;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -20,8 +20,8 @@ mod cache;
 mod plan;
 mod prepare;
 mod resolve;
-pub(crate) use plan::uses_first_party_anthropic_messages;
 use plan::*;
+pub(crate) use plan::{first_party_endpoint, FirstPartyEndpoint};
 
 pub(crate) struct AttachmentManager {
     http: Arc<dyn Transport>,
@@ -29,6 +29,8 @@ pub(crate) struct AttachmentManager {
     provider_file_cache: Mutex<BTreeMap<FileCacheKey, CachedProviderFile>>,
     provider_file_upload_locks:
         Mutex<BTreeMap<FileCacheKey, std::sync::Weak<futures::lock::Mutex<()>>>>,
+    content_cache: Mutex<ContentCache>,
+    content_read_locks: Mutex<BTreeMap<ContentCacheKey, std::sync::Weak<futures::lock::Mutex<()>>>>,
     qwen_file_rate_limiters: Mutex<BTreeMap<(String, String), Arc<files::QwenFileRateLimiter>>>,
 }
 impl AttachmentManager {
@@ -47,7 +49,7 @@ impl AttachmentManager {
                 .ok_or_else(|| LlmError::UnsupportedCapability {
                     message: "image attachment requires an AttachmentResolver".into(),
                 })?;
-        let bytes = resolver.resolve(attachment).await?;
+        let bytes = self.resolve_content(resolver.as_ref(), attachment).await?;
         if bytes.len() as u64 != attachment.size_bytes || bytes.len() as u64 > MAX_ATTACHMENT_BYTES
         {
             return Err(LlmError::InvalidRequest {
@@ -65,19 +67,18 @@ impl AttachmentManager {
             attachment_resolver,
             provider_file_cache: Default::default(),
             provider_file_upload_locks: Default::default(),
+            content_cache: Default::default(),
+            content_read_locks: Default::default(),
             qwen_file_rate_limiters: Default::default(),
         }
-    }
-    pub(super) fn invalidate_profiles(&self, names: &BTreeSet<String>) {
-        self.provider_file_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|key, _| !names.contains(&key.profile_name));
     }
 }
 
 pub(crate) const INLINE_IMAGE_PREFERENCE_LIMIT: usize = 5 * 1024 * 1024;
 const MAX_PROVIDER_FILE_CACHE_ENTRIES: usize = 256;
+const ATTACHMENT_CONCURRENCY: usize = 4;
+const MAX_CONTENT_CACHE_ENTRIES: usize = 256;
+const MAX_CONTENT_CACHE_BYTES: usize = MAX_ATTACHMENT_BYTES as usize;
 const MAX_OPENAI_INPUT_FILE_BYTES: u64 = 50_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AttachmentKind {
@@ -100,16 +101,21 @@ pub(crate) struct ResolvedAttachmentPayload {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRequest<'a> {
-    pub request: &'a CompletionRequest,
+    pub request: &'a ChatRequest,
     pub attachments: Vec<ResolvedAttachmentPayload>,
 }
 
 pub(crate) struct ProviderFilePreparation<'a> {
+    pub file_validation_time: std::time::SystemTime,
+    pub endpoint: FirstPartyEndpoint,
     /// Selected-model data for capability checks; authentication uses the original profile.
     pub planning_profile: &'a ProviderProfile,
     pub opts: &'a RequestOptions,
     pub request_deadline: Option<Instant>,
     pub stable_account_scope: Option<&'a str>,
+    /// Captured with the request's immutable configuration snapshot.
+    pub cache_namespace: u64,
+    pub cache_generation: u64,
     pub inline_image_data_budget_bytes: Option<usize>,
     pub authenticator: Option<&'a dyn Authenticator>,
     pub credential: Option<&'a crate::protocol::Secret<String>>,
@@ -118,6 +124,10 @@ pub(crate) struct ProviderFilePreparation<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct FileCacheKey {
+    // Keep these fixed for the request: an upload or a 404 from an older
+    // snapshot must never populate or invalidate a newer snapshot's entry.
+    namespace: u64,
+    generation: u64,
     attachment_id: String,
     revision: String,
     filename: String,
@@ -137,12 +147,45 @@ struct CachedProviderFile {
     cached_at: Instant,
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ContentCacheKey {
+    attachment_id: String,
+    revision: String,
+    filename: String,
+    media_type: String,
+    size_bytes: u64,
+}
+
+impl From<&AttachmentRef> for ContentCacheKey {
+    fn from(attachment: &AttachmentRef) -> Self {
+        Self {
+            attachment_id: attachment.attachment_id.clone(),
+            revision: attachment.revision.clone(),
+            filename: attachment.filename.clone(),
+            media_type: attachment.media_type.clone(),
+            size_bytes: attachment.size_bytes,
+        }
+    }
+}
+
+struct CachedContent {
+    bytes: Bytes,
+    cached_at: Instant,
+}
+
+#[derive(Default)]
+struct ContentCache {
+    entries: BTreeMap<ContentCacheKey, CachedContent>,
+    total_bytes: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct PreparedProviderFileUse {
     // An unscoped request has no cache entry, but still needs a 404 retry.
     key: Option<FileCacheKey>,
     pub(crate) file_id: String,
     pub(crate) uri: Option<String>,
+    pub(crate) expires_at: Option<String>,
 }
 
 struct PlannedUpload<'a> {
@@ -159,7 +202,7 @@ pub(crate) struct PreparedAttachments<'a> {
     pub cleanup: Option<Arc<files::AutomaticFileCleanup>>,
 }
 pub(crate) fn provider_file_binding<'a>(
-    request: &'a CompletionRequest,
+    request: &'a ChatRequest,
     payload: &ResolvedAttachmentPayload,
     file: crate::protocol::ProviderFileSource,
 ) -> Result<crate::codecs::ContentBinding<'a>, LlmError> {

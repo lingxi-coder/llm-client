@@ -1,13 +1,13 @@
 //! Traverse request content independently from tokenizer model mapping.
 use super::{backends::Encoder, model::encoder_for, types::*};
 use crate::{
-    client::LlmClient,
+    client::ClientSnapshot,
     protocol::{
-        CompletionRequest, ContentBlock, DocumentSource, ImageSource, MessageRole, ProtocolFamily,
+        ChatRequest, ContentBlock, DocumentSource, ImageSource, MessageRole, ProtocolFamily,
         VideoSource,
     },
 };
-impl LlmClient {
+impl ClientSnapshot {
     /// Estimate input tokens locally for the route selected by `request.model`.
     ///
     /// The estimate is synchronous and never sends a request or reads a
@@ -15,7 +15,7 @@ impl LlmClient {
     /// route later fails over, this result does not count the fallback model.
     pub fn estimate_local_tokens(
         &self,
-        request: &CompletionRequest,
+        request: &ChatRequest,
     ) -> Result<LocalTokenEstimate, LocalTokenCountError> {
         self.estimate_local_tokens_resolved(request, self.resolve(&request.model)?)
     }
@@ -25,7 +25,7 @@ impl LlmClient {
     pub fn estimate_local_tokens_in(
         &self,
         profile_or_group: &str,
-        request: &CompletionRequest,
+        request: &ChatRequest,
     ) -> Result<LocalTokenEstimate, LocalTokenCountError> {
         let route = self.resolve_in(&request.model, Some(profile_or_group))?;
         self.estimate_local_tokens_resolved(request, route)
@@ -33,7 +33,7 @@ impl LlmClient {
 
     fn estimate_local_tokens_resolved(
         &self,
-        request: &CompletionRequest,
+        request: &ChatRequest,
         route: crate::client::route::ResolvedRoute,
     ) -> Result<LocalTokenEstimate, LocalTokenCountError> {
         let encoder = encoder_for(&route.provider_id, &route.request_model)?.ok_or_else(|| {
@@ -72,7 +72,21 @@ impl LlmClient {
             if tool.strict {
                 accumulator.add_text("strict")?;
             }
+            if tool.defer_loading {
+                accumulator.add_text("defer_loading")?;
+            }
             accumulator.add_framing(8);
+        }
+        if !request.anthropic_client_toolsets.is_empty() {
+            accumulator.omit(LocalTokenEstimateOmission::ProviderClientToolsetDefinitions);
+        }
+
+        if !matches!(request.output_format, crate::protocol::OutputFormat::Text) {
+            accumulator.add_json(
+                &serde_json::to_value(&request.output_format)
+                    .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?,
+            )?;
+            accumulator.omit(LocalTokenEstimateOmission::StructuredOutputInstructions);
         }
 
         match &request.tool_choice {
@@ -89,13 +103,25 @@ impl LlmClient {
         if request.thinking.is_some() {
             accumulator.add_framing(2);
         }
-        if request.web_search.is_some() {
+        if request.hosted_web_search().is_some() {
             accumulator.omit(LocalTokenEstimateOmission::HostedWebSearchContext);
         }
-        if request.file_search.is_some() {
+        if request.hosted_file_search().is_some() {
             accumulator.omit(LocalTokenEstimateOmission::HostedFileSearchContext);
         }
-        if request.previous_response_id.is_some() {
+        if request.hosted_anthropic_tool_search().is_some() {
+            accumulator.omit(LocalTokenEstimateOmission::HostedToolSearchContext);
+        }
+        if let Some(execution) = request.hosted_anthropic_code_execution() {
+            accumulator.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
+            if execution.container.is_some() {
+                accumulator.omit(LocalTokenEstimateOmission::PreviousResponseState);
+            }
+            if !execution.files.is_empty() {
+                accumulator.omit(LocalTokenEstimateOmission::ProviderFileInput);
+            }
+        }
+        if request.continuation.is_some() {
             accumulator.omit(LocalTokenEstimateOmission::PreviousResponseState);
         }
         if !request.metadata.is_null() {
@@ -168,6 +194,8 @@ impl<'a> Accumulator<'a> {
                 name,
                 input,
                 provider_id,
+                caller,
+                toolset_name,
                 thought_signature,
             } => {
                 self.add_text(id.as_str())?;
@@ -175,6 +203,12 @@ impl<'a> Accumulator<'a> {
                 self.add_json(input)?;
                 if let Some(provider_id) = provider_id {
                     self.add_text(provider_id)?;
+                }
+                if caller.is_some() {
+                    self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
+                }
+                if let Some(toolset_name) = toolset_name {
+                    self.add_text(toolset_name)?;
                 }
                 self.add_framing(2);
                 if thought_signature.is_some() {
@@ -185,10 +219,14 @@ impl<'a> Accumulator<'a> {
                 tool_use_id,
                 content,
                 blocks,
+                toolset_name,
                 ..
             } => {
                 self.add_text(tool_use_id.as_str())?;
                 self.add_text(content)?;
+                if let Some(toolset_name) = toolset_name {
+                    self.add_text(toolset_name)?;
+                }
                 if blocks.is_some() {
                     self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
                 }
@@ -241,6 +279,9 @@ impl<'a> Accumulator<'a> {
                     }
                 }
             }
+            ContentBlock::Audio { .. } => {
+                self.omit(LocalTokenEstimateOmission::AudioInput);
+            }
             ContentBlock::Video { source } => match source {
                 VideoSource::ProviderFile { .. } => {
                     self.omit(LocalTokenEstimateOmission::ProviderFileInput);
@@ -259,14 +300,15 @@ impl<'a> Accumulator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::LlmClientBuilder;
-    #[cfg(feature = "tokenizers-all")]
+    use crate::client::{LlmClient, LlmClientBuilder};
+    #[cfg(any(feature = "tokenizers-all", feature = "tokenizer-deepseek"))]
     use crate::protocol::ProviderId;
-    use crate::protocol::{ConversationMessage, ToolChoice};
     #[cfg(feature = "tokenizer-deepseek")]
     use crate::protocol::{
-        FileSearchConfig, ResponseId, SystemBlock, ThinkingConfig, ToolSpec, WebSearchConfig,
+        ContinuationRef, FileSearchConfig, ResponseId, SystemBlock, ThinkingConfig, ToolSpec,
+        WebSearchConfig,
     };
+    use crate::protocol::{ConversationMessage, ToolChoice};
     #[cfg(feature = "tokenizer-openai")]
     use crate::token_count::backends::openai_encoder;
     #[cfg(feature = "tokenizer-deepseek")]
@@ -326,18 +368,35 @@ mod tests {
     #[test]
     fn estimates_visible_conversation_tools_and_reports_omissions() {
         let client = client("deepseek", crate::protocol::Region::ChinaMainland);
-        let request = CompletionRequest {
+        let request = ChatRequest {
+            prompt_cache: Default::default(),
+            output_format: Default::default(),
             service_tier: None,
             model: "deepseek-flash".to_owned(),
-            web_search: Some(WebSearchConfig::default()),
-            file_search: Some(FileSearchConfig {
-                knowledge_base_id: "kb-1".to_owned(),
-                workspace_id: "workspace-1".to_owned(),
+            anthropic_client_toolsets: Vec::new(),
+            hosted_tools: vec![
+                crate::protocol::HostedTool::WebSearch(WebSearchConfig::default()),
+                crate::protocol::HostedTool::FileSearch(FileSearchConfig {
+                    knowledge_base_id: "kb-1".to_owned(),
+                    workspace_id: "workspace-1".to_owned(),
+                }),
+                crate::protocol::HostedTool::AnthropicToolSearch(
+                    crate::protocol::AnthropicToolSearchConfig {
+                        strategy: crate::protocol::AnthropicToolSearchStrategy::Bm25,
+                    },
+                ),
+            ],
+            continuation: Some(ContinuationRef {
+                response_id: ResponseId::new("resp_previous"),
+                provider_id: ProviderId::new("deepseek"),
+                profile_name: "deepseek".into(),
+                endpoint_fingerprint: "fixture".into(),
+                account_scope: "account-1".into(),
+                request_model: "deepseek-flash".into(),
+                workspace_id: Some("workspace-1".into()),
             }),
-            previous_response_id: Some(ResponseId::new("resp_previous")),
             system: vec![SystemBlock {
                 text: "system prompt".to_owned(),
-                cacheable: false,
             }],
             messages: vec![
                 ConversationMessage::user_text("hello world"),
@@ -346,9 +405,12 @@ mod tests {
                     name: "lookup".to_owned(),
                     input: json!({"query": "local token count"}),
                     provider_id: Some("provider-call-1".to_owned()),
+                    caller: None,
+                    toolset_name: None,
                     thought_signature: None,
                 }]),
                 ConversationMessage {
+                    anthropic: None,
                     role: MessageRole::User,
                     content: vec![
                         ContentBlock::ToolResult {
@@ -356,6 +418,7 @@ mod tests {
                             content: "found a result".to_owned(),
                             is_error: false,
                             blocks: None,
+                            toolset_name: None,
                         },
                         ContentBlock::Text {
                             text: "follow-up text".to_owned(),
@@ -384,6 +447,10 @@ mod tests {
                                 url: "https://example.invalid/clip.mp4".to_owned(),
                             },
                         },
+                        ContentBlock::Audio {
+                            format: "wav".to_owned(),
+                            data: "YWJj".to_owned(),
+                        },
                         ContentBlock::ProviderContent {
                             protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
                             value: json!({"type": "opaque_provider_block"}),
@@ -399,6 +466,8 @@ mod tests {
                     "properties": {"query": {"type": "string"}}
                 }),
                 strict: true,
+                defer_loading: false,
+                allowed_callers: vec![],
             }],
             tool_choice: ToolChoice::Tool {
                 name: "lookup".to_owned(),
@@ -423,8 +492,10 @@ mod tests {
             LocalTokenEstimateOmission::ImageInput,
             LocalTokenEstimateOmission::DocumentInput,
             LocalTokenEstimateOmission::VideoInput,
+            LocalTokenEstimateOmission::AudioInput,
             LocalTokenEstimateOmission::HostedWebSearchContext,
             LocalTokenEstimateOmission::HostedFileSearchContext,
+            LocalTokenEstimateOmission::HostedToolSearchContext,
             LocalTokenEstimateOmission::PreviousResponseState,
             LocalTokenEstimateOmission::ProviderOpaqueContent,
             LocalTokenEstimateOmission::ProviderSignature,
@@ -437,6 +508,15 @@ mod tests {
         }
 
         let mut output_cap_changed = request.clone();
+        let mut with_toolset = request.clone();
+        with_toolset.anthropic_client_toolsets.push(
+            crate::protocol::AnthropicClientToolset::Browser(Default::default()),
+        );
+        let toolset_estimate = client.estimate_local_tokens(&with_toolset).unwrap();
+        assert!(toolset_estimate.is_partial);
+        assert!(toolset_estimate
+            .uncounted_components
+            .contains(&LocalTokenEstimateOmission::ProviderClientToolsetDefinitions,));
         output_cap_changed.max_tokens = Some(16_384);
         assert_eq!(
             estimate.input_tokens,
@@ -450,12 +530,14 @@ mod tests {
     #[test]
     fn unsupported_openai_model_does_not_fall_back_to_another_tokenizer() {
         let openai = client("openai", crate::protocol::Region::International);
-        let request = CompletionRequest {
+        let request = ChatRequest {
+            prompt_cache: Default::default(),
+            output_format: Default::default(),
             service_tier: None,
             model: "gpt-6-astra".to_owned(),
-            web_search: None,
-            file_search: None,
-            previous_response_id: None,
+            anthropic_client_toolsets: Vec::new(),
+            hosted_tools: vec![],
+            continuation: None,
             system: Vec::new(),
             messages: vec![ConversationMessage::user_text("hello")],
             tools: Vec::new(),

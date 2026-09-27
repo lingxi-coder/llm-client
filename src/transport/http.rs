@@ -1,4 +1,4 @@
-use super::{HttpRequest, StreamResponse, Transport};
+use super::{HttpRequest, HttpStreamRequest, StreamResponse, Transport};
 use crate::protocol::LlmError;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -69,6 +69,50 @@ impl HttpTransport {
             .await
             .map_err(|err| network_error(err, false))
     }
+
+    async fn send_stream_request(
+        &self,
+        req: HttpStreamRequest,
+    ) -> Result<reqwest::Response, LlmError> {
+        let invalid = || LlmError::InvalidRequest {
+            message: "invalid streaming HTTP method, URL or headers".into(),
+        };
+        let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| invalid())?;
+        let url = url::Url::parse(&req.url).map_err(|_| invalid())?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(invalid());
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (name, value) in req.headers {
+            let name =
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
+            if name == reqwest::header::CONTENT_LENGTH || name == reqwest::header::TRANSFER_ENCODING
+            {
+                return Err(invalid());
+            }
+            let mut value =
+                reqwest::header::HeaderValue::from_str(&value).map_err(|_| invalid())?;
+            value.set_sensitive(true);
+            headers.append(name, value);
+        }
+        headers.insert(
+            reqwest::header::CONTENT_LENGTH,
+            reqwest::header::HeaderValue::from_str(&req.content_length.to_string())
+                .map_err(|_| invalid())?,
+        );
+        let mut request = self
+            .client
+            .request(method, url)
+            .headers(headers)
+            .body(reqwest::Body::wrap_stream(req.body));
+        if let Some(timeout) = req.timeout {
+            request = request.timeout(timeout);
+        }
+        request
+            .send()
+            .await
+            .map_err(|err| network_error(err, false))
+    }
 }
 
 fn response_headers(response: &reqwest::Response) -> Vec<(String, String)> {
@@ -110,6 +154,18 @@ fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmError {
 impl Transport for HttpTransport {
     async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
         let response = self.send_request(req).await?;
+        Ok(StreamResponse {
+            status: response.status().as_u16(),
+            headers: response_headers(&response),
+            body: response
+                .bytes_stream()
+                .map(|chunk| chunk.map_err(|err| network_error(err, true)))
+                .boxed(),
+        })
+    }
+
+    async fn send_stream(&self, req: HttpStreamRequest) -> Result<StreamResponse, LlmError> {
+        let response = self.send_stream_request(req).await?;
         Ok(StreamResponse {
             status: response.status().as_u16(),
             headers: response_headers(&response),

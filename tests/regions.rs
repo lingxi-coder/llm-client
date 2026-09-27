@@ -1,7 +1,7 @@
 //! Region policy is shared by listings and execution, while configuration stays complete.
 use async_trait::async_trait;
 use lingxi_llm_client::protocol::{
-    AuthStrategy, CompletionRequest, LlmError, ProviderProfile, Region, WebSearchConfig,
+    AuthStrategy, ChatRequest, LlmError, ProviderProfile, Region, WebSearchConfig,
 };
 use lingxi_llm_client::{
     builtin_providers, BuildError, HttpRequest, HttpResponse, LlmClient, LlmClientBuilder,
@@ -97,14 +97,14 @@ fn every_builtin_has_the_declared_policy_and_listed_models_resolve() {
     }
     for region in Region::ALL {
         let c = client(&profiles, region);
-        assert_eq!(c.profiles().len(), profiles.len());
+        assert_eq!(c.snapshot().profiles().len(), profiles.len());
         let listed = c.providers();
         for p in &profiles {
             assert_eq!(
                 listed.iter().any(|r| r.profile_name == p.profile_name),
                 p.supports_region(region)
             );
-            assert!(c.provider(&p.profile_name).is_some());
+            assert!(c.snapshot().provider(&p.profile_name).is_some());
         }
         for row in c.models() {
             assert!(row.regions.contains(&region));
@@ -162,11 +162,13 @@ fn glm_and_zai_shared_group_cannot_cross_regions() {
         (Region::International, "zai"),
     ] {
         let c = client(&profiles, region);
-        let p = c.provider(name).unwrap();
+        let c_view = c.snapshot();
+        let p = c_view.provider(name).unwrap();
         let route = c
             .resolve_in(&p.models[0].request_model, Some(name))
             .unwrap();
         assert!(route.connection_chain.iter().all(|hop| c
+            .snapshot()
             .provider(&hop.profile_name)
             .unwrap()
             .supports_region(region)));
@@ -194,7 +196,7 @@ impl RecordingHttp {
         Err(self.fail(req))
     }
 }
-fn request(model: &str) -> CompletionRequest {
+fn request(model: &str) -> ChatRequest {
     serde_json::from_value(json!({"model":model, "messages":[{"role":"user", "content":[{"type":"text","text":"hello"}]}]})).unwrap()
 }
 
@@ -209,23 +211,26 @@ async fn blocked_completion_stream_search_and_media_never_reach_transport() {
     let req = request("intl/model");
     let opts = RequestOptions::default();
     assert!(matches!(
-        c.complete(&req, &opts).await,
+        c.chat().complete(&req, &opts).await,
         Err(LlmError::ModelUnavailable { .. })
     ));
     assert!(matches!(
-        c.stream(&req, &opts).await,
+        c.chat().stream(&req, &opts).await,
         Err(LlmError::ModelUnavailable { .. })
     ));
     assert!(matches!(
-        c.complete_in("intl", &request("model"), &opts).await,
+        c.chat().complete_in("intl", &request("model"), &opts).await,
         Err(LlmError::ModelUnavailable { .. })
     ));
     assert!(matches!(
-        c.web_search(&req, WebSearchConfig::default(), &opts).await,
+        c.chat()
+            .web_search(&req, WebSearchConfig::default(), &opts)
+            .await,
         Err(LlmError::ModelUnavailable { .. })
     ));
     assert!(matches!(
-        c.web_search_stream_in("intl", &req, WebSearchConfig::default(), &opts)
+        c.chat()
+            .web_search_stream_in("intl", &req, WebSearchConfig::default(), &opts)
             .await,
         Err(LlmError::ModelUnavailable { .. })
     ));
@@ -237,7 +242,7 @@ async fn blocked_completion_stream_search_and_media_never_reach_transport() {
         },
     }];
     assert!(matches!(
-        c.complete(&media, &opts).await,
+        c.chat().complete(&media, &opts).await,
         Err(LlmError::ModelUnavailable { .. })
     ));
     assert!(http.0.lock().unwrap().is_empty());
@@ -263,8 +268,16 @@ async fn failover_only_sends_to_allowed_connections_even_when_spares_are_hidden(
     assert_eq!(c.providers().len(), 2);
     assert_eq!(c.models().len(), 1);
     let req = request("cn/model");
-    assert!(c.complete(&req, &RequestOptions::default()).await.is_err());
-    assert!(c.stream(&req, &RequestOptions::default()).await.is_err());
+    assert!(c
+        .chat()
+        .complete(&req, &RequestOptions::default())
+        .await
+        .is_err());
+    assert!(c
+        .chat()
+        .stream(&req, &RequestOptions::default())
+        .await
+        .is_err());
     let seen = http.0.lock().unwrap();
     assert_eq!(seen.len(), 4);
     assert!(seen.iter().all(|url| !url.contains("intl.test")));

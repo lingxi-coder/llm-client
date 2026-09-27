@@ -232,7 +232,7 @@ fn ordinary_responses_do_not_claim_web_search() {
 #[test]
 fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
     use lingxi_llm_client::protocol::{
-        CompletionRequest, FailoverTriggers, ModelCapabilitySupport, ProviderId, ProviderProfile,
+        ChatRequest, FailoverTriggers, ModelCapabilitySupport, ProviderId, ProviderProfile,
         ToolChoice,
     };
     use lingxi_llm_client::{PricingModelRef, RequestOptions, ResolvedRoute};
@@ -249,12 +249,14 @@ fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
         .unwrap();
     assert_eq!(decoded.stop_reason, StopReason::Other("pause_turn".into()));
     assert_eq!(decoded.message.text(), "News");
-    let req = CompletionRequest {
+    let req = ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "m".into(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![decoded.message],
         tools: vec![],

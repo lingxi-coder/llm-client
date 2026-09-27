@@ -29,11 +29,17 @@ impl FileService<'_> {
             filename: None,
             media_type: file.media_type.clone(),
             size_bytes: None,
-            expires_at: None,
+            expires_at: file.expires_at.clone(),
+            processing_status: file.processing_status.clone(),
             downloadable: None,
             purpose: file.purpose.clone(),
         };
         self.check_ref(&pending)?;
+        if pending.processing_status.as_deref() == Some("FAILED") {
+            return Err(LlmError::InvalidRequest {
+                message: "Gemini file processing failed and cannot be resumed".into(),
+            });
+        }
         let timeout = self
             .gemini_processing_timeout
             .unwrap_or(DEFAULT_GEMINI_PROCESSING_TIMEOUT);
@@ -251,6 +257,11 @@ impl FileService<'_> {
                     }
                     if metadata.filename.is_none() {
                         metadata.filename.clone_from(&pending.filename);
+                    }
+                    if file_value.get("expirationTime").is_none()
+                        && file_value.get("expires_at").is_none()
+                    {
+                        metadata.expires_at.clone_from(&pending.expires_at);
                     }
                     if metadata.uri.as_deref().is_none_or(str::is_empty) {
                         return Err(gemini_processing_unresolved(

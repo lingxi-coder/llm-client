@@ -12,9 +12,11 @@
 
 `ProviderProfile.regions` 声明使用区域，例如 TOML 中 `regions = ["china_mainland"]`；两区共享时填写 `["china_mainland", "international"]`。当前格式中 regions 缺省时两区可用，显式 `[]` 则两区均不可用。模型继承所属 profile 的区域，`ProviderListing` 和 `ModelListing` 都返回 `regions`。
 
+仅提供 Embeddings 等独立服务的连接可设置 `chat_enabled = false` 并保持 Chat `models` 为空。该 profile 不参与 Chat 模型解析或目录刷新，独立服务仍按各自路由、凭证和区域执行；声明 Chat 模型会在构建时被拒绝。
+
 `providers()` 和 `models()` 先按区域过滤，再应用各自现有的隐藏状态和模型白名单规则。模型解析、限定 profile/group 的调用、普通与流式请求、搜索及备用链都受区域限制；其他区域的同名模型不参与歧义判断。区域内的隐藏备用账号仍可用于故障切换。区域声明不保证网络可达性，不根据 IP、语言或 URL 自动推断，也不会改写 API 地址。
 
-`provider()`、`profiles()` 是完整配置管理视图；CRUD、同步、账号 usage 和独立文件管理仍可操作其他区域账号。过滤不删除配置或模型，当前 client 的区域不写入共享 `providers.json`。当前格式未声明 `regions` 时两区可用；恢复内置配置会恢复其显式地区声明。
+`snapshot.provider()`、`snapshot.profiles()` 是完整配置视图；CRUD、同步、账号 usage 和独立文件管理仍可操作其他区域账号。过滤不删除配置或模型，当前 client 的区域不写入共享 `providers.json`。当前格式未声明 `regions` 时两区可用；恢复内置配置会恢复其显式地区声明。
 
 内置国内 profile：`qwen`、`qwen-search`、`minimax`、`kimi`、`kimi-search`、`glm`、`glm-coding`。`deepseek`、`deepseek-search`、`kimi-code` 两区共享；其他内置 profile 属于国际区域，包括 Qwen 香港、新加坡、美国及对应搜索连接。
 
@@ -49,7 +51,7 @@
 
 ```rust,no_run
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice,
+    ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice,
 };
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 
@@ -74,12 +76,14 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
     let client = LlmClientBuilder::new(&[profile])?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
-    let request = CompletionRequest {
+    let request = ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "my-model".into(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage::user_text("你好")],
         tools: vec![],
@@ -118,7 +122,8 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `register_profile_account_source(profile_name, AccountIdentity, Arc<dyn AccountUsageSource>)` | `&mut Self` | 将已登录账户源绑定到单个连接，优先于供应商级账户源 |
 | `add_profile(ProviderProfile)` | `&mut Self` | 追加连接配置 |
 | `codec_families()` | `Vec<ProtocolFamily>` | 查询已注册的协议族 |
-| `build(self)` | `Result<LlmClient, BuildError>` | 消费构建器并验证配置 |
+| `build(self)` | `Result<LlmClient, BuildError>` | 验证配置并返回可共享的请求句柄 |
+| `build_managed(self)` | `Result<(LlmClient, ClientConfigManager), BuildError>` | 同时返回独立的异步配置管理器 |
 
 `BuildError` 包括 `MissingRegion`、 `DuplicateProfile { profile_name }`、`MissingCodec { profile_name, family }`、`MissingAuthenticator { profile_name, strategy }` 和 `InvalidPeakSchedule { profile_name, reason }`。`AuthStrategy::None` 不需要认证器；缺少目录解析器不阻止构建。构建时会拒绝无效或空的峰值价格时间窗；构建成功不代表凭证有效、地址可达或 provider 支持所有请求参数。
 
@@ -129,12 +134,12 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | 方法 | 返回值 | 行为 |
 | --- | --- | --- |
 | `models()` | `Vec<ModelListing>` | 列出当前区域可见模型，并过滤元数据中声明 `image` 输出的模型 |
-| `complete(&CompletionRequest, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | 按模型路由并返回完整响应 |
-| `complete_in(&str, &CompletionRequest, &RequestOptions).await` | 同上 | 限定起始 profile 或连接组 |
-| `stream(&CompletionRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 按模型路由并打开流 |
-| `stream_in(&str, &CompletionRequest, &RequestOptions).await` | 同上 | 在指定 profile 或连接组上打开流 |
+| `complete(&ChatRequest, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | 按模型路由并返回完整响应 |
+| `complete_in(&str, &ChatRequest, &RequestOptions).await` | 同上 | 限定起始 profile 或连接组 |
+| `stream(&ChatRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 按模型路由并打开流 |
+| `stream_in(&str, &ChatRequest, &RequestOptions).await` | 同上 | 在指定 profile 或连接组上打开流 |
 
-托管搜索可在调用 Chat 前设置 `CompletionRequest.web_search` 或 `file_search`，也可使用 `LlmClient::web_search*` 便捷方法；`ChatService` 本身没有 `web_search*` 方法。配置、账户查询、路由检查、token 估算和价格接口仍属于 `LlmClient`；图像生成与编辑使用 `client.images()`。
+托管搜索可在调用 Chat 前设置 `ChatRequest.hosted_tools`，也可使用 `ChatService::web_search*` 便捷方法。账户查询、路由检查、token 估算和价格接口同时提供于 `LlmClient` 和 `ClientSnapshot`；配置管理属于 `ClientConfigManager`。图像生成与编辑使用 `client.images()` 或 `snapshot.images()`。
 
 ### `LlmClient`
 
@@ -142,17 +147,20 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | --- | --- | --- |
 | `chat()` | `ChatService<'_>` | 对话模型列表、完整响应与流式响应 |
 | `images()` | `ImageService<'_>` | 独立图像目录、生成、编辑与原生任务 |
+| `embeddings()` | `EmbeddingService<'_>` | 向量模型目录与请求 |
+| `retrieval()` | `RetrievalService<'_>` | 检索库、导入和搜索 |
+| `batches()` | `BatchService<'_>` | 原生批量提交、查询与输出 |
 
 | 方法 | 返回值 | 行为 |
 | --- | --- | --- |
-| `complete(&CompletionRequest, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | 解析路由、编码、认证、发送并解码完整响应 |
-| `complete_in(&str, &CompletionRequest, &RequestOptions).await` | 同上 | 显式指定起始 profile 或连接组；模型解析、凭证和执行使用同一路由 |
-| `stream(&CompletionRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 打开 HTTP 流，返回统一事件接口 |
-| `stream_in(&str, &CompletionRequest, &RequestOptions).await` | 同上 | 在指定 profile 或连接组上打开流 |
-| `web_search(&CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | 本次请求启用 provider 托管搜索，返回答案和来源 |
-| `web_search_stream(&CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 本次请求启用搜索并返回流式事件 |
-| `web_search_in(&str, &CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<CompletionResponse, LlmError>` | 在指定 profile 或连接组上执行搜索 |
-| `web_search_stream_in(&str, &CompletionRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 在指定 profile 或连接组上流式搜索 |
+| `complete(&ChatRequest, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | 解析路由、编码、认证、发送并解码完整响应 |
+| `complete_in(&str, &ChatRequest, &RequestOptions).await` | 同上 | 显式指定起始 profile 或连接组；模型解析、凭证和执行使用同一路由 |
+| `stream(&ChatRequest, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 打开 HTTP 流，返回统一事件接口 |
+| `stream_in(&str, &ChatRequest, &RequestOptions).await` | 同上 | 在指定 profile 或连接组上打开流 |
+| `web_search(&ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | 本次请求启用 provider 托管搜索，返回答案和来源 |
+| `web_search_stream(&ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 本次请求启用搜索并返回流式事件 |
+| `web_search_in(&str, &ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ChatResponse, LlmError>` | 在指定 profile 或连接组上执行搜索 |
+| `web_search_stream_in(&str, &ChatRequest, WebSearchConfig, &RequestOptions).await` | `Result<ModelStream, LlmError>` | 在指定 profile 或连接组上流式搜索 |
 | `resolve(&str)` | `Result<ResolvedRoute, ResolveError>` | 在配置中解析模型及故障转移链 |
 | `resolve_in(&str, Option<&str>)` | 同上 | 显式限制起始连接或连接组 |
 | `region()` | `Region` | 返回构建时选择的使用区域 |
@@ -160,20 +168,35 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `providers()` | `Vec<ProviderListing>` | 返回当前区域的连接，包括隐藏连接和没有凭证的连接 |
 | `account_usage(&str, &AccountQuery).await` | `Result<AccountSnapshot, AccountUsageError>` | 查询一个连接的账户额度与用量 |
 | `accounts_usage(&BTreeMap<String, AccountQuery>).await` | `Vec<(String, Result<AccountSnapshot, AccountUsageError>)>` | 逐连接查询，保留独立结果 |
-| `register_profile_account_source(&str, AccountIdentity, Arc<dyn AccountUsageSource>)` | `Result<(), ProviderStoreError>` | 配置变更后为连接重新绑定登录会话 |
-| `profiles()` | `&[ProviderProfile]` | 读取客户端使用的配置 |
+| `clone()` | `LlmClient` | 共享运行资源和 live 配置发布槽 |
+| `snapshot()` | `ClientSnapshot` | 将服务与查询固定到一个已发布状态 |
 | `codec_families()` | `Vec<ProtocolFamily>` | 查询 codec 协议族 |
 | `directory_shapes()` | `Vec<ProtocolFamily>` | 查询目录解析器支持的协议形状 |
 | `directory_for(&ProviderProfile)` | `Option<Arc<dyn ModelDirectory>>` | 根据 `model_list` 查找目录解析器 |
-| `estimate_local_tokens(&CompletionRequest)` | `Result<LocalTokenEstimate, LocalTokenCountError>` | 根据首选路由及精确模型 ID，离线估算可见的输入内容 |
-| `estimate_local_tokens_in(&str, &CompletionRequest)` | 同上 | 限定 profile 或连接组后估算输入内容 |
+| `estimate_local_tokens(&ChatRequest)` | `Result<LocalTokenEstimate, LocalTokenCountError>` | 根据首选路由及精确模型 ID，离线估算可见的输入内容 |
+| `estimate_local_tokens_in(&str, &ChatRequest)` | 同上 | 限定 profile 或连接组后估算输入内容 |
 | `price_quote(&str, Option<&str>, &PricingContext)` | `Result<PriceQuote, LlmError>` | 查询模型与档位的价格、来源和匹配条件 |
 | `estimate_stream_cost(&ResolvedRoute, &ModelStream, Submission)` | `Result<CostEstimate, LlmError>` | 使用流的实际连接、档位和发送时间估价 |
 | `estimate_cost(&ResolvedRoute, &Usage, &PricingContext)` | `Result<CostEstimate, LlmError>` | 按配置价格和当前时钟估算费用 |
-| `estimate_actual_cost(&ResolvedRoute, &CompletionResponse, Submission)` | 同上 | 根据完整响应的实际成功连接估价 |
+| `estimate_actual_cost(&ResolvedRoute, &ChatResponse, Submission)` | 同上 | 根据完整响应的实际成功连接估价 |
 | `estimate_cost_for_profile(&ResolvedRoute, &str, &UsageReport, &InferenceReport, Submission)` | 同上 | 根据指定的成功连接和实际档位估价 |
 
-配置在构建时复制。本地配置管理接口可以更新客户端的有效配置；直接调用目录解析器读取数据不会修改 `models()` 的结果。
+应用应长期保存 client，并 clone 给并行任务。Live 操作在入口捕获配置（异步调用在首次 poll 时捕获），长期保存服务句柄不会固定配置。配置提交不等待网络请求完成；直接调用目录解析器不会修改 `models()` 的结果。
+
+### `ClientSnapshot` 与 `ClientConfigManager`
+
+`client.snapshot()` 可低成本 clone，保留一个版本的配置、账户源绑定及缓存代际。`snapshot.revision()` 返回该发布版本，可用于诊断。它提供与 client 相同的服务、路由、账户、token 和价格接口，以及借用查询 `profiles() -> &[ProviderProfile]`、`provider(&str) -> Option<&ProviderProfile>`。保留返回引用前先把 snapshot 绑定到局部变量。预估、执行、计价需要一致性时共用一个 snapshot；live 价格查询使用查询时配置，不恢复历史价格。
+
+`ClientConfigManager` 负责配置加载、修改、同步和账户源重新绑定，方法均为异步 `&self`。管理器不实现 `Clone`，需要多个任务管理配置时可通过 `Arc` 共享。丢弃管理器后请求句柄继续使用最后发布的状态。
+
+| 管理查询／绑定方法 | 异步结果 |
+| --- | --- |
+| `deleted_builtin_profiles()` | `Result<BTreeSet<String>, ProviderStoreError>` |
+| `tracked_models(&str)` | `Result<Option<BTreeSet<String>>, ProviderStoreError>` |
+| `configured_models(&str)` | `Result<Vec<ConfiguredModel>, ProviderStoreError>` |
+| `register_profile_account_source(&str, AccountIdentity, Arc<dyn AccountUsageSource>)` | `Result<(), ProviderStoreError>` |
+
+配置修改和同步接口见[本地保存与多账号](#本地保存与多账号)；生命周期和基准说明见[共享 Client](client-reuse.md)。
 
 ## 请求与消息
 
@@ -183,18 +206,20 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | --- | --- | --- |
 | `credential` | `Option<Secret<String>>` / `None` | 本次请求的有效凭证；不读取配置中的环境变量或静态密钥 |
 | `fallback_credentials` | `BTreeMap<String, Secret<String>>` / 空 | 按备用 profile 名提供独立凭证；未提供时不会复用首连接密钥 |
+| `account_scope` | `Option<String>` / `None` | Responses 续传使用的不含密钥的稳定账号身份；未设置时不生成可复用引用 |
 | `total_timeout` | `Option<Duration>` / `None` | 逐请求总时限；`complete()` 省略时默认 120 秒（含视频的请求默认两小时），`stream()` 省略时不设总时限 |
 | `file_account_scope` | `Option<String>` / `None` | 不含密钥的稳定 provider 账号身份，用于绑定或跨请求复用 provider 文件引用 |
 
-### `CompletionRequest`
+### `ChatRequest`
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `model` | `String` | 配置中的显示名、wire ID、alias 或限定模型引用 |
-| `web_search` | `Option<WebSearchConfig>` | `None` 为默认关闭；`Some` 启用所选连接的托管搜索 |
-| `file_search` | `Option<FileSearchConfig>` | `None` 为默认关闭；Qwen Responses 的知识库搜索配置 |
-| `previous_response_id` | `Option<ResponseId>` | Responses 续接的上一个响应 ID |
-| `system` | `Vec<SystemBlock>` | 系统提示块：`text` 和 `cacheable` |
+| `output_format` | `OutputFormat` | 文本、JSON object 或 JSON Schema 输出契约 |
+| `prompt_cache` | `PromptCachePolicy` | 自动缓存 TTL 和请求块断点，见[服务说明](services.md) |
+| `hosted_tools` | `Vec<HostedTool>` | 提供方执行的搜索、检索、Code Interpreter；与宿主执行的 `tools` 分开 |
+| `continuation` | `Option<ContinuationRef>` | 绑定连接、模型和账户的 Responses 续传引用 |
+| `system` | `Vec<SystemBlock>` | 系统提示块：`text`；断点见 `prompt_cache` |
 | `messages` | `Vec<ConversationMessage>` | 本轮输入及调用方维护的历史 |
 | `tools` | `Vec<ToolSpec>` | 工具名称、说明、JSON Schema 与 `strict` 标志 |
 | `tool_choice` | `ToolChoice` | `Auto`、`Any`、`None` 或 `Tool { name }` |
@@ -205,13 +230,13 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 | `stop_sequences` | `Vec<String>` | 停止序列 |
 | `metadata` | `serde_json::Value` | codec 按其实现处理的附加数据，不是通用透传任意参数的承诺 |
 
-`CompletionRequest` 没有 `Default` 实现。通过 serde 读取时，`model`、`messages` 必填，其余有默认值或可省略。不同协议对工具选择、思考、多模态的表达不同，统一类型不保证每种组合都被所有服务接受。
+`ChatRequest` 没有 `Default` 实现。通过 serde 读取时，`model`、`messages` 必填，其余有默认值或可省略。不同协议对工具选择、思考、多模态的表达不同，统一类型不保证每种组合都被所有服务接受。
 
-`previous_response_id` 仅适用于 `OpenAiResponses` 且配置 `extra.supports_previous_response_id = true` 的端点。调用方保存响应 ID，并只发送需要新增的输入；客户端不自动保存会话。续接请求不会遍历故障转移连接，因为响应 ID 是端点侧状态。
+`continuation` 仅适用于 `OpenAiResponses` 且配置 `extra.supports_previous_response_id = true` 的端点。调用方提供稳定的 `RequestOptions.account_scope`，保存 `response.continuation`，下一次请求只发送新增输入。引用校验原始 provider、profile、端点、模型、账户及检索工作空间。续接请求不会故障转移或自动重提；流式引用在终止事件后通过 `ModelStream::continuation()` 获取。
 
 ### 消息和内容块
 
-`ConversationMessage { role, content }` 的角色为 `User`、`Assistant`、`System`。便捷方法有 `user_text(text)`、`assistant(blocks)`、`text()` 和 `tool_uses()`；`text()` 只拼接文本块，不包含思考内容。
+`ConversationMessage { role, content }` 的角色为 `User`、`Assistant`、`System`。便捷方法有 `user_text(text)`、`assistant(blocks)`、`text()` 和 `tool_uses()`；`text()` 只拼接文本块，不包含思考内容。`tool_uses()` 每项返回 `(id, toolset_name, name, input)`，处理客户端工具集时应按 `(toolset_name, name)` 一起分派。
 
 | `ContentBlock` 变体 | 字段 / 用途 |
 | --- | --- |
@@ -227,11 +252,11 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 
 Base64 源携带 `media_type` 和 `data`；URL 源携带 `url`。库不执行工具、不自动下载附件。工具调用返回后，宿主执行工具，把带相同 `tool_use_id` 的结果加入下一轮输入。
 
-### `CompletionResponse`
+### `ChatResponse`
 
 `UsageReport` 将 `Option<Usage>` 与 `Missing`、`Partial`、`Complete`、`Invalid` 状态统一保存。仅有 usage 数值的旧格式不再接受；实际成本 API 只接受完整报告。
 
-返回 `message: ConversationMessage`、`web_search: Option<WebSearchResult>`、`file_search: Option<FileSearchResult>`、`stop_reason: StopReason`、`usage: UsageReport`、`model: String`、`response_id: Option<ResponseId>`、`inference: InferenceReport` 和 `executed_profile: Option<String>`。高层 `complete()` 会设置实际成功的连接名称；直接调用 codec 解码时此字段为 `None`。`StopReason` 包括 `EndTurn`、`ToolUse`、`MaxTokens`、`StopSequence`、`Refusal` 和 `Other(String)`。
+返回 `message: ConversationMessage`、`web_search: Option<WebSearchResult>`、`file_search: Option<FileSearchResult>`、`stop_reason: StopReason`、`usage: UsageReport`、`model: String`、`response_id: Option<ResponseId>`、`continuation: Option<ContinuationRef>`、`inference: InferenceReport` 和 `executed_profile: Option<String>`。高层 `complete()` 会设置实际成功的连接名称；直接调用 codec 解码时此字段为 `None`。`StopReason` 包括 `EndTurn`、`ToolUse`、`MaxTokens`、`StopSequence`、`Refusal` 和 `Other(String)`。
 
 `inference` 保留请求的推理 effort 与服务档位、供应商回报的实际档位及本地执行时间。请求值不能证明实际档位，详见[推理控制与价格](inference.md)。
 
@@ -239,33 +264,37 @@ Base64 源携带 `media_type` 和 `data`；URL 源携带 `url`。库不执行工
 
 以下函数写在调用方应用中。`append_tool_results` 接收 `response.message` 和应用自己的工具执行器，保留完整 assistant 消息（包括签名与原生内容），并用调用 ID 配对结果。宿主在回调中处理权限与工具错误，然后决定是否发起下一次请求。若 `response.executed_profile` 有值，后续重放应使用该实际执行连接。
 
-此示例使用完整历史重放（`previous_response_id: None`）。状态续接则使用返回的响应 ID，仅发送新增输入，并固定到相同连接。下面的上下文恢复函数演示宿主“最多重试一次”的策略：调用方提供 `reduce`，它必须保留有效的工具调用／结果配对及重放签名；这不是客户端自动执行的行为。
+这个执行器示例只返回文本；Browser 标签管理等需要结构化结果的工具，应使用 `ToolResult.blocks` 并保留 `toolset_name`，见[客户端工具集](anthropic-client-toolsets.md)。
+
+此示例使用完整历史重放（`continuation: None`）。状态续接则使用返回的 `ContinuationRef`、相同 `account_scope` 和新增输入，并固定到相同连接。下面的上下文恢复函数演示宿主“最多重试一次”的策略：调用方提供 `reduce`，它必须保留有效的工具调用／结果配对及重放签名；这不是客户端自动执行的行为。
 
 ```rust,no_run
 use lingxi_llm_client::protocol::{
-    CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage,
+    ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
     LlmError, MessageRole,
 };
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 fn append_tool_results(
-    request: &mut CompletionRequest,
+    request: &mut ChatRequest,
     assistant: ConversationMessage,
-    mut execute: impl FnMut(&str, &serde_json::Value) -> Result<String, String>,
+    mut execute: impl FnMut(Option<&str>, &str, &serde_json::Value) -> Result<String, String>,
 ) -> bool {
-    let results: Vec<_> = assistant.tool_uses().map(|(id, name, input)| {
-        let (content, is_error) = match execute(name, input) {
+    let results: Vec<_> = assistant.tool_uses().map(|(id, toolset_name, name, input)| {
+        let (content, is_error) = match execute(toolset_name, name, input) {
             Ok(output) => (output, false),
             Err(error) => (error, true),
         };
         ContentBlock::ToolResult {
             tool_use_id: id.clone(), content, is_error, blocks: None,
+            toolset_name: toolset_name.map(str::to_owned),
         }
     }).collect();
     request.messages.push(assistant);
     let has_results = !results.is_empty();
     if has_results {
         request.messages.push(ConversationMessage {
+            anthropic: None,
             role: MessageRole::User, content: results,
         });
     }
@@ -275,10 +304,10 @@ fn append_tool_results(
 async fn call_with_one_context_retry(
     client: &LlmClient,
     profile: &str,
-    request: CompletionRequest,
+    request: ChatRequest,
     options: &RequestOptions,
-    reduce: impl FnOnce(CompletionRequest, &LlmError) -> CompletionRequest,
-) -> Result<CompletionResponse, LlmError> {
+    reduce: impl FnOnce(ChatRequest, &LlmError) -> ChatRequest,
+) -> Result<ChatResponse, LlmError> {
     match client.chat().complete_in(profile, &request, options).await {
         Err(error @ (LlmError::ContextOverflow { .. } | LlmError::RequestTooLarge { .. })) => {
             let reduced = reduce(request, &error);
@@ -302,10 +331,10 @@ async fn call_with_one_context_retry(
 
 ## Web Search 接口
 
-`web_search()` 和 `web_search_stream()` 接受普通 `CompletionRequest`、本次搜索的 `WebSearchConfig` 和 `RequestOptions`。两种方法只克隆请求并设置 `web_search`，随后使用与 `complete()` / `stream()` 相同的路由、认证和故障转移逻辑；原请求不会被修改。传入的配置覆盖请求中已有的 `web_search`。也可以直接设置 `request.web_search = Some(config)` 后调用普通方法，效果相同。这里的“接口”是 Rust 客户端方法，本库不提供独立 HTTP 搜索服务。
+`web_search()` 和 `web_search_stream()` 接受普通 `ChatRequest`、本次搜索的 `WebSearchConfig` 和 `RequestOptions`。两种方法只克隆请求并替换其中的托管 Web Search 配置，其他托管工具仍保留；随后使用与 `complete()` / `stream()` 相同的路由、认证和故障转移逻辑。原请求不会被修改。也可以直接设置 `request.set_hosted_web_search(Some(config))` 后调用普通方法，效果相同。这里的“接口”是 Rust 客户端方法，本库不提供独立 HTTP 搜索服务。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, ConversationMessage, LlmError, Secret, WebSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, LlmError, Secret, WebSearchConfig};
 use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
@@ -313,7 +342,7 @@ async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
-    let request: CompletionRequest = serde_json::from_value(serde_json::json!({
+    let request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "glm/glm-4.7",
         "messages": [{"role": "user", "content": [{"type": "text", "text": "查找 Rust 最新版本，给出来源"}]}]
     }))?;
@@ -322,7 +351,7 @@ async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
         ..RequestOptions::default()
     };
     let config = WebSearchConfig::default();
-    let response = client.web_search(&request, config, &options).await?;
+    let response = client.chat().web_search(&request, config, &options).await?;
     println!("{}", response.message.text());
     if let Some(search) = response.web_search {
         for source in search.citations {
@@ -348,11 +377,11 @@ async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 流式调用：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, LlmError, StreamEvent, WebSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError, StreamEvent, WebSearchConfig};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
-async fn search_stream(client: &LlmClient, request: &CompletionRequest, options: &RequestOptions) -> Result<(), LlmError> {
-    let mut stream = client.web_search_stream(request, WebSearchConfig::default(), options).await?;
+async fn search_stream(client: &LlmClient, request: &ChatRequest, options: &RequestOptions) -> Result<(), LlmError> {
+    let mut stream = client.chat().web_search_stream(request, WebSearchConfig::default(), options).await?;
     while let Some(event) = stream.next().await {
         match event? {
             StreamEvent::TextDelta { text, .. } => print!("{text}"),
@@ -377,19 +406,19 @@ async fn search_stream(client: &LlmClient, request: &CompletionRequest, options:
 Qwen Responses profile 可在请求上设置单个知识库 ID 和其 Model Studio workspace ID。该功能目前适用于 Qwen Max / Flash 支持的 Responses 连接；内置的北京、新加坡、美国和香港 Qwen Search profile 已声明 `extra.file_search = "qwen"`。客户端会使用 workspace 专属的区域域名发送该 Responses 请求；普通模型请求仍使用 profile 配置的 base URL。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, FileSearchConfig, Secret};
+use lingxi_llm_client::protocol::{ChatRequest, FileSearchConfig, Secret};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 // client 必须使用 Region::ChinaMainland；国际连接请改用对应区域的 profile 和凭证。
 async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
+    let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "qwen3.8-max",
         "messages": [{"role":"user","content":[{"type":"text","text":"按知识库回答问题"}]}]
     }))?;
-    request.file_search = Some(FileSearchConfig {
+    request.set_hosted_file_search(Some(FileSearchConfig {
         knowledge_base_id: "kb-123".into(),
         workspace_id: "ws-example".into(),
-    });
+    }));
     let options = RequestOptions {
         credential: Some(Secret::new(api_key)),
         ..RequestOptions::default()
@@ -409,12 +438,12 @@ async fn ask_qwen(client: &LlmClient, api_key: String) -> Result<(), Box<dyn std
 ## 流式响应
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, LlmError, StreamEvent};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError, StreamEvent};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 async fn read_stream(
     client: &LlmClient,
-    request: &CompletionRequest,
+    request: &ChatRequest,
     options: &RequestOptions,
 ) -> Result<(), LlmError> {
     let mut stream = client.chat().stream(request, options).await?;
@@ -444,7 +473,7 @@ async fn read_stream(
 | `ProviderContent { block, protocol, value }` | 完整原生 reasoning 数据；按输出索引存为 `ContentBlock::ProviderContent` 并在下一轮原样回传。同索引的思考增量仅用于展示，不能替代该数据 |
 | `ThoughtSignature { block, signature }` | 思考签名，需与对应 block 一起保留 |
 | `RedactedThinking { block, data }` | 不透明思考数据 |
-| `ToolCallDelta { block, id, name, arguments_fragment }` | 工具参数片段；按 block 累积后再解析 JSON |
+| `ToolCallDelta { block, id, provider_id, caller, toolset_name, name, arguments_fragment }` | 工具参数片段；按 block 累积后再解析 JSON。Anthropic 客户端工具集使用 `(toolset_name, name)` 分派 |
 | `WebSearch { result }` | 托管搜索来源及 provider 原生元数据；可能出现多次 |
 | `FileSearch { result }` | Qwen 托管知识库查询与命中结果；重复的最终输出会去重 |
 | `Inference { report }` | 服务端档位与 effort 观测；与请求值区分 |
@@ -478,6 +507,8 @@ Anthropic 的 `message_start` 计数属于初始值，即使包含数值有效�
 | `supports_websockets` 等 WebSocket 字段 | 配置元数据；高层客户端当前仍使用 HTTP |
 
 `ModelProfile` 必须指定 `display_model`、`request_model`、`billing_model`；可添加 `aliases`、`description`、`metadata`、`capability_support`、`pricing` 和模型级 `billing_mode`。三种模型名分别用于显示/匹配、请求协议和价格归属。`metadata` 保存上下文窗口、输出上限、模态等目录数据。
+
+`ModelProfile.foundry` 可保存 `FoundryDeployment { hosting, model_id }`，用于 Foundry 按托管位置和底层模型校验工具能力；请求仍发送 `request_model` 部署名。该字段通过 `ModelField::Foundry` 支持覆盖、清除和继承，不从价格或部署名推断。见 [Foundry 指南](anthropic-foundry.md)。
 
 `capability_support` 使用 `unknown`、`supported`、`unsupported` 三种状态。`ModelProfile::capability_support_for(ModelCapability)` 返回明确的支持状态；缺失字段保持未知。旧布尔能力字段和回退逻辑已删除。推理参数的范围和组合约束另见 `info.features`。
 
@@ -539,39 +570,39 @@ Azure 必须配置 `azure.api_version`；`azure.deployment` 省略时使用 `req
 
 ### 内置配置与扩展参数
 
-`builtin_providers() -> Result<Vec<ProviderProfile>, PresetError>` 返回编译进库的静态目录。`merge_providers(user)` 保留用户条目，并追加未被同名用户条目覆盖的预设；这是整条 profile 覆盖，不是字段合并。用户输入中的重复名称仍由 builder 拒绝。`PresetError` 分为解析失败 `Invalid` 和空模型列表 `NoModels`。
+`builtin_catalog() -> Result<&'static [ProviderProfile], PresetError>` 返回进程内只解析一次的只读内置目录。`builtin_providers() -> Result<Vec<ProviderProfile>, PresetError>` 从该缓存复制可编辑目录，配置合并也复用同一份解析结果。`merge_providers(user)` 保留用户条目，并追加未被同名用户条目覆盖的预设；这是整条 profile 覆盖，不是字段合并。用户输入中的重复名称仍由 builder 拒绝。`PresetError` 分为解析失败 `Invalid` 和空模型列表 `NoModels`。
 
 ### 本地保存与多账号
 
-`LlmClient` 创建后可调用 `set_config_dir(path)`。库在该目录管理 `providers.json`，立即加载其中的 profile，并将目录固定为绝对路径，后续工作目录变化不会改变保存位置；同名账户的连接设置覆盖静态定义，模型字段按来源合并，详见 [v2 配置说明](architecture-migration.md)。再次设置目录时会清除上一个目录加载的配置。多个客户端写入同一目录时，库使用 `.providers.json.lock` 协调写入，并在锁内读取最新配置后应用本次修改；直接修改 JSON 的外部程序也需要遵守这个锁。`sync_provider(profile_name, credential).await` 使用该连接自己的凭证读取模型目录，按 `request_model` 更新现有模型、加入新模型，再保存配置。目录缺失、请求失败或写盘失败时，旧文件与内存配置保持不变。同步不会删除目录未返回的旧模型，也不会改变已有模型的 `hidden`、价格、能力或别名。目录明确报告不兼容的模型时，同步会按 profile 持久保存排除记录，并从有效模型列表和路由中排除该模型，避免旧配置、白名单变化或重启绕过排除；仍在白名单中的完整模型元数据继续保存，目录明确恢复兼容后复用原有设置；目录未返回的 ID 不会被视为不兼容。后续目录明确报告支持该 ID，或显式替换 profile、恢复内置 profile、删除 profile 时，会清除相应的排除记录。Gemini 行缺少 `supportedGenerationMethods` 时支持状态仍为未知，会保留模型行但不会清除已有排除记录。
+通过 `build_managed()` 创建 `(client, config)` 后，调用 `config.set_config_dir(path).await?`。库在该目录管理 `providers.json`，立即加载其中的 profile，并将目录固定为绝对路径，后续工作目录变化不会改变保存位置；同名账户的连接设置覆盖静态定义，模型字段按来源合并，详见 [v3 配置说明](architecture-migration.md)。再次设置目录时会清除上一个目录加载的配置。多个客户端写入同一目录时，库使用 `.providers.json.lock` 协调写入，并在锁内读取最新配置后应用本次修改；直接修改 JSON 的外部程序也需要遵守这个锁。`sync_provider(profile_name, credential).await` 使用该连接自己的凭证读取模型目录，按 `request_model` 更新现有模型、加入新模型，再保存配置。目录缺失、请求失败或写盘失败时，旧文件与内存配置保持不变。同步不会删除目录未返回的旧模型，也不会改变已有模型的 `hidden`、价格、能力或别名。目录明确报告不兼容的模型时，同步会按 profile 持久保存排除记录，并从有效模型列表和路由中排除该模型，避免旧配置、白名单变化或重启绕过排除；仍在白名单中的完整模型元数据继续保存，目录明确恢复兼容后复用原有设置；目录未返回的 ID 不会被视为不兼容。后续目录明确报告支持该 ID，或显式替换 profile、恢复内置 profile、删除 profile 时，会清除相应的排除记录。Gemini 行缺少 `supportedGenerationMethods` 时支持状态仍为未知，会保留模型行但不会清除已有排除记录。
 
-同步过程的文件读取、文件锁和写盘运行在 Tokio 的 blocking 线程池上。`sync_provider()` 是串行便捷入口；需要在目录网络请求期间继续使用客户端时，先调用同步方法 `prepare_provider_sync()` 获得独立的 `ProviderSyncOperation`，再执行其 `fetch().await`，最后通过 `apply_provider_sync(result).await` 提交。准备操作不访问磁盘，并复制本次凭证和必要配置；operation 不借用客户端，宿主可在网络等待前释放自己的客户端锁。
+配置管理 API 均通过 `ClientConfigManager` 异步调用。文件读取、文件锁和写盘运行在 Tokio 的 blocking 线程池上。`config.sync_provider(...).await` 是便捷入口；需要独立调度获取过程时，使用 `config.prepare_provider_sync(...).await`、`operation.fetch().await` 和 `config.apply_provider_sync(result).await`。准备操作复制本次凭证和必要配置，fetch 不持有管理锁，请求 client 在整个过程都可独立使用。
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, ProviderStoreError};
+use lingxi_llm_client::{ClientConfigManager, ProviderStoreError};
 use lingxi_llm_client::protocol::Secret;
 
 async fn refresh(
-    client: &mut LlmClient,
+    config: &ClientConfigManager,
     credential: &Secret<String>,
 ) -> Result<usize, ProviderStoreError> {
-    let operation = client.prepare_provider_sync("primary", Some(credential))?;
-    // operation 已拥有获取目录所需的数据，可独立调度；不再借用 client。
+    let operation = config.prepare_provider_sync("primary", Some(credential)).await?;
+    // operation 拥有获取目录所需的数据；fetch 期间不持有配置管理锁。
     let result = operation.fetch().await?;
-    client.apply_provider_sync(result).await
+    config.apply_provider_sync(result).await
 }
 ```
 
-获取目录前会核对磁盘上的连接配置，提交时再次在文件锁内校验并合并最新配置。结果还绑定准备时的配置目录代次；切换目录后，即使再切回原路径，旧结果也会被拒绝。丢弃尚未提交的获取操作不会修改配置。提交操作在进入写入前检查取消状态，但写入开始后取消仍可能留下已更新的文件和未更新的客户端快照；遇到这种取消时，再次调用 `set_config_dir()` 可重新加载已持久化状态。同步配置管理方法（如 `add_provider()`）仍是阻塞接口，宿主从异步任务调用时应安排在合适的阻塞执行环境中。
+获取目录前会核对磁盘上的连接配置，提交时再次在文件锁内校验并合并最新配置。结果还绑定准备时的配置目录代次；切换目录后，即使再切回原路径，旧结果也会被拒绝。丢弃尚未提交的获取操作不会修改配置。worker 在写入前检查取消状态；一旦开始写盘，即使调用方取消等待，也继续完成成功提交的内存安装和发布。验证或写盘失败保持原发布状态，配置提交不等待 client 的网络请求。
 
 目录观察没有版本号；同一 profile 的并发获取结果按 `apply_provider_sync()` 的提交顺序应用。新鲜度校验只验证连接配置和配置目录代次。若宿主要求最近发起的刷新优先，应串行刷新该 profile，或在提交前丢弃过期结果。
 
 | 操作 | API | 保存行为 |
 | --- | --- | --- |
-| 新增 / 修改 | `add_provider(profile)` | 按 `profile_name` 新增或整条替换并写盘；也可用于多账号中的单个账号 |
-| 查询 | `provider(profile_name)`、`profiles()`、`providers()`、`deleted_builtin_profiles()` | 读取配置、列表摘要及已软删除内置项的名称 |
-| 删除 | `remove_provider(profile_name)` | 自定义 profile 从文件删除；内置 profile 记录软删除，重启后仍停用 |
-| 恢复内置项 | `restore_builtin(profile_name)` | 清除软删除标记并保存库内预设；即使 builder 有同名自定义覆盖也以预设为准 |
+| 新增 / 修改 | `config.add_provider(profile).await?` | 按 `profile_name` 新增或整条替换并写盘；也可用于多账号中的单个账号 |
+| 查询 | `snapshot.provider(profile_name)`、`snapshot.profiles()`、`client.providers()`、`config.deleted_builtin_profiles().await?` | 读取配置、列表摘要及已软删除内置项名称的 owned 副本 |
+| 删除 | `config.remove_provider(profile_name).await?` | 自定义 profile 从文件删除；内置 profile 记录软删除，重启后仍停用 |
+| 恢复内置项 | `config.restore_builtin(profile_name).await?` | 清除软删除标记并保存库内预设；即使 builder 有同名自定义覆盖也以预设为准 |
 
 删除的是单个连接账号，不会连带删除同组的其他账号；如需停用整个 provider，逐个删除其 profile。重加一个已软删除的同名配置也会清除软删除标记。自定义 profile 若由宿主在每次启动时再次传给 builder，宿主还须从自己的输入中移除它。
 
@@ -584,18 +615,18 @@ use lingxi_llm_client::protocol::{ProviderProfile, Secret};
 use lingxi_llm_client::LlmClientBuilder;
 
 # async fn example(primary: ProviderProfile, spare: ProviderProfile) -> Result<(), Box<dyn std::error::Error>> {
-let mut client = LlmClientBuilder::new(&[])?
+let (client, config) = LlmClientBuilder::new(&[])?
         .with_region(lingxi_llm_client::protocol::Region::International)
-        .build()?;
-client.set_config_dir("./config")?;
-client.set_tracked_models("acme", ["model-id".to_owned()])?;
-client.add_provider(primary)?;
-client.add_provider(spare)?;
-client.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
-client.set_model_visibility("primary", "model-id", false)?;
-assert!(client.provider("primary").is_some());
-client.untrack_model("acme", "model-id")?;
-client.remove_provider("primary")?;
+        .build_managed()?;
+config.set_config_dir("./config").await?;
+config.set_tracked_models("acme", ["model-id".to_owned()]).await?;
+config.add_provider(primary).await?;
+config.add_provider(spare).await?;
+config.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
+config.set_model_visibility("primary", "model-id", false).await?;
+assert!(client.snapshot().provider("primary").is_some());
+config.untrack_model("acme", "model-id").await?;
+config.remove_provider("primary").await?;
 # Ok(())
 # }
 ```
@@ -732,12 +763,12 @@ fn show_estimate(client: &LlmClient, model: &str, usage: &Usage) -> Result<(), L
 
 ```rust,no_run
 use lingxi_llm_client::{
-    protocol::CompletionRequest, LocalTokenCountError, LocalTokenEstimate, LlmClient,
+    protocol::ChatRequest, LocalTokenCountError, LocalTokenEstimate, LlmClient,
 };
 
 fn estimate_input(
     client: &LlmClient,
-    request: &CompletionRequest,
+    request: &ChatRequest,
 ) -> Result<LocalTokenEstimate, LocalTokenCountError> {
     let estimate = client.estimate_local_tokens(request)?;
     println!("{} tokens via {}", estimate.input_tokens, estimate.tokenizer);
@@ -806,7 +837,7 @@ ChatGPT/Codex、GitHub Copilot 和 Kimi Code 的用户账户查询由宿主提�
 
 Copilot 也可在每次查询的 `AccountQuery.credential` 中提供对应用户的 GitHub 令牌；此时共享 SDK 数据源会按令牌分别查询，不需要逐连接绑定。
 
-替换、删除或重载已变更的连接会清除其按连接绑定的账户源；切换配置目录也会清除这些绑定。供应商级单账号会话源的隐式绑定同时失效，此后需要会话绑定的查询会返回 `AmbiguousAccountSource`；无状态来源及每次显式提供用户 token 的查询仍可复用。重新登录后应调用 `LlmClient::register_profile_account_source`，避免把旧会话额度标到新连接。
+新发布状态中，替换、删除或重载已变更的连接会清除其按连接绑定的账户源；切换配置目录也会清除这些绑定。供应商级单账号会话源的隐式绑定同时失效，此后需要会话绑定的查询会返回 `AmbiguousAccountSource`；无状态来源及每次显式提供用户 token 的查询仍可复用。重新登录后应异步调用 `config.register_profile_account_source(...)`，避免把旧会话额度标到新连接。已有 snapshot 和在途账户查询仍配对保留原连接及其账户源绑定。
 
 ## 错误处理
 
@@ -850,3 +881,10 @@ cargo doc --no-deps --open
 
 
 详见[推理控制与服务档位价格](inference.md)：`info.features`、`info.pricing`、`price_quote`、`estimate_cost` 和 `estimate_stream_cost`。
+
+Qwen Audio Generation 使用 `LlmClient` 与 `ClientSnapshot` 上独立的 `qwen_audio_generation(scope)` 入口，显式绑定北京工作空间并逐次提供凭证。见 [Qwen Audio Generation](qwen-audio-generation.md)。
+
+`realtime::QwenLiveTranslateSession` 提供独立3.5/3.8音视频实时翻译，使用显式北京/新加坡工作空间路由与可注入实时传输。[Qwen LiveTranslate](qwen-translate.md)。
+
+
+`realtime::OpenAiLiveSession` 提供独立 GPT-Live 主 WebSocket 会话、显式工具委派和关闭流程。参见 [OpenAI GPT-Live](openai-live.md)。

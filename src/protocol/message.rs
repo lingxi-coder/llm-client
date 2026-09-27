@@ -42,6 +42,16 @@ pub enum ContentBlock {
         /// calls with results when an older provider omits this field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_id: Option<String>,
+        /// Native provider metadata describing how the tool was invoked.
+        /// Anthropic uses this to identify calls made from Code Execution and
+        /// to associate them with the paused server-tool call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<Value>,
+        /// Anthropic client-toolset family for Browser/Computer members.
+        /// Dispatch member calls by this field together with `name` because
+        /// toolset members may share names with other tools.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        toolset_name: Option<String>,
         /// Gemini's opaque signature, attached to this exact call part.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
@@ -57,6 +67,10 @@ pub enum ContentBlock {
         /// images or resources). Sent verbatim when present.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blocks: Option<Vec<Value>>,
+        /// Anthropic client-toolset family of the paired call, echoed on
+        /// Browser/Computer member results.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        toolset_name: Option<String>,
     },
 
     /// Extended-thinking trace. `signature` must round-trip: providers that sign
@@ -88,6 +102,80 @@ pub enum ContentBlock {
     Video {
         source: VideoSource,
     },
+
+    /// Base64-encoded audio input for OpenRouter Chat or Gemini GenerateContent.
+    /// `format` is a provider-supported format such as `wav` or `mp3`;
+    /// codecs validate their own formats and encode the appropriate wire part.
+    /// This content part does not accept URLs.
+    Audio {
+        format: String,
+        data: String,
+    },
+}
+
+/// Audio formats documented by OpenRouter for Chat Completions audio output.
+/// A selected model may support only a subset of these formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpenRouterChatAudioFormat {
+    Wav,
+    Mp3,
+    Flac,
+    Opus,
+    Pcm16,
+}
+
+impl OpenRouterChatAudioFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wav => "wav",
+            Self::Mp3 => "mp3",
+            Self::Flac => "flac",
+            Self::Opus => "opus",
+            Self::Pcm16 => "pcm16",
+        }
+    }
+}
+
+/// Per-request voice and format for OpenRouter Chat Completions audio output.
+///
+/// `write_metadata` stores this under `openrouter_chat_audio` in
+/// [`crate::protocol::ChatRequest::metadata`]. The Chat codec turns it into
+/// OpenRouter's top-level `modalities` and `audio` fields. OpenRouter requires
+/// a streaming request for audio output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenRouterChatAudioOutput {
+    pub voice: String,
+    pub format: OpenRouterChatAudioFormat,
+}
+
+impl OpenRouterChatAudioOutput {
+    pub fn new(voice: impl Into<String>, format: OpenRouterChatAudioFormat) -> Self {
+        Self {
+            voice: voice.into(),
+            format,
+        }
+    }
+
+    /// Add the provider-specific configuration while retaining unrelated
+    /// object metadata. Returns an error instead of discarding non-object
+    /// metadata that the caller may already rely on.
+    pub fn write_metadata(&self, metadata: &mut Value) -> Result<(), &'static str> {
+        if metadata.is_null() {
+            *metadata = Value::Object(Default::default());
+        }
+        let Some(object) = metadata.as_object_mut() else {
+            return Err("OpenRouter Chat audio configuration requires object request metadata");
+        };
+        object.insert(
+            "openrouter_chat_audio".to_owned(),
+            serde_json::json!({
+                "voice": self.voice,
+                "format": self.format.as_str(),
+            }),
+        );
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,8 +260,10 @@ pub struct ProviderFileSource {
     /// Connection which created the provider file. The client checks it
     /// against the current route before sending the reference.
     pub profile_name: String,
-    /// Deterministic, non-secret fingerprint of the full configured base URL.
-    /// Missing fingerprints from older serialized references are rejected.
+    /// Deterministic, non-secret fingerprint of the configured file endpoint.
+    /// Routes with a documented canonical resource identity (Foundry Files)
+    /// use that canonical base. Missing fingerprints from older serialized
+    /// references are rejected.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub endpoint_fingerprint: String,
     /// Optional stable, non-secret account identity supplied by the host.
@@ -188,6 +278,14 @@ pub struct ProviderFileSource {
     /// id for management. This is not a public or cross-device display URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
+    /// Provider-reported expiry for this file. The original timestamp string
+    /// is retained so references round-trip without normalizing provider data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Provider-reported processing status, retained verbatim for local
+    /// readiness checks. It is not sent as model-input data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_status: Option<String>,
     /// Required by providers whose model-input URI does not carry the
     /// uploaded file's media type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,11 +296,42 @@ pub struct ProviderFileSource {
     pub purpose: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicClearAt {
+    Never,
+    NextUserMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnthropicMessageEffort {
+    Low,
+    Medium,
+    High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
+}
+
+/// Anthropic-only metadata associated with one message. Codecs map these
+/// options to the provider's supported message-level fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnthropicMessageOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clear_at: Option<AnthropicClearAt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<AnthropicMessageEffort>,
+}
+
 /// One message of the transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMessage {
     pub role: MessageRole,
     pub content: Vec<ContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic: Option<AnthropicMessageOptions>,
 }
 
 impl ConversationMessage {
@@ -213,6 +342,18 @@ impl ConversationMessage {
                 text: text.into(),
                 thought_signature: None,
             }],
+            anthropic: None,
+        }
+    }
+
+    pub fn system_text(text: impl Into<String>) -> Self {
+        Self {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                thought_signature: None,
+            }],
+            anthropic: None,
         }
     }
 
@@ -220,15 +361,27 @@ impl ConversationMessage {
         Self {
             role: MessageRole::Assistant,
             content,
+            anthropic: None,
         }
     }
 
-    /// Every tool call this message requests, in order.
-    pub fn tool_uses(&self) -> impl Iterator<Item = (&ToolUseId, &str, &Value)> {
+    pub fn with_anthropic_options(mut self, options: AnthropicMessageOptions) -> Self {
+        self.anthropic = Some(options);
+        self
+    }
+
+    /// Every tool call this message requests, in order, as
+    /// `(id, toolset_name, member_name, input)`. Dispatch namespaced calls by
+    /// the `(toolset_name, member_name)` pair.
+    pub fn tool_uses(&self) -> impl Iterator<Item = (&ToolUseId, Option<&str>, &str, &Value)> {
         self.content.iter().filter_map(|b| match b {
             ContentBlock::ToolUse {
-                id, name, input, ..
-            } => Some((id, name.as_str(), input)),
+                id,
+                name,
+                input,
+                toolset_name,
+                ..
+            } => Some((id, toolset_name.as_deref(), name.as_str(), input)),
             _ => None,
         })
     }
@@ -260,10 +413,92 @@ mod tests {
             content: "ok".into(),
             is_error: false,
             blocks: None,
+            toolset_name: None,
         };
         let s = serde_json::to_string(&b).unwrap();
         assert!(!s.contains("blocks"));
+        assert!(!s.contains("toolset_name"));
         assert_eq!(serde_json::from_str::<ContentBlock>(&s).unwrap(), b);
+    }
+
+    #[test]
+    fn client_toolset_names_round_trip_and_null_decodes_as_absent() {
+        let use_block = ContentBlock::ToolUse {
+            id: ToolUseId::new("toolu_browser"),
+            name: "screenshot".into(),
+            input: serde_json::json!({"tab_id": "1"}),
+            provider_id: None,
+            caller: None,
+            toolset_name: Some("browser".into()),
+            thought_signature: None,
+        };
+        let use_value = serde_json::to_value(&use_block).unwrap();
+        assert_eq!(use_value["toolset_name"], "browser");
+        assert_eq!(
+            serde_json::from_value::<ContentBlock>(use_value).unwrap(),
+            use_block
+        );
+
+        let result_block = ContentBlock::ToolResult {
+            tool_use_id: ToolUseId::new("toolu_browser"),
+            content: "done".into(),
+            is_error: false,
+            blocks: None,
+            toolset_name: Some("browser".into()),
+        };
+        let result_value = serde_json::to_value(&result_block).unwrap();
+        assert_eq!(result_value["toolset_name"], "browser");
+        assert_eq!(
+            serde_json::from_value::<ContentBlock>(result_value).unwrap(),
+            result_block
+        );
+
+        let null_use = serde_json::json!({
+            "type": "tool_use",
+            "id": "toolu_legacy",
+            "name": "lookup",
+            "input": {},
+            "toolset_name": null
+        });
+        assert!(matches!(
+            serde_json::from_value::<ContentBlock>(null_use).unwrap(),
+            ContentBlock::ToolUse {
+                toolset_name: None,
+                ..
+            }
+        ));
+        let omitted_result = serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_legacy",
+            "content": "done",
+            "is_error": false
+        });
+        assert!(matches!(
+            serde_json::from_value::<ContentBlock>(omitted_result).unwrap(),
+            ContentBlock::ToolResult {
+                toolset_name: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn tool_uses_exposes_toolset_name_with_member_name() {
+        let message = ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+            id: ToolUseId::new("toolu_browser"),
+            name: "screenshot".into(),
+            input: serde_json::json!({"tab_id": "1"}),
+            provider_id: None,
+            caller: None,
+            toolset_name: Some("browser".into()),
+            thought_signature: None,
+        }]);
+
+        let (id, toolset_name, name, input) = message.tool_uses().next().unwrap();
+        assert_eq!(id.as_str(), "toolu_browser");
+        assert_eq!(toolset_name, Some("browser"));
+        assert_eq!(name, "screenshot");
+        assert_eq!(input["tab_id"], "1");
     }
 
     #[test]
@@ -274,5 +509,42 @@ mod tests {
         };
         let s = serde_json::to_string(&b).unwrap();
         assert_eq!(serde_json::from_str::<ContentBlock>(&s).unwrap(), b);
+    }
+
+    #[test]
+    fn anthropic_message_options_are_typed_optional_metadata() {
+        let message = ConversationMessage::system_text("Reminder").with_anthropic_options(
+            AnthropicMessageOptions {
+                clear_at: Some(AnthropicClearAt::NextUserMessage),
+                effort: Some(AnthropicMessageEffort::XHigh),
+            },
+        );
+        let value = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            value["anthropic"],
+            serde_json::json!({
+                "clear_at":"next_user_message",
+                "effort":"xhigh"
+            })
+        );
+
+        let legacy: ConversationMessage = serde_json::from_value(serde_json::json!({
+            "role":"user",
+            "content":[{"type":"text","text":"hello"}]
+        }))
+        .unwrap();
+        assert_eq!(legacy.anthropic, None);
+        assert!(
+            serde_json::to_value(ConversationMessage::user_text("hello"))
+                .unwrap()
+                .get("anthropic")
+                .is_none()
+        );
+        assert!(
+            serde_json::from_value::<AnthropicMessageOptions>(serde_json::json!({
+                "unknown":true
+            }))
+            .is_err()
+        );
     }
 }

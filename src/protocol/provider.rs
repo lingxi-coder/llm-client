@@ -373,6 +373,11 @@ pub struct ModelProfile {
     /// Model id used by pricing lookup. Often equal to `request_model`, but a
     /// provider may bill a family under one id and serve several wire ids.
     pub billing_model: String,
+    /// Explicit underlying Claude identity for a Microsoft Foundry deployment.
+    /// `request_model` remains the deployment name sent on the wire.
+    /// Neither this identity nor hosting is inferred from that name or pricing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foundry: Option<FoundryDeployment>,
     /// Exclude this model from picker listings while keeping it addressable.
     #[serde(default)]
     pub hidden: bool,
@@ -405,6 +410,23 @@ pub struct ModelProfile {
     /// charging.
     #[serde(default)]
     pub billing_mode: Option<BillingMode>,
+}
+
+/// Infrastructure selected when provisioning a Claude deployment in Foundry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FoundryHosting {
+    Azure,
+    Anthropic,
+}
+
+/// Caller-supplied deployment facts, independent of a custom deployment name.
+/// The client cannot discover these facts through Foundry's Messages endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct FoundryDeployment {
+    pub hosting: FoundryHosting,
+    /// Exact underlying Foundry model ID, not a deployment alias or billing ID.
+    pub model_id: String,
 }
 
 impl ModelProfile {
@@ -685,6 +707,9 @@ impl Region {
 pub struct ProviderProfile {
     #[serde(default)]
     pub inference: super::InferenceWire,
+    /// Disable Chat for a profile that only exposes independent services.
+    #[serde(default = "default_chat_enabled")]
+    pub chat_enabled: bool,
     /// Allowed usage regions. Missing means both; an empty list disables execution.
     #[serde(default = "Region::all")]
     pub regions: Vec<Region>,
@@ -715,6 +740,25 @@ pub struct ProviderProfile {
     #[serde(default)]
     pub images: super::ImageServiceConfig,
     #[serde(default)]
+    pub embeddings: crate::protocol::ServiceSetting<crate::embeddings::EmbeddingRoute>,
+    #[serde(default)]
+    pub retrieval: crate::protocol::ServiceSetting<crate::retrieval::RetrievalRoute>,
+    #[serde(default)]
+    pub batches: crate::protocol::ServiceSetting<crate::batches::BatchRoute>,
+    #[serde(default)]
+    pub deferred: crate::protocol::ServiceSetting<crate::deferred::DeferredRoute>,
+    #[serde(default)]
+    pub background: crate::protocol::ServiceSetting<crate::background::BackgroundRoute>,
+    #[serde(default)]
+    pub audio: crate::protocol::ServiceSetting<crate::audio::AudioRoute>,
+    #[serde(default)]
+    pub interactions: crate::protocol::ServiceSetting<crate::interactions::InteractionRoute>,
+    #[serde(default)]
+    pub gemini_file_search:
+        crate::protocol::ServiceSetting<crate::gemini_file_search::GeminiFileSearchRoute>,
+    #[serde(default)]
+    pub glm_knowledge: crate::protocol::ServiceSetting<crate::glm_knowledge::GlmKnowledgeRoute>,
+    #[serde(default)]
     pub pricing: PricingConfig,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
@@ -736,6 +780,10 @@ pub struct ProviderProfile {
     /// Provider-opaque extras a codec may read.
     #[serde(default)]
     pub extra: Value,
+}
+
+fn default_chat_enabled() -> bool {
+    true
 }
 
 impl ProviderProfile {

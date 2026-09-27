@@ -19,25 +19,6 @@ connection = { group = "kimi-intl", connection_id = "chat", order = 0 }
 extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
 
 [[model]]
-id = "kimi-k2.5"
-name = "Kimi K2.5"
-context_window = 262144
-max_output = 262144
-input_modalities = ["text", "image", "video"]
-output_modalities = ["text"]
-tool_call = true
-reasoning = true
-attachment = true
-
-
-[model.features]
-thinking = "supported"
-fast = "unknown"
-sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
-budget = { support = "unsupported", dynamic = "unsupported" }
-modes = ["enabled", "disabled"]
-
-[[model]]
 id = "kimi-k2.6"
 name = "Kimi K2.6"
 context_window = 262144

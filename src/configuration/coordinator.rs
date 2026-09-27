@@ -1,7 +1,11 @@
 //! Transaction coordination produces changes; service invalidation belongs to the client.
 use super::{merge::*, model::*, repository::Repository, ProviderStoreError};
 use crate::protocol::ProviderProfile;
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::BTreeSet,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 pub(crate) struct Coordinator {
     pub definitions: Definitions,
@@ -9,6 +13,8 @@ pub(crate) struct Coordinator {
     pub repository: Option<Repository>,
     pub generation: u64,
     pub deleted_builtin_profiles: BTreeSet<String>,
+    #[cfg(test)]
+    pub before_publication: Option<Box<dyn FnOnce() + Send>>,
 }
 #[derive(Default)]
 pub(crate) struct ChangeSet {
@@ -45,19 +51,30 @@ impl Coordinator {
             repository: None,
             generation: 0,
             deleted_builtin_profiles: BTreeSet::new(),
+            #[cfg(test)]
+            before_publication: None,
         }
     }
     pub fn load(
         &mut self,
         path: &Path,
         validate: impl FnOnce(&[ProviderProfile]) -> Result<(), ProviderStoreError>,
+        cancel: &AtomicBool,
     ) -> Result<Vec<ProviderProfile>, ProviderStoreError> {
         let repo = Repository::open(path)?;
         let state = repo.read_locked()?;
         let profiles = state.profiles(&self.definitions, true)?;
         validate(&profiles)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(ProviderStoreError::Worker(
+                "configuration load was cancelled before publication".into(),
+            ));
+        }
+        let generation = self.generation.checked_add(1).ok_or_else(|| {
+            ProviderStoreError::Worker("configuration directory generation exhausted".into())
+        })?;
         self.repository = Some(repo);
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = generation;
         self.install(state);
         Ok(profiles)
     }
@@ -74,6 +91,7 @@ impl Coordinator {
         &mut self,
         change: impl FnOnce(&mut SavedConfig, &Definitions) -> Result<T, ProviderStoreError>,
         validate: impl FnOnce(&[ProviderProfile]) -> Result<(), ProviderStoreError>,
+        cancel: &AtomicBool,
     ) -> Result<(T, Vec<ProviderProfile>), ProviderStoreError> {
         let repo = self
             .repository
@@ -87,6 +105,11 @@ impl Coordinator {
         state.refresh_fallbacks(&self.definitions);
         let profiles = state.profiles(&self.definitions, true)?;
         validate(&profiles)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(ProviderStoreError::Worker(
+                "configuration operation was cancelled before commit".into(),
+            ));
+        }
         repo.write(&state)?;
         self.install(state);
         Ok((result, profiles))
@@ -95,9 +118,26 @@ impl Coordinator {
         &self,
         name: &str,
     ) -> Result<Vec<ConfiguredModel>, ProviderStoreError> {
-        let mut state = self.state.clone();
-        state.ensure_definitions(&self.definitions);
-        profile(&mut state, name)?.rows(&self.definitions)
+        if !self.state.deleted_profiles.contains(name) {
+            if let Some(profile) = self
+                .state
+                .providers
+                .iter()
+                .find(|p| p.connection.profile_name == name)
+            {
+                return profile.rows(&self.definitions);
+            }
+            if let Some(definition) = self
+                .definitions
+                .caller
+                .iter()
+                .find(|p| p.profile_name == name)
+            {
+                return SavedProfile::inherited(definition, self.definitions.reference(name))
+                    .rows(&self.definitions);
+            }
+        }
+        Err(ProviderStoreError::UnknownProfile(name.into()))
     }
 }
 pub(crate) fn profile<'a>(

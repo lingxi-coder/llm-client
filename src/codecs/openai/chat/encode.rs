@@ -9,8 +9,8 @@
 use crate::codecs::json::{WireRequest, WireValue};
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::protocol::{
-    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
-    ProviderProfile, ToolChoice,
+    CachePosition, ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError,
+    MessageRole, ProviderProfile, ToolChoice,
 };
 
 use base64::Engine;
@@ -31,14 +31,33 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
-    crate::files::validate_direct_provider_file_inputs(
+    crate::codecs::anthropic_code_execution::validate(req, opts)?;
+    crate::codecs::qwen_cache::validate(req, opts)?;
+    super::openrouter_cache::validate(req, opts)?;
+    validate_audio_request(req, profile, opts)?;
+    let audio_output =
+        openrouter_audio_output(req.metadata.get("openrouter_chat_audio"), profile, opts)?;
+    req.validate_hosted_tools()?;
+    crate::codecs::openrouter_server_tools::validate(req, profile, None, false)?;
+    if req.hosted_anthropic_tool_search().is_some()
+        || req.hosted_anthropic_web_fetch().is_some()
+        || req.hosted_openai_tool_search().is_some()
+        || req.tools.iter().any(|tool| tool.defer_loading)
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: "Anthropic tool search, Web Fetch, and defer_loading require an Anthropic Messages codec".into(),
+        });
+    }
+    crate::files::validate_direct_provider_file_inputs_at(
         wire.blocks(),
         profile,
         &opts.request_model,
         opts.file_scope(),
+        opts.file_validation_time(),
     )?;
     crate::codecs::reject_responses_continuation(req, crate::protocol::ProtocolFamily::OpenAiChat)?;
-    if req.file_search.is_some() {
+    crate::codecs::reject_code_interpreter(req, crate::protocol::ProtocolFamily::OpenAiChat)?;
+    if req.hosted_file_search().is_some() {
         return Err(LlmError::UnsupportedCapability {
             message: "hosted file search is supported only on Qwen Responses profiles".into(),
         });
@@ -62,10 +81,12 @@ pub fn request<'a>(
             .is_some_and(|url| url.host_str() == Some("api.openai.com"));
     let mut consumed_leading_system = false;
 
-    // Several system blocks become one system message: the wire has one slot,
-    // and the cacheable/non-cacheable split is a prefix-caching concern that
-    // this protocol cannot express.
-    if !req.system.is_empty() {
+    // Qwen markers address original system blocks; preserve those boundaries.
+    if let Some(system) = crate::codecs::qwen_cache::system(req, opts) {
+        messages.push(system);
+    } else if let Some(system) = super::openrouter_cache::system(req, opts) {
+        messages.push(system);
+    } else if !req.system.is_empty() {
         let text = req
             .system
             .iter()
@@ -120,7 +141,7 @@ pub fn request<'a>(
                     .filter(|message| matches!(&message.role, MessageRole::System))
                 {
                     let mut encoded = encode_message(
-                        first,
+                        (0, first),
                         keep_reasoning,
                         pdf_only_files,
                         qwen_long,
@@ -131,8 +152,7 @@ pub fn request<'a>(
                     if encoded.len() == 1
                         && encoded[0].get("role").and_then(Value::as_str) == Some("system")
                         && encoded[0]
-                            .get("content")
-                            .and_then(Value::as_str)
+                            .get_str("content")
                             .is_some_and(|content| !content.trim().is_empty())
                     {
                         messages.push(encoded.remove(0));
@@ -146,8 +166,7 @@ pub fn request<'a>(
                     );
                 }
             } else if messages[0]
-                .get("content")
-                .and_then(Value::as_str)
+                .get_str("content")
                 .is_some_and(|content| content.trim().is_empty())
             {
                 messages[0]["content"] = Value::String("You are a helpful assistant.".into());
@@ -156,13 +175,14 @@ pub fn request<'a>(
         }
     }
 
-    for m in req
+    for (message_index, m) in req
         .messages
         .iter()
+        .enumerate()
         .skip(usize::from(consumed_leading_system))
     {
         messages.extend(encode_message(
-            m,
+            (message_index, m),
             keep_reasoning,
             pdf_only_files,
             qwen_long,
@@ -222,7 +242,40 @@ pub fn request<'a>(
     crate::codecs::web_search::apply(req, profile, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::structured::apply(req, opts, &mut body)?;
+    super::openrouter_cache::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
+    if opts.stream && crate::codecs::qwen_cache::applies(opts) {
+        let options = body.entry("stream_options").or_insert_with(|| json!({}));
+        let options = options
+            .as_object_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Qwen stream_options must be an object".into(),
+            })?;
+        options.insert("include_usage".into(), Value::Bool(true));
+    }
+    if let Some(audio) = &audio_output {
+        // This request-scoped configuration is authoritative over profile
+        // defaults because it is the caller's explicit output contract.
+        body.insert("modalities".to_owned(), json!(["text", "audio"]));
+        body.insert(
+            "audio".to_owned(),
+            json!({"voice": audio.voice, "format": audio.format}),
+        );
+        match body.get_mut("stream_options") {
+            Some(options) => {
+                let Some(options) = options.as_object_mut() else {
+                    return Err(LlmError::InvalidRequest {
+                        message: "OpenRouter stream_options must be an object when requesting audio output".into(),
+                    });
+                };
+                options.insert("include_usage".into(), Value::Bool(true));
+            }
+            None => {
+                body.insert("stream_options".to_owned(), json!({"include_usage": true}));
+            }
+        }
+    }
     if req.max_tokens.is_some() {
         // The selected typed field is authoritative. A profile body extra must
         // not add the other spelling and send conflicting output limits.
@@ -239,18 +292,33 @@ pub fn request<'a>(
         "{}/chat/completions",
         profile.base_url.trim_end_matches('/')
     );
-    Ok(WireRequest::new(
-        url,
-        headers,
-        WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages)),
-    ))
+    let mut body =
+        WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages));
+    if !req.tools.is_empty() {
+        body = body.map_array_field("tools", |index, mut tool| {
+            let Some(spec) = req.tools.get(index) else {
+                return tool.into();
+            };
+            let function = tool
+                .as_object_mut()
+                .expect("function tool")
+                .remove("function")
+                .expect("function fields");
+            WireValue::from(tool).with(
+                "function",
+                WireValue::from(function)
+                    .with("parameters", WireValue::borrowed(&spec.input_schema)),
+            )
+        });
+    }
+    Ok(WireRequest::new(url, headers, body))
 }
 
 /// One conversation message becomes one or more wire messages: a tool result
 /// cannot share a message with text, so any pending text is flushed first and
 /// the result becomes its own `role: "tool"` entry.
 fn encode_message<'a>(
-    m: &ConversationMessage,
+    (message_index, m): (usize, &'a ConversationMessage),
     keep_reasoning: bool,
     pdf_only_files: bool,
     qwen_long: bool,
@@ -263,6 +331,28 @@ fn encode_message<'a>(
         MessageRole::Assistant => "assistant",
         MessageRole::System => "system",
     };
+    // A single text block is the usual chat shape. It needs neither content
+    // part objects nor the general tool/reasoning partitioning below.
+    if let [block] = m.content.as_slice() {
+        if let ContentBlock::Text { text, .. } = wire.block(block) {
+            let position = CachePosition::Message {
+                index: message_index,
+                block: 0,
+            };
+            let qwen_marked = crate::codecs::qwen_cache::marked(wire.request(), opts, position);
+            let openrouter_marker = (!qwen_marked)
+                .then(|| super::openrouter_cache::marker(wire.request(), opts, position))
+                .flatten();
+            return Ok(vec![WireValue::from(json!({"role": role})).with(
+                "content",
+                if qwen_marked {
+                    crate::codecs::qwen_cache::text_content(text, true)
+                } else {
+                    super::openrouter_cache::text_content(text, openrouter_marker)
+                },
+            )]);
+        }
+    }
     let mut native_reasoning = None;
     for block in &m.content {
         let block = wire.block(block);
@@ -286,10 +376,24 @@ fn encode_message<'a>(
     let mut tool_calls: Vec<Value> = Vec::new();
     let mut out: Vec<WireValue<'a>> = Vec::new();
 
-    for block in &m.content {
+    for (block_index, block) in m.content.iter().enumerate() {
         let block = wire.block(block);
+        let position = CachePosition::Message {
+            index: message_index,
+            block: block_index,
+        };
+        let qwen_marked = crate::codecs::qwen_cache::marked(wire.request(), opts, position);
+        let openrouter_marker = if qwen_marked {
+            None
+        } else {
+            super::openrouter_cache::marker(wire.request(), opts, position)
+        };
         if let Some(media) = inline(wire, block, opts)? {
-            parts.push(media);
+            parts.push(if qwen_marked {
+                crate::codecs::qwen_cache::mark(media, true)
+            } else {
+                super::openrouter_cache::mark(media, openrouter_marker.clone())
+            });
             continue;
         }
         match block {
@@ -297,7 +401,9 @@ fn encode_message<'a>(
             // including tool calls which may precede it in the block sequence.
             ContentBlock::ProviderContent { .. } => {}
             ContentBlock::Text { text, .. } => {
-                parts.push((json!({"type":"text", "text":text})).into());
+                parts.push(
+                    WireValue::from(json!({"type":"text"})).with("text", WireValue::text(text)),
+                );
             }
             ContentBlock::Thinking { text: t, .. } => {
                 if keep_reasoning && native_reasoning.is_none() && m.role == MessageRole::Assistant
@@ -365,6 +471,12 @@ fn encode_message<'a>(
                     .into(),
                 );
             }
+            ContentBlock::Audio { format, data } => {
+                parts.push(WireValue::from(json!({"type":"input_audio"})).with(
+                    "input_audio",
+                    WireValue::from(json!({"format": format})).with("data", WireValue::text(data)),
+                ));
+            }
             // Signed reasoning round-trips only on providers that sign it
             // (gate 18); this wire has no slot, so a replayed block is dropped
             // rather than sent somewhere it would be rejected.
@@ -395,13 +507,33 @@ fn encode_message<'a>(
                     &mut native_reasoning,
                 );
                 out.push(
-                    (json!({
+                    WireValue::from(json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
-                        "content": content,
                     }))
-                    .into(),
+                    .with(
+                        "content",
+                        if qwen_marked {
+                            crate::codecs::qwen_cache::text_content(content, true)
+                        } else {
+                            super::openrouter_cache::text_content(
+                                content,
+                                openrouter_marker.clone(),
+                            )
+                        },
+                    ),
                 );
+            }
+        }
+        if qwen_marked && !matches!(block, ContentBlock::ToolResult { .. }) {
+            if let Some(part) = parts.last_mut() {
+                part.insert("cache_control".into(), json!({"type":"ephemeral"}));
+            }
+        } else if let Some(marker) = openrouter_marker {
+            if !matches!(block, ContentBlock::ToolResult { .. }) {
+                if let Some(part) = parts.last_mut() {
+                    part.insert("cache_control".into(), marker);
+                }
             }
         }
     }
@@ -415,6 +547,167 @@ fn encode_message<'a>(
         &mut native_reasoning,
     );
     Ok(out)
+}
+
+#[derive(Debug)]
+struct AudioOutputConfig<'a> {
+    voice: &'a str,
+    format: &'a str,
+}
+
+fn openrouter_audio_output<'a>(
+    value: Option<&'a Value>,
+    profile: &ProviderProfile,
+    opts: &CodecContext,
+) -> Result<Option<AudioOutputConfig<'a>>, LlmError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if profile.provider_id.as_str() != "openrouter" {
+        return Err(LlmError::UnsupportedCapability {
+            message: "OpenRouter Chat audio output configuration requires an OpenRouter profile"
+                .into(),
+        });
+    }
+    if !opts.stream {
+        return Err(LlmError::UnsupportedCapability {
+            message: "OpenRouter Chat audio output requires streaming".into(),
+        });
+    }
+    let config = value.as_object().ok_or_else(|| LlmError::InvalidRequest {
+        message: "metadata.openrouter_chat_audio must be an object".into(),
+    })?;
+    if config.keys().any(|key| key != "voice" && key != "format") {
+        return Err(LlmError::InvalidRequest {
+            message: "metadata.openrouter_chat_audio accepts only voice and format".into(),
+        });
+    }
+    let voice = config
+        .get("voice")
+        .and_then(Value::as_str)
+        .filter(|voice| !voice.trim().is_empty())
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "metadata.openrouter_chat_audio.voice must be a non-empty string".into(),
+        })?;
+    let format = config
+        .get("format")
+        .and_then(Value::as_str)
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "metadata.openrouter_chat_audio.format must be a string".into(),
+        })?;
+    if !["wav", "mp3", "flac", "opus", "pcm16"].contains(&format) {
+        return Err(LlmError::InvalidRequest {
+            message: "OpenRouter Chat audio output format must be wav, mp3, flac, opus, or pcm16"
+                .into(),
+        });
+    }
+    validate_model_audio_modality(profile, &opts.request_model, false)?;
+    Ok(Some(AudioOutputConfig { voice, format }))
+}
+
+pub(super) fn validate_audio_request(
+    req: &crate::protocol::ChatRequest,
+    profile: &ProviderProfile,
+    opts: &CodecContext,
+) -> Result<(), LlmError> {
+    let mut has_audio = false;
+    for message in &req.messages {
+        for block in &message.content {
+            let ContentBlock::Audio { format, data } = block else {
+                continue;
+            };
+            has_audio = true;
+            if profile.provider_id.as_str() != "openrouter" {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "Chat audio input is currently supported only by OpenRouter profiles"
+                        .into(),
+                });
+            }
+            if message.role != MessageRole::User {
+                return Err(LlmError::InvalidRequest {
+                    message: "OpenRouter Chat audio input must be in a user message".into(),
+                });
+            }
+            validate_audio_format(format)?;
+            validate_base64_audio(data)?;
+        }
+    }
+    if has_audio {
+        validate_model_audio_modality(profile, &opts.request_model, true)?;
+    }
+    if let Some(audio) = req.metadata.get("openrouter_chat_audio") {
+        openrouter_audio_output(Some(audio), profile, opts)?;
+    }
+    Ok(())
+}
+
+fn validate_model_audio_modality(
+    profile: &ProviderProfile,
+    request_model: &str,
+    input: bool,
+) -> Result<(), LlmError> {
+    if let Some(model) = profile
+        .models
+        .iter()
+        .find(|model| model.request_model == request_model)
+    {
+        let modalities = if input {
+            &model.metadata.input_modalities
+        } else {
+            &model.metadata.output_modalities
+        };
+        if !modalities.is_empty() && !modalities.iter().any(|value| value == "audio") {
+            return Err(LlmError::UnsupportedCapability {
+                message: format!(
+                    "selected OpenRouter model {request_model} does not advertise {} audio modality",
+                    if input { "input" } else { "output" }
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_audio_format(format: &str) -> Result<(), LlmError> {
+    if [
+        "wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "pcm16", "pcm24",
+    ]
+    .contains(&format)
+    {
+        Ok(())
+    } else {
+        Err(LlmError::InvalidRequest {
+            message: format!("unsupported OpenRouter Chat audio input format {format:?}"),
+        })
+    }
+}
+
+fn validate_base64_audio(data: &str) -> Result<(), LlmError> {
+    let bytes = data.as_bytes();
+    let padding = bytes.iter().rev().take_while(|&&byte| byte == b'=').count();
+    let valid_alphabet = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/';
+    let valid = !bytes.is_empty()
+        && bytes.len().is_multiple_of(4)
+        && padding <= 2
+        && bytes[..bytes.len() - padding]
+            .iter()
+            .all(|&byte| valid_alphabet(byte))
+        && bytes[bytes.len() - padding..]
+            .iter()
+            .all(|&byte| byte == b'=')
+        && match padding {
+            0 => true,
+            1 => (bytes.len() - padding) % 4 == 3,
+            2 => (bytes.len() - padding) % 4 == 2,
+            _ => false,
+        };
+    if valid {
+        Ok(())
+    } else {
+        Err(LlmError::InvalidRequest {
+            message: "OpenRouter Chat audio data must be standard base64 without a data URI".into(),
+        })
+    }
 }
 
 /// Select the request field used for the output token limit. A profile can opt
@@ -485,20 +778,36 @@ fn document_url(source: &DocumentSource, pdf_only_files: bool) -> Result<String,
     }
 }
 
-fn user_message<'a>(role: &str, parts: &[WireValue<'a>]) -> WireValue<'a> {
-    let content = if parts
+fn user_message<'a>(role: &str, parts: &mut Vec<WireValue<'a>>) -> WireValue<'a> {
+    let marked = parts.iter().any(|part| part.get("cache_control").is_some());
+    let all_text = parts
+        .iter()
+        .all(|part| part.get_str("type") == Some("text"));
+    let content = if marked {
+        let mut content = Vec::new();
+        for (index, part) in std::mem::take(parts).into_iter().enumerate() {
+            // Match the unmarked text-only path's newline concatenation.
+            if all_text && index > 0 {
+                content.push(json!({"type":"text","text":"\n"}).into());
+            }
+            content.push(part);
+        }
+        WireValue::array(content)
+    } else if parts.len() == 1 && parts[0].get_str("type") == Some("text") {
+        parts.pop().unwrap().take_field("text").expect("text part")
+    } else if parts
         .iter()
         .all(|part| part.get("type").and_then(Value::as_str) == Some("text"))
     {
         WireValue::from(Value::String(
             parts
                 .iter()
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .filter_map(|part| part.get_str("text"))
                 .collect::<Vec<_>>()
                 .join("\n"),
         ))
     } else {
-        WireValue::array(parts.to_vec())
+        WireValue::array(std::mem::take(parts))
     };
     WireValue::from(json!({"role": role})).with("content", content)
 }
@@ -515,13 +824,14 @@ fn flush_message<'a>(
         return;
     }
     let role = if calls.is_empty() { role } else { "assistant" };
+    let had_parts = !parts.is_empty();
     let mut message = user_message(role, parts);
     if role == "assistant" {
-        if parts.is_empty() {
+        if !had_parts {
             message["content"] = Value::Null;
         }
         if let Some(native) = native_reasoning.take() {
-            message.object_mut().extend(native);
+            message.extend_fields(native);
         } else if !reasoning.is_empty() {
             message["reasoning_content"] = Value::String(std::mem::take(reasoning));
         }
@@ -540,7 +850,7 @@ fn encode_tool(t: &crate::protocol::ToolSpec) -> Value {
         "function": {
             "name": t.name,
             "description": t.description,
-            "parameters": t.input_schema,
+            "parameters": Value::Null,
             "strict": t.strict,
         }
     })
@@ -607,7 +917,7 @@ fn inline<'a>(
         _ => {
             return Err(LlmError::UnsupportedCapability {
                 message: "Chat Completions does not support video content blocks".into(),
-            })
+            });
         }
     }))
 }

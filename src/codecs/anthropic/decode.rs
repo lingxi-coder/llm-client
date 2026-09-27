@@ -1,14 +1,18 @@
 //! Response and error decoding for the Messages API.
 
 use crate::protocol::{
-    CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, StopReason,
-    ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, StopReason, ToolUseId,
+    Usage,
 };
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
 
-pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
+pub fn response(
+    resp: &HttpResponse,
+    retain_openrouter_container: bool,
+    retain_anthropic_container: bool,
+) -> Result<ChatResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
     if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
@@ -28,14 +32,32 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             content.push(block);
         }
     }
-    Ok(CompletionResponse {
+    Ok(ChatResponse {
         inference: Default::default(),
+        response_cache: None,
         web_search: crate::codecs::web_search_decode::with_usage(
             crate::codecs::web_search_decode::anthropic(&body),
             body.get("usage"),
         ),
         file_search: None,
+        anthropic_usage: retain_anthropic_container
+            .then(|| body.get("usage"))
+            .flatten()
+            .cloned(),
+        anthropic_container: retain_anthropic_container
+            .then(|| body.get("container"))
+            .flatten()
+            .filter(|container| !container.is_null())
+            .cloned()
+            .map(|envelope| crate::protocol::AnthropicContainerMetadata { envelope }),
+        openrouter_container: retain_openrouter_container
+            .then(|| body.get("container"))
+            .flatten()
+            .filter(|container| !container.is_null())
+            .cloned()
+            .map(|envelope| crate::protocol::OpenRouterContainerMetadata { envelope }),
         message: ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content,
         },
@@ -52,20 +74,20 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: None,
+        continuation: None,
         executed_profile: None,
     })
 }
 
-/// An unknown block type is dropped, not an error: this provider adds block
-/// types over time and a client is expected to tolerate them.
+/// An unknown complete content block is retained as native provider content.
+/// Anthropic adds block types over time; keeping the block under this protocol
+/// identity allows exact replay without interpreting it as a client tool.
 pub fn decode_block(v: &Value) -> Option<ContentBlock> {
     if crate::codecs::web_search_decode::is_anthropic_search_block(v)
+        || is_anthropic_tool_search_block(v)
         || v.get("citations")
             .and_then(Value::as_array)
-            .is_some_and(|cs| {
-                cs.iter()
-                    .any(|c| c["type"].as_str() == Some("web_search_result_location"))
-            })
+            .is_some_and(|citations| !citations.is_empty())
     {
         return Some(ContentBlock::ProviderContent {
             protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
@@ -74,6 +96,15 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
     }
 
     match v.get("type").and_then(Value::as_str) {
+        // MCP blocks carry server-owned tool identity and input. Keep the
+        // entire block native so replay retains its server name, tool ID,
+        // listing schema, and any fields added by Anthropic.
+        Some("mcp_tool_use" | "mcp_tool_result" | "mcp_tool_listing") => {
+            Some(ContentBlock::ProviderContent {
+                protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+                value: v.clone(),
+            })
+        }
         Some("text") => Some(ContentBlock::Text {
             text: v.get("text").and_then(Value::as_str)?.to_owned(),
             thought_signature: None,
@@ -99,9 +130,35 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
             name: v.get("name").and_then(Value::as_str)?.to_owned(),
             input: v.get("input").cloned().unwrap_or(Value::Null),
             provider_id: None,
+            caller: v.get("caller").cloned(),
+            toolset_name: v
+                .get("toolset_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             thought_signature: None,
         }),
-        _ => None,
+        Some(_) => Some(ContentBlock::ProviderContent {
+            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+            value: v.clone(),
+        }),
+        // Keep malformed or future block objects intact as well. Their type is
+        // not interpreted, but silently removing the provider value would make
+        // an otherwise replayable transcript incomplete.
+        None => Some(ContentBlock::ProviderContent {
+            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+            value: v.clone(),
+        }),
+    }
+}
+
+pub(crate) fn is_anthropic_tool_search_block(block: &Value) -> bool {
+    match block.get("type").and_then(Value::as_str) {
+        Some("tool_search_tool_result") => true,
+        Some("server_tool_use") => block
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| matches!(name, "tool_search_tool_regex" | "tool_search_tool_bm25")),
+        _ => false,
     }
 }
 
@@ -235,8 +292,14 @@ pub fn usage(u: &Value) -> Usage {
     let web_search_requests = u
         .pointer("/server_tool_use/web_search_requests")
         .and_then(Value::as_u64);
+    let web_fetch_requests = u
+        .pointer("/server_tool_use/web_fetch_requests")
+        .and_then(Value::as_u64);
     let file_search_requests = u
         .pointer("/server_tool_use/file_search_requests")
+        .and_then(Value::as_u64);
+    let code_execution_requests = u
+        .pointer("/server_tool_use/code_execution_requests")
         .and_then(Value::as_u64);
     Usage {
         input_tokens: n("input_tokens"),
@@ -252,11 +315,17 @@ pub fn usage(u: &Value) -> Usage {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         cost: None,
-        server_tool_usage: (web_search_requests.is_some() || file_search_requests.is_some())
-            .then_some(crate::protocol::ServerToolUsage {
-                web_search_requests,
-                file_search_requests,
-            }),
+        server_tool_usage: (web_search_requests.is_some()
+            || web_fetch_requests.is_some()
+            || file_search_requests.is_some()
+            || code_execution_requests.is_some())
+        .then_some(crate::protocol::ServerToolUsage {
+            web_search_requests,
+            web_fetch_requests,
+            web_extractor_requests: None,
+            file_search_requests,
+            code_interpreter_requests: code_execution_requests,
+        }),
     }
 }
 

@@ -12,7 +12,7 @@ fn profile(protocol: ProtocolFamily) -> ProviderProfile {
         "models":[{"request_model":"wire", "display_model":"shared", "billing_model":"wire", "aliases":["first"]}]
     })).unwrap()
 }
-fn fast_request(model: &str) -> CompletionRequest {
+fn fast_request(model: &str) -> ChatRequest {
     serde_json::from_value(json!({"model":model,"messages":[],"service_tier":"fast"})).unwrap()
 }
 
@@ -90,19 +90,24 @@ async fn complete_and_stream_keep_the_exact_aliased_row() {
             .unwrap();
         let opts = RequestOptions::default();
         assert!(matches!(
-            client.complete(&fast_request("first"), &opts).await,
+            client.chat().complete(&fast_request("first"), &opts).await,
             Err(LlmError::UnsupportedCapability { .. })
         ));
         assert!(matches!(
-            client.stream(&fast_request("first"), &opts).await,
+            client.chat().stream(&fast_request("first"), &opts).await,
             Err(LlmError::UnsupportedCapability { .. })
         ));
         assert!(http.0.lock().unwrap().is_empty());
         client
+            .chat()
             .complete(&fast_request("second"), &opts)
             .await
             .unwrap();
-        let mut stream = client.stream(&fast_request("second"), &opts).await.unwrap();
+        let mut stream = client
+            .chat()
+            .stream(&fast_request("second"), &opts)
+            .await
+            .unwrap();
         let mut ended = false;
         while let Some(event) = stream.next().await {
             ended |= matches!(event.unwrap(), StreamEvent::End { .. });
@@ -155,10 +160,11 @@ async fn attachment_planning_uses_the_selected_row_and_auth_keeps_the_connection
     builder.with_attachment_resolver(Arc::new(Attachment));
     builder.register_authenticator(AuthStrategy::ApiKey, auth.clone());
     let client = builder.with_region(Region::International).build().unwrap();
-    let req: CompletionRequest = serde_json::from_value(json!({"model":"second","messages":[{"role":"user","content":[{
+    let req: ChatRequest = serde_json::from_value(json!({"model":"second","messages":[{"role":"user","content":[{
         "type":"document","source":{"type":"attachment","attachment":{"attachment_id":"pdf","revision":"1","filename":"paper.pdf","media_type":"application/pdf","size_bytes":4}}
     }]}]})).unwrap();
     client
+        .chat()
         .complete(
             &req,
             &RequestOptions {
@@ -181,7 +187,7 @@ fn gemini_preserves_explicit_thought_output_settings() {
     for typed in [false, true] {
         for include in [None, Some(false), Some(true)] {
             let mut p = profile(ProtocolFamily::GeminiGenerateContent);
-            let mut req: CompletionRequest =
+            let mut req: ChatRequest =
                 serde_json::from_value(json!({"model":"wire","messages":[]})).unwrap();
             if typed {
                 req.thinking = Some(ThinkingConfig {
@@ -236,7 +242,7 @@ fn encrypted_reasoning_is_never_tokenized_as_plaintext() {
                 .with_region(Region::International)
                 .build()
                 .unwrap();
-        let plain: CompletionRequest = serde_json::from_value(json!({"model":"gpt-4o","messages":[{"role":"assistant","content":[{"type":"text","text":"hello"}]}]})).unwrap();
+        let plain: ChatRequest = serde_json::from_value(json!({"model":"gpt-4o","messages":[{"role":"assistant","content":[{"type":"text","text":"hello"}]}]})).unwrap();
         let mut encrypted = plain.clone();
         encrypted.messages[0].content.insert(
             0,

@@ -179,6 +179,75 @@ async fn openai_upload_builds_multipart_and_returns_a_profile_scoped_reference()
 }
 
 #[tokio::test]
+async fn openai_batch_upload_sets_batch_purpose_and_requires_scope() {
+    let http = MockTransport::with_responses(vec![response(json!({
+        "id":"file-batch","filename":"input.jsonl","purpose":"batch"
+    }))]);
+    let profile = profile(
+        "openai",
+        "https://api.openai.com/v1",
+        "open_ai_responses",
+        &["text"],
+    );
+    let auth = ApiKeyAuthenticator;
+    let key = Secret::new("test-key".to_owned());
+    let upload = UploadFile {
+        filename: "input.jsonl".into(),
+        media_type: "application/x-ndjson".into(),
+        bytes: Bytes::from_static(b"{\"custom_id\":\"one\"}\n"),
+    };
+    assert!(service(&http, &profile, &auth, &key, None)
+        .upload(&upload, FilePurpose::Batch)
+        .await
+        .is_err());
+    assert!(http.requests().is_empty());
+    let file = service(&http, &profile, &auth, &key, Some("acct-a"))
+        .upload(&upload, FilePurpose::Batch)
+        .await
+        .unwrap();
+    assert_eq!(file.purpose.as_deref(), Some("batch"));
+    let requests = http.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(String::from_utf8_lossy(&requests[0].body).contains("name=\"purpose\"\r\n\r\nbatch"));
+}
+
+#[tokio::test]
+async fn xai_batch_upload_uses_file_only_wire_and_the_files_endpoint_cap() {
+    let http = MockTransport::with_responses(vec![response(json!({
+        "id":"file_xai_batch",
+        "filename":"input.jsonl",
+        "bytes":19,
+        "purpose":""
+    }))]);
+    let profile = profile("xai", "https://api.x.ai/v1", "open_ai_responses", &["text"]);
+    let auth = ApiKeyAuthenticator;
+    let key = Secret::new("xai-key".to_owned());
+    let upload = UploadFile {
+        filename: "input.jsonl".into(),
+        media_type: "application/jsonl".into(),
+        bytes: Bytes::from_static(b"{\"custom_id\":\"one\"}\n"),
+    };
+    let service = service(&http, &profile, &auth, &key, Some("acct-xai"));
+    let capabilities =
+        service.capabilities_for_purpose("test-model", "application/jsonl", FilePurpose::Batch);
+    assert!(capabilities.upload);
+    assert_eq!(capabilities.max_upload_bytes, Some(50_000_000));
+
+    let uploaded = service.upload(&upload, FilePurpose::Batch).await.unwrap();
+    assert_eq!(uploaded.file_id, "file_xai_batch");
+    assert_eq!(uploaded.filename.as_deref(), Some("input.jsonl"));
+    assert_eq!(uploaded.media_type.as_deref(), Some("application/jsonl"));
+    assert_eq!(uploaded.account_scope.as_deref(), Some("acct-xai"));
+
+    let requests = http.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://api.x.ai/v1/files");
+    let body = String::from_utf8_lossy(&requests[0].body);
+    assert!(body.contains("name=\"file\"; filename=\"input.jsonl\""));
+    assert!(!body.contains("name=\"purpose\""));
+}
+
+#[tokio::test]
 async fn openrouter_upload_requires_workspace_purpose_and_is_not_model_input() {
     let http = MockTransport::with_responses(vec![response(json!({
         "id": "file-workspace",
@@ -420,6 +489,7 @@ async fn provider_file_scope_mismatch_fails_before_network_access() {
         media_type: None,
         size_bytes: None,
         expires_at: None,
+        processing_status: None,
         downloadable: None,
         purpose: None,
     };
@@ -458,6 +528,7 @@ async fn file_ids_are_encoded_as_one_path_segment() {
         media_type: None,
         size_bytes: None,
         expires_at: None,
+        processing_status: None,
         downloadable: None,
         purpose: None,
     };
@@ -550,6 +621,7 @@ async fn uploaded_anthropic_file_marked_not_downloadable_is_not_fetched() {
         media_type: Some("application/pdf".into()),
         size_bytes: None,
         expires_at: None,
+        processing_status: None,
         downloadable: Some(false),
         purpose: None,
     };

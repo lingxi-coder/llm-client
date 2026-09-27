@@ -86,6 +86,7 @@ fn param(url: &str, key: &str) -> Option<String> {
 async fn openai_admin_usage_pages_and_filters() {
     let mut p = profile("openai");
     p.base_url = "https://untrusted.invalid/v1".into();
+    p.background = lingxi_llm_client::protocol::ServiceSetting::Disabled;
     let http = ScriptedTransport::replies(vec![
         (
             200,
@@ -121,9 +122,10 @@ async fn openai_admin_usage_pages_and_filters() {
     assert_eq!(value.buckets[0].currency, "USD");
     let seen = http.requests();
     assert_eq!(seen.len(), 3);
-    assert!(seen[..2].iter().all(|r| r
-        .url
-        .starts_with("https://api.openai.com/v1/organization/usage/completions?")));
+    assert!(seen[..2].iter().all(|r| {
+        r.url
+            .starts_with("https://api.openai.com/v1/organization/usage/completions?")
+    }));
     assert!(seen[2]
         .url
         .starts_with("https://api.openai.com/v1/organization/costs?"));
@@ -331,6 +333,7 @@ async fn gemini_developer_metric_reports_output_only() {
 async fn vertex_gemini_metric_merges_input_and_output() {
     let mut p = profile("google");
     p.protocol = ProtocolFamily::VertexGemini;
+    p.gemini_file_search = lingxi_llm_client::protocol::ServiceSetting::Disabled;
     let http = ScriptedTransport::replies(vec![(
         200,
         json!({"timeSeries":[
@@ -404,9 +407,10 @@ async fn anthropic_oauth_uses_bearer_and_cost_failure_keeps_tokens() {
     );
     let seen = http.requests();
     assert_eq!(seen.len(), 2);
-    assert!(seen.iter().all(|r| r
-        .headers
-        .contains(&("authorization".into(), "Bearer admin-key".into()))));
+    assert!(seen.iter().all(|r| {
+        r.headers
+            .contains(&("authorization".into(), "Bearer admin-key".into()))
+    }));
     assert!(seen
         .iter()
         .all(|r| !r.headers.iter().any(|(name, _)| name == "x-api-key")));

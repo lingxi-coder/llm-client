@@ -4,15 +4,16 @@
 //! caller can choose how to reduce input or otherwise recover.
 
 use crate::protocol::{
-    CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
-    ReportedCost, StopReason, ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
+    ReportedCost, ResponseId, StopReason, ToolUseId, Usage,
 };
 use serde_json::Value;
 
 pub(super) fn response_with_usage_mode(
     resp: &HttpResponse,
     separate_reasoning: bool,
-) -> Result<CompletionResponse, LlmError> {
+    qwen_cache: bool,
+) -> Result<ChatResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
     if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
@@ -77,18 +78,25 @@ pub(super) fn response_with_usage_mode(
             // schema validation is where that should surface.
             input: serde_json::from_str(arguments).unwrap_or(Value::Null),
             provider_id: None,
+            caller: None,
+            toolset_name: None,
             thought_signature: None,
         });
     }
 
-    Ok(CompletionResponse {
+    Ok(ChatResponse {
         inference: Default::default(),
+        response_cache: None,
         web_search: crate::codecs::web_search_decode::with_usage(
             crate::codecs::web_search_decode::chat_with_search(message, &body),
             body.get("usage"),
         ),
         file_search: None,
+        openrouter_container: None,
+        anthropic_container: None,
+        anthropic_usage: None,
         message: ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content,
         },
@@ -98,7 +106,7 @@ pub(super) fn response_with_usage_mode(
         ),
         usage: crate::codecs::usage::report(
             body.get("usage")
-                .map(|raw| normalize_usage(raw, separate_reasoning))
+                .map(|raw| normalize_usage(raw, separate_reasoning, qwen_cache))
                 .as_ref(),
             &crate::codecs::usage::OPENAI_CHAT,
             usage,
@@ -109,7 +117,12 @@ pub(super) fn response_with_usage_mode(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        response_id: None,
+        response_id: body
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(ResponseId::new),
+        continuation: None,
         executed_profile: None,
     })
 }
@@ -280,8 +293,11 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
 }
 
 /// Convert independently reported reasoning to the shared output-subset contract.
-pub(super) fn normalize_usage(raw: &Value, separate_reasoning: bool) -> Value {
+pub(super) fn normalize_usage(raw: &Value, separate_reasoning: bool, qwen_cache: bool) -> Value {
     let mut normalized = raw.clone();
+    if qwen_cache {
+        crate::codecs::qwen_cache::normalize_usage(&mut normalized);
+    }
     if separate_reasoning {
         if let Some(output) = raw.get("completion_tokens").and_then(Value::as_u64) {
             let reasoning = raw

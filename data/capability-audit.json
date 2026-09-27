@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "status": "source_index_only_not_a_support_matrix",
+  "evidence_matrices": [
+    "capability-matrix-openai-gemini.json",
+    "capability-matrix-china.json",
+    "capability-matrix-west.json"
+  ],
+  "capabilities": [
+    "structured_output",
+    "prompt_cache",
+    "hosted_tools",
+    "retrieval",
+    "embeddings",
+    "batch_background",
+    "audio_realtime"
+  ],
+  "providers": [
+    {
+      "provider_id": "anthropic",
+      "profiles": [
+        "anthropic"
+      ],
+      "sources": [
+        "https://platform.claude.com/docs/en/build-with-claude/structured-outputs",
+        "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+        "https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "deepseek",
+      "profiles": [
+        "deepseek",
+        "deepseek-search"
+      ],
+      "sources": [
+        "https://api-docs.deepseek.com/guides/json_mode/",
+        "https://api-docs.deepseek.com/guides/kv_cache/"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "github-copilot",
+      "profiles": [
+        "github-copilot"
+      ],
+      "sources": [
+        "https://docs.github.com/en/rest/copilot"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "google",
+      "profiles": [
+        "gemini"
+      ],
+      "sources": [
+        "https://ai.google.dev/gemini-api/docs/interactions-overview",
+        "https://ai.google.dev/gemini-api/docs/streaming",
+        "https://ai.google.dev/api/interactions-api",
+        "https://ai.google.dev/api/embeddings",
+        "https://ai.google.dev/api/caching",
+        "https://ai.google.dev/api/batch-api",
+        "https://ai.google.dev/gemini-api/docs/file-search",
+        "https://ai.google.dev/gemini-api/docs/live-api"
+      ],
+      "evidence_date": "2026-09-25",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "kimi",
+      "profiles": [
+        "kimi",
+        "kimi-code",
+        "kimi-intl",
+        "kimi-search",
+        "kimi-search-intl"
+      ],
+      "sources": [
+        "https://platform.kimi.com/docs/guide/response_format",
+        "https://platform.kimi.com/docs/guide/use-batch-api"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "minimax",
+      "profiles": [
+        "minimax",
+        "minimax-intl"
+      ],
+      "sources": [
+        "https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache",
+        "https://platform.minimax.io/docs/guides/server-tools",
+        "https://platform.minimax.io/docs/guides/speech-to-text",
+        "https://platform.minimax.io/docs/api-reference/speech-t2a-async-create"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "openai",
+      "profiles": [
+        "openai"
+      ],
+      "sources": [
+        "https://developers.openai.com/api/docs/guides/tools",
+        "https://developers.openai.com/api/docs/guides/tools-code-interpreter",
+        "https://developers.openai.com/api/docs/guides/retrieval",
+        "https://developers.openai.com/api/docs/guides/structured-outputs",
+        "https://developers.openai.com/api/docs/guides/batch",
+        "https://developers.openai.com/api/docs/guides/audio",
+        "https://developers.openai.com/api/docs/guides/tools-connectors-mcp",
+        "https://developers.openai.com/api/reference/resources/containers/methods/create"
+      ],
+      "evidence_date": "2026-09-25",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "openrouter",
+      "profiles": [
+        "openrouter"
+      ],
+      "sources": [
+        "https://openrouter.ai/docs/batch-quickstart",
+        "https://openrouter.ai/docs/guides/features/server-tools",
+        "https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request",
+        "https://openrouter.ai/docs/guides/features/response-caching"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "qwen",
+      "profiles": [
+        "qwen",
+        "qwen-hk",
+        "qwen-intl",
+        "qwen-search",
+        "qwen-search-hk",
+        "qwen-search-intl",
+        "qwen-search-us",
+        "qwen-us"
+      ],
+      "sources": [
+        "https://help.aliyun.com/en/model-studio/qwen-structured-output",
+        "https://help.aliyun.com/en/model-studio/text-embedding-synchronous-api",
+        "https://help.aliyun.com/en/model-studio/batch-inference"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "xai",
+      "profiles": [
+        "grok",
+        "grok-anthropic",
+        "grok-responses"
+      ],
+      "sources": [
+        "https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions",
+        "https://docs.x.ai/developers/advanced-api-usage/batch-api",
+        "https://docs.x.ai/developers/files/collections",
+        "https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    },
+    {
+      "provider_id": "zhipu",
+      "profiles": [
+        "glm",
+        "glm-coding",
+        "zai",
+        "zai-coding"
+      ],
+      "sources": [
+        "https://docs.bigmodel.cn/cn/guide/capabilities/struct-output/",
+        "https://docs.bigmodel.cn/cn/guide/models/embedding/embedding-3",
+        "https://docs.bigmodel.cn/cn/guide/tools/batch"
+      ],
+      "evidence_date": "2026-09-24",
+      "model_region_account_audit": "pending",
+      "live_validation": "not_run"
+    }
+  ]
+}

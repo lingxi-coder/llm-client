@@ -2,12 +2,70 @@
 
 use crate::codecs::StreamDecoder;
 use crate::files::AutomaticFileCleanup;
-use crate::protocol::{LlmError, StreamEvent, Usage};
+use crate::protocol::{
+    ChatResponse, ContentBlock, ContinuationRef, ConversationMessage, LlmError, OutputFormat,
+    ResponseCacheObservation, StreamEvent, StructuredOutputError, StructuredOutputErrorKind, Usage,
+};
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
-use std::collections::VecDeque;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
+
+const MAX_STRUCTURED_STREAM_BYTES: usize = 64 * 1024 * 1024;
+
+/// Count the actual escaped JSON bytes without allocating an encoded event.
+struct EventByteCounter {
+    bytes: usize,
+    limit: usize,
+}
+
+impl std::io::Write for EventByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let size = self
+            .bytes
+            .checked_add(bytes.len())
+            .filter(|size| *size <= self.limit)
+            .ok_or_else(|| std::io::Error::other("structured stream byte limit exceeded"))?;
+        self.bytes = size;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A validated terminal stream value with the reconstructed response and all
+/// provider-neutral events needed to inspect native output and usage.
+#[derive(Debug)]
+pub struct StructuredStreamResult<T> {
+    pub value: T,
+    pub response: ChatResponse,
+    pub events: Vec<StreamEvent>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StructuredStreamError {
+    #[error("structured stream failed: {source}")]
+    Stream {
+        #[source]
+        source: LlmError,
+        events: Vec<StreamEvent>,
+    },
+    #[error("structured stream has no terminal response")]
+    MissingEnd { events: Vec<StreamEvent> },
+    #[error("structured stream exceeds 64 MiB of decoded content")]
+    TooLarge { events: Vec<StreamEvent> },
+    #[error("structured stream validation failed: {source}")]
+    Validation {
+        #[source]
+        source: StructuredOutputError,
+        events: Vec<StreamEvent>,
+    },
+}
 
 /// A provider-neutral event stream: the transport's frames run through the
 /// codec's decoder. Dropping it drops the underlying byte stream, which is how
@@ -21,8 +79,13 @@ pub struct ModelStream {
     status: u16,
     headers: Vec<(String, String)>,
     executed_profile: String,
-    automatic_file_cleanup: Option<Arc<AutomaticFileCleanup>>,
-    automatic_file_cleanup_deadline: Option<Instant>,
+    response_cache: Option<ResponseCacheObservation>,
+    observe_anthropic_container: bool,
+    anthropic_container: Option<crate::protocol::AnthropicContainerMetadata>,
+    anthropic_usage: Option<Value>,
+    continuation: Option<ContinuationRef>,
+    continuation_completed: bool,
+    automatic_file_cleanup: Option<(Arc<AutomaticFileCleanup>, Option<Instant>)>,
 }
 
 impl ModelStream {
@@ -30,9 +93,10 @@ impl ModelStream {
         resp: crate::transport::StreamResponse,
         mut decoder: Box<dyn StreamDecoder>,
         executed_profile: String,
-        automatic_file_cleanup: Option<Arc<AutomaticFileCleanup>>,
-        automatic_file_cleanup_deadline: Option<Instant>,
+        response_cache: Option<ResponseCacheObservation>,
+        automatic_file_cleanup: Option<(Arc<AutomaticFileCleanup>, Option<Instant>)>,
         requested_inference: crate::protocol::InferenceReport,
+        continuation: Option<ContinuationRef>,
     ) -> Self {
         decoder.set_response_headers(&resp.headers);
         let mut ready = VecDeque::new();
@@ -49,9 +113,33 @@ impl ModelStream {
             status: resp.status,
             headers: resp.headers,
             executed_profile,
+            response_cache,
+            observe_anthropic_container: false,
+            anthropic_container: None,
+            anthropic_usage: None,
+            continuation,
+            continuation_completed: false,
             automatic_file_cleanup,
-            automatic_file_cleanup_deadline,
         }
+    }
+
+    pub(super) fn with_anthropic_container_observation(mut self, enabled: bool) -> Self {
+        self.observe_anthropic_container = enabled;
+        self
+    }
+
+    /// Latest first-party Anthropic container envelope observed in this stream.
+    /// This metadata is available before completion and also after interruption;
+    /// it does not assert that execution finished. The caller decides recovery.
+    pub fn anthropic_container(&self) -> Option<&crate::protocol::AnthropicContainerMetadata> {
+        self.anthropic_container.as_ref()
+    }
+
+    /// Native Anthropic usage with reported fields folded across stream frames.
+    /// Original JSON frames remain available through `ProviderEvent`. This
+    /// observation may be partial until the terminal usage event arrives.
+    pub fn anthropic_usage(&self) -> Option<&Value> {
+        self.anthropic_usage.as_ref()
     }
 
     /// The status the stream opened with.
@@ -63,6 +151,15 @@ impl ModelStream {
     /// The connection that accepted this streamed request.
     pub fn executed_profile(&self) -> &str {
         &self.executed_profile
+    }
+
+    /// State from a complete stream, suitable for the next Responses request.
+    /// An interrupted stream never yields a continuation reference.
+    pub fn continuation(&self) -> Option<&ContinuationRef> {
+        self.continuation_completed
+            .then_some(self.continuation.as_ref())
+            .flatten()
+            .filter(|reference| !reference.response_id.as_str().is_empty())
     }
 
     /// A response header of the streamed response, case-insensitively.
@@ -84,6 +181,12 @@ impl ModelStream {
         &self.headers
     }
 
+    /// OpenRouter's documented response-cache observation from response headers.
+    /// Absent or unrecognized cache-status headers remain `None`.
+    pub fn response_cache(&self) -> Option<&ResponseCacheObservation> {
+        self.response_cache.as_ref()
+    }
+
     /// The next event, or `None` at the end. One frame can decode to several
     /// events, so decoded events are buffered and drained before the next
     /// frame is pulled. After a terminal event or EOF, automatic Qwen file deletion may use the
@@ -98,14 +201,49 @@ impl ModelStream {
                     }) => self.add_requested(report),
                     _ => {}
                 }
+                match &event {
+                    Ok(StreamEvent::ProviderEvent {
+                        protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+                        payload,
+                    }) if self.observe_anthropic_container => {
+                        if let Some(usage) =
+                            crate::codecs::anthropic_code_execution::stream_usage(payload)
+                        {
+                            if let Some(current) = &mut self.anthropic_usage {
+                                crate::codecs::usage::fold(current, usage);
+                            } else {
+                                self.anthropic_usage = Some(usage.clone());
+                            }
+                        }
+                        if let Some(container) =
+                            crate::codecs::anthropic_code_execution::stream_container(payload)
+                        {
+                            self.anthropic_container = (!container.is_null()).then(|| {
+                                crate::protocol::AnthropicContainerMetadata {
+                                    envelope: container.clone(),
+                                }
+                            });
+                        }
+                    }
+                    Ok(StreamEvent::Start {
+                        response_id: Some(id),
+                        ..
+                    }) => {
+                        if let Some(reference) = &mut self.continuation {
+                            reference.response_id = id.clone();
+                        }
+                    }
+                    Ok(StreamEvent::End { .. }) => self.continuation_completed = true,
+                    _ => {}
+                }
                 if matches!(&event, Ok(StreamEvent::End { .. }) | Err(_)) {
                     self.finish_transport();
                 }
                 return Some(event);
             }
             if self.finished {
-                if let Some(cleanup) = self.automatic_file_cleanup.take() {
-                    cleanup.finish(self.automatic_file_cleanup_deadline).await;
+                if let Some((cleanup, deadline)) = self.automatic_file_cleanup.take() {
+                    cleanup.finish(deadline).await;
                 }
                 return None;
             }
@@ -170,5 +308,158 @@ impl ModelStream {
     #[must_use]
     pub fn usage_is_complete(&self) -> bool {
         self.decoder.usage_report().state == crate::protocol::UsageState::Complete
+    }
+
+    /// Consume a stream, then validate its final text against an output
+    /// contract. Deltas are never parsed as standalone JSON.
+    pub async fn collect_structured_json(
+        mut self,
+        format: &OutputFormat,
+    ) -> Result<StructuredStreamResult<Value>, StructuredStreamError> {
+        let mut events = Vec::new();
+        let mut text_by_block = BTreeMap::<usize, String>::new();
+        let mut text_bytes = 0usize;
+        let mut event_bytes = EventByteCounter {
+            bytes: 0,
+            limit: MAX_STRUCTURED_STREAM_BYTES,
+        };
+        let mut model = None;
+        let mut response_id = None;
+        let mut terminal = None;
+        let mut saw_tool = false;
+        while let Some(next) = self.next().await {
+            let event = match next {
+                Ok(event) => event,
+                Err(source) => return Err(StructuredStreamError::Stream { source, events }),
+            };
+            if serde_json::to_writer(&mut event_bytes, &event).is_err() {
+                return Err(StructuredStreamError::TooLarge { events });
+            }
+            match &event {
+                StreamEvent::Start {
+                    model: observed,
+                    response_id: id,
+                } => {
+                    model = Some(observed.clone());
+                    response_id = id.clone();
+                }
+                StreamEvent::TextDelta { block, text } => {
+                    text_bytes = text_bytes.saturating_add(text.len());
+                    if text_bytes > MAX_STRUCTURED_STREAM_BYTES {
+                        return Err(StructuredStreamError::TooLarge { events });
+                    }
+                    text_by_block.entry(*block).or_default().push_str(text);
+                }
+                StreamEvent::ToolCallDelta { .. } => saw_tool = true,
+                StreamEvent::End {
+                    stop_reason,
+                    usage,
+                    inference,
+                } => terminal = Some((stop_reason.clone(), usage.clone(), inference.clone())),
+                _ => {}
+            }
+            events.push(event);
+        }
+        let Some((stop_reason, usage, inference)) = terminal else {
+            return Err(StructuredStreamError::MissingEnd { events });
+        };
+        let response = ChatResponse {
+            inference,
+            response_cache: self.response_cache.clone(),
+            message: ConversationMessage::assistant(
+                text_by_block
+                    .into_values()
+                    .map(|text| ContentBlock::Text {
+                        text,
+                        thought_signature: None,
+                    })
+                    .collect(),
+            ),
+            web_search: None,
+            file_search: None,
+            openrouter_container: None,
+            anthropic_container: self.anthropic_container.clone(),
+            anthropic_usage: self.anthropic_usage.clone(),
+            stop_reason,
+            usage,
+            model: model.unwrap_or_default(),
+            response_id,
+            continuation: self.continuation().cloned(),
+            executed_profile: Some(self.executed_profile.clone()),
+        };
+        if saw_tool {
+            return Err(StructuredStreamError::Validation {
+                source: StructuredOutputError {
+                    kind: StructuredOutputErrorKind::Incomplete,
+                    response: Box::new(response),
+                },
+                events,
+            });
+        }
+        let value = match response.structured_json(format) {
+            Ok(value) => value,
+            Err(source) => return Err(StructuredStreamError::Validation { source, events }),
+        };
+        Ok(StructuredStreamResult {
+            value,
+            response,
+            events,
+        })
+    }
+
+    /// Deserialize the validated final JSON while retaining its source data.
+    pub async fn collect_structured<T: DeserializeOwned>(
+        self,
+        format: &OutputFormat,
+    ) -> Result<StructuredStreamResult<T>, StructuredStreamError> {
+        let result = self.collect_structured_json(format).await?;
+        let value = match serde_json::from_value(result.value) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(StructuredStreamError::Validation {
+                    source: StructuredOutputError {
+                        kind: StructuredOutputErrorKind::Deserialization(error.to_string()),
+                        response: Box::new(result.response),
+                    },
+                    events: result.events,
+                });
+            }
+        };
+        Ok(StructuredStreamResult {
+            value,
+            response: result.response,
+            events: result.events,
+        })
+    }
+}
+
+#[cfg(test)]
+mod byte_budget_tests {
+    use super::*;
+
+    #[test]
+    fn event_budget_counts_escaped_unicode_across_events_at_the_exact_limit() {
+        let event = StreamEvent::TextDelta {
+            block: 0,
+            text: "quote\" slash\\ newline\n nul\0 雪🙂".into(),
+        };
+        let encoded = serde_json::to_vec(&event).unwrap();
+        let mut counter = EventByteCounter {
+            bytes: 0,
+            limit: encoded.len() * 2,
+        };
+        serde_json::to_writer(&mut counter, &event).unwrap();
+        assert_eq!(counter.bytes, encoded.len());
+        serde_json::to_writer(&mut counter, &event).unwrap();
+        assert_eq!(counter.bytes, counter.limit);
+        assert!(serde_json::to_writer(&mut counter, &event).is_err());
+        assert_eq!(counter.bytes, counter.limit);
+
+        let mut too_small = EventByteCounter {
+            bytes: 0,
+            limit: encoded.len() - 1,
+        };
+        assert!(serde_json::to_writer(&mut too_small, &event).is_err());
+        assert!(too_small.bytes <= too_small.limit);
     }
 }

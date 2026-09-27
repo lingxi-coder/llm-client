@@ -391,8 +391,8 @@ fn image_routes_round_trip_independently_of_chat_models() {
         .any(|model| model.request_model == "gpt-image-1.5"));
 }
 
-#[test]
-fn builtin_image_routes_survive_configuration_reload() {
+#[tokio::test]
+async fn builtin_image_routes_survive_configuration_reload() {
     let fixture = Fixture::new(vec![]);
     let path = std::env::temp_dir().join(format!(
         "llm-images-config-{}-{}",
@@ -406,16 +406,17 @@ fn builtin_image_routes_survive_configuration_reload() {
     let mut first_builder =
         LlmClientBuilder::with_transport(fixture.clone(), &[]).with_region(Region::International);
     first_builder.add_builtin_profile("openai").unwrap();
-    let mut first = first_builder.build().unwrap();
-    first.set_config_dir(&path).unwrap();
-    first
+    let (_first, first_config) = first_builder.build_managed().unwrap();
+    first_config.set_config_dir(&path).await.unwrap();
+    first_config
         .set_tracked_models("openai", ["gpt-image-1.5".into()])
+        .await
         .unwrap();
     let mut second_builder =
         LlmClientBuilder::with_transport(fixture, &[]).with_region(Region::International);
     second_builder.add_builtin_profile("openai").unwrap();
-    let mut second = second_builder.build().unwrap();
-    second.set_config_dir(&path).unwrap();
+    let (second, second_config) = second_builder.build_managed().unwrap();
+    second_config.set_config_dir(&path).await.unwrap();
     assert!(second
         .images()
         .models()
@@ -557,8 +558,8 @@ async fn image_response_preserves_media_type_and_legacy_mime_type() {
     assert_eq!(response.images[2].media_type, None);
 }
 
-#[test]
-fn explicit_builtin_image_configuration_survives_replacement_and_reload() {
+#[tokio::test]
+async fn explicit_builtin_image_configuration_survives_replacement_and_reload() {
     let path = std::env::temp_dir().join(format!(
         "llm-images-override-{}-{}",
         std::process::id(),
@@ -568,33 +569,41 @@ fn explicit_builtin_image_configuration_survives_replacement_and_reload() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&path).unwrap();
-    let build = || {
+    let build = || async {
         let mut builder = LlmClientBuilder::with_transport(Fixture::new(vec![]), &[])
             .with_region(Region::International);
         builder.add_builtin_profile("openai").unwrap();
-        let mut client = builder.build().unwrap();
-        client.set_config_dir(&path).unwrap();
-        client
+        let (client, client_config) = builder.build_managed().unwrap();
+        client_config.set_config_dir(&path).await.unwrap();
+        (client, client_config)
     };
-    let mut client = build();
-    let mut profile = client.provider("openai").unwrap().clone();
+    let (client, client_config) = build().await;
+    let client_view = client.snapshot();
+    let mut profile = client_view.provider("openai").unwrap().clone();
     let route = profile.images.routes.get_mut("primary").unwrap();
     route.base_url = "https://proxy.example/v1".into();
     route.api_key_header = Some("x-image-key".into());
     profile.images.models.truncate(1);
     profile.images.models[0].request_model = "custom-image-model".into();
     let expected = profile.images.clone();
-    client.add_provider(profile).unwrap();
-    assert_eq!(client.provider("openai").unwrap().images, expected);
-    let mut restored = build();
-    assert_eq!(restored.provider("openai").unwrap().images, expected);
+    client_config.add_provider(profile).await.unwrap();
+    assert_eq!(
+        client.snapshot().provider("openai").unwrap().images,
+        expected
+    );
+    let (restored, restored_config) = build().await;
+    assert_eq!(
+        restored.snapshot().provider("openai").unwrap().images,
+        expected
+    );
 
     // An explicitly empty replacement disables images instead of inheriting defaults.
-    let mut profile = restored.provider("openai").unwrap().clone();
+    let restored_view = restored.snapshot();
+    let mut profile = restored_view.provider("openai").unwrap().clone();
     profile.images = Default::default();
-    restored.add_provider(profile).unwrap();
+    restored_config.add_provider(profile).await.unwrap();
     assert!(restored.images().models().is_empty());
-    assert!(build().images().models().is_empty());
+    assert!(build().await.0.images().models().is_empty());
     std::fs::remove_dir_all(path).unwrap();
 }
 

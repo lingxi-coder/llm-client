@@ -1,66 +1,108 @@
 //! Conversation-facing service facade.
-use super::{LlmClient, ModelStream, RequestOptions};
-use crate::protocol::{CompletionRequest, CompletionResponse, LlmError, ModelListing};
+use super::{ClientSource, ModelStream, RequestOptions};
+use crate::protocol::{ChatRequest, ChatResponse, LlmError, ModelListing};
 
+#[derive(Clone, Copy)]
 pub struct ChatService<'a> {
-    client: &'a LlmClient,
+    client: ClientSource<'a>,
 }
 
 impl<'a> ChatService<'a> {
-    pub(crate) fn new(client: &'a LlmClient) -> Self {
+    pub(crate) fn new(client: ClientSource<'a>) -> Self {
         Self { client }
     }
     pub fn models(&self) -> Vec<ModelListing> {
-        self.client
-            .models()
-            .into_iter()
-            .filter(|listed| {
-                self.client
-                    .profiles()
-                    .iter()
-                    .find(|p| p.profile_name == listed.profile_name)
-                    .and_then(|p| {
-                        p.models
-                            .iter()
-                            .find(|m| m.request_model == listed.request_model)
-                    })
-                    .is_none_or(|m| {
-                        !m.metadata
-                            .output_modalities
-                            .iter()
-                            .any(|modality| modality == "image")
-                    })
-            })
-            .collect()
+        self.client.snapshot().models_matching(|model| {
+            !model
+                .metadata
+                .output_modalities
+                .iter()
+                .any(|modality| modality == "image")
+        })
     }
     pub async fn complete(
-        &self,
-        request: &CompletionRequest,
+        self,
+        request: &ChatRequest,
         options: &RequestOptions,
-    ) -> Result<CompletionResponse, LlmError> {
-        self.client.complete(request, options).await
+    ) -> Result<ChatResponse, LlmError> {
+        self.client.snapshot().complete(request, options).await
     }
     pub async fn complete_in(
-        &self,
+        self,
         profile: &str,
-        request: &CompletionRequest,
+        request: &ChatRequest,
         options: &RequestOptions,
-    ) -> Result<CompletionResponse, LlmError> {
-        self.client.complete_in(profile, request, options).await
+    ) -> Result<ChatResponse, LlmError> {
+        self.client
+            .snapshot()
+            .complete_in(profile, request, options)
+            .await
     }
     pub async fn stream(
-        &self,
-        request: &CompletionRequest,
+        self,
+        request: &ChatRequest,
         options: &RequestOptions,
     ) -> Result<ModelStream, LlmError> {
-        self.client.stream(request, options).await
+        self.client.snapshot().stream(request, options).await
     }
     pub async fn stream_in(
-        &self,
+        self,
         profile: &str,
-        request: &CompletionRequest,
+        request: &ChatRequest,
         options: &RequestOptions,
     ) -> Result<ModelStream, LlmError> {
-        self.client.stream_in(profile, request, options).await
+        self.client
+            .snapshot()
+            .stream_in(profile, request, options)
+            .await
+    }
+    pub async fn web_search(
+        self,
+        request: &ChatRequest,
+        search: crate::protocol::WebSearchConfig,
+        options: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        self.client
+            .snapshot()
+            .web_search(request, search, options)
+            .await
+    }
+
+    pub async fn web_search_in(
+        self,
+        profile: &str,
+        request: &ChatRequest,
+        search: crate::protocol::WebSearchConfig,
+        options: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        self.client
+            .snapshot()
+            .web_search_in(profile, request, search, options)
+            .await
+    }
+
+    pub async fn web_search_stream(
+        self,
+        request: &ChatRequest,
+        search: crate::protocol::WebSearchConfig,
+        options: &RequestOptions,
+    ) -> Result<ModelStream, LlmError> {
+        self.client
+            .snapshot()
+            .web_search_stream(request, search, options)
+            .await
+    }
+
+    pub async fn web_search_stream_in(
+        self,
+        profile: &str,
+        request: &ChatRequest,
+        search: crate::protocol::WebSearchConfig,
+        options: &RequestOptions,
+    ) -> Result<ModelStream, LlmError> {
+        self.client
+            .snapshot()
+            .web_search_stream_in(profile, request, search, options)
+            .await
     }
 }

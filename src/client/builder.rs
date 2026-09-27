@@ -4,6 +4,11 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuildError {
+    #[error("provider profile {profile_name:?} has invalid service configuration: {reason}")]
+    InvalidService {
+        profile_name: String,
+        reason: String,
+    },
     #[error("invalid image configuration on {profile_name:?}: {reason}")]
     InvalidImage {
         profile_name: String,
@@ -206,7 +211,7 @@ impl LlmClientBuilder {
 
     /// Register bundled defaults with explicit builtin provenance for persistence.
     pub fn add_builtin_profiles(&mut self) -> Result<&mut Self, crate::presets::PresetError> {
-        for profile in crate::presets::builtin()? {
+        for profile in crate::presets::builtin_catalog()?.iter().cloned() {
             self.builtin_definitions
                 .insert(profile.profile_name.clone());
             if let Some(existing) = self
@@ -227,9 +232,10 @@ impl LlmClientBuilder {
         &mut self,
         name: &str,
     ) -> Result<&mut Self, crate::configuration::ProviderStoreError> {
-        let profile = crate::presets::builtin()?
-            .into_iter()
+        let profile = crate::presets::builtin_catalog()?
+            .iter()
             .find(|p| p.profile_name == name)
+            .cloned()
             .ok_or_else(|| crate::configuration::ProviderStoreError::NotBuiltin(name.into()))?;
         self.builtin_definitions.insert(name.into());
         if let Some(existing) = self.profiles.iter_mut().find(|p| p.profile_name == name) {
@@ -253,6 +259,22 @@ impl LlmClientBuilder {
     /// authenticator (`AuthStrategy::None` needs none). Fails before the first
     /// request, naming the profile (gate 33). A region must be selected first.
     pub fn build(self) -> Result<LlmClient, BuildError> {
+        self.build_runtime()
+    }
+
+    /// Build shared request handles and an independent configuration manager.
+    /// Management operations are asynchronous; requests never acquire the writer lock.
+    pub fn build_managed(self) -> Result<(LlmClient, ClientConfigManager), BuildError> {
+        // The management definitions preserve the caller's original overrides;
+        // the execution snapshot separately computes effective capabilities.
+        let mut store = crate::configuration::Coordinator::new(self.profiles.clone());
+        store.definitions.builtin_names = self.builtin_definitions.clone();
+        let client = self.build_runtime()?;
+        let manager = ClientConfigManager::new(client.clone(), store);
+        Ok((client, manager))
+    }
+
+    fn build_runtime(self) -> Result<LlmClient, BuildError> {
         let region = self.region.ok_or(BuildError::MissingRegion)?;
         validate_profiles(&self.profiles, &self.codecs, &self.authenticators)?;
         for profile in &self.profiles {
@@ -273,12 +295,28 @@ impl LlmClientBuilder {
                 }
             }
         }
-        let mut store = crate::configuration::Coordinator::new(self.profiles.clone());
-        store.definitions.builtin_names = self.builtin_definitions;
-        Ok(LlmClient {
+        let account_registry = Arc::new(account::Registry::new(
+            self.account_sources,
+            self.profile_account_sources,
+        ));
+        let cache_generations = self
+            .profiles
+            .iter()
+            .map(|profile| (profile.profile_name.clone(), 1))
+            .collect();
+        let published = Arc::new(RwLock::new(Arc::new(PublishedState {
+            revision: 1,
+            config: Arc::new(super::snapshot::RuntimeSnapshot::new(
+                region,
+                self.profiles,
+                None,
+            )),
+            account_registry,
+            cache_namespace: 1,
+            cache_generations,
+        })));
+        let runtime = Arc::new(RuntimeResources {
             accounts: account::Service::new(
-                self.account_sources,
-                self.profile_account_sources,
                 self.http.clone(),
                 self.clock.clone(),
                 self.account_concurrency,
@@ -292,13 +330,9 @@ impl LlmClientBuilder {
             image_authenticators: self.image_authenticators,
             directories: self.directories,
             authenticators: self.authenticators,
-            snapshot: Arc::new(super::snapshot::RuntimeSnapshot::new(
-                region,
-                self.profiles,
-                None,
-            )),
-            store,
-        })
+        });
+        let client = LlmClient { runtime, published };
+        Ok(client)
     }
 }
 
@@ -310,6 +344,68 @@ pub(super) fn validate_profiles(
     let mut seen = std::collections::BTreeSet::new();
     let mut connections = std::collections::BTreeSet::new();
     for p in profiles {
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.embeddings {
+            crate::embeddings::validate_route(route).map_err(|e| BuildError::InvalidService {
+                profile_name: p.profile_name.clone(),
+                reason: e.to_string(),
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.retrieval {
+            crate::retrieval::validate_route(route).map_err(|e| BuildError::InvalidService {
+                profile_name: p.profile_name.clone(),
+                reason: e.to_string(),
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.batches {
+            crate::batches::validate_route(route).map_err(|e| BuildError::InvalidService {
+                profile_name: p.profile_name.clone(),
+                reason: e.to_string(),
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.deferred {
+            crate::deferred::validate_route(p, route).map_err(|e| BuildError::InvalidService {
+                profile_name: p.profile_name.clone(),
+                reason: e.to_string(),
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.background {
+            crate::background::validate_route(p, route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.audio {
+            crate::audio::validate_route(p, route).map_err(|e| BuildError::InvalidService {
+                profile_name: p.profile_name.clone(),
+                reason: e.to_string(),
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.interactions {
+            crate::interactions::validate_route(p, route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.gemini_file_search {
+            crate::gemini_file_search::validate_route(p, route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+        }
+        if let crate::protocol::ServiceSetting::Enabled(route) = &p.glm_knowledge {
+            crate::glm_knowledge::validate_route(p, route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
+        }
         for (name, route) in &p.images.routes {
             for (label, raw) in [
                 ("base_url", &route.base_url),
@@ -395,6 +491,12 @@ pub(super) fn validate_profiles(
         }
     }
     for p in profiles {
+        if !p.chat_enabled && !p.models.is_empty() {
+            return Err(BuildError::InvalidService {
+                profile_name: p.profile_name.clone(),
+                reason: "Chat-disabled profiles cannot declare Chat models".into(),
+            });
+        }
         for model in &p.models {
             if let Some(prices) = &model.pricing {
                 super::price_query::validate_prices(prices).map_err(|reason| {
@@ -423,13 +525,13 @@ pub(super) fn validate_profiles(
                     reason,
                 })?;
         }
-        if !codecs.contains_key(&p.protocol) {
+        if p.chat_enabled && !codecs.contains_key(&p.protocol) {
             return Err(BuildError::MissingCodec {
                 profile_name: p.profile_name.clone(),
                 family: p.protocol,
             });
         }
-        if p.auth != AuthStrategy::None && !authenticators.contains_key(&p.auth) {
+        if p.chat_enabled && p.auth != AuthStrategy::None && !authenticators.contains_key(&p.auth) {
             return Err(BuildError::MissingAuthenticator {
                 profile_name: p.profile_name.clone(),
                 strategy: p.auth,

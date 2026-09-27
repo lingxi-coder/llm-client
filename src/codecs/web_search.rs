@@ -1,15 +1,15 @@
 //! Explicit endpoint adapters: compatible JSON alone does not imply search.
-use crate::protocol::{CompletionRequest, LlmError, ProtocolFamily, ProviderProfile, ToolChoice};
+use crate::protocol::{ChatRequest, LlmError, ProtocolFamily, ProviderProfile, ToolChoice};
 use serde_json::{json, Map, Value};
 
 /// Add the configured hosted tool after ordinary tools, before profile extras.
 /// Adapter selection is data-driven; provider names never select behavior.
 pub(crate) fn apply(
-    req: &CompletionRequest,
+    req: &ChatRequest,
     profile: &ProviderProfile,
     body: &mut Map<String, Value>,
 ) -> Result<(), LlmError> {
-    let Some(search) = &req.web_search else {
+    let Some(search) = req.hosted_web_search() else {
         return Ok(());
     };
     let unsupported = |message: &str| LlmError::UnsupportedCapability {

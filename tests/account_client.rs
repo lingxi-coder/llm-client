@@ -245,12 +245,12 @@ async fn replacing_a_profile_invalidates_its_signed_in_account_source() {
         AccountIdentity::AuthUser,
         Arc::new(FakeSource),
     );
-    let mut client = builder
+    let (client, client_config) = builder
         .with_region(lingxi_llm_client::protocol::Region::International)
-        .build()
+        .build_managed()
         .unwrap();
     let dir = account_config_dir();
-    client.set_config_dir(&dir).unwrap();
+    client_config.set_config_dir(&dir).await.unwrap();
     let mut query = AccountQuery::new(AccountIdentity::AuthUser);
     query.since_unix = Some(100);
     query.until_unix = Some(200);
@@ -265,7 +265,8 @@ async fn replacing_a_profile_invalidates_its_signed_in_account_source() {
 
     let mut replacement = profile;
     replacement.base_url = "https://replacement.invalid/v1".into();
-    client.add_provider(replacement).unwrap();
+    replacement.background = lingxi_llm_client::protocol::ServiceSetting::Disabled;
+    client_config.add_provider(replacement).await.unwrap();
     assert!(matches!(
         client
             .account_usage("openai", &query)
@@ -275,8 +276,9 @@ async fn replacing_a_profile_invalidates_its_signed_in_account_source() {
         AccountMetric::Unsupported
     ));
 
-    client
+    client_config
         .register_profile_account_source("openai", AccountIdentity::AuthUser, Arc::new(FakeSource))
+        .await
         .unwrap();
     assert!(matches!(
         client
@@ -304,22 +306,23 @@ async fn reloading_a_changed_profile_invalidates_its_signed_in_account_source() 
         AccountIdentity::AuthUser,
         Arc::new(FakeSource),
     );
-    let mut client = builder
+    let (client, client_config) = builder
         .with_region(lingxi_llm_client::protocol::Region::International)
-        .build()
+        .build_managed()
         .unwrap();
-    client.set_config_dir(&dir).unwrap();
-    let mut other = LlmClientBuilder::new(std::slice::from_ref(&profile))
+    client_config.set_config_dir(&dir).await.unwrap();
+    let (other, other_config) = LlmClientBuilder::new(std::slice::from_ref(&profile))
         .unwrap()
         .with_region(lingxi_llm_client::protocol::Region::International)
-        .build()
+        .build_managed()
         .unwrap();
-    other.set_config_dir(&dir).unwrap();
+    other_config.set_config_dir(&dir).await.unwrap();
     let mut replacement = profile;
     replacement.base_url = "https://replacement.invalid/v1".into();
-    other.add_provider(replacement).unwrap();
+    replacement.background = lingxi_llm_client::protocol::ServiceSetting::Disabled;
+    other_config.add_provider(replacement).await.unwrap();
 
-    client.set_config_dir(&dir).unwrap();
+    client_config.set_config_dir(&dir).await.unwrap();
     let mut query = AccountQuery::new(AccountIdentity::AuthUser);
     query.since_unix = Some(100);
     query.until_unix = Some(200);
@@ -377,11 +380,14 @@ async fn implicit_session_binding_expires_on_account_changes_but_token_queries_s
             AccountIdentity::AuthUser,
             Arc::new(QueryBoundSource(calls.clone())),
         );
-        let mut client = builder.with_region(Region::International).build().unwrap();
+        let (client, client_config) = builder
+            .with_region(Region::International)
+            .build_managed()
+            .unwrap();
         let dir = account_config_dir();
         let second_dir = account_config_dir();
-        client.set_config_dir(&dir).unwrap();
-        client.set_config_dir(&dir).unwrap();
+        client_config.set_config_dir(&dir).await.unwrap();
+        client_config.set_config_dir(&dir).await.unwrap();
         let query = AccountQuery::new(AccountIdentity::AuthUser);
         client.account_usage("openai", &query).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -391,23 +397,23 @@ async fn implicit_session_binding_expires_on_account_changes_but_token_queries_s
             key: "bob-login".into(),
         };
         match action {
-            "replace" => client.add_provider(replacement).unwrap(),
-            "readd" => client.add_provider(profile.clone()).unwrap(),
+            "replace" => client_config.add_provider(replacement).await.unwrap(),
+            "readd" => client_config.add_provider(profile.clone()).await.unwrap(),
             "remove" => {
-                client.remove_provider("openai").unwrap();
-                client.add_provider(profile.clone()).unwrap();
+                client_config.remove_provider("openai").await.unwrap();
+                client_config.add_provider(profile.clone()).await.unwrap();
             }
-            "restore" => client.restore_builtin("openai").unwrap(),
-            "switch" => client.set_config_dir(&second_dir).unwrap(),
+            "restore" => client_config.restore_builtin("openai").await.unwrap(),
+            "switch" => client_config.set_config_dir(&second_dir).await.unwrap(),
             "reload" => {
-                let mut other = LlmClientBuilder::new(std::slice::from_ref(&profile))
+                let (_other, other_config) = LlmClientBuilder::new(std::slice::from_ref(&profile))
                     .unwrap()
                     .with_region(Region::International)
-                    .build()
+                    .build_managed()
                     .unwrap();
-                other.set_config_dir(&dir).unwrap();
-                other.add_provider(replacement).unwrap();
-                client.set_config_dir(&dir).unwrap();
+                other_config.set_config_dir(&dir).await.unwrap();
+                other_config.add_provider(replacement).await.unwrap();
+                client_config.set_config_dir(&dir).await.unwrap();
             }
             _ => unreachable!(),
         }
@@ -431,17 +437,19 @@ async fn implicit_session_binding_expires_on_account_changes_but_token_queries_s
             "only explicitly scoped queries may call the old source: {action}"
         );
         let rebound = Arc::new(AtomicUsize::new(0));
-        client
+        client_config
             .register_profile_account_source(
                 "openai",
                 AccountIdentity::AuthUser,
                 Arc::new(QueryBoundSource(rebound.clone())),
             )
+            .await
             .unwrap();
         client.account_usage("openai", &query).await.unwrap();
         assert_eq!(rebound.load(Ordering::SeqCst), 1);
-        let current = client.provider("openai").unwrap().clone();
-        client.add_provider(current).unwrap();
+        let client_view = client.snapshot();
+        let current = client_view.provider("openai").unwrap().clone();
+        client_config.add_provider(current).await.unwrap();
         assert!(matches!(
             client.account_usage("openai", &query).await,
             Err(AccountUsageError::AmbiguousAccountSource(_))
@@ -470,22 +478,27 @@ async fn model_only_and_other_provider_changes_preserve_implicit_session_binding
         AccountIdentity::AuthUser,
         Arc::new(QueryBoundSource(calls.clone())),
     );
-    let mut client = builder.with_region(Region::International).build().unwrap();
-    let dir = account_config_dir();
-    client.set_config_dir(&dir).unwrap();
-    client
-        .set_tracked_models("openai", [model.clone()])
+    let (client, client_config) = builder
+        .with_region(Region::International)
+        .build_managed()
         .unwrap();
-    client
+    let dir = account_config_dir();
+    client_config.set_config_dir(&dir).await.unwrap();
+    client_config
+        .set_tracked_models("openai", [model.clone()])
+        .await
+        .unwrap();
+    client_config
         .set_model_visibility("openai", &model, false)
+        .await
         .unwrap();
     let other = builtin_providers()
         .unwrap()
         .into_iter()
         .find(|p| p.profile_name == "deepseek")
         .unwrap();
-    client.add_provider(other).unwrap();
-    client.set_config_dir(&dir).unwrap();
+    client_config.add_provider(other).await.unwrap();
+    client_config.set_config_dir(&dir).await.unwrap();
     client
         .account_usage("openai", &AccountQuery::new(AccountIdentity::AuthUser))
         .await

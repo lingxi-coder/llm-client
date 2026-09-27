@@ -8,8 +8,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(Region::International)
         .build()?;
+    // Keep one configuration version from preflight through actual cost calculation.
+    let snapshot = client.snapshot();
     let model = "gpt-5.6";
-    let listing = client
+    let listing = snapshot
         .models()
         .into_iter()
         .find(|row| row.profile_name == "openai" && row.request_model == model)
@@ -20,14 +22,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         input_tokens: Some(1000),
         ..Default::default()
     };
-    let quote = client.price_quote(model, Some("openai"), &context)?;
+    let quote = snapshot.price_quote(model, Some("openai"), &context)?;
     println!("price: {quote:?}");
     if listing.info.features.fast != CapabilitySupport::Supported
         || quote.status != PriceStatus::Priced
     {
         return Err("fast support or its price is unknown".into());
     }
-    let route = client.resolve_in(model, Some("openai"))?;
+    let route = snapshot.resolve_in(model, Some("openai"))?;
     let assumed_usage = Usage {
         input_tokens: 1000,
         output_tokens: 500,
@@ -35,10 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!(
         "preflight: {:?}",
-        client.estimate_cost(&route, &assumed_usage, &context)?
+        snapshot.estimate_cost(&route, &assumed_usage, &context)?
     );
 
-    let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
+    let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": model,
         "messages": [{"role":"user","content":[{"type":"text","text":"Explain why reasoning effort changes token consumption."}]}],
         "max_tokens": 2048
@@ -52,13 +54,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         credential: Some(Secret::new(std::env::var("OPENAI_API_KEY")?)),
         ..Default::default()
     };
-    let response = client.complete_in("openai", &request, &options).await?;
+    let response = snapshot
+        .chat()
+        .complete_in("openai", &request, &options)
+        .await?;
     println!("{}", response.message.text());
     println!("inference: {:?}", response.inference);
     println!("provider usage and reported cost: {:?}", response.usage);
     println!(
         "local estimate: {:?}",
-        client.estimate_actual_cost(&route, &response, Submission::Interactive)?
+        snapshot.estimate_actual_cost(&route, &response, Submission::Interactive)?
     );
     Ok(())
 }

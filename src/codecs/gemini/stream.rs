@@ -7,13 +7,14 @@ use super::decode;
 use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
-use crate::protocol::{LlmError, StopReason, StreamEvent};
+use crate::protocol::{LlmError, ProtocolFamily, StopReason, StreamEvent};
 use serde_json::Value;
 use std::collections::HashSet;
 
 #[derive(Debug, Default)]
 pub struct GeminiStreamDecoder {
     inference: crate::codecs::inference::StreamInference,
+    protocol: Option<ProtocolFamily>,
     started: bool,
     next_block: usize,
     text_block: Option<usize>,
@@ -116,6 +117,8 @@ impl EventDecoder for GeminiStreamDecoder {
                     block,
                     id,
                     provider_id,
+                    caller: None,
+                    toolset_name: None,
                     name,
                     arguments_fragment: call
                         .get("args")
@@ -126,6 +129,25 @@ impl EventDecoder for GeminiStreamDecoder {
                 if let Some(signature) = signature {
                     out.push(StreamEvent::ThoughtSignature { block, signature });
                 }
+                continue;
+            }
+            if part.get("executableCode").is_some()
+                || part.get("codeExecutionResult").is_some()
+                || part.get("inlineData").is_some()
+                || part.get("toolCall").is_some()
+                || part.get("toolResponse").is_some()
+            {
+                self.text_block = None;
+                self.reasoning_block = None;
+                let block = self.next_block;
+                self.next_block += 1;
+                out.push(StreamEvent::ProviderContent {
+                    block,
+                    protocol: self
+                        .protocol
+                        .unwrap_or(ProtocolFamily::GeminiGenerateContent),
+                    value: part.clone(),
+                });
                 continue;
             }
             let Some(text) = part.get("text").and_then(Value::as_str) else {
@@ -223,6 +245,7 @@ impl GeminiStreamDecoder {
     pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
         Self {
             inference: crate::codecs::inference::StreamInference::new(context),
+            protocol: Some(context.profile().protocol),
             ..Self::default()
         }
     }

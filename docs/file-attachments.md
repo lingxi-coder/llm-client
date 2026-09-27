@@ -107,6 +107,31 @@ without a documented purpose filter return `UnsupportedCapability`.
 After a direct Qwen upload, use `get` to wait for `processed` before sending its
 ID to the model; automatic app attachments perform that wait in the client.
 
+Microsoft Foundry's Files API is available only for deployments explicitly
+hosted on Anthropic. Use `FileService::new_foundry(...,
+FoundryHosting::Anthropic, ...)` to opt in without a chat model catalog, or
+`new_foundry_for_model(...)` to validate a selected row from the profile. Both
+require the strict `https://{resource}.services.ai.azure.com/anthropic` route
+and a stable non-secret account scope; the existing profile-only `new()` does
+not infer Foundry file support. The resulting references retain the
+`FoundryClaude` protocol and canonical resource endpoint identity. Files are
+workspace/resource scoped rather than bound to a deployment name or underlying
+model, so they can be reused by compatible deployments in the same resource
+and account scope. Foundry Code Execution checks that scope before adding a
+file as a `container_upload`.
+
+Anthropic `FileService::list_by_ids(&[ProviderFileRef])` retrieves metadata for
+up to 100 already-scoped references in one request. The provider omits IDs
+that are missing or inaccessible, so compare returned IDs with the requested
+set if the caller needs to detect omissions. The client rejects references
+from another account/resource and provider responses containing IDs that were
+not requested. Anthropic says uploaded files are not downloadable; `download`
+is allowed only when metadata reports `downloadable: true` (for example, for
+Code Execution outputs). Its guide states a 500 MB per-file maximum; the
+service's local upload bound is a safety check, while the provider determines
+acceptance ([Files API](https://platform.claude.com/docs/en/build-with-claude/files),
+[Foundry hosting](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)).
+
 FileService uses no-redirect transport operations for credentialed requests.
 Custom `Transport` implementations provide one `send` method returning raw
 bytes and must disable automatic redirects and retries. The shared executor
@@ -115,7 +140,7 @@ enforces its 64 MiB download cap while reading the stream. OpenAI model-input up
 the 50,000,000-byte combined limit for file inputs with known sizes before
 uploading app attachments. Callers supplying provider file IDs directly must
 keep their combined file size within the provider limit.
-Supported image inputs use the Files API's 512 MiB upload cap.
+Supported OpenAI image inputs use the Files API's 512 MiB upload cap. xAI's ordinary multipart Files upload limit is 50,000,000 bytes; buffered and streaming uploads reject larger inputs before dispatch ([xAI upload reference](https://docs.x.ai/developers/rest-api-reference/files/upload)).
 Attachment resolution remains limited to 64 MiB total per request.
 
 For automatic `AttachmentRef` requests, set `RequestOptions::file_account_scope`
@@ -137,9 +162,60 @@ list and delete any files left behind by process exit or persistent failures.
 Explicit `FileService::upload` calls retain caller-managed lifetime and should
 be deleted by the host when no longer needed.
 
-Direct `FileService` uploads for `FilePurpose::ModelInput` or
-`FilePurpose::VideoUnderstanding`, and directly supplied `ProviderFileSource`
-references require an explicit, non-empty account scope.
+For inputs already produced as a one-shot stream, use
+`FileService::upload_stream(UploadFileStream::new(filename, media_type,
+size_bytes, stream))`. It sends multipart uploads incrementally for the
+existing REST adapters and sends Gemini Files through its resumable start and
+raw-body requests. The declared size must equal the bytes yielded: short,
+overlong, or interrupted streams fail. Multipart adapters withhold the closing
+boundary unless the stream reaches exact EOF; Gemini sends its raw body with
+the declared length. Preflight checks run before the input stream is polled. The
+stream is consumed once, with no automatic retry or Gemini processing poll.
+Because a transport interruption can happen after the provider accepts some
+or all of the upload, `FileUploadError::OutcomeUnknown` means callers should
+not blindly retry; use provider metadata/listing where available to reconcile
+the result. Gemini `PROCESSING` is returned as
+`LlmError::ProviderFileProcessing` with its scoped reference, which callers
+can pass to `resume_gemini_processing()`. Existing `FileService::upload`
+continues to accept in-memory `UploadFile` values. A custom `Transport` must
+implement `send_stream` to use `upload_stream`; the default rejects before it
+consumes the input.
+
+```rust,no_run
+use futures::{stream, StreamExt};
+use lingxi_llm_client::{
+    files::{FilePurpose, FileService, FileUploadError, UploadFileStream},
+    protocol::{LlmError, ProviderProfile, Secret},
+    Authenticator, Transport,
+};
+
+async fn upload_pdf(
+    transport: &dyn Transport,
+    profile: &ProviderProfile,
+    authenticator: &dyn Authenticator,
+    api_key: &Secret<String>,
+) -> Result<(), FileUploadError> {
+    let chunks = stream::iter([b"hello ".to_vec(), b"world".to_vec()])
+        .map(|part| Ok::<_, LlmError>(part.into()));
+    let files = FileService::new(
+        transport,
+        profile,
+        Some(authenticator),
+        Some(api_key),
+        Some("account-42"),
+    );
+    let input = UploadFileStream::new("report.pdf", "application/pdf", 11, chunks);
+    let _uploaded = files.upload_stream(input, FilePurpose::ModelInput).await?;
+    Ok(())
+}
+```
+
+Direct `FileService` uploads for `FilePurpose::ModelInput`,
+`FilePurpose::VideoUnderstanding`, `FilePurpose::Batch`, or
+`FilePurpose::AsyncTtsInput`, and directly supplied `ProviderFileSource`
+references require an explicit, non-empty account scope. This includes
+MiniMax asynchronous TTS text-file inputs so the uploaded reference has the
+same account binding that the async TTS service checks.
 Pass the same stable scope to `FileService` and as
 `RequestOptions::file_account_scope` when sending the reference. The automatic
 request-local scope is internal and cannot be used for a new direct model input;
@@ -147,13 +223,64 @@ it can be supplied to `resume_gemini_processing()` for the same pending upload.
 Never pass an API key, OAuth token, or other credential as this scope.
 
 Provider file references also carry a deterministic FNV-1a 128 fingerprint of
-the profile's complete configured `base_url`. The reference stores the
+the configured file endpoint. Most adapters bind the profile's complete
+`base_url`; Foundry Files binds its canonical resource base, so a trailing
+slash does not create a different identity. The reference stores the
 fingerprint, not the URL, so userinfo and query parameters are not copied into
-it. The binding includes the full URL and rejects use after the configured
-endpoint changes; serialized references without a fingerprint are rejected.
-This fingerprint is an endpoint identifier, not an authentication credential.
+it. A changed endpoint rejects the old reference; serialized references
+without a fingerprint are rejected. This fingerprint is an endpoint
+identifier, not an authentication credential.
 Normally obtain a `ProviderFileSource` from `ProviderFileRef::model_reference()`;
 if constructing one manually, set `endpoint_fingerprint` with
-`provider_file_endpoint_fingerprint(profile.base_url)`.
+`provider_file_endpoint_fingerprint(profile.base_url)` for ordinary profiles,
+or the normalized `https://{resource}.services.ai.azure.com/anthropic` base for
+Foundry.
+
+`ProviderFileRef::model_reference()` also copies the original `expires_at`
+timestamp into `ProviderFileSource.expires_at: Option<String>`. This is local
+validation metadata and is not included in the provider's model-input wire.
+A present timestamp must be RFC 3339 (including fractional seconds and timezone
+offsets) or integer Unix seconds represented as a string. Numeric JSON expiry
+values are converted to strings by the adapter. The validator does not guess
+milliseconds versus seconds, and `"0"` means the Unix epoch, not unlimited
+lifetime. Malformed or unrepresentable timestamps, and timestamps at or before
+the current time, return `LlmError::InvalidRequest`. An absent expiry is allowed;
+it does not establish readiness or continued availability.
+
+The projection also copies the provider-reported `processing_status` verbatim.
+This value is local metadata and is never sent in the model-input wire. The
+client rejects known Gemini `PROCESSING` and Qwen `uploaded`/`processing`
+references before model dispatch, and reports known Gemini `FAILED` or Qwen
+`error` files as invalid requests. Gemini `ACTIVE` and Qwen `processed` are the
+documented ready states ([Gemini Files API](https://ai.google.dev/api/files),
+[Qwen OpenAI-compatible File API](https://help.aliyun.com/en/model-studio/openai-file-interface)).
+Absent or unrecognized statuses remain unknown and are not interpreted using
+another provider's vocabulary.
+
+The high-level client checks known expiry before attachment resolution. File
+planning checks direct references and their known readiness before upload, and
+the final codec validates the effective references again before encoding.
+Expiry is rechecked after attachment preparation and after authentication just
+before writing the model request. Direct codecs use the same file validator.
+The current system time is the default;
+direct callers can supply `CodecContext::with_file_validation_time` for a custom
+clock or deterministic tests. A known-expiry failure does not trigger automatic
+metadata refresh or reupload; existing upload-cache invalidation behavior
+otherwise remains unchanged. Provider, profile, endpoint, protocol, and account
+scope checks still apply.
+
+`FileService::get()` refreshes the status when the response includes it and
+retains the last known status when the field is omitted. Explicit `null` clears
+the status back to unknown. Gemini's `resume_gemini_processing()` returns a
+reference projected from the final metadata, so an `ACTIVE` result replaces
+the earlier `PROCESSING` state. Automatic Qwen attachment uploads wait for a
+`processed` result and use that refreshed reference. A direct model-input
+reference does not trigger an implicit refresh or retry. Qwen's direct
+`FileService::upload()` returns its reported status; callers can inspect a
+fresh `get()` result before using the file. File storage expiry is also
+distinct from Anthropic execution-container expiry: Anthropic Files supports
+[optional file expiration](https://platform.claude.com/docs/en/build-with-claude/files#file-expiration),
+while the execution container's rolling `expires_at` is retained without a
+local expiry rejection, as explained in [Code Execution](anthropic-code-execution.en.md).
 
 Attachments resolve once per revision into shared `Bytes`. Each attempt validates a complete transfer plan before uploading, and passes borrowed content bindings to the codec. Upload/cache paths never create Base64 strings. Inline Base64 writes directly into the final JSON serializer; Anthropic preflight uses the same serializer with a counting writer. One cleanup lease owns temporary files for each attempt, independently of cache-reference bookkeeping.

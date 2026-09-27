@@ -2,7 +2,7 @@
 
 mod wire;
 
-use crate::client::LlmClient;
+use crate::client::{ClientSnapshot, ClientSource};
 use crate::protocol::{
     ImageApi, ImageCapabilities, ImageEditRequest, ImageGenerationRequest, ImageInput,
     ImageModelListing, ImageModelProfile, ImageRequest, ImageRequestOptions, ImageResponse,
@@ -172,21 +172,128 @@ pub(crate) fn builtin_adapters() -> BTreeMap<ImageApi, Arc<dyn ImageAdapter>> {
     .collect()
 }
 
+/// A service handle whose live configuration is captured once per operation.
+#[derive(Clone, Copy)]
 pub struct ImageService<'a> {
-    client: &'a LlmClient,
+    source: ClientSource<'a>,
 }
 
 impl<'a> ImageService<'a> {
-    pub(crate) fn new(client: &'a LlmClient) -> Self {
-        Self { client }
+    pub(crate) fn new(source: ClientSource<'a>) -> Self {
+        Self { source }
     }
 
     pub fn models(&self) -> Vec<ImageModelListing> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }.models()
+    }
+
+    pub fn capabilities(&self, model: &str) -> Result<ImageCapabilities, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }.capabilities(model)
+    }
+
+    pub fn capabilities_in(
+        &self,
+        profile: &str,
+        model: &str,
+    ) -> Result<ImageCapabilities, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }.capabilities_in(profile, model)
+    }
+
+    pub async fn generate(
+        &self,
+        req: &ImageGenerationRequest,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageResponse, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .generate(req, opts)
+            .await
+    }
+
+    pub async fn generate_in(
+        &self,
+        profile: &str,
+        req: &ImageGenerationRequest,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageResponse, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .generate_in(profile, req, opts)
+            .await
+    }
+
+    pub async fn edit(
+        &self,
+        req: &ImageEditRequest,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageResponse, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .edit(req, opts)
+            .await
+    }
+
+    pub async fn edit_in(
+        &self,
+        profile: &str,
+        req: &ImageEditRequest,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageResponse, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .edit_in(profile, req, opts)
+            .await
+    }
+
+    pub async fn submit(
+        &self,
+        req: &ImageRequest,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageTaskRef, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .submit(req, opts)
+            .await
+    }
+
+    pub async fn submit_in(
+        &self,
+        profile: &str,
+        req: &ImageRequest,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageTaskRef, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .submit_in(profile, req, opts)
+            .await
+    }
+
+    pub async fn get_task(
+        &self,
+        task: &ImageTaskRef,
+        opts: &ImageRequestOptions,
+    ) -> Result<ImageTaskSnapshot, ImageError> {
+        let snapshot = self.source.snapshot();
+        PinnedImageService { client: &snapshot }
+            .get_task(task, opts)
+            .await
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PinnedImageService<'a> {
+    client: &'a ClientSnapshot,
+}
+
+impl<'a> PinnedImageService<'a> {
+    fn models(&self) -> Vec<ImageModelListing> {
         self.client
-            .snapshot
-            .profiles
+            .profiles()
             .iter()
-            .filter(|p| p.supports_region(self.client.region) && !p.connection.hidden)
+            .filter(|p| p.supports_region(self.client.region()) && !p.connection.hidden)
             .flat_map(|p| {
                 p.images
                     .models
@@ -203,17 +310,13 @@ impl<'a> ImageService<'a> {
             .collect()
     }
 
-    pub fn capabilities(&self, model: &str) -> Result<ImageCapabilities, ImageError> {
+    fn capabilities(&self, model: &str) -> Result<ImageCapabilities, ImageError> {
         Ok(self.resolve(model, None)?.1.capabilities.clone())
     }
-    pub fn capabilities_in(
-        &self,
-        profile: &str,
-        model: &str,
-    ) -> Result<ImageCapabilities, ImageError> {
+    fn capabilities_in(&self, profile: &str, model: &str) -> Result<ImageCapabilities, ImageError> {
         Ok(self.resolve(model, Some(profile))?.1.capabilities.clone())
     }
-    pub async fn generate(
+    async fn generate(
         &self,
         req: &ImageGenerationRequest,
         opts: &ImageRequestOptions,
@@ -222,7 +325,7 @@ impl<'a> ImageService<'a> {
             .await
             .map(|result| result.0.expect("sync image call returns a response"))
     }
-    pub async fn generate_in(
+    async fn generate_in(
         &self,
         profile: &str,
         req: &ImageGenerationRequest,
@@ -237,7 +340,7 @@ impl<'a> ImageService<'a> {
         .await
         .map(|result| result.0.expect("sync image call returns a response"))
     }
-    pub async fn edit(
+    async fn edit(
         &self,
         req: &ImageEditRequest,
         opts: &ImageRequestOptions,
@@ -246,7 +349,7 @@ impl<'a> ImageService<'a> {
             .await
             .map(|result| result.0.expect("sync image call returns a response"))
     }
-    pub async fn edit_in(
+    async fn edit_in(
         &self,
         profile: &str,
         req: &ImageEditRequest,
@@ -256,7 +359,7 @@ impl<'a> ImageService<'a> {
             .await
             .map(|result| result.0.expect("sync image call returns a response"))
     }
-    pub async fn submit(
+    async fn submit(
         &self,
         req: &ImageRequest,
         opts: &ImageRequestOptions,
@@ -265,7 +368,7 @@ impl<'a> ImageService<'a> {
             .await
             .map(|result| result.1.expect("async image call returns a task"))
     }
-    pub async fn submit_in(
+    async fn submit_in(
         &self,
         profile: &str,
         req: &ImageRequest,
@@ -276,7 +379,7 @@ impl<'a> ImageService<'a> {
             .map(|result| result.1.expect("async image call returns a task"))
     }
 
-    pub async fn get_task(
+    async fn get_task(
         &self,
         task: &ImageTaskRef,
         opts: &ImageRequestOptions,
@@ -284,9 +387,8 @@ impl<'a> ImageService<'a> {
         let deadline = Deadline::after(Some(opts.total_timeout.unwrap_or(Duration::from_secs(60))));
         let profile = self
             .client
-            .snapshot
-            .profile(&task.profile_name)
-            .filter(|p| p.supports_region(self.client.region))
+            .provider(&task.profile_name)
+            .filter(|p| p.supports_region(self.client.region()))
             .ok_or_else(|| {
                 ImageError::TaskScopeMismatch("profile is unavailable in this region".into())
             })?;
@@ -309,7 +411,7 @@ impl<'a> ImageService<'a> {
             .run(authenticate(self.client, &mut request, route, opts))
             .await??;
         request.timeout = deadline.remaining()?;
-        let response = HttpExecutor::new(self.client.http.as_ref())
+        let response = HttpExecutor::new(self.client.runtime.http.as_ref())
             .with_deadline(deadline)
             .execute_bounded(request, opts.max_response_bytes.unwrap_or(64 * 1024 * 1024))
             .await
@@ -348,7 +450,7 @@ impl<'a> ImageService<'a> {
             .run(authenticate(self.client, &mut request, route, opts))
             .await??;
         request.timeout = deadline.remaining()?;
-        let response = HttpExecutor::new(self.client.http.as_ref())
+        let response = HttpExecutor::new(self.client.runtime.http.as_ref())
             .with_deadline(deadline)
             .execute_bounded(request, opts.max_response_bytes.unwrap_or(64 * 1024 * 1024))
             .await
@@ -388,9 +490,8 @@ impl<'a> ImageService<'a> {
         let matches_scope = |profile: &ProviderProfile, scope: &str| {
             if self
                 .client
-                .snapshot
-                .profile(scope)
-                .is_some_and(|p| p.supports_region(self.client.region))
+                .provider(scope)
+                .is_some_and(|p| p.supports_region(self.client.region()))
             {
                 profile.profile_name == scope
             } else {
@@ -398,8 +499,8 @@ impl<'a> ImageService<'a> {
             }
         };
         let mut candidates = Vec::new();
-        for profile in &self.client.snapshot.profiles {
-            if !profile.supports_region(self.client.region) {
+        for profile in self.client.profiles() {
+            if !profile.supports_region(self.client.region()) {
                 continue;
             }
             if scoped.is_some_and(|s| !matches_scope(profile, s)) {
@@ -444,6 +545,7 @@ impl<'a> ImageService<'a> {
 
     fn adapter(&self, api: ImageApi) -> Result<&dyn ImageAdapter, ImageError> {
         self.client
+            .runtime
             .image_adapters
             .get(&api)
             .map(Arc::as_ref)
@@ -482,7 +584,12 @@ impl<'a> ImageService<'a> {
                 }
                 .into());
             }
-            let bytes = self.client.attachments.resolve_image(attachment).await?;
+            let bytes = self
+                .client
+                .runtime
+                .attachments
+                .resolve_image(attachment)
+                .await?;
             *input = ImageInput::Base64 {
                 media_type: attachment.media_type.clone(),
                 data: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -493,17 +600,19 @@ impl<'a> ImageService<'a> {
 }
 
 async fn authenticate(
-    client: &LlmClient,
+    client: &ClientSnapshot,
     request: &mut HttpRequest,
     route: &ImageRouteConfig,
     opts: &ImageRequestOptions,
 ) -> Result<(), ImageError> {
     if let Some(name) = &route.authenticator {
-        let authenticator = client.image_authenticators.get(name).ok_or_else(|| {
-            LlmError::UnsupportedCapability {
+        let authenticator = client
+            .runtime
+            .image_authenticators
+            .get(name)
+            .ok_or_else(|| LlmError::UnsupportedCapability {
                 message: format!("image authenticator {name:?} is not registered"),
-            }
-        })?;
+            })?;
         return authenticator
             .apply(request, route, opts.credential.as_ref())
             .await

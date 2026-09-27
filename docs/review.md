@@ -86,7 +86,7 @@ HTTP 实现依照 [reqwest 0.12 ClientBuilder 文档](https://docs.rs/reqwest/0.
 
 迁移时，原有 JSON 配置可继续读取；Rust `ModelProfile` 字面量需补 `capability_support: None`。依赖未限定模型名的调用方如遇歧义，应改用显式 profile 的 `_in` 接口。当前接入使用 `lingxi_llm_client::protocol` 导入协议类型。
 
-配置同步的获取阶段可以取消而不写盘。提交进入文件写入阶段后，取消仍可能留下已更新的文件和未更新的内存快照；宿主在该情况下应重新加载配置。同步配置管理方法仍保持阻塞接口，异步宿主应选择合适的执行环境。
+本次历史审查记录的取消限制已由[共享 Client 与配置管理器更新](client-reuse.md)解决。管理方法现为异步接口；写盘开始后即使调用方取消等待，worker 仍完成成功提交的内存安装与发布。
 
 本轮验证：335 项单元/集成测试与 12 项文档测试通过；格式检查、Clippy（警告视为错误）、严格 Rustdoc 通过。共享协议的默认和最小 feature 构建/测试通过，最小 feature 的严格 Rustdoc 也通过。共享 crate 的离线打包及包内构建验证通过；客户端打包列表已排除本地 `.omx` 运行状态。本轮仅使用模拟传输和回环 HTTP，未请求真实 provider 或验证线上费率。
 

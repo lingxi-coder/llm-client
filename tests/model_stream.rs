@@ -6,10 +6,11 @@ mod tests {
     use bytes::Bytes;
     use futures::{stream, StreamExt};
     use lingxi_llm_client::protocol::{
-        CompletionRequest, LlmError, ProviderProfile, Region, StreamEvent,
+        ChatRequest, LlmError, ProviderProfile, Region, StreamEvent,
     };
     use lingxi_llm_client::{
-        HttpRequest, LlmClientBuilder, RequestOptions, StreamResponse, Transport,
+        HttpRequest, LlmClientBuilder, RequestOptions, StreamResponse, StructuredStreamError,
+        Transport,
     };
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -40,12 +41,68 @@ mod tests {
             .with_region(Region::International)
             .build()
             .unwrap();
-        let req: CompletionRequest =
-            serde_json::from_value(json!({"model":"m", "messages":[]})).unwrap();
+        let req: ChatRequest = serde_json::from_value(json!({"model":"m", "messages":[]})).unwrap();
         client
+            .chat()
             .stream(&req, &RequestOptions::default())
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn structured_stream_validates_only_after_terminal_event() {
+        let payload = concat!(
+            "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"{\\\"answer\\\":\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"\\\"ok\\\"}\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let stream = stream_for(
+            stream::iter(vec![Ok(Bytes::from(payload))]).boxed(),
+            "open_ai_chat",
+        )
+        .await;
+        let format = lingxi_llm_client::protocol::OutputFormat::JsonSchema {
+            name: "answer".into(),
+            strict: true,
+            schema: json!({"type":"object","properties":{"answer":{"type":"string"}},
+                "required":["answer"],"additionalProperties":false}),
+        };
+        let result = stream.collect_structured_json(&format).await.unwrap();
+        assert_eq!(result.value, json!({"answer":"ok"}));
+        assert_eq!(result.response.model, "m");
+        assert_eq!(result.response.executed_profile.as_deref(), Some("test"));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::End { .. })));
+    }
+
+    #[tokio::test]
+    async fn structured_stream_keeps_terminal_response_on_schema_failure() {
+        let payload = concat!(
+            "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"{\\\"answer\\\":3}\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let stream = stream_for(
+            stream::iter(vec![Ok(Bytes::from(payload))]).boxed(),
+            "open_ai_chat",
+        )
+        .await;
+        let format = lingxi_llm_client::protocol::OutputFormat::JsonSchema {
+            name: "answer".into(),
+            strict: true,
+            schema: json!({"type":"object","properties":{"answer":{"type":"string"}},
+                "required":["answer"],"additionalProperties":false}),
+        };
+        let Err(StructuredStreamError::Validation { source, events }) =
+            stream.collect_structured_json(&format).await
+        else {
+            panic!("expected structured validation error");
+        };
+        assert_eq!(source.response.message.text(), "{\"answer\":3}");
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::End { .. })));
     }
 
     #[tokio::test]

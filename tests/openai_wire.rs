@@ -8,7 +8,7 @@ mod wire_api;
 
 use lingxi_llm_client::codecs::openai::chat::{classify_error, OpenAiChatCodec};
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, DocumentSource, FailoverTriggers,
+    ChatRequest, ContentBlock, ConversationMessage, DocumentSource, FailoverTriggers, ImageSource,
     LlmError, MessageRole, ModelCapabilitySupport, ProtocolFamily, ProviderFileSource, ProviderId,
     ProviderProfile, StopReason, StreamEvent, ToolChoice, ToolSpec, Usage,
 };
@@ -46,15 +46,18 @@ fn route() -> ResolvedRoute {
     }
 }
 
-fn request() -> CompletionRequest {
-    CompletionRequest {
+fn request() -> ChatRequest {
+    ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
@@ -73,6 +76,50 @@ fn request() -> CompletionRequest {
 
 fn body_of(r: &lingxi_llm_client::HttpRequest) -> Value {
     serde_json::from_slice(&r.body).unwrap()
+}
+
+#[test]
+fn single_text_and_multimodal_assistant_keep_their_wire_content() {
+    let profile = profile(Value::Null);
+    let mut req = request();
+    let context = wire_api::context(&profile, &route().request_model, &RequestOptions::default());
+    let encoded = OpenAiChatCodec
+        .encode_request(
+            lingxi_llm_client::codecs::EncodeRequest::new(&req),
+            &context,
+        )
+        .unwrap();
+    assert_eq!(body_of(&encoded)["messages"][0]["content"], "hello");
+
+    req.messages[0] = ConversationMessage {
+        anthropic: None,
+        role: MessageRole::Assistant,
+        content: vec![
+            ContentBlock::Text {
+                text: "see".into(),
+                thought_signature: None,
+            },
+            ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.test/image.png".into(),
+                },
+            },
+        ],
+    };
+    let encoded = OpenAiChatCodec
+        .encode_request(
+            lingxi_llm_client::codecs::EncodeRequest::new(&req),
+            &context,
+        )
+        .unwrap();
+    assert_eq!(
+        body_of(&encoded)["messages"][0]["content"][0]["text"],
+        "see"
+    );
+    assert_eq!(
+        body_of(&encoded)["messages"][0]["content"][1]["image_url"]["url"],
+        "https://example.test/image.png"
+    );
 }
 
 // --- gate 31 ---------------------------------------------------------------
@@ -190,22 +237,27 @@ fn the_wire_model_is_the_routes_not_the_requests() {
 fn a_tool_result_becomes_its_own_message() {
     let mut req = request();
     req.messages.push(ConversationMessage {
+        anthropic: None,
         role: MessageRole::Assistant,
         content: vec![ContentBlock::ToolUse {
             id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             name: "read".to_owned(),
             input: json!({"path": "a"}),
             provider_id: None,
+            caller: None,
+            toolset_name: None,
             thought_signature: None,
         }],
     });
     req.messages.push(ConversationMessage {
+        anthropic: None,
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             content: "contents".to_owned(),
             is_error: false,
             blocks: None,
+            toolset_name: None,
         }],
     });
 
@@ -382,6 +434,8 @@ fn provider_file_ids_without_a_bound_account_scope_are_rejected() {
                 profile_name: "acme".into(),
                 endpoint_fingerprint: String::new(),
                 account_scope: None,
+                expires_at: None,
+                processing_status: None,
                 file_id: "file_from_another_login".into(),
                 uri: None,
                 media_type: Some("application/pdf".into()),
@@ -497,7 +551,7 @@ fn chat_rejects_an_invalid_output_limit_field_setting() {
     }
 }
 
-fn request_with_assistant(assistant: ConversationMessage) -> CompletionRequest {
+fn request_with_assistant(assistant: ConversationMessage) -> ChatRequest {
     let mut req = request();
     req.messages.push(assistant);
     req
@@ -539,7 +593,7 @@ fn a_profile_flag_turns_on_the_usage_opt_in_without_naming_a_provider() {
 /// thinking is on, but accepts `none`, `auto` and the tools themselves. So a
 /// forced choice is rejected and everything else passes through — and
 /// the tools are never dropped.
-fn with_tools(choice: ToolChoice) -> CompletionRequest {
+fn with_tools(choice: ToolChoice) -> ChatRequest {
     let mut req = request();
     req.tool_choice = choice;
     req.tools.push(ToolSpec {
@@ -547,11 +601,13 @@ fn with_tools(choice: ToolChoice) -> CompletionRequest {
         description: "read a file".to_owned(),
         input_schema: json!({"type": "object"}),
         strict: false,
+        defer_loading: false,
+        allowed_callers: vec![],
     });
     req
 }
 
-fn encoded(req: &CompletionRequest, extra: Value) -> Value {
+fn encoded(req: &ChatRequest, extra: Value) -> Value {
     body_of(
         &OpenAiChatCodec
             .encode_request(
@@ -887,6 +943,8 @@ fn chat_preserves_explicit_tool_strictness() {
             description: "Lookup".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             strict,
+            defer_loading: false,
+            allowed_callers: vec![],
         });
         let http = OpenAiChatCodec
             .encode_request(
@@ -946,7 +1004,7 @@ fn chat_message_response(message: Value) -> HttpResponse {
 #[test]
 fn chat_native_reasoning_survives_history_serialization_and_tool_replay() {
     let details = json!([
-        {"type":"reasoning.encrypted","data":"opaque-sig","index":0,"vendor_extension":{"version":2}},
+        {"type":"reasoning.encrypted","data":"opaque-sig","index":0,"vendor_extension":{"version":3}},
         {"type":"reasoning.text","text":"signed text","signature":"sig","id":null,"index":1}
     ]);
     for message in [
@@ -1056,6 +1114,8 @@ fn streaming_chat_reasoning_preserves_detail_chunks_and_emits_native_data_once()
                         name: name.clone(),
                         input: serde_json::from_str(arguments_fragment).unwrap(),
                         provider_id: None,
+                        caller: None,
+                        toolset_name: None,
                         thought_signature: None,
                     },
                 )),
@@ -1172,6 +1232,7 @@ fn chat_replay_rejects_wrong_envelopes_roles_and_protocols() {
     ] {
         let mut req = request();
         req.messages.push(ConversationMessage {
+            anthropic: None,
             role,
             content: vec![ContentBlock::ProviderContent { protocol, value }],
         });

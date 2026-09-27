@@ -1,3 +1,6 @@
+embeddings = { mode = "enabled", value = { api = "gemini", endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents", models_endpoint = "https://generativelanguage.googleapis.com/v1beta/models", auth = { type = "api_key", header = "x-goog-api-key" }, max_inputs = 100 } }
+interactions = { mode = "enabled", value = { endpoint = "https://generativelanguage.googleapis.com/v1beta/interactions", auth = { type = "api_key", header = "x-goog-api-key" } } }
+gemini_file_search = { mode = "enabled", value = { endpoint = "https://generativelanguage.googleapis.com/v1beta/fileSearchStores", auth = { type = "api_key", header = "x-goog-api-key" } } }
 
 # Inference controls are endpoint contracts, separate from catalog model facts.
 inference = { reasoning = "gemini", fast = "priority", tier_response_header = "x-gemini-service-tier" }
@@ -478,35 +481,6 @@ fast = "unknown"
 sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
 
 [[model]]
-id = "gemini-3-pro-image-preview"
-name = "Nano Banana Pro"
-description = "Nano Banana Pro for higher-fidelity image generation and design-heavy edits"
-family = "gemini-pro"
-knowledge_cutoff = "2025-01"
-release_date = "2025-11-20"
-last_updated = "2025-11-20"
-context_window = 131072
-max_output = 32768
-input_modalities = ["text", "image"]
-output_modalities = ["text", "image"]
-tool_call = false
-reasoning = true
-temperature = true
-attachment = true
-open_weights = false
-
-[model.pricing]
-input_per_million = 2
-output_per_million = 120
-source = "models.dev"
-
-
-[model.features]
-thinking = "supported"
-fast = "supported"
-sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
-
-[[model]]
 id = "gemini-3.1-flash-image"
 name = "Nano Banana 2"
 description = "Image model for prompt-driven generation, editing, and visual design workflows"
@@ -517,35 +491,6 @@ last_updated = "2026-05-28"
 context_window = 65536
 max_output = 65536
 input_modalities = ["text", "image", "video", "pdf"]
-output_modalities = ["text", "image"]
-tool_call = false
-reasoning = true
-temperature = true
-attachment = true
-open_weights = false
-
-[model.pricing]
-input_per_million = 0.5
-output_per_million = 60
-source = "models.dev"
-
-
-[model.features]
-thinking = "supported"
-fast = "unknown"
-sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
-
-[[model]]
-id = "gemini-3.1-flash-image-preview"
-name = "Nano Banana 2"
-description = "Image model for prompt-driven generation, editing, and visual design workflows"
-family = "gemini-flash"
-knowledge_cutoff = "2025-01"
-release_date = "2026-02-26"
-last_updated = "2026-02-26"
-context_window = 65536
-max_output = 65536
-input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text", "image"]
 tool_call = false
 reasoning = true
@@ -648,40 +593,6 @@ source = "models.dev"
 thinking = "supported"
 fast = "unknown"
 sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
-
-[[model]]
-id = "gemini-3.1-flash-lite-preview"
-name = "Gemini 3.1 Flash Lite Preview"
-description = "Legacy model retained for compatibility with older integrations"
-family = "gemini-flash-lite"
-knowledge_cutoff = "2025-01"
-release_date = "2026-03-03"
-last_updated = "2026-03-03"
-context_window = 1048576
-max_output = 65536
-input_modalities = ["text", "image", "video", "audio", "pdf"]
-output_modalities = ["text"]
-tool_call = true
-reasoning = true
-structured_output = true
-temperature = true
-attachment = true
-open_weights = false
-
-[model.pricing]
-input_per_million = 0.25
-output_per_million = 1.5
-cache_read_per_million = 0.025
-source = "models.dev"
-
-
-[model.features]
-thinking = "supported"
-fast = "unknown"
-sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
-modes = ["enabled", "adaptive"]
-budget = { support = "supported", dynamic = "supported", hard_limit = false }
-effort = { support = "supported", levels = ["minimal", "low", "medium", "high"] }
 
 [[model]]
 id = "gemini-3.1-flash-live-preview"

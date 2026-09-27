@@ -4,8 +4,7 @@ mod wire_api;
 
 use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 use lingxi_llm_client::protocol::{
-    CompletionRequest, CompletionResponse, LlmError, ProviderProfile, ToolChoice, ToolSpec,
-    WebSearchConfig,
+    ChatRequest, ChatResponse, LlmError, ProviderProfile, ToolChoice, ToolSpec, WebSearchConfig,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, GeminiCodec, LlmClientBuilder, RequestOptions,
@@ -32,10 +31,10 @@ fn profile(adapter: &str, protocol: &str) -> ProviderProfile {
     }))
     .unwrap()
 }
-fn request() -> CompletionRequest {
-    serde_json::from_value(json!({"model":"m", "messages":[{"role":"user","content":[{"type":"text","text":"latest news"}]}], "web_search":{}})).unwrap()
+fn request() -> ChatRequest {
+    serde_json::from_value(json!({"model":"m", "messages":[{"role":"user","content":[{"type":"text","text":"latest news"}]}], "hosted_tools":[{"type":"web_search","config":{}}]})).unwrap()
 }
-fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
+fn encode(req: &ChatRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
             .with_region(lingxi_llm_client::protocol::Region::International)
@@ -64,6 +63,8 @@ fn client_tool() -> ToolSpec {
         description: "Read local data".into(),
         input_schema: json!({"type":"object","properties":{}}),
         strict: false,
+        defer_loading: false,
+        allowed_callers: vec![],
     }
 }
 
@@ -92,7 +93,7 @@ fn each_adapter_emits_its_documented_hosted_search_shape() {
 fn declaring_adapter_does_not_enable_search_until_requested() {
     for &(adapter, protocol) in ADAPTERS {
         let mut req = request();
-        req.web_search = None;
+        req.set_hosted_web_search(None);
         let configured = profile(adapter, protocol);
         let mut plain = configured.clone();
         plain.extra = Value::Null;
@@ -173,7 +174,7 @@ fn supported_domain_filters_and_anthropic_budget_are_preserved() {
         .filter(|(a, _)| matches!(*a, "openai_responses" | "anthropic" | "xai"))
     {
         let mut req = request();
-        req.web_search.as_mut().unwrap().allowed_domains = vec!["example.com".into()];
+        req.hosted_web_search_mut().unwrap().allowed_domains = vec!["example.com".into()];
         let body = encode(&req, &profile(adapter, protocol)).unwrap();
         let tool = &body["tools"][0];
         assert_eq!(
@@ -190,7 +191,7 @@ fn supported_domain_filters_and_anthropic_budget_are_preserved() {
         ("xai", "open_ai_responses", "excluded_domains"),
     ] {
         let mut req = request();
-        req.web_search.as_mut().unwrap().blocked_domains = vec!["example.com".into()];
+        req.hosted_web_search_mut().unwrap().blocked_domains = vec!["example.com".into()];
         let body = encode(&req, &profile(adapter, protocol)).unwrap();
         assert_eq!(
             if adapter == "anthropic" {
@@ -202,7 +203,7 @@ fn supported_domain_filters_and_anthropic_budget_are_preserved() {
         );
     }
     let mut req = request();
-    req.web_search.as_mut().unwrap().max_uses = Some(3);
+    req.hosted_web_search_mut().unwrap().max_uses = Some(3);
     assert_eq!(
         encode(&req, &profile("anthropic", "anthropic_messages")).unwrap()["tools"][0]["max_uses"],
         3
@@ -213,19 +214,20 @@ fn supported_domain_filters_and_anthropic_budget_are_preserved() {
 fn unsupported_controls_fail_instead_of_disappearing() {
     for &(adapter, protocol) in ADAPTERS {
         let mut req = request();
-        req.web_search.as_mut().unwrap().max_uses = Some(2);
+        req.hosted_web_search_mut().unwrap().max_uses = Some(2);
         if adapter != "anthropic" {
-            assert!(matches!(
-                encode(&req, &profile(adapter, protocol)),
-                Err(LlmError::UnsupportedCapability { .. })
-            ));
+            let encoded = encode(&req, &profile(adapter, protocol));
+            assert!(
+                matches!(&encoded, Err(LlmError::UnsupportedCapability { .. })),
+                "{adapter}: {encoded:?}"
+            );
         }
         for blocked in [false, true] {
             if matches!(adapter, "gemini" | "openai_chat")
                 || (adapter == "openai_responses" && blocked)
             {
                 let mut req = request();
-                let search = req.web_search.as_mut().unwrap();
+                let search = req.hosted_web_search_mut().unwrap();
                 if blocked {
                     search.blocked_domains.push("example.com".into());
                 } else {
@@ -251,7 +253,7 @@ fn malformed_filters_conflicting_filters_and_zero_budget_are_invalid() {
         json!({"allowed_domains":["example .com"]}),
     ] {
         let mut req = request();
-        req.web_search = Some(serde_json::from_value(config).unwrap());
+        req.set_hosted_web_search(Some(serde_json::from_value(config).unwrap()));
         assert!(matches!(
             encode(&req, &profile("anthropic", "anthropic_messages")),
             Err(LlmError::InvalidRequest { .. })
@@ -259,12 +261,13 @@ fn malformed_filters_conflicting_filters_and_zero_budget_are_invalid() {
     }
     for (adapter, limit) in [("xai", 5), ("openai_responses", 100)] {
         let mut req = request();
-        req.web_search.as_mut().unwrap().allowed_domains =
+        req.hosted_web_search_mut().unwrap().allowed_domains =
             (0..=limit).map(|n| format!("{n}.example.com")).collect();
-        assert!(matches!(
-            encode(&req, &profile(adapter, "open_ai_responses")),
-            Err(LlmError::InvalidRequest { .. })
-        ));
+        let encoded = encode(&req, &profile(adapter, "open_ai_responses"));
+        assert!(
+            matches!(&encoded, Err(LlmError::InvalidRequest { .. })),
+            "{adapter}: {encoded:?}"
+        );
     }
 }
 
@@ -287,23 +290,22 @@ fn search_tool_names_cannot_collide_with_hosted_tools() {
 
 #[test]
 fn search_fields_are_optional_in_current_requests_and_responses() {
-    let req: CompletionRequest =
-        serde_json::from_value(json!({"model":"m","messages":[]})).unwrap();
-    assert!(req.web_search.is_none());
+    let req: ChatRequest = serde_json::from_value(json!({"model":"m","messages":[]})).unwrap();
+    assert!(req.hosted_web_search().is_none());
     assert!(serde_json::to_value(req)
         .unwrap()
         .get("web_search")
         .is_none());
-    let response: CompletionResponse = serde_json::from_value(json!({"message":{"role":"assistant","content":[]},"stop_reason":"end_turn","usage":{"usage":null,"state":"missing"},"model":"m"})).unwrap();
+    let response: ChatResponse = serde_json::from_value(json!({"message":{"role":"assistant","content":[]},"stop_reason":"end_turn","usage":{"usage":null,"state":"missing"},"model":"m"})).unwrap();
     assert!(response.web_search.is_none());
     assert!(serde_json::to_value(response)
         .unwrap()
         .get("web_search")
         .is_none());
     let req = request();
-    assert_eq!(req.web_search, Some(WebSearchConfig::default()));
+    assert_eq!(req.hosted_web_search(), Some(&WebSearchConfig::default()));
     assert_eq!(
-        serde_json::from_value::<CompletionRequest>(serde_json::to_value(&req).unwrap()).unwrap(),
+        serde_json::from_value::<ChatRequest>(serde_json::to_value(&req).unwrap()).unwrap(),
         req
     );
 }
@@ -350,7 +352,9 @@ fn openrouter_domain_filters_use_server_tool_parameters() {
         ("blocked_domains", "excluded_domains"),
     ] {
         let mut req = request();
-        req.web_search = Some(serde_json::from_value(json!({field:["example.com"]})).unwrap());
+        req.set_hosted_web_search(Some(
+            serde_json::from_value(json!({field:["example.com"]})).unwrap(),
+        ));
         let body = encode(&req, &profile("openrouter", "open_ai_chat")).unwrap();
         assert_eq!(
             body["tools"][0]["parameters"][native],
@@ -363,7 +367,7 @@ fn openrouter_domain_filters_use_server_tool_parameters() {
 fn native_hosted_search_history_replays_only_on_its_own_wire() {
     let native = json!({"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"news"}});
     let mut req = request();
-    req.web_search = None;
+    req.set_hosted_web_search(None);
     req.messages = serde_json::from_value(json!([{"role":"assistant","content":[{"type":"provider_content","protocol":"anthropic_messages","value":native}]}])).unwrap();
     let body = encode(&req, &profile("anthropic", "anthropic_messages")).unwrap();
     assert_eq!(body["messages"][0]["content"][0], native);
@@ -414,21 +418,29 @@ fn public_web_search_methods_enable_search_without_mutating_request() {
     .build()
     .unwrap();
     let mut req = request();
-    req.web_search = Some(WebSearchConfig {
+    req.set_hosted_web_search(Some(WebSearchConfig {
         allowed_domains: vec!["example.com".into()],
         ..WebSearchConfig::default()
-    });
+    }));
     let config = WebSearchConfig::default();
     assert!(matches!(
-        block_on(client.web_search(&req, config.clone(), &RequestOptions::default())),
+        block_on(
+            client
+                .chat()
+                .web_search(&req, config.clone(), &RequestOptions::default())
+        ),
         Err(LlmError::Transport { .. })
     ));
     assert!(matches!(
-        block_on(client.web_search_stream(&req, config, &RequestOptions::default())),
+        block_on(
+            client
+                .chat()
+                .web_search_stream(&req, config, &RequestOptions::default())
+        ),
         Err(LlmError::Transport { .. })
     ));
     assert_eq!(
-        req.web_search.as_ref().unwrap().allowed_domains,
+        req.hosted_web_search().unwrap().allowed_domains,
         vec!["example.com"]
     );
     let bodies = transport.0.lock().unwrap();
@@ -456,13 +468,18 @@ fn failover_cannot_silently_drop_requested_search_on_an_unsupported_connection()
         .unwrap();
     let route = client.resolve("m").unwrap();
     assert_eq!(route.connection_chain.len(), 1);
-    let error = block_on(client.complete(&request(), &RequestOptions::default())).unwrap_err();
+    let error = block_on(
+        client
+            .chat()
+            .complete(&request(), &RequestOptions::default()),
+    )
+    .unwrap_err();
     assert!(
         matches!(error, LlmError::UnsupportedCapability { .. }),
         "{error}"
     );
     assert!(error.to_string().contains("fallback"));
-    let error = match block_on(client.stream(&request(), &RequestOptions::default())) {
+    let error = match block_on(client.chat().stream(&request(), &RequestOptions::default())) {
         Ok(_) => panic!("unsupported fallback should fail"),
         Err(error) => error,
     };

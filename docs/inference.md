@@ -46,8 +46,8 @@ fn inspect(client: &LlmClient) -> Result<(), LlmError> {
 ```rust,no_run
 use lingxi_llm_client::protocol::*;
 
-fn request() -> CompletionRequest {
-    let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
+fn request() -> ChatRequest {
+    let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "claude-opus-5",
         "messages": [{"role":"user", "content":[{"type":"text", "text":"Explain this design."}]}],
         "max_tokens": 8192
@@ -83,19 +83,21 @@ Gemini 的档位请求使用 `serviceTier`。原生 `serviceTier` 与 protobuf �
 
 ## 实际档位和费用
 
+从预估、请求到计价保留同一个 `client.snapshot()`，可固定模型能力与价格版本。Live client 的查询每次独立读取配置。同一个共享 client 上，每次请求可以分别选择 model、effort、Fast 和凭证。详见[共享 Client](client-reuse.md)。
+
 完整响应的 `inference`、流的 `inference_report()`、`StreamEvent::Inference` 及结束事件保留请求 effort、请求档位、服务端回报及原始字符串。请求值不等于已确认值。Gemini 的 `usageMetadata.serviceTier`、档位响应头和其他协议的 JSON/SSE 回报均被保留；服务端未报告的值保持未知。
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, ResolvedRoute, ModelStream, protocol::*};
+use lingxi_llm_client::{ClientSnapshot, ResolvedRoute, ModelStream, protocol::*};
 
-fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionResponse,
+fn report(snapshot: &ClientSnapshot, route: &ResolvedRoute, response: &ChatResponse,
           stream: &ModelStream) -> Result<(), LlmError> {
     if let Some(cost) = response.usage.usage.and_then(|usage| usage.cost) {
         println!("provider reported nano-USD: {}", cost.nano_usd);
     }
-    let cost = client.estimate_actual_cost(route, response, Submission::Interactive)?;
+    let cost = snapshot.estimate_actual_cost(route, response, Submission::Interactive)?;
     println!("token estimate: {cost:?}; inference: {:?}", response.inference);
-    let streamed_cost = client.estimate_stream_cost(route, stream, Submission::Interactive)?;
+    let streamed_cost = snapshot.estimate_stream_cost(route, stream, Submission::Interactive)?;
     println!("stream token estimate: {streamed_cost:?}");
     Ok(())
 }
@@ -113,7 +115,7 @@ fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionRespon
 - 响应和流结束事件增加 `inference`；流增加非文本的 `Inference` 事件，穷尽匹配需处理它。
 - `CostEstimate` 使用 `currency` 和 `input_cost/output_cost/cache_read_cost/cache_write_cost/reasoning_cost/total_cost`，不再把所有币种标为 USD。
 - `estimate_cost` 必须接收 `PricingContext`，返回 `CostEstimate`；未知价格返回 `CostUnavailable`。`estimate_cost_for_profile` 必须提供 `InferenceReport`。
-- 配置使用 v2 的显式覆盖机制；不提供旧版本字段别名、自动迁移或旧 API 包装。数值预算 JSON 必须写为 `{"budget":{"tokens":2048}}`，不接受 `budget_tokens` 或裸整数。
+- 配置使用 v3 的显式覆盖机制；不提供旧版本字段别名、自动迁移或旧 API 包装。数值预算 JSON 必须写为 `{"budget":{"tokens":2048}}`，不接受 `budget_tokens` 或裸整数。
 - 旧布尔 `capabilities` 已删除；模型、列表和路由统一使用三态 `capability_support`。
 
 - `TokenPricing::at` 和公开的 `pricing::estimate` 已移除。请使用客户端的价格查询和估算方法，通过 `PricingContext` 统一选择上下文、档位、提交方式与时段规则。

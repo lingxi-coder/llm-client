@@ -10,7 +10,7 @@ fn preset(name: &str) -> ProviderProfile {
         .find(|p| p.profile_name == name)
         .unwrap()
 }
-fn request(model: &str, thinking: Value, tier: Value) -> CompletionRequest {
+fn request(model: &str, thinking: Value, tier: Value) -> ChatRequest {
     serde_json::from_value(json!({"model":model,"messages":[],"max_tokens":8192,"thinking":thinking,"service_tier":tier})).unwrap()
 }
 fn codec(p: &ProviderProfile) -> Box<dyn WireCodec> {
@@ -21,13 +21,13 @@ fn codec(p: &ProviderProfile) -> Box<dyn WireCodec> {
         _ => Box::new(OpenAiChatCodec),
     }
 }
-fn encode(p: &ProviderProfile, req: &CompletionRequest) -> Result<HttpRequest, LlmError> {
+fn encode(p: &ProviderProfile, req: &ChatRequest) -> Result<HttpRequest, LlmError> {
     codec(p).encode_request(
         EncodeRequest::new(req),
         &CodecContext::new(p, &req.model, RequestMode::Complete),
     )
 }
-fn body(p: &ProviderProfile, req: &CompletionRequest) -> Value {
+fn body(p: &ProviderProfile, req: &ChatRequest) -> Value {
     serde_json::from_slice(&encode(p, req).unwrap().body).unwrap()
 }
 fn client(profiles: &[ProviderProfile]) -> LlmClient {
@@ -290,13 +290,17 @@ fn beta_headers_accumulate_and_nested_extras_survive() {
     let mut p = preset("anthropic");
     p.extra["betas"] = json!(["another-beta", "fast-mode-2026-02-01"]);
     p.extra["headers"] = json!({"Anthropic-Beta":"header-beta,another-beta"});
-    p.extra["body"] =
-        json!({"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}});
-    let req = request(
+    p.extra["body"] = json!({"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{},"additionalProperties":false}}}});
+    let mut req = request(
         "claude-opus-5",
         json!({"mode":"adaptive","effort":"high"}),
         json!("fast"),
     );
+    req.output_format = OutputFormat::JsonSchema {
+        name: "answer".into(),
+        schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+        strict: true,
+    };
     let http = encode(&p, &req).unwrap();
     let b: Value = serde_json::from_slice(&http.body).unwrap();
     assert_eq!(b["output_config"]["format"]["type"], "json_schema");
@@ -438,18 +442,23 @@ fn standard_fast_quotes_and_unknown_prices_do_not_depend_on_effort() {
     assert!(quota.rates.is_none());
     // There is deliberately no effort field on PricingContext.
     let route = c.resolve_in("claude-opus-5", Some("anthropic")).unwrap();
-    let make = |effort| CompletionResponse {
+    let make = |effort| ChatResponse {
         inference: InferenceReport {
             requested_effort: Some(effort),
             service_tier: Some(ServiceTier::Standard),
             ..Default::default()
         },
+        response_cache: None,
         message: ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content: vec![],
         },
         web_search: None,
         file_search: None,
+        openrouter_container: None,
+        anthropic_container: None,
+        anthropic_usage: None,
         stop_reason: StopReason::EndTurn,
         usage: UsageReport::measured(
             Usage {
@@ -462,6 +471,7 @@ fn standard_fast_quotes_and_unknown_prices_do_not_depend_on_effort() {
         ),
         model: route.request_model.clone(),
         response_id: None,
+        continuation: None,
         executed_profile: Some("anthropic".into()),
     };
     let low = c
@@ -761,6 +771,7 @@ fn tier_profiles() -> Vec<ProviderProfile> {
             p.profile_name = name.into();
             p.auth = AuthStrategy::None;
             p.base_url = format!("https://{name}.test/v1");
+            p.deferred = ServiceSetting::Disabled;
             p.models.retain(|m| m.request_model == "grok-4.6");
             p.models[0].pricing = Some(TokenPricing {
                 input_per_million: Some(if i == 0 { 1.0 } else { 2.0 }),
@@ -812,10 +823,12 @@ async fn full_and_stream_costs_follow_actual_tier_and_failover_connection() {
         let req = request("grok-4.6", json!({"effort":"high"}), json!("fast"));
         let route = c.resolve_in(&req.model, Some("primary")).unwrap();
         let response = c
+            .chat()
             .complete_in("primary", &req, &RequestOptions::default())
             .await
             .unwrap();
         let mut stream = c
+            .chat()
             .stream_in("primary", &req, &RequestOptions::default())
             .await
             .unwrap();
@@ -878,7 +891,11 @@ async fn actual_cost_keeps_dispatch_time_when_the_clock_moves_into_another_price
     let c = builder.build().unwrap();
     let req = request("grok-4.6", Value::Null, Value::Null);
     let route = c.resolve(&req.model).unwrap();
-    let mut response = c.complete(&req, &RequestOptions::default()).await.unwrap();
+    let mut response = c
+        .chat()
+        .complete(&req, &RequestOptions::default())
+        .await
+        .unwrap();
     clock
         .0
         .store(20 * 3600, std::sync::atomic::Ordering::Relaxed);
@@ -967,6 +984,7 @@ async fn failover_revalidates_fast_before_contacting_an_unsupported_connection()
         .build()
         .unwrap();
     let result = c
+        .chat()
         .complete_in(
             "primary",
             &request("grok-4.6", Value::Null, json!("fast")),

@@ -15,7 +15,7 @@ use bytes::Bytes;
 use futures::executor::block_on;
 use futures::stream;
 use lingxi_llm_client::protocol::{
-    AttachmentRef, CompletionRequest, CompletionResponse, ContentBlock, ConversationMessage,
+    AttachmentRef, ChatRequest, ChatResponse, ContentBlock, ContinuationRef, ConversationMessage,
     DocumentSource, ImageSource, LlmError, MessageRole, ProtocolFamily, ProviderProfile,
     ResponseId, StopReason, StreamEvent, ToolChoice, Usage, WebSearchConfig,
 };
@@ -320,7 +320,7 @@ impl WireCodec for FakeCodec {
             headers: vec![],
             body: Bytes::from(
                 serde_json::to_vec(
-                    &json!({ "model": route.request_model, "n": req.messages.len(), "web_search": req.web_search, "stream": opts.stream }),
+                    &json!({ "model": route.request_model, "n": req.messages.len(), "web_search": req.hosted_web_search(), "stream": opts.stream }),
                 )
                 .unwrap(),
             ),
@@ -331,17 +331,22 @@ impl WireCodec for FakeCodec {
         &self,
         resp: &HttpResponse,
         _context: &lingxi_llm_client::CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         if resp.status != 200 {
             return Err(LlmError::ProviderInternal {
                 message: format!("status {}", resp.status),
             });
         }
-        Ok(CompletionResponse {
+        Ok(ChatResponse {
             inference: Default::default(),
+            response_cache: None,
             web_search: None,
             file_search: None,
+            openrouter_container: None,
+            anthropic_container: None,
+            anthropic_usage: None,
             message: ConversationMessage {
+                anthropic: None,
                 role: MessageRole::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "hi".to_owned(),
@@ -352,6 +357,7 @@ impl WireCodec for FakeCodec {
             usage: Usage::default().into(),
             model: "fake".to_owned(),
             response_id: None,
+            continuation: None,
             executed_profile: None,
         })
     }
@@ -390,7 +396,7 @@ impl WireCodec for FakeStatefulCodec {
         &self,
         resp: &HttpResponse,
         _context: &lingxi_llm_client::CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         FakeCodec.decode_response(resp, &wire_api::decode_context())
     }
     fn stream_decoder(&self, _context: &lingxi_llm_client::CodecContext) -> Box<dyn StreamDecoder> {
@@ -546,11 +552,12 @@ fn openai_openrouter_client(
     // The scripted codec models the common chat surface for the test. OpenAI's
     // built-in profile normally uses Responses, while its model names and auth
     // strategy remain the real built-in definitions.
-    profiles
+    let openai = profiles
         .iter_mut()
         .find(|p| p.profile_name == "openai")
-        .expect("the OpenAI preset is present")
-        .protocol = ProtocolFamily::OpenAiChat;
+        .expect("the OpenAI preset is present");
+    openai.protocol = ProtocolFamily::OpenAiChat;
+    openai.background = lingxi_llm_client::protocol::ServiceSetting::Disabled;
     let mut b = LlmClientBuilder::with_transport(http, &profiles);
     b.register_codec(Arc::new(FakeCodec));
     (
@@ -561,15 +568,18 @@ fn openai_openrouter_client(
     )
 }
 
-fn request(model: &str) -> CompletionRequest {
-    CompletionRequest {
+fn request(model: &str) -> ChatRequest {
+    ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: model.to_owned(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_owned(),
@@ -622,7 +632,7 @@ fn openai_file_profile(profile_name: &str, order: u32, grouped: bool) -> Provide
     .expect("OpenAI file profile parses")
 }
 
-fn request_with_app_document() -> CompletionRequest {
+fn request_with_app_document() -> ChatRequest {
     let mut request = request("gpt-test");
     request.messages[0].content.push(ContentBlock::Document {
         source: DocumentSource::Attachment {
@@ -664,7 +674,7 @@ fn file_upload_is_repeated_for_the_fallback_profile_and_uses_its_credential() {
     );
     let original = request_with_app_document();
 
-    let response = block_on(client.complete(&original, &options)).unwrap();
+    let response = block_on(client.chat().complete(&original, &options)).unwrap();
 
     assert_eq!(response.executed_profile.as_deref(), Some("backup"));
     assert_eq!(http.uploads.load(Ordering::SeqCst), 2);
@@ -700,7 +710,12 @@ fn cached_file_404_invalidates_and_reuploads_once_on_the_same_profile() {
         ..RequestOptions::default()
     };
 
-    let response = block_on(client.complete(&request_with_app_document(), &options)).unwrap();
+    let response = block_on(
+        client
+            .chat()
+            .complete(&request_with_app_document(), &options),
+    )
+    .unwrap();
 
     assert_eq!(response.executed_profile.as_deref(), Some("openai"));
     assert_eq!(http.uploads.load(Ordering::SeqCst), 2);
@@ -733,8 +748,8 @@ fn concurrent_requests_share_one_upload_for_the_same_scoped_attachment() {
 
     let (first, second) = block_on(async {
         futures::join!(
-            client.complete(&request, &options),
-            client.complete(&request, &options)
+            client.chat().complete(&request, &options),
+            client.chat().complete(&request, &options)
         )
     });
 
@@ -791,7 +806,7 @@ fn small_images_stay_inline_without_provider_uploads() {
         ..RequestOptions::default()
     };
 
-    block_on(client.complete(&request, &options)).unwrap();
+    block_on(client.chat().complete(&request, &options)).unwrap();
 
     assert_eq!(http.uploads.load(Ordering::SeqCst), 0);
     let requests = http.requests.lock().unwrap();
@@ -824,10 +839,12 @@ fn provider_upload_cache_is_partitioned_by_account_scope() {
 
     block_on(async {
         client
+            .chat()
             .complete(&request, &options("account-a"))
             .await
             .unwrap();
         client
+            .chat()
             .complete(&request, &options("account-b"))
             .await
             .unwrap();
@@ -1214,14 +1231,17 @@ fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
 
     let (complete, stream, searched, searched_stream) = block_on(async {
         let complete = c
+            .chat()
             .complete_in("openai", &req, &with_credential("openai-secret"))
             .await
             .unwrap();
         let stream = c
+            .chat()
             .stream_in("openrouter", &req, &with_credential("openrouter-secret"))
             .await
             .unwrap();
         let searched = c
+            .chat()
             .web_search_in(
                 "openai",
                 &req,
@@ -1234,6 +1254,7 @@ fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
             .await
             .unwrap();
         let searched_stream = c
+            .chat()
             .web_search_stream_in(
                 "openrouter",
                 &req,
@@ -1290,7 +1311,7 @@ fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
 fn unscoped_collision_fails_before_authentication_or_http() {
     let http = ScriptedTransport::new(vec![]);
     let (c, _) = openai_openrouter_client(http.clone());
-    let err = block_on(c.complete(
+    let err = block_on(c.chat().complete(
         &request("openai/gpt-4o"),
         &RequestOptions {
             credential: Some(lingxi_llm_client::protocol::Secret::new(
@@ -1383,9 +1404,19 @@ fn stateful_pair(http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
         .expect("every profile's protocol has a codec")
 }
 
-fn continuing(model: &str) -> CompletionRequest {
+fn continuing(model: &str) -> ChatRequest {
     let mut req = request(model);
-    req.previous_response_id = Some(ResponseId::new("resp_previous"));
+    req.continuation = Some(ContinuationRef {
+        response_id: ResponseId::new("resp_previous"),
+        provider_id: "acme".into(),
+        profile_name: "acme:one".into(),
+        endpoint_fingerprint: lingxi_llm_client::files::provider_file_endpoint_fingerprint(
+            "https://one.test",
+        ),
+        account_scope: "account-1".into(),
+        request_model: "m-1".into(),
+        workspace_id: None,
+    });
     req
 }
 
@@ -1409,8 +1440,14 @@ fn a_continuation_does_not_fail_over_to_a_connection_that_never_saw_it() {
     ]);
     let c = stateful_pair(http.clone());
 
-    let err = block_on(c.complete(&continuing("m-1"), &RequestOptions::default()))
-        .expect_err("the connection holding the state is the only one that can serve this");
+    let err = block_on(c.chat().complete(
+        &continuing("m-1"),
+        &RequestOptions {
+            account_scope: Some("account-1".into()),
+            ..Default::default()
+        },
+    ))
+    .expect_err("the connection holding the state is the only one that can serve this");
     assert!(matches!(err, LlmError::Overloaded { .. }), "{err}");
     assert_eq!(
         http.hops(),
@@ -1430,7 +1467,11 @@ fn a_continuation_does_not_fail_over_to_a_connection_that_never_saw_it() {
         ("https://two.test", Ok(200)),
     ]);
     let c = stateful_pair(http.clone());
-    block_on(c.complete(&request("m-1"), &RequestOptions::default())).unwrap();
+    block_on(
+        c.chat()
+            .complete(&request("m-1"), &RequestOptions::default()),
+    )
+    .unwrap();
     assert_eq!(http.hops().len(), 2);
 }
 
@@ -1442,8 +1483,14 @@ fn a_continuation_on_a_wire_that_has_no_such_state_is_refused_before_it_is_sent(
     let http = ScriptedTransport::new(vec![("https://one.test", Ok(200))]);
     let c = pair(http.clone());
 
-    let err = block_on(c.complete(&continuing("m-1"), &RequestOptions::default()))
-        .expect_err("this wire keeps no turn state to continue");
+    let err = block_on(c.chat().complete(
+        &continuing("m-1"),
+        &RequestOptions {
+            account_scope: Some("account-1".into()),
+            ..Default::default()
+        },
+    ))
+    .expect_err("this wire keeps no turn state to continue");
     match err {
         LlmError::UnsupportedCapability { message } => assert!(
             message.contains("acme:one"),
@@ -1496,7 +1543,11 @@ fn a_failover_trigger_moves_the_request_to_the_next_connection() {
     ]);
     let c = pair(http.clone());
 
-    let resp = block_on(c.complete(&request("m-1"), &RequestOptions::default())).unwrap();
+    let resp = block_on(
+        c.chat()
+            .complete(&request("m-1"), &RequestOptions::default()),
+    )
+    .unwrap();
 
     assert_eq!(resp.stop_reason, StopReason::EndTurn);
     assert_eq!(
@@ -1521,7 +1572,11 @@ fn an_error_another_endpoint_would_repeat_stops_at_the_first_connection() {
     ]);
     let c = pair(http.clone());
 
-    let err = block_on(c.complete(&request("m-1"), &RequestOptions::default())).unwrap_err();
+    let err = block_on(
+        c.chat()
+            .complete(&request("m-1"), &RequestOptions::default()),
+    )
+    .unwrap_err();
 
     assert!(matches!(err, LlmError::ContextOverflow { .. }));
     assert_eq!(
@@ -1550,7 +1605,11 @@ fn the_last_error_survives_when_the_group_is_spent() {
     ]);
     let c = pair(http.clone());
 
-    let err = block_on(c.complete(&request("m-1"), &RequestOptions::default())).unwrap_err();
+    let err = block_on(
+        c.chat()
+            .complete(&request("m-1"), &RequestOptions::default()),
+    )
+    .unwrap_err();
 
     assert_eq!(
         err,
@@ -1577,6 +1636,7 @@ fn streaming_walks_the_same_connections_and_decodes_through_the_codec() {
 
     let events = block_on(async {
         let mut s = c
+            .chat()
             .stream(
                 &request("m-1"),
                 &RequestOptions {
@@ -1607,7 +1667,7 @@ fn an_interrupted_http_error_body_keeps_the_known_status_and_fails_over() {
     let http = InterruptedErrorBodyTransport::new(true);
     let c = failover_pair_with_transport(http.clone());
 
-    let stream = block_on(c.stream(
+    let stream = block_on(c.chat().stream(
         &request("m-1"),
         &RequestOptions {
             ..RequestOptions::default()
@@ -1630,7 +1690,7 @@ fn an_exhausted_interrupted_http_error_body_keeps_429_retry_after_and_body() {
     let http = InterruptedErrorBodyTransport::new(false);
     let c = failover_pair_with_transport(http.clone());
 
-    let result = block_on(c.stream(
+    let result = block_on(c.chat().stream(
         &request("m-1"),
         &RequestOptions {
             ..RequestOptions::default()
@@ -1663,7 +1723,11 @@ fn a_standalone_profile_is_one_connection() {
         http.clone(),
     );
 
-    let err = block_on(c.complete(&request("m-1"), &RequestOptions::default())).unwrap_err();
+    let err = block_on(
+        c.chat()
+            .complete(&request("m-1"), &RequestOptions::default()),
+    )
+    .unwrap_err();
 
     assert!(matches!(err, LlmError::Overloaded { .. }));
     assert_eq!(
@@ -1683,14 +1747,15 @@ fn a_streamed_response_still_has_its_headers() {
     let c = pair(http.clone());
 
     let s = block_on(async {
-        c.stream(
-            &request("m-1"),
-            &RequestOptions {
-                ..RequestOptions::default()
-            },
-        )
-        .await
-        .unwrap()
+        c.chat()
+            .stream(
+                &request("m-1"),
+                &RequestOptions {
+                    ..RequestOptions::default()
+                },
+            )
+            .await
+            .unwrap()
     });
 
     assert_eq!(s.status(), 200);
@@ -1765,17 +1830,18 @@ mod credentials_come_from_the_caller {
             .expect("the profile's protocol has a codec");
 
         block_on(async {
-            c.complete(
-                &request("m-1"),
-                &RequestOptions {
-                    credential: Some(lingxi_llm_client::protocol::Secret::new(
-                        "sk-from-the-caller".to_owned(),
-                    )),
-                    ..RequestOptions::default()
-                },
-            )
-            .await
-            .unwrap();
+            c.chat()
+                .complete(
+                    &request("m-1"),
+                    &RequestOptions {
+                        credential: Some(lingxi_llm_client::protocol::Secret::new(
+                            "sk-from-the-caller".to_owned(),
+                        )),
+                        ..RequestOptions::default()
+                    },
+                )
+                .await
+                .unwrap();
         });
 
         assert_eq!(
@@ -1804,7 +1870,8 @@ mod credentials_come_from_the_caller {
             .unwrap();
 
         block_on(async {
-            c.complete(&request("m-1"), &RequestOptions::default())
+            c.chat()
+                .complete(&request("m-1"), &RequestOptions::default())
                 .await
                 .unwrap();
         });
@@ -1974,6 +2041,7 @@ mod raw_http_streams {
             let (client, _) = setup(vec![response(200, SSE, chunk_size)], false);
             block_on(async {
                 let mut stream = client
+                    .chat()
                     .stream(&request("m-1"), &RequestOptions::default())
                     .await
                     .unwrap();
@@ -2004,6 +2072,7 @@ mod raw_http_streams {
             );
             block_on(async {
                 let mut stream = client
+                    .chat()
                     .stream(&request("m-1"), &RequestOptions::default())
                     .await
                     .unwrap();
@@ -2027,7 +2096,11 @@ mod raw_http_streams {
                 )],
                 false,
             );
-            let result = block_on(client.stream(&request("m-1"), &RequestOptions::default()));
+            let result = block_on(
+                client
+                    .chat()
+                    .stream(&request("m-1"), &RequestOptions::default()),
+            );
             let error = match result {
                 Err(error) => error,
                 Ok(_) => panic!("HTTP error returned a stream"),
@@ -2059,7 +2132,11 @@ mod raw_http_streams {
         })));
         let (client, _) = setup(vec![resp], false);
         assert!(matches!(
-            block_on(client.stream(&request("m-1"), &RequestOptions::default())),
+            block_on(
+                client
+                    .chat()
+                    .stream(&request("m-1"), &RequestOptions::default())
+            ),
             Err(LlmError::RateLimited { .. })
         ));
     }
@@ -2128,7 +2205,7 @@ impl WireCodec for ModeCheckingCodec {
         &self,
         resp: &HttpResponse,
         _context: &lingxi_llm_client::CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         FakeCodec.decode_response(resp, &wire_api::decode_context())
     }
     fn stream_decoder(&self, _context: &lingxi_llm_client::CodecContext) -> Box<dyn StreamDecoder> {
@@ -2153,9 +2230,9 @@ fn client_methods_determine_wire_mode() {
             ..Default::default()
         };
         if streaming {
-            assert!(block_on(client.stream(&request("m"), &opts)).is_ok());
+            assert!(block_on(client.chat().stream(&request("m"), &opts)).is_ok());
         } else {
-            assert!(block_on(client.complete(&request("m"), &opts)).is_ok());
+            assert!(block_on(client.chat().complete(&request("m"), &opts)).is_ok());
         }
     }
 }
@@ -2194,7 +2271,7 @@ fn complete_cannot_be_changed_to_streaming_by_profile_body_extras() {
         .build()
         .unwrap();
 
-    block_on(client.complete(
+    block_on(client.chat().complete(
         &request("m"),
         &RequestOptions {
             ..RequestOptions::default()
@@ -2245,7 +2322,7 @@ fn a_fallback_without_its_own_credential_is_never_sent() {
         credential: Some(Secret::new("primary-secret".to_owned())),
         ..Default::default()
     };
-    assert!(block_on(client.complete(&request("m"), &opts)).is_err());
+    assert!(block_on(client.chat().complete(&request("m"), &opts)).is_err());
     assert_eq!(http.hops(), vec!["https://one.test/chat"]);
 }
 
@@ -2300,7 +2377,7 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
         )]),
         ..Default::default()
     };
-    let mut response = block_on(client.complete(&request("m"), &opts)).unwrap();
+    let mut response = block_on(client.chat().complete(&request("m"), &opts)).unwrap();
     assert_eq!(response.executed_profile.as_deref(), Some("secondary"));
     let route = client.resolve("m").unwrap();
     let usage = Usage {
@@ -2336,7 +2413,7 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
             Some("Bearer secondary-secret".into())
         ]
     );
-    let stream = block_on(client.stream(&request("m"), &opts)).unwrap();
+    let stream = block_on(client.chat().stream(&request("m"), &opts)).unwrap();
     assert_eq!(stream.executed_profile(), "secondary");
     assert_eq!(
         client
@@ -2361,8 +2438,13 @@ fn request_timeout_defaults_to_120_seconds_and_can_be_overridden() {
         &[solo("only", "https://one.test", model("m", "m"))],
         http.clone(),
     );
-    block_on(client.complete(&request("m"), &RequestOptions::default())).unwrap();
-    block_on(client.complete(
+    block_on(
+        client
+            .chat()
+            .complete(&request("m"), &RequestOptions::default()),
+    )
+    .unwrap();
+    block_on(client.chat().complete(
         &request("m"),
         &RequestOptions {
             total_timeout: Some(Duration::from_secs(7)),
@@ -2375,7 +2457,12 @@ fn request_timeout_defaults_to_120_seconds_and_can_be_overridden() {
         timeouts[0].is_some_and(|t| t <= Duration::from_secs(120) && t > Duration::from_secs(119))
     );
     assert!(timeouts[1].is_some_and(|t| t <= Duration::from_secs(7) && t > Duration::from_secs(6)));
-    block_on(client.stream(&request("m"), &RequestOptions::default())).unwrap();
+    block_on(
+        client
+            .chat()
+            .stream(&request("m"), &RequestOptions::default()),
+    )
+    .unwrap();
     assert_eq!(
         http.timeouts()[2],
         None,
@@ -2419,9 +2506,17 @@ async fn total_timeout_expires_during_authentication_before_a_request_is_sent() 
         };
 
         let result = if streaming {
-            client.stream(&request("m"), &options).await.map(|_| ())
+            client
+                .chat()
+                .stream(&request("m"), &options)
+                .await
+                .map(|_| ())
         } else {
-            client.complete(&request("m"), &options).await.map(|_| ())
+            client
+                .chat()
+                .complete(&request("m"), &options)
+                .await
+                .map(|_| ())
         };
         assert!(matches!(result, Err(LlmError::TransportTimeout { .. })));
         assert!(http.hops().is_empty(), "expired work must never be sent");

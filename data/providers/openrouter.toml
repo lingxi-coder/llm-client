@@ -1,3 +1,4 @@
+embeddings = { mode = "enabled", value = { api = "open_router", endpoint = "https://openrouter.ai/api/v1/embeddings", models_endpoint = "https://openrouter.ai/api/v1/embeddings/models", auth = { type = "bearer" } } }
 # An aggregator: one key, many vendors' models, all over one OpenAI-compatible
 # wire. Its catalog is by far the largest here, which is the nature of the thing
 # rather than a mistake.

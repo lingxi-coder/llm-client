@@ -2,8 +2,8 @@
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProviderProfile,
-    Secret, StreamEvent, ToolChoice,
+    ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProviderProfile, Secret,
+    StreamEvent, ToolChoice,
 };
 use lingxi_llm_client::{
     HttpExecutor, HttpRequest, HttpTransport, LlmClientBuilder, RequestOptions, Transport,
@@ -172,6 +172,7 @@ async fn complete_fails_over_on_interrupted_429_when_only_rate_limits_are_enable
     let client = rate_limit_failover_client(&primary, &backup);
 
     let reply = client
+        .chat()
         .complete(&completion(), &RequestOptions::default())
         .await
         .expect("truncated 429 still qualifies for configured rate-limit failover");
@@ -210,6 +211,7 @@ async fn exhausted_interrupted_429_keeps_retry_after() {
     let client = rate_limit_failover_client(&primary, &backup);
 
     let error = client
+        .chat()
         .complete(&completion(), &RequestOptions::default())
         .await
         .expect_err("both interrupted 429 responses should remain rate-limit errors");
@@ -256,7 +258,7 @@ async fn interrupted_429_body_does_not_extend_the_client_deadline_for_failover()
 
     let result = tokio::time::timeout(
         Duration::from_secs(3),
-        client.complete(
+        client.chat().complete(
             &completion(),
             &RequestOptions {
                 total_timeout: Some(Duration::from_millis(250)),
@@ -300,6 +302,7 @@ async fn interrupted_401_and_5xx_keep_their_categories_without_rate_limit_failov
         .await;
         let client = rate_limit_failover_client(&primary, &backup);
         let error = client
+            .chat()
             .complete(&completion(), &RequestOptions::default())
             .await
             .expect_err("only rate-limit failures should trigger the backup");
@@ -514,15 +517,18 @@ async fn truncated_stream_is_reported_as_interrupted() {
     task.await.unwrap();
 }
 
-fn completion() -> CompletionRequest {
-    CompletionRequest {
+fn completion() -> ChatRequest {
+    ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "test-model".into(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hello".into(),
@@ -565,7 +571,7 @@ async fn builtin_builder_completes_and_streams_with_api_key_and_bearer_authentic
                 ..Default::default()
             };
             if streaming {
-                let mut stream = client.stream(&completion(), &opts).await.unwrap();
+                let mut stream = client.chat().stream(&completion(), &opts).await.unwrap();
                 let mut text = String::new();
                 while let Some(event) = stream.next().await {
                     if let StreamEvent::TextDelta { text: delta, .. } = event.unwrap() {
@@ -574,7 +580,7 @@ async fn builtin_builder_completes_and_streams_with_api_key_and_bearer_authentic
                 }
                 assert_eq!(text, "hello");
             } else {
-                let reply = client.complete(&completion(), &opts).await.unwrap();
+                let reply = client.chat().complete(&completion(), &opts).await.unwrap();
                 assert!(reply.message.content.iter().any(
                     |block| matches!(block, ContentBlock::Text { text, .. } if text == "hello")
                 ));

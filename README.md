@@ -46,7 +46,7 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 
 构建 client 时必须通过 `with_region(Region::ChinaMainland)` 或 `with_region(Region::International)` 选择使用区域。provider/model 列表、模型解析和故障切换均按区域过滤；完整配置仍保留。自定义 profile 可通过 `regions` 声明可用区域，未声明时两区可用。详见[区域过滤](docs/api.md#region-区域过滤)。
 
-默认构建不包含 tokenizer 后端及资产；按需启用方式见[离线估算输入 token](#6-离线估算输入-token)。公开扩展接口、用量报告和配置 v2 的变化见[架构与 API 迁移指南](docs/architecture-migration.md)。
+默认构建不包含 tokenizer 后端及资产；按需启用方式见[离线估算输入 token](#6-离线估算输入-token)。公开扩展接口、用量报告和配置 v3 的变化见[架构与 API 迁移指南](docs/architecture-migration.md)。
 
 ### 能力支持表
 
@@ -60,19 +60,21 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 | 推理与服务档位 | 调节思考预算、effort 和 fast；读取实际执行档位 | 全部内置 Provider 可查询能力；budget、effort、fast 按模型分别声明，不互相等同 | [推理与定价](docs/inference.md) |
 | JSON 与 Schema 输出 | 约束输出格式，并校验 JSON/schema 或反序列化为 Rust 类型 | OpenAI、Anthropic、Gemini；OpenRouter 按上游模型；其他兼容服务须核实 JSON Object / Schema 各自支持 | [输出契约](docs/services.md) |
 | 联网搜索与引用 | 由服务端搜索网页，返回来源与引用 | OpenAI、Anthropic、Gemini、OpenRouter、GLM/Z.AI、MiniMax、Kimi Search、Qwen Search、DeepSeek Search；xAI 需自定义 Responses 搜索 profile | [搜索矩阵](docs/web-search.md) |
-| 显式提示缓存 | 复用工具、system 或消息前缀，减少重复输入开销 | Anthropic / Messages 适配；MiniMax 仅五分钟显式断点。服务端自动缓存另计 | [提示缓存](docs/services.md) |
+| 显式提示缓存 | 复用工具、system 或消息前缀，减少重复输入开销 | OpenAI Responses（GPT-5.6+ 原生 options 与独立 retention）；Anthropic / Messages；MiniMax 仅五分钟断点。服务端自动缓存另计 | [OpenAI Responses](docs/openai-responses-prompt-cache.md) · [提示缓存总览](docs/services.md) |
 | 远端上下文缓存 | 创建、读取、更新和删除可复用的上下文缓存资源 | Gemini（独立 cachedContents 服务） | [Gemini Cache](docs/gemini-context-cache.md) |
 | 网关响应缓存 | 复用完整响应，读取服务端明确返回的 HIT/MISS | OpenRouter Chat、Responses、Messages、Embeddings | [OpenRouter Cache](docs/services.md) |
 | 状态续接 | 用账户绑定引用接续已有响应，避免重复发送历史 | OpenAI Responses；Gemini Interactions 使用独立接口 | [Responses](docs/services.md) · [Interactions](docs/interactions.md) |
-| 服务端代码执行与容器 | 让模型在远端容器执行代码，并管理容器文件 | OpenAI Responses | [Code Interpreter](docs/services.md) · [Containers](docs/openai-containers.md) |
-| Remote MCP 与工具搜索 | 连接远端 MCP，或按需发现延迟加载的函数工具 | OpenAI Responses：MCP；Anthropic：Tool Search；Gemini Interactions：受模型／agent 限制的工具请求 | [OpenAI MCP](docs/openai-hosted-extended.md) · [Anthropic Tool Search](docs/anthropic-tools.md) · [Gemini](docs/interactions.md) |
+| 服务端代码执行与容器 | 让模型在远端容器执行代码，并管理容器文件 | OpenAI Responses；Anthropic 第一方与显式 Anthropic 托管 Foundry 代码执行及容器续用 | [Code Interpreter](docs/services.md) · [Containers](docs/openai-containers.md) · [Anthropic](docs/anthropic-code-execution.md) |
+| 程序化工具调用 | 接收远端代码执行器发起的函数调用，由宿主执行并返回结果 | Anthropic 支持模型及代码执行工具；保留调用者信息 | [程序化工具调用](docs/anthropic-programmatic-tools.md) |
+| Anthropic Skills 请求 | 在远端代码执行容器中加载内置或已上传的 Skill | 第一方及 Anthropic 托管 Foundry；自定义引用绑定工作空间或资源账户；支持上传及版本管理 | [Skills 与容器](docs/anthropic-code-execution.md) · [Skills 资源](docs/anthropic-skills.md) |
+| Remote MCP 与工具搜索 | 连接远端 MCP，或按需发现延迟加载的函数工具 | OpenAI Responses：MCP；Tool Search 限 GPT-5.4+；Anthropic：原生 MCP 与 Tool Search；Gemini Interactions：受模型／agent 限制的工具请求 | [OpenAI Tool Search](docs/openai-tool-search.md) · [OpenAI MCP](docs/openai-hosted-extended.md) · [Anthropic Tool Search](docs/anthropic-tools.md) · [Anthropic MCP](docs/anthropic-mcp.md) · [Anthropic Web Fetch](docs/anthropic-web-fetch.md) · [Browser / Computer](docs/anthropic-client-toolsets.md) · [Vertex Claude](docs/anthropic-vertex.md) · [Foundry Claude](docs/anthropic-foundry.md) · [中途指令与工具变更](docs/anthropic-conversation.md) · [Gemini](docs/interactions.md) |
 
 #### 检索、文件与任务
 
 | 能力 | 用途 | 支持的 Provider／范围 | 文档 |
 | --- | --- | --- | --- |
 | 文件与多模态附件 | 管理上传及文件生命周期，将应用附件转成模型可接受的输入 | OpenAI、Anthropic、Gemini、Qwen、MiniMax、xAI 等，按模型／媒体／用途区分；文件管理不等于 Chat 可引用 | [附件](docs/file-attachments.zh.md) |
-| 文本向量 Embeddings | 把文本转换为向量，用于语义检索、聚类和相似度比较 | OpenAI、Gemini、OpenRouter、GLM 内置路由；Qwen 需显式工作空间 endpoint | [Embeddings](docs/services.md) |
+| 文本向量 Embeddings | 把文本转换为向量，用于语义检索、聚类和相似度比较 | OpenAI、Gemini、OpenRouter、GLM 内置路由；Qwen 需显式工作空间 endpoint | [Embeddings](docs/services.md) · [模型参数限制](docs/embedding-limits.md) |
 | 多模态向量 | 将文本和媒体组合编码为向量 | Gemini Embedding 2 | [Gemini Embedding](docs/gemini-embedding.md) |
 | 知识库与文件检索 | 管理远端索引／文档，并检索相关内容供 RAG 使用 | OpenAI Vector Stores、Gemini File Search、GLM 知识库、Qwen 北京工作空间、xAI Collections；各服务操作范围不同 | [OpenAI](docs/retrieval.md) · [Gemini](docs/gemini-file-search.md) · [GLM](docs/glm-knowledge.md) · [Qwen](docs/qwen-knowledge.md) · [xAI](docs/xai-collections.md) |
 | 检索重排 Rerank | 按查询相关度重新排列候选文档 | Qwen 北京工作空间、OpenRouter | [Qwen](docs/qwen-rerank.md) · [OpenRouter](docs/openrouter-rerank.md) |
@@ -85,9 +87,9 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 | --- | --- | --- | --- |
 | 图像生成 | 根据提示词或参考图生成图片 | OpenAI、Gemini、Qwen、xAI、MiniMax、GLM/Z.AI、OpenRouter；Wan 需自定义工作空间路由 | [Images](docs/images.md) |
 | 图像编辑与异步任务 | 修改原图、使用蒙版，或提交并查询原生生成任务 | 编辑：OpenAI、Gemini、Qwen、xAI、OpenRouter；蒙版：OpenAI；异步：Qwen、GLM/Z.AI、自定义 Wan | [Images](docs/images.md) |
-| 语音识别 ASR / STT | 将录音转为文本，按接口读取时间戳或说话人信息 | OpenAI、MiniMax、OpenRouter、xAI、GLM/Z.AI 云端；Qwen 文件异步转写；另有自托管 GLM-ASR 适配 | [OpenAI](docs/audio.md) · [MiniMax](docs/minimax-audio.md) · [OpenRouter](docs/openrouter-audio.md) · [xAI](docs/xai-audio.md) · [GLM Cloud](docs/glm-cloud-audio.md) · [Qwen](docs/qwen-asr.md) · [GLM Self-hosted](docs/glm-audio.md) |
+| 语音识别 ASR / STT | 将录音转为文本，按接口读取时间戳或说话人信息 | OpenAI、MiniMax、OpenRouter、xAI、GLM/Z.AI 云端；Qwen 文件异步与独立实时转写；另有自托管 GLM-ASR 适配 | [OpenAI](docs/audio.md) · [MiniMax](docs/minimax-audio.md) · [OpenRouter](docs/openrouter-audio.md) · [xAI](docs/xai-audio.md) · [GLM Cloud](docs/glm-cloud-audio.md) · [Qwen](docs/qwen-asr.md) · [GLM Self-hosted](docs/glm-audio.md) |
 | 语音翻译 | 将音频中的讲话翻译为英文文本 | OpenAI Whisper | [Audio](docs/audio.md) |
-| 语音合成 TTS | 把文本合成为音频字节、流或临时 URL | OpenAI、Gemini、MiniMax、OpenRouter、xAI、Qwen、GLM 大陆；MiniMax 另有异步长文本 TTS | [OpenAI](docs/audio.md) · [Gemini](docs/gemini-speech.md) · [MiniMax](docs/minimax-tts.md) · [Async TTS](docs/minimax-async-tts.md) · [OpenRouter](docs/openrouter-audio.md) · [xAI](docs/xai-audio.md) · [Qwen](docs/qwen-tts.md) · [GLM](docs/glm-cloud-audio.md) |
+| 语音合成 TTS | 把文本合成为音频字节、流或临时 URL | OpenAI、Gemini、Vertex Gemini、MiniMax、OpenRouter、xAI、Qwen、GLM 大陆；MiniMax 另有异步长文本、普通及双向 WebSocket TTS | [OpenAI](docs/audio.md) · [Gemini](docs/gemini-speech.md) · [Vertex](docs/vertex-speech.md) · [MiniMax](docs/minimax-tts.md) · [Async TTS](docs/minimax-async-tts.md) · [OpenRouter](docs/openrouter-audio.md) · [xAI](docs/xai-audio.md) · [Qwen](docs/qwen-tts.md) · [GLM](docs/glm-cloud-audio.md) |
 | Chat 音频 | 在 Chat 中传入音频并接收原生音频增量 | OpenRouter，按模型输入／输出模态校验 | [Chat Audio](docs/openrouter-chat-audio.md) |
 | 实时双向会话 | 低延迟交换语音、文本和工具事件；应用管理音频设备 | OpenAI Realtime、Gemini Live、xAI Voice、GLM 大陆；内置 WebSocket 后端需启用 realtime-websocket | [OpenAI](docs/realtime.md) · [Gemini](docs/gemini-live.md) · [xAI](docs/xai-realtime.md) · [GLM](docs/glm-realtime.md) |
 
@@ -131,7 +133,7 @@ serde_json = "1"
 将以下完整示例保存为 `src/main.rs`：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, Secret};
+use lingxi_llm_client::protocol::{ChatRequest, Secret};
 use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 #[tokio::main]
@@ -144,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         credential: Some(Secret::new(std::env::var("OPENAI_API_KEY")?)),
         ..RequestOptions::default()
     };
-    let request: CompletionRequest = serde_json::from_value(serde_json::json!({
+    let request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "gpt-4.1-mini",
         "messages": [{
             "role": "user",
@@ -175,12 +177,12 @@ cargo run
 
 ```rust,no_run
 use std::io::{self, Write};
-use lingxi_llm_client::protocol::{CompletionRequest, StreamEvent};
+use lingxi_llm_client::protocol::{ChatRequest, StreamEvent};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 async fn stream_chat(
     client: &LlmClient,
-    request: &CompletionRequest,
+    request: &ChatRequest,
     options: &RequestOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut stream = client.chat().stream_in("openai", request, options).await?;
@@ -209,37 +211,37 @@ async fn stream_chat(
 
 ### 3. 配置、更新与读取模型
 
-需要持久化配置时，将上例的 `client` 声明为 `mut`，并在构建后调用 `client.set_config_dir("./config")?`。该调用加载并保存目录中的 `providers.json`；应用重启时再次调用以恢复配置。
+应用启动时创建长期使用的 client，并将 `client.clone()` 交给并行任务；model、effort、Fast 档位和凭证保持请求级。需要持久化或动态配置时，把上例的 `.build()?` 改为 `.build_managed()?`，用 `let (client, config) = ...` 接收结果，再调用 `config.set_config_dir("./config").await?`。该调用加载并保存 `providers.json`，应用启动时再次调用以恢复配置。更新后新请求使用新快照，在途请求保持原配置。详见[共享 Client 与迁移](docs/client-reuse.md)。
 
 | 需求 | 接口 |
 | --- | --- |
-| 新增或替换连接 | `add_provider(profile)`；配置包含 profile 名、协议、地址和模型 |
-| 读取连接配置 | `provider("openai")` / `profiles()` |
-| 获取连接与可见模型列表 | `providers()` / `chat().models()` |
-| 从服务端更新模型目录 | `sync_provider("openai", options.credential.as_ref()).await?` |
-| 设置 provider 的模型白名单 | `set_tracked_models(provider_id, model_ids)` |
-| 设置已跟踪模型的可见性 | `set_model_visibility(profile_name, model_id, visible)` |
-| 删除连接或恢复内置配置 | `remove_provider(profile_name)` / `restore_builtin(profile_name)` |
+| 新增或替换连接 | `config.add_provider(profile).await?`；配置包含 profile 名、协议、地址和模型 |
+| 读取连接配置 | `snapshot.provider("openai")` / `snapshot.profiles()` |
+| 获取连接与可见模型列表 | `client.providers()` / `client.chat().models()` |
+| 从服务端更新模型目录 | `config.sync_provider("openai", options.credential.as_ref()).await?` |
+| 设置 provider 的模型白名单 | `config.set_tracked_models(provider_id, model_ids).await?` |
+| 设置已跟踪模型的可见性 | `config.set_model_visibility(profile_name, model_id, visible).await?` |
+| 删除连接或恢复内置配置 | `config.remove_provider(profile_name).await?` / `config.restore_builtin(profile_name).await?` |
 
-每个账号连接分别同步，并提供该账号的凭证。完整配置示例与更新规则见[本地保存与多账号](docs/api.md#本地保存与多账号)和[模型目录](docs/api.md#模型目录)。
+借用配置前先保存 `let snapshot = client.snapshot();`；需要多步一致性时，用同一个 snapshot 完成预估、请求和计价。每个账号连接分别同步，并提供该账号的凭证。完整配置示例与更新规则见[本地保存与多账号](docs/api.md#本地保存与多账号)和[模型目录](docs/api.md#模型目录)。
 
-配置使用 v2；读取 v1 文件会返回 `UnsupportedVersion`，不会自动迁移。`add_provider()` 会完整替换连接；如需修改单个字段并让其他字段继续继承目录默认值，使用 `configured_models()` 获取行 ID，再调用 `set_model_override()` / `clear_model_override()`。详见[配置 v2 契约](docs/architecture-migration.md#配置-v2)。
+配置使用 v3；读取 v1/v2 文件会返回 `UnsupportedVersion`，不会自动迁移。`add_provider()` 会完整替换连接；如需修改单个字段并让其他字段继续继承目录默认值，使用 `configured_models()` 获取行 ID，再调用 `set_model_override()` / `clear_model_override()`。详见[配置 v3 契约](docs/architecture-migration.md#配置-v3)。
 
 ### 4. 使用 Web Search
 
 复用上例的 `client`、`request` 和 `options`，把消息改为需要联网查询的问题，在 `main` 中调用 `search(&client, &request, &options).await?`。将以下函数添加到 `src/main.rs`，合并重复的导入：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{CompletionRequest, WebSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, WebSearchConfig};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 async fn search(
     client: &LlmClient,
-    request: &CompletionRequest,
+    request: &ChatRequest,
     options: &RequestOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
-        .web_search_in("openai", request, WebSearchConfig::default(), options)
+        .chat().web_search_in("openai", request, WebSearchConfig::default(), options)
         .await?;
     println!("{}", response.message.text());
     if let Some(search) = response.web_search {
@@ -251,7 +253,7 @@ async fn search(
 }
 ```
 
-`web_search*` 便捷方法属于 `LlmClient`。也可设置 `request.web_search = Some(WebSearchConfig::default())`，再将请求交给 `client.chat().complete_in()` 或 `client.chat().stream_in()`。
+`web_search*` 便捷方法属于 `ChatService`。也可设置 `request.set_hosted_web_search(Some(WebSearchConfig::default()))`，再将请求交给 `client.chat().complete_in()` 或 `client.chat().stream_in()`。
 
 搜索由 provider 执行，需使用支持搜索的模型；启用搜索不保证每次请求都会触发搜索。域名限制、搜索引用和流式搜索的用法见 [Web Search 指南](docs/web-search.md)。
 
@@ -298,9 +300,9 @@ lingxi-llm-client = { git = "https://github.com/lingxi-coder/llm-client", branch
 ```
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, LocalTokenCountError, protocol::CompletionRequest};
+use lingxi_llm_client::{LlmClient, LocalTokenCountError, protocol::ChatRequest};
 
-fn estimate_input(client: &LlmClient, request: &CompletionRequest) -> Result<(), LocalTokenCountError> {
+fn estimate_input(client: &LlmClient, request: &ChatRequest) -> Result<(), LocalTokenCountError> {
     let estimate = client.estimate_local_tokens_in("openai", request)?;
     println!("{} input tokens via {}", estimate.input_tokens, estimate.tokenizer);
     if estimate.is_partial {
@@ -338,7 +340,7 @@ fn estimate_input(client: &LlmClient, request: &CompletionRequest) -> Result<(),
 | [API 接口指南](docs/api.md) | 客户端构建、请求、流式响应、认证、配置、模型目录与费用 |
 | [推理控制与价格](docs/inference.md) | 能力查询、思考预算、effort、服务档位与实际费用估算 |
 | [图像生成与编辑](docs/images.md) | 图像模型、生成、编辑、参考图与原生任务 |
-| [架构与 API 迁移](docs/architecture-migration.md) | 扩展契约、用量报告、配置 v2 与 tokenizer features |
+| [架构与 API 迁移](docs/architecture-migration.md) | 扩展契约、用量报告、配置 v3 与 tokenizer features |
 | [本地输入 Token 估算](docs/api.md#本地输入-token-估算) | 离线计数、支持模型与未计数内容 |
 | [账户额度与用量](docs/api.md#账户额度与账户-token-用量) | 账户身份、查询预算、额度窗口与部分报告 |
 | [文件附件指南](docs/file-attachments.zh.md) | 稳定附件引用、远程设备显示、resolver 与 provider 文件输入 |
@@ -378,3 +380,13 @@ CI 还会测试 `tokenizers-all` 配置，并分别编译每个 tokenizer featur
 ## License
 
 本项目采用 MIT 或 Apache License 2.0，任选其一。详见 [MIT License](LICENSE-MIT) 和 [Apache License 2.0](LICENSE-APACHE)。
+
+## 服务文档
+
+- 对话与工具：[输出契约](docs/services.md) · [Gemini Interactions](docs/interactions.md) · [Anthropic 工具搜索](docs/anthropic-tools.md) · [Anthropic Code Execution](docs/anthropic-code-execution.md) · [OpenAI Tool Search](docs/openai-tool-search.md) · [OpenAI 托管工具与 MCP](docs/openai-hosted-extended.md) · [xAI Remote MCP](docs/xai-remote-mcp.md) · [Qwen 托管代码解释器](docs/qwen-hosted.md) · [Qwen Web Extractor](docs/qwen-web-extractor.md) · [OpenRouter 服务端工具](docs/openrouter-server-tools.md) · [OpenRouter Chat 音频](docs/openrouter-chat-audio.md) · [Realtime](docs/realtime.md) · [OpenAI GPT-Live](docs/openai-live.md) · [Gemini Live](docs/gemini-live.md) · [xAI Realtime](docs/xai-realtime.md) · [GLM Realtime](docs/glm-realtime.md) · [Qwen Realtime](docs/qwen-realtime.md) · [Qwen LiveTranslate](docs/qwen-translate.md)
+- 检索与向量：[知识库检索](docs/retrieval.md) · [Gemini 多模态 Embeddings](docs/gemini-embedding.md) · [Gemini File Search](docs/gemini-file-search.md) · [GLM 知识库](docs/glm-knowledge.md) · [Qwen 知识库管理与检索](docs/qwen-knowledge.md) · [Qwen Rerank](docs/qwen-rerank.md) · [OpenRouter Rerank](docs/openrouter-rerank.md) · [xAI Collections](docs/xai-collections.md)
+- 批处理与异步：[OpenAI Batch](docs/batches.md) · [Anthropic Batch](docs/anthropic-batch.md) · [Gemini Batch](docs/gemini-batch.md) · [Qwen Batch](docs/qwen-batch.md) · [OpenRouter Batch](docs/openrouter-batch.md) · [Kimi Batch](docs/kimi-batch.md) · [xAI Batch](docs/xai-batch.md) · [GLM Batch](docs/glm-batch.md) · [OpenAI Background](docs/background.md) · [xAI Deferred Chat](docs/deferred.md) · [GLM 异步推理](docs/glm-async.md) · [Gemini 显式缓存](docs/gemini-context-cache.md) · [Qwen Prompt Cache](docs/qwen-prompt-cache.md) · [OpenRouter Prompt Cache](docs/openrouter-prompt-cache.md) · [OpenAI 容器](docs/openai-containers.md)
+- 语音：[OpenAI Audio](docs/audio.md) · [Gemini Speech](docs/gemini-speech.md) · [Vertex TTS](docs/vertex-speech.md) · [Gemini Chat audio](docs/gemini-chat-audio.md) · [Gemini Voices](docs/gemini-voices.md) · [MiniMax ASR](docs/minimax-audio.md) · [MiniMax TTS](docs/minimax-tts.md) · [MiniMax 音色管理](docs/minimax-voices.md) · [MiniMax WebSocket TTS](docs/minimax-streaming-tts.md) · [MiniMax 双向 TTS](docs/minimax-bidi-tts.md) · [MiniMax 异步 TTS](docs/minimax-async-tts.md) · [OpenRouter Audio](docs/openrouter-audio.md) · [xAI Audio](docs/xai-audio.md) · [xAI 流式 TTS](docs/xai-streaming-tts.md) · [xAI 自定义音色](docs/xai-custom-voices.md) · [xAI 实时转写](docs/xai-stt.md) · [Qwen 异步语音转写](docs/qwen-asr.md) · [Qwen 实时转写](docs/qwen-asr-realtime.md) · [Qwen TTS](docs/qwen-tts.md) · [Qwen Audio Generation](docs/qwen-audio-generation.md) · [Qwen 实时 TTS](docs/qwen-tts-realtime.md) · [GLM 自托管 ASR](docs/glm-audio.md) · [GLM 云端音频](docs/glm-cloud-audio.md)
+- [实施状态](docs/implementation-plan.md) · [OpenAI/Gemini 能力证据矩阵](docs/capability-matrix-openai-gemini.md) · [中国提供方能力证据矩阵](docs/capability-matrix-china.md) · [其他提供方能力证据矩阵](docs/capability-matrix-west.md)
+
+[真实提供方验收与只读检查](docs/provider-acceptance.md)

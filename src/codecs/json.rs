@@ -1,4 +1,4 @@
-//! JSON values with borrowed inline byte payloads. No encoded media strings.
+//! JSON values that borrow request text, schemas, and inline byte payloads.
 use crate::{protocol::LlmError, transport::HttpRequest};
 use serde::{
     ser::{SerializeMap, SerializeSeq},
@@ -6,70 +6,200 @@ use serde::{
 };
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    borrow::Cow,
     fmt, io,
     ops::{Index, IndexMut},
+    sync::OnceLock,
 };
 
 #[derive(Clone)]
 pub(crate) struct WireValue<'a> {
-    value: Value,
-    fields: BTreeMap<String, WireValue<'a>>,
-    array: Option<Vec<WireValue<'a>>>,
-    data: Option<(&'a [u8], String)>,
+    value: Cow<'a, Value>,
+    fields: Vec<(&'static str, WireValue<'a>)>,
+    payload: Option<Payload<'a>>,
+    // Inspection through the Value API is uncommon for borrowed payloads.
+    // Materialize only on demand; serialization itself never uses this cache.
+    materialized: OnceLock<Value>,
+}
+#[derive(Clone)]
+enum Payload<'a> {
+    Text(&'a str),
+    Array(Vec<WireValue<'a>>),
+    Data(&'a [u8], String),
 }
 impl<'a> From<Value> for WireValue<'a> {
     fn from(value: Value) -> Self {
         Self {
-            value,
+            value: Cow::Owned(value),
             fields: Default::default(),
-            array: None,
-            data: None,
+            payload: None,
+            materialized: OnceLock::new(),
         }
     }
 }
 impl<'a> WireValue<'a> {
+    pub(crate) fn borrowed(value: &'a Value) -> Self {
+        Self {
+            value: Cow::Borrowed(value),
+            ..Value::Null.into()
+        }
+    }
+    pub(crate) fn text(text: &'a str) -> Self {
+        Self {
+            payload: Some(Payload::Text(text)),
+            ..Value::Null.into()
+        }
+    }
     pub(crate) fn array(values: Vec<Self>) -> Self {
         Self {
-            array: Some(values),
+            payload: Some(Payload::Array(values)),
             ..Value::Null.into()
         }
     }
     pub(crate) fn base64(bytes: &'a [u8], prefix: String) -> Self {
         Self {
-            data: Some((bytes, prefix)),
+            payload: Some(Payload::Data(bytes, prefix)),
             ..Value::Null.into()
         }
     }
-    pub(crate) fn with(mut self, field: &str, value: Self) -> Self {
-        self.value[field] = Value::Null;
-        self.fields.insert(field.into(), value);
+    fn as_value(&self) -> &Value {
+        if self.payload.is_none() && self.fields.is_empty() {
+            &self.value
+        } else {
+            self.materialized
+                .get_or_init(|| serde_json::to_value(self).expect("wire values serialize as JSON"))
+        }
+    }
+    fn materialize(&mut self) {
+        if self.payload.is_some() || !self.fields.is_empty() {
+            let value = self.materialized.take().unwrap_or_else(|| {
+                serde_json::to_value(&*self).expect("wire values serialize as JSON")
+            });
+            self.value = Cow::Owned(value);
+            self.payload = None;
+            self.fields.clear();
+        }
+        self.materialized.take();
+    }
+    fn into_value(mut self) -> Value {
+        self.materialize();
+        self.value.into_owned()
+    }
+    fn field(&self, key: &str) -> Option<&Self> {
+        self.fields
+            .iter()
+            .find(|(field, _)| *field == key)
+            .map(|(_, value)| value)
+    }
+    fn remove_field(&mut self, key: &str) -> Option<Self> {
+        let index = self.fields.iter().position(|(field, _)| *field == key)?;
+        Some(self.fields.swap_remove(index).1)
+    }
+    pub(crate) fn with(mut self, field: &'static str, value: Self) -> Self {
+        if self.payload.is_some() {
+            self.materialize();
+        }
+        self.materialized.take();
+        self.value.to_mut()[field] = Value::Null;
+        if let Some((_, old)) = self.fields.iter_mut().find(|(key, _)| *key == field) {
+            *old = value;
+        } else if self.fields.is_empty() {
+            self.fields = vec![(field, value)];
+        } else {
+            self.fields.push((field, value));
+        }
         self
     }
+    /// Rewrite an owned JSON array before borrowed field overlays are attached.
+    pub(crate) fn map_array_field(
+        mut self,
+        field: &'static str,
+        mut map: impl FnMut(usize, Value) -> Self,
+    ) -> Self {
+        let Some(array) = self
+            .value
+            .to_mut()
+            .get_mut(field)
+            .and_then(Value::as_array_mut)
+        else {
+            return self;
+        };
+        let array = std::mem::take(array)
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| map(index, value))
+            .collect();
+        self.with(field, Self::array(array))
+    }
+    pub(crate) fn array_field_mut(&mut self, field: &str) -> Option<&mut Vec<Self>> {
+        self.materialized.take();
+        let value = &mut self.fields.iter_mut().find(|(key, _)| *key == field)?.1;
+        value.materialized.take();
+        match value.payload.as_mut()? {
+            Payload::Array(array) => Some(array),
+            _ => None,
+        }
+    }
     pub(crate) fn get(&self, field: &str) -> Option<&Value> {
-        self.fields
-            .get(field)
-            .map(|value| &value.value)
+        self.field(field)
+            .map(Self::as_value)
             .or_else(|| self.value.get(field))
     }
-    pub(crate) fn object_mut(&mut self) -> &mut serde_json::Map<String, Value> {
-        self.value.as_object_mut().expect("wire object")
+    pub(crate) fn get_str(&self, field: &str) -> Option<&str> {
+        match self.field(field) {
+            Some(Self {
+                payload: Some(Payload::Text(text)),
+                ..
+            }) => Some(text),
+            _ => self.get(field).and_then(Value::as_str),
+        }
+    }
+    pub(crate) fn take_field(&mut self, field: &str) -> Option<Self> {
+        self.materialized.take();
+        let owned = self.value.to_mut().as_object_mut()?.remove(field)?;
+        Some(self.remove_field(field).unwrap_or_else(|| owned.into()))
+    }
+    /// Update one owned field without materializing unrelated borrowed payloads.
+    pub(crate) fn insert(&mut self, field: String, value: Value) {
+        self.materialized.take();
+        self.remove_field(&field);
+        self.value
+            .to_mut()
+            .as_object_mut()
+            .expect("wire object")
+            .insert(field, value);
+    }
+    pub(crate) fn extend_fields(&mut self, fields: serde_json::Map<String, Value>) {
+        for (field, value) in fields {
+            self.insert(field, value);
+        }
     }
     pub(crate) fn remove(&mut self, field: &str) {
-        self.fields.remove(field);
-        self.object_mut().remove(field);
+        self.materialized.take();
+        self.remove_field(field);
+        self.value
+            .to_mut()
+            .as_object_mut()
+            .expect("wire object")
+            .remove(field);
     }
 }
 impl Index<&str> for WireValue<'_> {
     type Output = Value;
     fn index(&self, key: &str) -> &Value {
-        &self.value[key]
+        self.get(key).unwrap_or(&Value::Null)
     }
 }
 impl IndexMut<&str> for WireValue<'_> {
     fn index_mut(&mut self, key: &str) -> &mut Value {
-        self.fields.remove(key);
-        &mut self.value[key]
+        if self.payload.is_some() {
+            self.materialize();
+        }
+        self.materialized.take();
+        if let Some(value) = self.remove_field(key) {
+            self.value.to_mut()[key] = value.into_value();
+        }
+        &mut self.value.to_mut()[key]
     }
 }
 struct Data<'a>(&'a [u8], &'a str);
@@ -87,15 +217,18 @@ impl fmt::Display for Data<'_> {
 }
 impl Serialize for WireValue<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if let Some((bytes, prefix)) = &self.data {
-            return serializer.collect_str(&Data(bytes, prefix));
-        }
-        if let Some(array) = &self.array {
-            let mut seq = serializer.serialize_seq(Some(array.len()))?;
-            for value in array {
-                seq.serialize_element(value)?;
-            }
-            return seq.end();
+        if let Some(payload) = &self.payload {
+            return match payload {
+                Payload::Text(text) => serializer.serialize_str(text),
+                Payload::Data(bytes, prefix) => serializer.collect_str(&Data(bytes, prefix)),
+                Payload::Array(array) => {
+                    let mut seq = serializer.serialize_seq(Some(array.len()))?;
+                    for value in array {
+                        seq.serialize_element(value)?;
+                    }
+                    seq.end()
+                }
+            };
         }
         if self.fields.is_empty() {
             return self.value.serialize(serializer);
@@ -103,7 +236,7 @@ impl Serialize for WireValue<'_> {
         let object = self.value.as_object().expect("overridden wire object");
         let mut map = serializer.serialize_map(Some(object.len()))?;
         for (key, value) in object {
-            if let Some(value) = self.fields.get(key) {
+            if let Some(value) = self.field(key) {
                 map.serialize_entry(key, value)?;
             } else {
                 map.serialize_entry(key, value)?;
@@ -155,5 +288,98 @@ impl io::Write for Counter {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn borrowed_values_remain_coherent_when_inspected_and_mutated() {
+        let schema = json!({"properties": {"message": {"type": "string"}}});
+        let text = "quoted \"text\"\n中文";
+        let mut value = WireValue::from(json!({"role": "user"}))
+            .with("schema", WireValue::borrowed(&schema))
+            .with("text", WireValue::text(text))
+            .with("content", WireValue::array(vec![WireValue::text(text)]));
+        assert_eq!(value.get_str("text"), Some(text));
+        assert_eq!(value.get("text"), Some(&json!(text)));
+        assert_eq!(value["schema"], schema);
+        assert_eq!(value["content"], json!([text]));
+
+        // A cached materialization must never hide later array or field edits.
+        value
+            .array_field_mut("content")
+            .unwrap()
+            .push(json!(7).into());
+        assert_eq!(value["content"], json!([text, 7]));
+        value["schema"]["additionalProperties"] = json!(false);
+        value["text"] = json!("changed");
+        assert_eq!(value.get_str("text"), Some("changed"));
+        assert!(schema.get("additionalProperties").is_none());
+        value.insert("extra".into(), json!(true));
+        value.remove("role");
+        // serde_json's insertion-ordered map swaps the last field into the
+        // removed role's position, as it did before adding borrowed payloads.
+        let expected = json!({
+            "extra": true,
+            "schema": {"properties": {"message": {"type": "string"}}, "additionalProperties": false},
+            "text": "changed", "content": [text, 7],
+        });
+        assert_eq!(
+            serde_json::to_vec(&value).unwrap(),
+            serde_json::to_vec(&expected).unwrap()
+        );
+    }
+
+    #[test]
+    fn metadata_edits_keep_text_schemas_and_base64_payloads_borrowed() {
+        let schema = json!({"type": "object"});
+        let text = "long text";
+        let mut body = WireValue::from(json!({"model": "test", "stream": true}))
+            .with("schema", WireValue::borrowed(&schema))
+            .with("text", WireValue::text(text))
+            .with("data", WireValue::base64(b"hello", String::new()));
+        // Hosted Anthropic wrappers change only metadata; Chat reasoning adds
+        // native fields. Neither operation may allocate encoded media strings.
+        body.remove("model");
+        body.remove("stream");
+        body.insert("anthropic_version".into(), json!("bedrock-2023-05-31"));
+        body.extend_fields(json!({"reasoning": "native"}).as_object().unwrap().clone());
+        assert!(body.materialized.get().is_none());
+        assert!(matches!(
+            body.field("schema").unwrap().value,
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            body.field("text").unwrap().payload,
+            Some(Payload::Text(_))
+        ));
+        let data = body.field("data").unwrap();
+        assert!(matches!(data.payload, Some(Payload::Data(_, _))));
+        assert!(data.materialized.get().is_none());
+        assert_eq!(serde_json::to_value(&body).unwrap()["data"], "aGVsbG8=");
+    }
+
+    #[test]
+    fn borrowed_payloads_share_serialization_and_body_length() {
+        let text = "\n\t\"\\中文";
+        let schema = json!({"enum": [text]});
+        let value = WireValue::from(json!({}))
+            .with("schema", WireValue::borrowed(&schema))
+            .with("text", WireValue::text(text))
+            .with(
+                "data",
+                WireValue::base64(b"hello", "data:text/plain;base64,".into()),
+            );
+        let request = WireRequest::new("https://test.invalid".into(), vec![], value);
+        let length = request.body_len().unwrap();
+        let body = request.encode().unwrap().body;
+        let expected =
+            json!({"schema":schema,"text":text,"data":"data:text/plain;base64,aGVsbG8="});
+        assert_eq!(length, body.len());
+        assert_eq!(body.as_ref(), serde_json::to_vec(&expected).unwrap());
     }
 }

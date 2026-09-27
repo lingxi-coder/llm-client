@@ -1,3 +1,5 @@
+embeddings = { mode = "enabled", value = { api = "open_ai", endpoint = "https://open.bigmodel.cn/api/paas/v4/embeddings", auth = { type = "bearer" } } }
+glm_knowledge = { mode = "enabled", value = { endpoint = "https://open.bigmodel.cn/api/llm-application/open", auth = { type = "bearer" } } }
 # Mainland metered chat API, separate from Coding Plan and Z.AI accounts.
 
 # Inference controls are endpoint contracts, separate from catalog model facts.

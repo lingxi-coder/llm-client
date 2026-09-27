@@ -3,7 +3,7 @@
 mod wire_api;
 
 use lingxi_llm_client::protocol::{
-    AuthStrategy, BillingMode, CompletionRequest, CredentialConfig, FileSearchConfig, LlmError,
+    AuthStrategy, BillingMode, ChatRequest, CredentialConfig, FileSearchConfig, LlmError,
     ProviderId, ProviderProfile, StreamEvent, ToolChoice, ToolSpec,
 };
 use lingxi_llm_client::{
@@ -29,11 +29,11 @@ fn profile(adapter: &str, protocol: &str) -> ProviderProfile {
     .unwrap()
 }
 
-fn request() -> CompletionRequest {
-    serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"latest news"}]}],"web_search":{}})).unwrap()
+fn request() -> ChatRequest {
+    serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"latest news"}]}],"hosted_tools":[{"type":"web_search","config":{}}]})).unwrap()
 }
 
-fn encode(req: &CompletionRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
+fn encode(req: &ChatRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
     let client =
         LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(p))
             .with_region(lingxi_llm_client::protocol::Region::International)
@@ -99,6 +99,8 @@ fn provider_tools_are_opt_in_and_coexist_with_functions() {
             description: "Local lookup".into(),
             input_schema: json!({"type":"object","properties":{}}),
             strict: false,
+            defer_loading: false,
+            allowed_callers: vec![],
         });
         let body = encode(&req, &p).unwrap();
         assert_eq!(body["tools"].as_array().unwrap().len(), 2);
@@ -118,7 +120,7 @@ fn provider_tools_are_opt_in_and_coexist_with_functions() {
                 .contains(&json!("web_search_call.action.sources")));
         }
         assert!(body.get("web_search_engine").is_none());
-        req.web_search = None;
+        req.set_hosted_web_search(None);
         let mut plain = p.clone();
         plain.extra = Value::Null;
         assert_eq!(encode(&req, &p).unwrap(), encode(&req, &plain).unwrap());
@@ -132,7 +134,7 @@ fn provider_domain_limits_and_engine_are_explicit() {
         ("glm", "open_ai_chat", 1),
     ] {
         let mut req = request();
-        req.web_search.as_mut().unwrap().allowed_domains =
+        req.hosted_web_search_mut().unwrap().allowed_domains =
             (0..count).map(|n| format!("{n}.example.com")).collect();
         let mut p = profile(adapter, protocol);
         if adapter == "glm" {
@@ -157,8 +159,7 @@ fn provider_domain_limits_and_engine_are_explicit() {
                 "search-prime"
             );
         }
-        req.web_search
-            .as_mut()
+        req.hosted_web_search_mut()
             .unwrap()
             .allowed_domains
             .push("overflow.example.com".into());
@@ -179,7 +180,7 @@ fn unsupported_controls_and_protocols_fail_before_http() {
             json!({"max_uses":2}),
         ] {
             let mut req = request();
-            req.web_search = Some(serde_json::from_value(config).unwrap());
+            req.set_hosted_web_search(Some(serde_json::from_value(config).unwrap()));
             assert!(matches!(
                 encode(&req, &profile(adapter, protocol)),
                 Err(LlmError::UnsupportedCapability { .. })
@@ -204,8 +205,7 @@ fn unsupported_controls_and_protocols_fail_before_http() {
         ));
     }
     let mut req = request();
-    req.web_search
-        .as_mut()
+    req.hosted_web_search_mut()
         .unwrap()
         .allowed_domains
         .push("example.com".into());
@@ -377,10 +377,10 @@ fn qwen_search_and_workspace_file_search_share_responses_and_use_the_regional_ho
     let route = client.resolve("qwen3.8-max").unwrap();
     let mut req = request();
     req.model = "qwen3.8-max".into();
-    req.file_search = Some(FileSearchConfig {
+    req.set_hosted_file_search(Some(FileSearchConfig {
         knowledge_base_id: "kb-123".into(),
         workspace_id: "ws-demo-1".into(),
-    });
+    }));
     let http = OpenAiResponsesCodec
         .encode_request(
             lingxi_llm_client::EncodeRequest::new(&req),
@@ -503,12 +503,12 @@ fn minimax_server_search_uses_anthropic_tool_without_unsupported_controls() {
     );
     assert_eq!(body["tool_choice"], json!({"type":"auto"}));
 
-    req.web_search.as_mut().unwrap().allowed_domains = vec!["example.com".into()];
+    req.hosted_web_search_mut().unwrap().allowed_domains = vec!["example.com".into()];
     assert!(matches!(
         encode(&req, &p),
         Err(LlmError::UnsupportedCapability { .. })
     ));
-    req.web_search = Some(Default::default());
+    req.set_hosted_web_search(Some(Default::default()));
     req.tool_choice = ToolChoice::Any;
     assert!(matches!(
         encode(&req, &p),
@@ -546,11 +546,11 @@ fn qwen_file_search_alone_honors_tool_choice_and_validates_named_functions() {
     p.models[0].request_model = "qwen3.8-max".into();
     p.extra["file_search"] = json!("qwen");
     let mut req = request();
-    req.web_search = None;
-    req.file_search = Some(FileSearchConfig {
+    req.set_hosted_web_search(None);
+    req.set_hosted_file_search(Some(FileSearchConfig {
         knowledge_base_id: "kb-123".into(),
         workspace_id: "ws-demo".into(),
-    });
+    }));
     for (choice, expected) in [
         (ToolChoice::None, "none"),
         (ToolChoice::Auto, "auto"),
@@ -576,6 +576,8 @@ fn qwen_file_search_alone_honors_tool_choice_and_validates_named_functions() {
         description: "lookup".into(),
         input_schema: json!({"type":"object"}),
         strict: false,
+        defer_loading: false,
+        allowed_callers: vec![],
     });
     assert_eq!(
         encode(&req, &p).unwrap()["tool_choice"],

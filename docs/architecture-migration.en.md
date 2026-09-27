@@ -2,11 +2,11 @@
 
 [简体中文](architecture-migration.md)
 
-This update keeps one standalone Rust crate and changes the public extension APIs. Old configuration and response formats are not supported. Recreate a version 2 configuration with the public configuration APIs; loading version 1 returns `UnsupportedVersion` without modifying the file.
+This update keeps one standalone Rust crate and changes the public extension APIs. Old configuration and response formats are not supported. Recreate a version 3 configuration with the public configuration APIs; loading version 1 or 2 returns `UnsupportedVersion` without modifying the file.
 
 ## Services and execution
 
-`LlmClient` coordinates the builder, request executor, attachment manager, account service and configuration coordinator. Routing, listings and prices read one immutable runtime snapshot. A successful configuration transaction installs a new snapshot and invalidates changed account bindings and attachment caches. The repository only locks, reads, validates the format, and atomically replaces the file.
+`LlmClient` is a cheap-to-clone request handle sharing runtime resources and a publication slot. `build_managed()` separately returns `ClientConfigManager`, whose async methods serialize management work without locking requests. Each live operation captures one immutable state; `client.snapshot()` pins all services and queries to that state across multiple calls. Publication installs configuration, account bindings and cache generations together. Existing requests and snapshots retain their original state. The repository handles file locks, rereads, format validation and atomic replacement. See [client reuse and migration](client-reuse.en.md).
 
 Complete and streamed requests share route selection, attachment resolution, preparation, authentication, stale-file retry and failover. Continuations remain pinned to one connection, and fallback connections need their own credentials. Monotonic deadlines cover asynchronous authentication, upload/poll/read and cleanup. Complete requests keep the 120-second default (video retains its longer policy); streams have no total deadline unless configured. Wall-clock time is used only for timestamps and pricing.
 
@@ -26,15 +26,15 @@ Complete and streamed requests share route selection, attachment resolution, pre
 
 Profile-specific codec variants, `FrameStream`, `UrlOpener`, and the unused Transport WebSocket API are removed. SSE framing belongs to ordinary codec decoders; Bedrock decoders own EventStream framing. Hosted adapters modify the base request before its single serialization. Native reasoning envelopes, signatures, tool IDs, multimodal ordering and message/attachment reference structures remain unchanged.
 
-Actual cost now reads the response's complete report:
+Retain the snapshot used to execute the request when pricing its response; a live client query uses its current configuration. Actual cost reads the response's complete report:
 
 ```rust
-use lingxi_llm_client::{LlmClient, ResolvedRoute};
-use lingxi_llm_client::protocol::{CompletionResponse, LlmError, Submission};
-fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionResponse)
+use lingxi_llm_client::{ClientSnapshot, ResolvedRoute};
+use lingxi_llm_client::protocol::{ChatResponse, LlmError, Submission};
+fn report(snapshot: &ClientSnapshot, route: &ResolvedRoute, response: &ChatResponse)
     -> Result<(), LlmError>
 {
-    let cost = client.estimate_actual_cost(route, response, Submission::Interactive)?;
+    let cost = snapshot.estimate_actual_cost(route, response, Submission::Interactive)?;
     println!("{cost:?}");
     Ok(())
 }
@@ -42,21 +42,21 @@ fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionRespon
 
 For a completed stream, call `estimate_stream_cost(&route, &stream, submission)` to include the observed service tier. Partial or invalid reports return `CostUnavailable`. A raw `Usage` can still be used for a preflight estimate through `estimate_cost`.
 
-## Version 2 configuration
+## Version 3 configuration
 
 Static definitions, user settings, account observations and the runtime snapshot have separate roles. Describe caller defaults with the builder's profile slice. `add_builtin_profile(name)` / `add_builtin_profiles()` explicitly registers built-in definitions; `restore_builtin(name)` also uses a built-in definition reference. Definition references record `builtin` or `caller`; they are never guessed by comparing values.
 
 Description, context and output limits merge as **user override > account observation > current definition**. Other model fields merge as **user override > current definition**. `add_provider` is a full replacement with explicit model fields. Use per-field overrides to keep other fields current. `Clear` sets the field's empty/default value; `Inherit` removes the override and keeps valid observations.
 
 ```rust
-use lingxi_llm_client::{LlmClient, ProviderStoreError};
+use lingxi_llm_client::{ClientConfigManager, ProviderStoreError};
 use lingxi_llm_client::configuration::{FieldOverride, ModelField};
-fn edit(client: &mut LlmClient, profile: &str) -> Result<(), ProviderStoreError> {
-    let rows = client.configured_models(profile)?;
+async fn edit(config: &ClientConfigManager, profile: &str) -> Result<(), ProviderStoreError> {
+    let rows = config.configured_models(profile).await?;
     if let Some(row) = rows.first() {
-        client.set_model_override(profile, &row.row_id, ModelField::Description,
-            FieldOverride::Set(serde_json::json!("My model")))?;
-        client.clear_model_override(profile, &row.row_id, ModelField::Description)?;
+        config.set_model_override(profile, &row.row_id, ModelField::Description,
+            FieldOverride::Set(serde_json::json!("My model"))).await?;
+        config.clear_model_override(profile, &row.row_id, ModelField::Description).await?;
     }
     Ok(())
 }

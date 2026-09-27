@@ -1,5 +1,6 @@
 # This vendor also speaks both wires behind one key, so its second entry is a
 # connection rather than a provider.
+deferred = { mode = "enabled", value = { api = "xai_chat", endpoint = "https://api.x.ai/v1/chat/completions", results_endpoint = "https://api.x.ai/v1/chat/deferred-completion", auth = { type = "bearer" } } }
 
 # Inference controls are endpoint contracts, separate from catalog model facts.
 inference = { reasoning = "open_ai_chat", fast = "priority" }

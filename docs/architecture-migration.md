@@ -2,13 +2,13 @@
 
 [English](architecture-migration.en.md)
 
-本次更新仍是一个独立 Rust crate，公开扩展接口有破坏性调整，不兼容旧配置和旧响应格式。请通过公开配置 API 重新建立 v2 配置；读取 v1 会返回 `UnsupportedVersion`，不会改写原文件。
+本次更新仍是一个独立 Rust crate，公开扩展接口有破坏性调整，不兼容旧配置和旧响应格式。请通过公开配置 API 重新建立 v3 配置；读取 v1 会返回 `UnsupportedVersion`，不会改写原文件。
 
 ## 服务与执行
 
-`LlmClient` 协调 builder、请求执行器、附件管理器、账户服务和配置协调器。路由、列表和价格读取同一个不可变运行快照。配置事务成功后安装新快照，并使变化连接的账户绑定和附件缓存失效。repository 只负责加锁、读取、格式验证和原子提交。
+`LlmClient` 是可低成本 clone 的请求句柄，共享运行资源和配置发布槽。`build_managed()` 独立返回 `ClientConfigManager`，其异步方法串行化管理操作，不锁住请求。Live 操作各自捕获不可变状态；`client.snapshot()` 可把全部服务和查询固定到同一版本。发布同时安装配置、账户绑定及缓存代际，在途请求和旧 snapshot 保持原状态。repository 负责文件锁、重读、格式验证和原子替换。详见[共享 Client 与迁移](client-reuse.md)。
 
-完整响应和流式响应共用路由、附件解析、准备、认证、文件失效重试及 failover。continuation 固定原连接，备用连接使用独立凭证。单调时钟 deadline 覆盖异步认证、上传、轮询、读取和清理。完整响应保留默认 120 秒（视频保留原有较长策略），流式响应默认无总时限。墙上时钟只用于时间戳与价格。
+完整响应和流式响应共用路由、附件解析、准备及认证。普通请求可按策略文件失效重试或 failover；continuation 固定原连接且不会自动重提，备用连接使用独立凭证。单调时钟 deadline 覆盖异步认证、上传、轮询、读取和清理。完整响应保留默认 120 秒（视频保留原有较长策略），流式响应默认无总时限。墙上时钟只用于时间戳与价格。
 
 ## 扩展接口变化
 
@@ -26,15 +26,15 @@
 
 删除重复的 profile-aware codec 接口、`FrameStream`、`UrlOpener` 和 Transport 未使用的 WebSocket 接口。普通 decoder 持有 SSE 分帧器，Bedrock 持有 EventStream 分帧器。Hosted adapter 在基础请求最终序列化前修改字段。native reasoning envelope、签名、工具 ID、多模态顺序及消息／附件引用结构保持不变。
 
-实际成本从响应中的完整报告读取：
+计价时保留执行请求所用的 snapshot；live client 的价格查询使用查询时配置。实际成本从响应中的完整报告读取：
 
 ```rust
-use lingxi_llm_client::{LlmClient, ResolvedRoute};
-use lingxi_llm_client::protocol::{CompletionResponse, LlmError, Submission};
-fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionResponse)
+use lingxi_llm_client::{ClientSnapshot, ResolvedRoute};
+use lingxi_llm_client::protocol::{ChatResponse, LlmError, Submission};
+fn report(snapshot: &ClientSnapshot, route: &ResolvedRoute, response: &ChatResponse)
     -> Result<(), LlmError>
 {
-    let cost = client.estimate_actual_cost(route, response, Submission::Interactive)?;
+    let cost = snapshot.estimate_actual_cost(route, response, Submission::Interactive)?;
     println!("{cost:?}");
     Ok(())
 }
@@ -42,21 +42,21 @@ fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionRespon
 
 流结束后调用 `estimate_stream_cost(&route, &stream, submission)`；部分或无效报告返回 `CostUnavailable`。请求前的 `estimate_cost` 仍可接受原始 `Usage` 作为估算输入。
 
-## 配置 v2
+## 配置 v3
 
 静态定义、用户配置、账户观测与运行快照各司其职。builder 的 profile 切片提供 caller 默认值；`add_builtin_profile(name)` / `add_builtin_profiles()` 显式注册 builtin 定义，`restore_builtin(name)` 也使用 builtin 定义引用。引用明确记录 `builtin` 或 `caller`，不会比较值来猜测来源。
 
 描述、上下文和输出上限按 **用户覆盖 > 账户观测 > 当前定义** 合并；其他字段按 **用户覆盖 > 当前定义** 合并。`add_provider` 是完整替换，模型字段均视为显式设置。需要跟随目录时使用字段覆盖。`Clear` 设置字段的空值／默认值；`Inherit` 移除覆盖，保留有效观测。
 
 ```rust
-use lingxi_llm_client::{LlmClient, ProviderStoreError};
+use lingxi_llm_client::{ClientConfigManager, ProviderStoreError};
 use lingxi_llm_client::configuration::{FieldOverride, ModelField};
-fn edit(client: &mut LlmClient, profile: &str) -> Result<(), ProviderStoreError> {
-    let rows = client.configured_models(profile)?;
+async fn edit(config: &ClientConfigManager, profile: &str) -> Result<(), ProviderStoreError> {
+    let rows = config.configured_models(profile).await?;
     if let Some(row) = rows.first() {
-        client.set_model_override(profile, &row.row_id, ModelField::Description,
-            FieldOverride::Set(serde_json::json!("My model")))?;
-        client.clear_model_override(profile, &row.row_id, ModelField::Description)?;
+        config.set_model_override(profile, &row.row_id, ModelField::Description,
+            FieldOverride::Set(serde_json::json!("My model"))).await?;
+        config.clear_model_override(profile, &row.row_id, ModelField::Description).await?;
     }
     Ok(())
 }

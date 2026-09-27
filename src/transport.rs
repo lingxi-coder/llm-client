@@ -43,6 +43,36 @@ pub struct HttpRequest {
     pub timeout: Option<Duration>,
 }
 
+/// An outgoing request with a streamed body and an exact declared byte count.
+/// The body is consumed once; transports must not replay it or follow redirects.
+pub struct HttpStreamRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: BoxStream<'static, Result<Bytes, LlmError>>,
+    pub content_length: u64,
+    pub timeout: Option<Duration>,
+}
+
+impl std::fmt::Debug for HttpStreamRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpStreamRequest")
+            .field("method", &self.method)
+            .field("url", &"<redacted>")
+            .field(
+                "header_names",
+                &self
+                    .headers
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .field("content_length", &self.content_length)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpRequest")
@@ -110,6 +140,14 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
+
+    /// Override to support large streaming uploads. The default fails before
+    /// consuming input, so custom transports never silently buffer it.
+    async fn send_stream(&self, _req: HttpStreamRequest) -> Result<StreamResponse, LlmError> {
+        Err(LlmError::UnsupportedCapability {
+            message: "transport does not support streaming request bodies".into(),
+        })
+    }
 }
 
 /// Shared request execution independent of the concrete HTTP backend.
@@ -137,6 +175,23 @@ impl<'a> HttpExecutor<'a> {
         let deadline = self.deadline.cap(request.timeout);
         request.timeout = deadline.remaining()?;
         let response = deadline.run(self.transport.send(request)).await??;
+        Ok(Self::bound_response(response, deadline))
+    }
+
+    pub async fn send_stream(
+        &self,
+        mut request: HttpStreamRequest,
+    ) -> Result<StreamResponse, LlmError> {
+        let deadline = self.deadline.cap(request.timeout);
+        request.timeout = deadline.remaining()?;
+        let response = deadline.run(self.transport.send_stream(request)).await??;
+        Ok(Self::bound_response(response, deadline))
+    }
+
+    fn bound_response(
+        response: StreamResponse,
+        deadline: crate::runtime::Deadline,
+    ) -> StreamResponse {
         let body = futures::stream::unfold(Some(response.body), move |state| async move {
             let mut body = state?;
             match deadline.run(body.next()).await {
@@ -146,11 +201,11 @@ impl<'a> HttpExecutor<'a> {
             }
         })
         .boxed();
-        Ok(StreamResponse {
+        StreamResponse {
             status: response.status,
             headers: response.headers,
             body,
-        })
+        }
     }
 
     pub async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, LlmError> {
@@ -163,6 +218,15 @@ impl<'a> HttpExecutor<'a> {
         limit: usize,
     ) -> Result<HttpResponse, LlmError> {
         self.collect(request, Some(limit)).await
+    }
+
+    pub async fn execute_stream_bounded(
+        &self,
+        request: HttpStreamRequest,
+        limit: usize,
+    ) -> Result<HttpResponse, LlmError> {
+        let response = self.send_stream(request).await?;
+        Self::collect_response(response, Some(limit)).await
     }
 
     async fn collect(

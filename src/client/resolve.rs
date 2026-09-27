@@ -87,9 +87,8 @@ impl RuntimeSnapshot {
         // qualified ref with the other connection's model. Failover still
         // reaches the rest of the group — scoping picks where to start.
         let names_a_connection = profile.is_some_and(|scoped| {
-            self.profiles
-                .iter()
-                .any(|p| p.supports_region(self.region) && p.profile_name == scoped)
+            self.profile(scoped)
+                .is_some_and(|p| p.supports_region(self.region))
         });
         let in_scope = |p: &ProviderProfile| match profile {
             // A group name scopes to every connection in that group, so a
@@ -122,9 +121,8 @@ impl RuntimeSnapshot {
         if let Some((qualifier, bare)) = requested.split_once('/') {
             if profile.is_none_or(|scoped| scoped == qualifier) {
                 let names_a_connection = self
-                    .profiles
-                    .iter()
-                    .any(|p| p.supports_region(self.region) && p.profile_name == qualifier);
+                    .profile(qualifier)
+                    .is_some_and(|p| p.supports_region(self.region));
                 for (pi, mi) in self.model_index.get(bare).into_iter().flatten() {
                     let p = &self.profiles[*pi];
                     if p.supports_region(self.region)
@@ -198,16 +196,14 @@ impl RuntimeSnapshot {
         // Two models of ONE profile answering to the same string is a genuine
         // ambiguity: they are different models on the same endpoint, so which to
         // send is unknown.
-        if let Some((dup, _)) = matches.iter().find(|(p, _)| {
-            matches
-                .iter()
-                .filter(|(q, _)| q.profile_name == p.profile_name)
-                .count()
-                > 1
-        }) {
+        // The index stores rows in profile order, and filtering preserves it.
+        if let Some(pair) = matches
+            .windows(2)
+            .find(|pair| pair[0].0.profile_name == pair[1].0.profile_name)
+        {
             return Err(ResolveError::DuplicateOnProfile {
                 model: requested.to_owned(),
-                profile_name: dup.profile_name.clone(),
+                profile_name: pair[0].0.profile_name.clone(),
             });
         }
 
@@ -237,18 +233,20 @@ impl RuntimeSnapshot {
         let billing = model.billing_mode_on(&provider.pricing);
         let group = provider.group();
         let mut siblings: Vec<(&ProviderProfile, &ModelProfile)> = self
-            .groups
-            .get(group)
-            .into_iter()
-            .flatten()
-            .map(|index| &self.profiles[*index])
-            .filter(|c| {
-                c.supports_region(self.region)
-                    && c.group() == group
-                    && c.profile_name != provider.profile_name
-            })
-            .filter_map(|c| {
-                let mut candidates = c.models.iter().filter(|m| {
+            .model_index
+            .get(&model.request_model)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .chunk_by(|a, b| a.0 == b.0)
+            .filter_map(|rows| {
+                let c = &self.profiles[rows[0].0];
+                if !c.supports_region(self.region)
+                    || c.group() != group
+                    || c.profile_name == provider.profile_name
+                {
+                    return None;
+                }
+                let mut candidates = rows.iter().map(|(_, mi)| &c.models[*mi]).filter(|m| {
                     m.request_model == model.request_model
                         && m.billing_mode_on(&c.pricing) == billing
                 });
@@ -302,15 +300,15 @@ fn sort_matches(matches: &mut [(&ProviderProfile, &ModelProfile)], prefer_visibl
     });
 }
 
-impl super::LlmClient {
+impl super::ClientSnapshot {
     pub fn resolve(&self, model: &str) -> Result<ResolvedRoute, ResolveError> {
-        self.snapshot.resolve(model)
+        self.state.config.resolve(model)
     }
     pub fn resolve_in(
         &self,
         model: &str,
         profile: Option<&str>,
     ) -> Result<ResolvedRoute, ResolveError> {
-        self.snapshot.resolve_in(model, profile)
+        self.state.config.resolve_in(model, profile)
     }
 }

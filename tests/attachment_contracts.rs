@@ -71,7 +71,7 @@ impl Transport for GeminiUpload {
 #[tokio::test]
 async fn gemini_attachments_keep_usable_short_request_budgets() {
     let p: ProviderProfile = serde_json::from_value(json!({"profile_name":"p","provider_id":"google","base_url":"https://generativelanguage.googleapis.com/v1beta","protocol":"gemini_generate_content","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m","metadata":{"inputModalities":["text","file"]},"capability_support":{"documents":"supported"}}]})).unwrap();
-    let req: CompletionRequest = serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("pdf","application/pdf")}}]}]})).unwrap();
+    let req: ChatRequest = serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("pdf","application/pdf")}}]}]})).unwrap();
     for timeout in [Duration::from_millis(500), Duration::from_secs(1)] {
         for streaming in [false, true] {
             let http = Arc::new(GeminiUpload(AtomicUsize::new(0)));
@@ -84,7 +84,7 @@ async fn gemini_attachments_keep_usable_short_request_budgets() {
                 ..Default::default()
             };
             if streaming {
-                let mut stream = c.stream(&req, &opts).await.unwrap();
+                let mut stream = c.chat().stream(&req, &opts).await.unwrap();
                 let mut ended = false;
                 while let Some(event) = stream.next().await {
                     ended |= matches!(event.unwrap(), StreamEvent::End { .. });
@@ -92,7 +92,7 @@ async fn gemini_attachments_keep_usable_short_request_budgets() {
                 assert!(ended);
             } else {
                 assert_eq!(
-                    c.complete(&req, &opts).await.unwrap().stop_reason,
+                    c.chat().complete(&req, &opts).await.unwrap().stop_reason,
                     StopReason::EndTurn
                 );
             }
@@ -108,7 +108,7 @@ async fn gemini_attachments_keep_usable_short_request_budgets() {
         ..Default::default()
     };
     assert!(matches!(
-        c.complete(&req, &opts).await,
+        c.chat().complete(&req, &opts).await,
         Err(LlmError::TransportTimeout { .. })
     ));
     assert_eq!(http.0.load(Ordering::Relaxed), 0);
@@ -117,14 +117,17 @@ async fn gemini_attachments_keep_usable_short_request_budgets() {
 #[tokio::test]
 async fn all_attachment_decisions_are_validated_before_the_first_upload() {
     let profile:ProviderProfile=serde_json::from_value(json!({"profile_name":"p","provider_id":"openai","base_url":"https://api.openai.com/v1","protocol":"open_ai_responses","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m","metadata":{"inputModalities":["text","image","file"]},"capability_support":{"vision":"unsupported","documents":"supported"}}]})).unwrap();
-    let request:CompletionRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("doc","application/pdf")}},{"type":"image","source":{"type":"attachment","attachment":attachment("image","image/png")}}]}]})).unwrap();
+    let request:ChatRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("doc","application/pdf")}},{"type":"image","source":{"type":"attachment","attachment":attachment("image","image/png")}}]}]})).unwrap();
     let original = request.clone();
     let http = Arc::new(NoIo(AtomicUsize::new(0)));
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(Resolver));
     let client = builder.with_region(Region::International).build().unwrap();
     assert!(matches!(
-        client.complete(&request, &RequestOptions::default()).await,
+        client
+            .chat()
+            .complete(&request, &RequestOptions::default())
+            .await,
         Err(LlmError::UnsupportedCapability { .. })
     ));
     assert_eq!(http.0.load(Ordering::Relaxed), 0);
@@ -134,7 +137,7 @@ async fn all_attachment_decisions_are_validated_before_the_first_upload() {
 fn anthropic_counting_and_serialization_share_escaped_titles_and_lazy_bytes() {
     let profile:ProviderProfile=serde_json::from_value(json!({"profile_name":"p","provider_id":"anthropic","base_url":"https://api.anthropic.com","protocol":"anthropic_messages","auth":"none","models":[]})).unwrap();
     let attachment = attachment("doc", "application/pdf");
-    let request:CompletionRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment}}]}]})).unwrap();
+    let request:ChatRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment}}]}]})).unwrap();
     let media = [PreparedMedia {
         attachment: &attachment,
         bytes: b"data",
@@ -163,13 +166,16 @@ fn anthropic_counting_and_serialization_share_escaped_titles_and_lazy_bytes() {
 #[tokio::test]
 async fn an_inline_wire_rejection_prevents_earlier_file_uploads() {
     let profile:ProviderProfile=serde_json::from_value(json!({"profile_name":"p","provider_id":"openai","base_url":"https://api.openai.com/v1","protocol":"open_ai_chat","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m","metadata":{"inputModalities":["text","file"]},"capability_support":{"documents":"supported"}}]})).unwrap();
-    let request:CompletionRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("pdf","application/pdf")}},{"type":"document","source":{"type":"attachment","attachment":attachment("txt","text/plain")}}]}]})).unwrap();
+    let request:ChatRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("pdf","application/pdf")}},{"type":"document","source":{"type":"attachment","attachment":attachment("txt","text/plain")}}]}]})).unwrap();
     let http = Arc::new(NoIo(AtomicUsize::new(0)));
     let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
     builder.with_attachment_resolver(Arc::new(Resolver));
     let client = builder.with_region(Region::International).build().unwrap();
     assert!(matches!(
-        client.complete(&request, &RequestOptions::default()).await,
+        client
+            .chat()
+            .complete(&request, &RequestOptions::default())
+            .await,
         Err(LlmError::UnsupportedCapability { .. })
     ));
     assert_eq!(http.0.load(Ordering::Relaxed), 0);
@@ -177,7 +183,7 @@ async fn an_inline_wire_rejection_prevents_earlier_file_uploads() {
 #[test]
 fn custom_content_bindings_are_validated_as_the_effective_request() {
     let p:ProviderProfile=serde_json::from_value(json!({"profile_name":"p","provider_id":"openai","base_url":"https://api.openai.com/v1","protocol":"open_ai_responses","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m","metadata":{"inputModalities":["text","image","file"]}}]})).unwrap();
-    let request:CompletionRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("d","application/pdf")}}]}]})).unwrap();
+    let request:ChatRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment("d","application/pdf")}}]}]})).unwrap();
     let file = ProviderFileSource {
         protocol: p.protocol,
         provider_id: p.provider_id.clone(),
@@ -186,6 +192,8 @@ fn custom_content_bindings_are_validated_as_the_effective_request() {
             &p.base_url,
         ),
         account_scope: Some("a".into()),
+        expires_at: None,
+        processing_status: None,
         file_id: "file-example".into(),
         uri: None,
         media_type: Some("image/png".into()),
@@ -204,4 +212,45 @@ fn custom_content_bindings_are_validated_as_the_effective_request() {
         OpenAiResponsesCodec.encode_request(view, &context),
         Err(LlmError::InvalidRequest { .. })
     ));
+}
+
+#[tokio::test]
+async fn gemini_audio_body_limit_prevents_automatic_uploads() {
+    let profile: ProviderProfile = serde_json::from_value(json!({"profile_name":"p","provider_id":"google","base_url":"https://generativelanguage.googleapis.com/v1beta","protocol":"gemini_generate_content","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m","metadata":{"inputModalities":["text","audio","file"]},"capability_support":{"documents":"supported"}}]})).unwrap();
+    let request: ChatRequest = serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"x".repeat(20_000_000)},{"type":"audio","format":"wav","data":"AA=="},{"type":"document","source":{"type":"attachment","attachment":attachment("doc","application/pdf")}}]}]})).unwrap();
+    let http = Arc::new(NoIo(AtomicUsize::new(0)));
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+    builder.with_attachment_resolver(Arc::new(Resolver));
+    let client = builder.with_region(Region::International).build().unwrap();
+    let error = client
+        .chat()
+        .complete(&request, &RequestOptions::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LlmError::RequestTooLarge { message } if message.contains("20 MB")));
+    assert_eq!(http.0.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn gemini_audio_and_automatic_files_complete_together() {
+    let profile: ProviderProfile = serde_json::from_value(json!({"profile_name":"p","provider_id":"google","base_url":"https://generativelanguage.googleapis.com/v1beta","protocol":"gemini_generate_content","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m","metadata":{"inputModalities":["text","audio","file"]},"capability_support":{"documents":"supported"}}]})).unwrap();
+    let request: ChatRequest = serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"audio","format":"wav","data":"AA=="},{"type":"document","source":{"type":"attachment","attachment":attachment("doc","application/pdf")}}]}]})).unwrap();
+    let http = Arc::new(GeminiUpload(AtomicUsize::new(0)));
+    let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+    builder.with_attachment_resolver(Arc::new(Resolver));
+    let client = builder.with_region(Region::International).build().unwrap();
+    let options = RequestOptions {
+        total_timeout: Some(Duration::from_secs(1)),
+        ..Default::default()
+    };
+    assert_eq!(
+        client
+            .chat()
+            .complete(&request, &options)
+            .await
+            .unwrap()
+            .stop_reason,
+        StopReason::EndTurn
+    );
+    assert_eq!(http.0.load(Ordering::Relaxed), 3);
 }

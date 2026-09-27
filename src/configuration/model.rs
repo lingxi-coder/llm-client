@@ -35,6 +35,7 @@ pub enum FieldOverride<T> {
 pub enum ModelField {
     DisplayModel,
     BillingModel,
+    Foundry,
     Hidden,
     Aliases,
     Description,
@@ -57,9 +58,10 @@ pub enum ModelField {
     TemperatureControl,
 }
 impl ModelField {
-    pub(crate) const ALL: [Self; 22] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::DisplayModel,
         Self::BillingModel,
+        Self::Foundry,
         Self::Hidden,
         Self::Aliases,
         Self::Description,
@@ -86,6 +88,7 @@ impl ModelField {
         match self {
             Self::DisplayModel => ("display_model", ""),
             Self::BillingModel => ("billing_model", ""),
+            Self::Foundry => ("foundry", ""),
             Self::Hidden => ("hidden", ""),
             Self::Aliases => ("aliases", ""),
             Self::Description => ("description", ""),
@@ -170,7 +173,7 @@ pub(crate) struct SavedConfig {
 impl Default for SavedConfig {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             tracked_models: BTreeMap::new(),
             deleted_profiles: BTreeSet::new(),
             providers: Vec::new(),
@@ -191,6 +194,7 @@ pub(crate) fn empty_model(wire: &str) -> ModelProfile {
         display_model: wire.into(),
         request_model: wire.into(),
         billing_model: wire.into(),
+        foundry: None,
         hidden: false,
         aliases: Vec::new(),
         description: None,
@@ -218,6 +222,9 @@ pub(crate) fn values(model: &ModelProfile) -> Values {
         .collect()
 }
 pub(crate) fn apply(model: &mut ModelProfile, fields: &Values) -> Result<(), serde_json::Error> {
+    if fields.is_empty() {
+        return Ok(());
+    }
     let mut value = serde_json::to_value(&*model)?;
     for (field, setting) in fields {
         let (key, metadata) = field.path();

@@ -48,7 +48,8 @@ pub(super) fn bundled_encoder(
         name,
         count: Box::new(move |text| {
             tokenizer
-                .encode(text, false)
+                // Counting only needs token IDs, not token text or offsets.
+                .encode_fast(text, false)
                 .map(|encoding| encoding.get_ids().len() as u64)
                 .map_err(|e| LocalTokenCountError::Tokenization(e.to_string()))
         }),

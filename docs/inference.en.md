@@ -46,8 +46,8 @@ Rule `valid_from` (inclusive) and `valid_until` (exclusive) store `PriceBoundary
 ```rust,no_run
 use lingxi_llm_client::protocol::*;
 
-fn request() -> CompletionRequest {
-    let mut request: CompletionRequest = serde_json::from_value(serde_json::json!({
+fn request() -> ChatRequest {
+    let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
         "model": "claude-opus-5",
         "messages": [{"role":"user", "content":[{"type":"text", "text":"Explain this design."}]}],
         "max_tokens": 8192
@@ -81,19 +81,21 @@ Highspeed/Turbo variants are explicitly selected models. The client never swaps 
 
 ## Actual service tier and charges
 
+Keep one `client.snapshot()` from preflight through request execution and cost calculation to pin model capabilities and prices. Live client queries capture the configuration independently at each call. Model, effort, Fast, and credentials can vary per request on the same shared client. See [client reuse](client-reuse.en.md).
+
 The response's `inference`, the stream's `inference_report()`, `StreamEvent::Inference` and terminal event retain requested effort/tier, provider observations and raw strings. Requested values are not confirmations. Gemini `usageMetadata.serviceTier`, response headers and other protocols' JSON/SSE observations are preserved. Native Gemini `serviceTier` and its protobuf `service_tier` spelling are checked for conflicts and emitted once as `serviceTier`. Missing observations remain unknown.
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, ResolvedRoute, ModelStream, protocol::*};
+use lingxi_llm_client::{ClientSnapshot, ResolvedRoute, ModelStream, protocol::*};
 
-fn report(client: &LlmClient, route: &ResolvedRoute, response: &CompletionResponse,
+fn report(snapshot: &ClientSnapshot, route: &ResolvedRoute, response: &ChatResponse,
           stream: &ModelStream) -> Result<(), LlmError> {
     if let Some(cost) = response.usage.usage.and_then(|usage| usage.cost) {
         println!("provider reported nano-USD: {}", cost.nano_usd);
     }
-    let cost = client.estimate_actual_cost(route, response, Submission::Interactive)?;
+    let cost = snapshot.estimate_actual_cost(route, response, Submission::Interactive)?;
     println!("token estimate: {cost:?}; inference: {:?}", response.inference);
-    let streamed_cost = client.estimate_stream_cost(route, stream, Submission::Interactive)?;
+    let streamed_cost = snapshot.estimate_stream_cost(route, stream, Submission::Interactive)?;
     println!("stream token estimate: {streamed_cost:?}");
     Ok(())
 }
@@ -109,7 +111,7 @@ Pricing uses the successful attempt’s local dispatch time, `inference.executed
 - Responses and terminal events include `inference`; exhaustive stream matches must handle the non-text `Inference` event.
 - `CostEstimate` exposes `currency` and `input_cost/output_cost/cache_read_cost/cache_write_cost/reasoning_cost/total_cost`, instead of labeling every currency USD.
 - `estimate_cost` requires `PricingContext` and returns `CostEstimate`; unknown prices return `CostUnavailable`. `estimate_cost_for_profile` requires `InferenceReport`.
-- Configuration uses v2 explicit overrides, without old field aliases, automatic migrations or API wrappers. Numeric budget JSON must use `{"budget":{"tokens":2048}}`; `budget_tokens` and bare integers are rejected.
+- Configuration uses v3 explicit overrides, without old field aliases, automatic migrations or API wrappers. Numeric budget JSON must use `{"budget":{"tokens":2048}}`; `budget_tokens` and bare integers are rejected.
 - Boolean `capabilities` are removed. Use tri-state `capability_support` for model, listing and resolved-route metadata.
 
 - `TokenPricing::at` and public `pricing::estimate` are removed. Use the client quote/estimate methods with `PricingContext`; all of them select the same context, tier, submission and time rules.

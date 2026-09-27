@@ -41,6 +41,11 @@ use crate::protocol::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::sync::OnceLock;
+
+fn default_chat_enabled() -> bool {
+    true
+}
 use thiserror::Error;
 
 // Generated from the directory listing; see build.rs.
@@ -90,10 +95,31 @@ struct Preset {
     connection: ConnectionSpec,
     #[serde(default)]
     extra: Value,
+    #[serde(default = "default_chat_enabled")]
+    chat_enabled: bool,
     #[serde(default)]
     model: Vec<CatalogModel>,
     #[serde(default)]
     images: crate::protocol::ImageServiceConfig,
+    #[serde(default)]
+    embeddings: crate::protocol::ServiceSetting<crate::embeddings::EmbeddingRoute>,
+    #[serde(default)]
+    retrieval: crate::protocol::ServiceSetting<crate::retrieval::RetrievalRoute>,
+    #[serde(default)]
+    batches: crate::protocol::ServiceSetting<crate::batches::BatchRoute>,
+    #[serde(default)]
+    deferred: crate::protocol::ServiceSetting<crate::deferred::DeferredRoute>,
+    #[serde(default)]
+    background: crate::protocol::ServiceSetting<crate::background::BackgroundRoute>,
+    #[serde(default)]
+    audio: crate::protocol::ServiceSetting<crate::audio::AudioRoute>,
+    #[serde(default)]
+    interactions: crate::protocol::ServiceSetting<crate::interactions::InteractionRoute>,
+    #[serde(default)]
+    gemini_file_search:
+        crate::protocol::ServiceSetting<crate::gemini_file_search::GeminiFileSearchRoute>,
+    #[serde(default)]
+    glm_knowledge: crate::protocol::ServiceSetting<crate::glm_knowledge::GlmKnowledgeRoute>,
 }
 
 /// The provider-level half of pricing: when the listed rates apply.
@@ -173,12 +199,27 @@ pub enum PresetError {
     NoModels { profile_name: String },
 }
 
-/// Every preset, by file name.
+/// The immutable built-in provider catalog, parsed once for the process.
+///
+/// Concurrent callers share the same catalog. Use [`builtin`] when the caller
+/// needs an independently editable copy instead. Parse errors are cached too,
+/// because the embedded files cannot change during the process lifetime.
+pub fn builtin_catalog() -> Result<&'static [ProviderProfile], PresetError> {
+    static CATALOG: OnceLock<Result<Vec<ProviderProfile>, PresetError>> = OnceLock::new();
+    CATALOG
+        .get_or_init(|| {
+            PRESETS
+                .iter()
+                .map(|(name, text)| parse(name, text))
+                .collect()
+        })
+        .as_deref()
+        .map_err(Clone::clone)
+}
+
+/// Every preset, by file name, copied from the shared immutable catalog.
 pub fn builtin() -> Result<Vec<ProviderProfile>, PresetError> {
-    PRESETS
-        .iter()
-        .map(|(name, text)| parse(name, text))
-        .collect()
+    builtin_catalog().map(<[ProviderProfile]>::to_vec)
 }
 
 pub(crate) fn is_builtin_profile(profile_name: &str) -> bool {
@@ -200,6 +241,7 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
         ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
     );
     let mut profile = ProviderProfile {
+        chat_enabled: p.chat_enabled,
         inference: p.inference,
         regions: p.regions,
         provider_id: p.provider_id,
@@ -225,6 +267,15 @@ fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError>
                 .collect(),
         ),
         images: p.images,
+        embeddings: p.embeddings,
+        retrieval: p.retrieval,
+        batches: p.batches,
+        deferred: p.deferred,
+        background: p.background,
+        audio: p.audio,
+        interactions: p.interactions,
+        gemini_file_search: p.gemini_file_search,
+        glm_knowledge: p.glm_knowledge,
         pricing: PricingConfig {
             billing_mode: p.billing_mode,
             peak: p.pricing.peak.clone(),
@@ -264,9 +315,10 @@ pub fn merge(user: Vec<ProviderProfile>) -> Result<Vec<ProviderProfile>, PresetE
         user.iter().map(|p| p.profile_name.clone()).collect();
     let mut out = user;
     out.extend(
-        builtin()?
-            .into_iter()
-            .filter(|p| !named.contains(&p.profile_name)),
+        builtin_catalog()?
+            .iter()
+            .filter(|p| !named.contains(&p.profile_name))
+            .cloned(),
     );
     Ok(out)
 }
@@ -323,6 +375,7 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
         display_model: m.name.clone().unwrap_or_else(|| m.id.clone()),
         request_model: m.id.clone(),
         billing_model: m.id.clone(),
+        foundry: None,
         aliases: m.aliases.clone(),
         description: m.description.clone(),
         metadata: ModelMetadata {

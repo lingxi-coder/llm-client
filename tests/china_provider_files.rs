@@ -2,9 +2,11 @@
 mod wire_api;
 use async_trait::async_trait;
 use bytes::Bytes;
-use lingxi_llm_client::files::{FilePurpose, FileService, ModelFileReference, UploadFile};
+use lingxi_llm_client::files::{
+    FilePurpose, FileService, ModelFileReference, UploadFile, UploadFileStream,
+};
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
+    ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
     ProviderFileSource, ProviderId, ProviderProfile, Secret, ToolChoice, VideoSource,
 };
 use lingxi_llm_client::{
@@ -221,6 +223,88 @@ async fn minimax_video_file_ids_and_purpose_specific_management_are_preserved() 
     assert_eq!(delete_body["purpose"], "voice_clone");
 }
 
+#[tokio::test]
+async fn minimax_mainland_voice_audio_uses_cn_route_and_documented_upload_bounds() {
+    let profile = profile(
+        "minimax",
+        "https://api.minimax.cn/v1",
+        "anthropic_messages",
+        "MiniMax-M3",
+        &["text"],
+    );
+    let http = QueueHttp::with_json(vec![
+        json!({"file":{"file_id":"clone-file","filename":"voice.wav","purpose":"voice_clone"},"base_resp":{"status_code":0,"status_msg":"success"}}),
+        json!({"file":{"file_id":"prompt-file","filename":"prompt.mp3","purpose":"prompt_audio"},"base_resp":{"status_code":0,"status_msg":"success"}}),
+    ]);
+    let auth = BearerAuthenticator;
+    let key = Secret::new("minimax-cn-test-key".to_owned());
+    let service = FileService::new(&http, &profile, Some(&auth), Some(&key), Some("account-cn"));
+
+    for purpose in [FilePurpose::VoiceClone, FilePurpose::PromptAudio] {
+        let caps = service.capabilities_for_purpose("MiniMax-M3", "audio/wav", purpose);
+        assert!(caps.upload);
+        assert_eq!(caps.max_upload_bytes, Some(20_000_000));
+    }
+
+    let clone_file = service
+        .upload(
+            &upload("voice.wav", "application/octet-stream", b"wav-audio"),
+            FilePurpose::VoiceClone,
+        )
+        .await
+        .unwrap();
+    let prompt_file = service
+        .upload(
+            &upload("prompt.mp3", "audio/mpeg", b"mp3-audio"),
+            FilePurpose::PromptAudio,
+        )
+        .await
+        .unwrap();
+    assert_eq!(clone_file.account_scope.as_deref(), Some("account-cn"));
+    assert_eq!(clone_file.purpose.as_deref(), Some("voice_clone"));
+    assert_eq!(prompt_file.account_scope.as_deref(), Some("account-cn"));
+    assert_eq!(prompt_file.purpose.as_deref(), Some("prompt_audio"));
+
+    let requests = http.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(request.url, "https://api.minimax.cn/v1/files/upload");
+        assert_eq!(request.method, "POST");
+    }
+    assert!(
+        String::from_utf8_lossy(&requests[0].body).contains("name=\"purpose\"\r\n\r\nvoice_clone")
+    );
+    assert!(
+        String::from_utf8_lossy(&requests[1].body).contains("name=\"purpose\"\r\n\r\nprompt_audio")
+    );
+
+    let no_send_http = QueueHttp::default();
+    let no_send = FileService::new(
+        &no_send_http,
+        &profile,
+        Some(&auth),
+        Some(&key),
+        Some("account-cn"),
+    );
+    assert!(matches!(
+        no_send
+            .upload_stream(
+                UploadFileStream::new(
+                    "reference.wav",
+                    "audio/wav",
+                    20_000_001,
+                    futures::stream::empty::<Result<Bytes, LlmError>>(),
+                ),
+                FilePurpose::VoiceClone,
+            )
+            .await,
+        Err(lingxi_llm_client::files::FileUploadError::Llm(
+            LlmError::RequestTooLarge { .. }
+        ))
+    ));
+    assert!(no_send_http.requests().is_empty());
+}
+
 #[test]
 fn minimax_m3_encodes_only_uploaded_video_file_refs() {
     let p = profile(
@@ -246,19 +330,24 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
             &p.base_url,
         ),
         account_scope: Some("account-2".into()),
+        expires_at: None,
+        processing_status: None,
         file_id: "1234567890123456789".into(),
         uri: Some("mm_file://1234567890123456789".into()),
         media_type: Some("video/mp4".into()),
         purpose: Some("video_understanding".into()),
     };
-    let request = CompletionRequest {
+    let request = ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "MiniMax-M3".into(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
+            anthropic: None,
             role: MessageRole::User,
             content: vec![ContentBlock::Video {
                 source: VideoSource::ProviderFile { file },

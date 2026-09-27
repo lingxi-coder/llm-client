@@ -6,13 +6,15 @@
 
 use crate::auth::Authenticator;
 use crate::protocol::{
-    AuthStrategy, CompletionRequest, ContentBlock, DocumentSource, ImageSource, LlmError,
-    ModelProfile, ProtocolFamily, ProviderFileSource, ProviderId, ProviderProfile, Secret,
-    VideoSource,
+    AuthStrategy, ChatRequest, ContentBlock, DocumentSource, ImageSource, LlmError, ModelProfile,
+    ProtocolFamily, ProviderFileSource, ProviderId, ProviderProfile, Secret, VideoSource,
 };
 use crate::transport::{HttpRequest, HttpResponse, Transport};
 use bytes::{Bytes, BytesMut};
-use futures::StreamExt;
+use futures::{
+    stream::{self, BoxStream},
+    StreamExt,
+};
 use serde_json::Value;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -32,8 +34,9 @@ pub(crate) use policy::*;
 pub use policy::{capabilities, capabilities_for_purpose};
 pub use service::FileService;
 pub use types::{
-    DownloadSupport, FileCapabilities, FileOperation, FilePurpose, ModelFileReference,
-    ProviderFileContent, ProviderFileMetadata, ProviderFilePage, ProviderFileRef, UploadFile,
+    DownloadSupport, FileCapabilities, FileOperation, FilePurpose, FileUploadError,
+    ModelFileReference, ProviderFileContent, ProviderFileMetadata, ProviderFilePage,
+    ProviderFileRef, UploadFile, UploadFileStream,
 };
 
 /// Maximum response body retained by [`FileService::download`].

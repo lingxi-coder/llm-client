@@ -3,24 +3,352 @@
 use crate::codecs::json::{WireRequest, WireValue};
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::protocol::{
-    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
-    ProviderProfile, ToolChoice, ToolSpec, ToolUseId, VideoSource,
+    ChatRequest, ContentBlock, ConversationMessage, DocumentSource, HostedTool, ImageSource,
+    LlmError, MessageRole, ProtocolFamily, ProviderProfile, ToolChoice, ToolSpec, ToolUseId,
+    VideoSource,
 };
 
 use base64::Engine;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 
+const GEMINI_DEVELOPER_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+
+const CODE_EXECUTION_MODELS: &[&str] = &[
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+];
+const URL_CONTEXT_MODELS: &[&str] = CODE_EXECUTION_MODELS;
+const MAPS_GROUNDING_MODELS: &[&str] = CODE_EXECUTION_MODELS;
+
+pub(crate) fn has_gemini_hosted_tools(req: &ChatRequest) -> bool {
+    req.hosted_tools.iter().any(|tool| {
+        matches!(
+            tool,
+            HostedTool::GeminiCodeExecution
+                | HostedTool::GeminiUrlContext
+                | HostedTool::GeminiMapsGrounding(_)
+        )
+    })
+}
+
+/// Validate typed inline audio before attachments or provider dispatch.
+pub(crate) fn validate_audio_input(req: &ChatRequest) -> Result<(), LlmError> {
+    if req.metadata.get("openrouter_chat_audio").is_some() {
+        return Err(LlmError::UnsupportedCapability {
+            message: "OpenRouter Chat audio output settings cannot be used with Gemini".into(),
+        });
+    }
+    for message in &req.messages {
+        for block in &message.content {
+            if let ContentBlock::Audio { format, data } = block {
+                if message.role != MessageRole::User {
+                    return Err(LlmError::InvalidRequest {
+                        message: "Gemini inline audio requires a user message".into(),
+                    });
+                }
+                audio_mime(format)?;
+                if data.is_empty() || data.len() > 20_000_000 {
+                    return Err(LlmError::InvalidRequest {
+                        message:
+                            "Gemini inline audio must be non-empty and fit the 20 MB request limit"
+                                .into(),
+                    });
+                }
+                // Validate each quartet without allocating a decoded copy.
+                if !data.len().is_multiple_of(4) {
+                    return Err(invalid_audio_base64());
+                }
+                let chunks = data.as_bytes().chunks_exact(4);
+                let count = chunks.len();
+                for (index, chunk) in chunks.enumerate() {
+                    if (index + 1 < count && chunk.contains(&b'='))
+                        || base64::engine::general_purpose::STANDARD
+                            .decode_slice(chunk, &mut [0u8; 3])
+                            .is_err()
+                    {
+                        return Err(invalid_audio_base64());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn invalid_audio_base64() -> LlmError {
+    LlmError::InvalidRequest {
+        message: "Gemini inline audio requires standard base64 without a data URI".into(),
+    }
+}
+
+fn audio_mime(format: &str) -> Result<&'static str, LlmError> {
+    match format {
+        "wav" => Ok("audio/wav"),
+        "mp3" => Ok("audio/mp3"),
+        "aiff" => Ok("audio/aiff"),
+        "aac" => Ok("audio/aac"),
+        "ogg" => Ok("audio/ogg"),
+        "flac" => Ok("audio/flac"),
+        "mpeg" => Ok("audio/mpeg"),
+        "m4a" => Ok("audio/m4a"),
+        "l16" => Ok("audio/l16"),
+        "opus" => Ok("audio/opus"),
+        "alaw" => Ok("audio/alaw"),
+        "mulaw" => Ok("audio/mulaw"),
+        "webm" => Ok("audio/webm"),
+        _ => Err(LlmError::InvalidRequest {
+            message: format!("unsupported Gemini inline audio format {format:?}"),
+        }),
+    }
+}
+
+/// Check Gemini-hosted tool scope before credential resolution, attachment
+/// preparation or HTTP. Only exact Developer API routes are enabled here;
+/// Vertex and compatible gateways need their own documented capability table.
+pub(crate) fn validate_hosted_tool_request(
+    req: &ChatRequest,
+    profile: &ProviderProfile,
+    model: &str,
+) -> Result<(), LlmError> {
+    req.validate_hosted_tools()?;
+    if !has_gemini_hosted_tools(req) {
+        return Ok(());
+    }
+    let unsupported = |message: &str| LlmError::UnsupportedCapability {
+        message: format!("Gemini GenerateContent hosted tools: {message}"),
+    };
+    if profile.provider_id.as_str() != "google"
+        || profile.protocol != ProtocolFamily::GeminiGenerateContent
+        || profile.base_url.trim_end_matches('/') != GEMINI_DEVELOPER_API_BASE
+    {
+        return Err(unsupported(
+            "code execution, URL Context and Maps grounding are enabled only for the first-party Gemini Developer API",
+        ));
+    }
+
+    let mut selected = None;
+    let mut count = 0;
+    for tool in &req.hosted_tools {
+        let candidate = match tool {
+            HostedTool::GeminiCodeExecution => Some(("code execution", CODE_EXECUTION_MODELS)),
+            HostedTool::GeminiUrlContext => Some(("URL Context", URL_CONTEXT_MODELS)),
+            HostedTool::GeminiMapsGrounding(config) => {
+                config.validate()?;
+                Some(("Maps grounding", MAPS_GROUNDING_MODELS))
+            }
+            HostedTool::WebSearch(_) => None,
+            _ => {
+                return Err(unsupported(
+                    "this request also contains a hosted tool owned by another provider",
+                ));
+            }
+        };
+        if let Some(candidate) = candidate {
+            selected = Some(candidate);
+            count += 1;
+        }
+    }
+    if count != 1 {
+        return Err(unsupported(
+            "combining multiple Gemini built-in tools in one request is not established by the supported GenerateContent contracts",
+        ));
+    }
+    let (name, models) = selected.expect("one Gemini hosted tool was counted");
+    if !models.contains(&model) {
+        return Err(unsupported(&format!(
+            "{name} is not documented for model {model:?}"
+        )));
+    }
+
+    let gemini_3_model = is_gemini_3_model(model);
+    if (!req.tools.is_empty() || req.tool_choice != ToolChoice::Auto) && !gemini_3_model {
+        return Err(unsupported(
+            "combining these built-in tools with client-executed functions requires a documented Gemini 3 model",
+        ));
+    }
+    if gemini_3_model && req.tool_choice != ToolChoice::Auto {
+        return Err(unsupported(
+            "tool context circulation requires validated function calling and cannot honor a forced tool mode",
+        ));
+    }
+    let extra_body = profile.extra.get("body").and_then(Value::as_object);
+    let maps_selected = matches!(
+        req.hosted_tools
+            .iter()
+            .find(|tool| matches!(tool, HostedTool::GeminiMapsGrounding(_))),
+        Some(HostedTool::GeminiMapsGrounding(_))
+    );
+    if maps_selected
+        && req
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Image { .. }
+                        | ContentBlock::Audio { .. }
+                        | ContentBlock::Video { .. }
+                        | ContentBlock::Document { .. }
+                ) || matches!(
+                    block,
+                    ContentBlock::ProviderContent { value, .. }
+                        if super::native::is_media_part(value)
+                )
+            })
+    {
+        return Err(unsupported(
+            "Google Maps grounding currently accepts text-only inputs",
+        ));
+    }
+    if maps_selected {
+        if let Some(modalities) = extra_body
+            .and_then(|body| body.get("generationConfig"))
+            .and_then(Value::as_object)
+            .and_then(|generation| generation.get("responseModalities"))
+        {
+            if !matches!(modalities.as_array(), Some(values) if values.len() == 1 && values[0].as_str() == Some("TEXT"))
+            {
+                return Err(unsupported(
+                    "Google Maps grounding currently supports text-only outputs",
+                ));
+            }
+        }
+    }
+
+    if req.hosted_web_search().is_some() {
+        if matches!(
+            req.hosted_tools
+                .iter()
+                .find(|tool| matches!(tool, HostedTool::GeminiMapsGrounding(_))),
+            Some(HostedTool::GeminiMapsGrounding(_))
+        ) && !matches!(
+            model,
+            "gemini-3.5-flash" | "gemini-3.6-flash" | "gemini-3.7-flash" | "gemini-3.8-flash"
+        ) {
+            return Err(unsupported(
+                "Maps grounding with Google Search is documented only for Gemini 3.5 Flash and later models",
+            ));
+        }
+        // Reuse the adapter's full local validation before any side effects.
+        crate::codecs::web_search::apply(req, profile, &mut Map::new())?;
+    }
+
+    if extra_body.is_some_and(|body| body.contains_key("tools") || body.contains_key("toolConfig"))
+    {
+        return Err(unsupported(
+            "profile extra.body cannot override the typed tools or toolConfig controls",
+        ));
+    }
+    Ok(())
+}
+
+fn is_gemini_3_model(model: &str) -> bool {
+    matches!(
+        model,
+        "gemini-3-flash-preview"
+            | "gemini-3.1-flash-lite"
+            | "gemini-3.1-pro-preview"
+            | "gemini-3.5-flash"
+            | "gemini-3.5-flash-lite"
+            | "gemini-3.6-flash"
+            | "gemini-3.7-flash"
+            | "gemini-3.8-flash"
+    )
+}
+
+fn apply_gemini_hosted_tools(
+    req: &ChatRequest,
+    model: &str,
+    body: &mut Map<String, Value>,
+) -> Result<(), LlmError> {
+    if !has_gemini_hosted_tools(req) {
+        return Ok(());
+    }
+    for hosted in &req.hosted_tools {
+        let tool = match hosted {
+            HostedTool::GeminiCodeExecution => Some(json!({"codeExecution": {}})),
+            HostedTool::GeminiUrlContext => Some(json!({"urlContext": {}})),
+            HostedTool::GeminiMapsGrounding(config) => {
+                let mut maps = json!({});
+                if let Some(enable_widget) = config.enable_widget {
+                    maps["enableWidget"] = json!(enable_widget);
+                }
+                if let Some(location) = config.lat_lng {
+                    let tool_config = body
+                        .entry("toolConfig")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Gemini toolConfig must be a JSON object".into(),
+                        })?;
+                    tool_config.insert(
+                        "retrievalConfig".into(),
+                        json!({
+                            "latLng": {
+                                "latitude": location.latitude,
+                                "longitude": location.longitude
+                            }
+                        }),
+                    );
+                }
+                Some(json!({"googleMaps": maps}))
+            }
+            _ => None,
+        };
+        if let Some(tool) = tool {
+            body.entry("tools")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Gemini tools must be a JSON array".into(),
+                })?
+                .push(tool);
+        }
+    }
+
+    if is_gemini_3_model(model) {
+        let tool_config = body
+            .entry("toolConfig")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Gemini toolConfig must be a JSON object".into(),
+            })?;
+        tool_config.insert("includeServerSideToolInvocations".into(), json!(true));
+        tool_config
+            .entry("functionCallingConfig")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Gemini functionCallingConfig must be a JSON object".into(),
+            })?
+            .insert("mode".into(), json!("VALIDATED"));
+    }
+    Ok(())
+}
+
 pub fn request<'a>(
     wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
-    crate::files::validate_direct_provider_file_inputs(
+    crate::files::validate_direct_provider_file_inputs_at(
         wire.blocks(),
         profile,
         &opts.request_model,
         opts.file_scope(),
+        opts.file_validation_time(),
     )?;
     request_to(
         wire,
@@ -40,11 +368,25 @@ pub(crate) fn request_to<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    validate_audio_input(req)?;
+    crate::codecs::anthropic_code_execution::validate(req, opts)?;
+    crate::codecs::openrouter_server_tools::validate(req, profile, None, false)?;
+    validate_hosted_tool_request(req, profile, &opts.request_model)?;
+    if req.hosted_anthropic_tool_search().is_some()
+        || req.hosted_openai_tool_search().is_some()
+        || req.tools.iter().any(|tool| tool.defer_loading)
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: "Anthropic tool search and defer_loading require an Anthropic Messages codec"
+                .into(),
+        });
+    }
+    crate::codecs::reject_code_interpreter(req, profile.protocol)?;
     crate::codecs::reject_responses_continuation(
         req,
         crate::protocol::ProtocolFamily::GeminiGenerateContent,
     )?;
-    if req.file_search.is_some() {
+    if req.hosted_file_search().is_some() {
         return Err(LlmError::UnsupportedCapability {
             message: "hosted file search is supported only on Qwen Responses profiles".into(),
         });
@@ -57,7 +399,7 @@ pub(crate) fn request_to<'a>(
     if !req.system.is_empty() {
         body.insert(
             "systemInstruction".to_owned(),
-            json!({"parts": req.system.iter().map(|b| json!({"text": b.text})).collect::<Vec<_>>()}),
+            json!({"parts": Value::Null}),
         );
     }
     if !req.tools.is_empty() {
@@ -65,10 +407,15 @@ pub(crate) fn request_to<'a>(
             "tools".to_owned(),
             json!([{ "functionDeclarations": req.tools.iter().map(encode_tool).collect::<Vec<_>>() }]),
         );
-        body.insert(
-            "toolConfig".to_owned(),
-            encode_tool_choice(&req.tool_choice),
-        );
+        let tool_config = if has_gemini_hosted_tools(req) {
+            json!({
+                "functionCallingConfig": {"mode": "VALIDATED"},
+                "includeServerSideToolInvocations": true
+            })
+        } else {
+            encode_tool_choice(&req.tool_choice)
+        };
+        body.insert("toolConfig".to_owned(), tool_config);
     }
 
     let mut generation = Map::new();
@@ -95,19 +442,61 @@ pub(crate) fn request_to<'a>(
     }
 
     crate::codecs::web_search::apply(req, profile, &mut body)?;
+    apply_gemini_hosted_tools(req, &opts.request_model, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::structured::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     // The inference adapter has validated both protobuf JSON spellings and
     // emitted the canonical key, including unrecognized native tier values.
     body.remove("service_tier");
     crate::wire_options::merge_headers(profile, &mut headers);
 
-    Ok(WireRequest::new(
-        url.to_owned(),
-        headers,
-        WireValue::from(Value::Object(body)).with("contents", WireValue::array(contents)),
-    ))
+    let mut body =
+        WireValue::from(Value::Object(body)).with("contents", WireValue::array(contents));
+    if !req.tools.is_empty() {
+        body = body.map_array_field("tools", |index, tool| {
+            let tool = WireValue::from(tool);
+            if index != 0 {
+                return tool;
+            }
+            tool.map_array_field("functionDeclarations", |index, function| {
+                WireValue::from(function).with(
+                    "parameters",
+                    WireValue::borrowed(&req.tools[index].input_schema),
+                )
+            })
+        });
+    }
+    if !req.system.is_empty() {
+        body = body.with(
+            "systemInstruction",
+            WireValue::from(json!({})).with(
+                "parts",
+                WireValue::array(
+                    req.system
+                        .iter()
+                        .map(|block| {
+                            WireValue::from(json!({})).with("text", WireValue::text(&block.text))
+                        })
+                        .collect(),
+                ),
+            ),
+        );
+    }
+    let request = WireRequest::new(url.to_owned(), headers, body);
+    if req
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .any(|block| matches!(block, ContentBlock::Audio { .. }))
+        && request.body_len()? > 20_000_000
+    {
+        return Err(LlmError::RequestTooLarge {
+            message: "Gemini inline audio request exceeds 20 MB; use the Files API".into(),
+        });
+    }
+    Ok(request)
 }
 
 /// Match each result to the earlier call, retaining a provider-issued ID only
@@ -135,7 +524,7 @@ fn tool_call_names(
 }
 
 fn contents<'a>(
-    messages: &[ConversationMessage],
+    messages: &'a [ConversationMessage],
     names: &BTreeMap<ToolUseId, (String, Option<String>)>,
     profile: &ProviderProfile,
     opts: &CodecContext,
@@ -150,7 +539,7 @@ fn contents<'a>(
             MessageRole::System => {
                 return Err(LlmError::InvalidRequest {
                     message: "the system prompt belongs in `systemInstruction`".to_owned(),
-                })
+                });
             }
         };
         let mut parts = Vec::new();
@@ -161,7 +550,7 @@ fn contents<'a>(
                 continue;
             }
             if let Some(part) = encode_part(b, names, profile, opts)? {
-                parts.push(part.into());
+                parts.push(part);
             }
         }
         if !parts.is_empty() {
@@ -171,34 +560,44 @@ fn contents<'a>(
     Ok(out)
 }
 
-fn encode_part(
-    b: &ContentBlock,
+fn encode_part<'a>(
+    b: &'a ContentBlock,
     names: &BTreeMap<ToolUseId, (String, Option<String>)>,
     profile: &ProviderProfile,
     opts: &CodecContext,
-) -> Result<Option<Value>, LlmError> {
-    Ok(match b {
-        ContentBlock::ProviderContent { .. } => {
-            return Err(LlmError::UnsupportedCapability {
-                message: "native content cannot be replayed on Gemini".to_owned(),
-            })
+) -> Result<Option<WireValue<'a>>, LlmError> {
+    let part = match b {
+        ContentBlock::ProviderContent { protocol, value } => {
+            if *protocol != profile.protocol
+                || !matches!(
+                    profile.protocol,
+                    ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
+                )
+                || !super::native::is_replayable_native_part(value)
+            {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "native content is not a replayable Gemini hosted-tool Part for this protocol".to_owned(),
+                });
+            }
+            return Ok(Some(WireValue::from(value.clone())));
         }
         ContentBlock::Text {
             text,
             thought_signature,
         } => {
-            let mut part = json!({"text": text});
+            let mut part = WireValue::from(json!({})).with("text", WireValue::text(text));
             if let Some(signature) = thought_signature {
                 part["thoughtSignature"] = Value::String(signature.clone());
             }
-            Some(part)
+            return Ok(Some(part));
         }
         ContentBlock::Thinking { text, signature } => {
-            let mut part = json!({"text": text, "thought": true});
+            let mut part = WireValue::from(json!({"text": Value::Null, "thought": true}))
+                .with("text", WireValue::text(text));
             if let Some(signature) = signature {
                 part["thoughtSignature"] = Value::String(signature.clone());
             }
-            Some(part)
+            return Ok(Some(part));
         }
         ContentBlock::RedactedThinking { .. } => None,
         ContentBlock::ToolUse {
@@ -208,15 +607,16 @@ fn encode_part(
             thought_signature,
             ..
         } => {
-            let mut call = json!({"name": name, "args": input});
+            let mut call =
+                WireValue::from(json!({"name": name})).with("args", WireValue::borrowed(input));
             if let Some(id) = provider_id {
                 call["id"] = Value::String(id.clone());
             }
-            let mut part = json!({"functionCall": call});
+            let mut part = WireValue::from(json!({})).with("functionCall", call);
             if let Some(signature) = thought_signature {
                 part["thoughtSignature"] = Value::String(signature.clone());
             }
-            Some(part)
+            return Ok(Some(part));
         }
         ContentBlock::ToolResult {
             tool_use_id,
@@ -232,11 +632,16 @@ fn encode_part(
                          and this wire keys results by function name"
                     ),
                     })?;
-            let mut response = json!({"name": name, "response": {"result": content}});
+            let mut response = WireValue::from(json!({"name": name})).with(
+                "response",
+                WireValue::from(json!({})).with("result", WireValue::text(content)),
+            );
             if let Some(id) = provider_id {
                 response["id"] = Value::String(id.clone());
             }
-            Some(json!({"functionResponse": response}))
+            return Ok(Some(
+                WireValue::from(json!({})).with("functionResponse", response),
+            ));
         }
         ContentBlock::Image { source } => Some(match source {
             ImageSource::Base64 { media_type, data } => {
@@ -246,7 +651,7 @@ fn encode_part(
             // `mimeType` is deliberately omitted for a URL.
             ImageSource::Url { url } => json!({"fileData": {"fileUri": url}}),
             ImageSource::Attachment { .. } => {
-                return Err(crate::codecs::unresolved_attachment_error())
+                return Err(crate::codecs::unresolved_attachment_error());
             }
             ImageSource::ProviderFile { file } => {
                 let file = crate::codecs::validate_provider_file(file, profile, opts)?;
@@ -283,7 +688,7 @@ fn encode_part(
             }
             DocumentSource::Url { url } => json!({"fileData": {"fileUri": url}}),
             DocumentSource::Attachment { .. } => {
-                return Err(crate::codecs::unresolved_attachment_error())
+                return Err(crate::codecs::unresolved_attachment_error());
             }
             DocumentSource::ProviderFile { file } => {
                 let file = crate::codecs::validate_provider_file(file, profile, opts)?;
@@ -310,13 +715,22 @@ fn encode_part(
                 json!({"fileData": {"mimeType": mime_type, "fileUri": uri}})
             }
         }),
+        ContentBlock::Audio { format, data } => {
+            return Ok(Some(
+                WireValue::from(json!({})).with(
+                    "inlineData",
+                    WireValue::from(json!({ "mimeType": audio_mime(format)? }))
+                        .with("data", WireValue::text(data)),
+                ),
+            ));
+        }
         ContentBlock::Video { source } => Some(match source {
             VideoSource::Base64 { media_type, data } => {
                 json!({"inlineData": {"mimeType": media_type, "data": data}})
             }
             VideoSource::Url { url } => json!({"fileData": {"fileUri": url}}),
             VideoSource::Attachment { .. } => {
-                return Err(crate::codecs::unresolved_attachment_error())
+                return Err(crate::codecs::unresolved_attachment_error());
             }
             VideoSource::ProviderFile { file } => {
                 let file = crate::codecs::validate_provider_file(file, profile, opts)?;
@@ -340,14 +754,15 @@ fn encode_part(
                 json!({"fileData": {"mimeType": mime_type, "fileUri": uri}})
             }
         }),
-    })
+    };
+    Ok(part.map(WireValue::from))
 }
 
 fn encode_tool(t: &ToolSpec) -> Value {
     json!({
         "name": t.name,
         "description": t.description,
-        "parameters": t.input_schema,
+        "parameters": Value::Null,
     })
 }
 
@@ -360,7 +775,7 @@ fn encode_tool_choice(c: &ToolChoice) -> Value {
             return json!({"functionCallingConfig": {
                 "mode": "ANY",
                 "allowedFunctionNames": [name],
-            }})
+            }});
         }
     };
     json!({"functionCallingConfig": {"mode": mode}})

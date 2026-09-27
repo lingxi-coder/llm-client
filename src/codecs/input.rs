@@ -1,7 +1,5 @@
 //! Pure request data passed to wire codecs. No credentials or execution state.
-use crate::protocol::{
-    CompletionRequest, CredentialConfig, ModelProfile, ProviderInfo, ProviderProfile,
-};
+use crate::protocol::{ChatRequest, CredentialConfig, ModelProfile, ProviderInfo, ProviderProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestMode {
@@ -17,6 +15,8 @@ pub struct CodecContext {
     pub(crate) request_model: String,
     pub(crate) stream: bool,
     pub(crate) file_account_scope: Option<String>,
+    account_scope: Option<String>,
+    file_validation_time: Option<std::time::SystemTime>,
 }
 impl CodecContext {
     /// Build a context from a wire ID. Use [`Self::for_model`] when selecting
@@ -49,6 +49,7 @@ impl CodecContext {
     ) -> Self {
         let connection = ProviderProfile {
             inference: profile.inference.clone(),
+            chat_enabled: profile.chat_enabled,
             regions: Vec::new(),
             provider_id: profile.provider_id.clone(),
             profile_name: profile.profile_name.clone(),
@@ -67,6 +68,15 @@ impl CodecContext {
                 })
                 .collect(),
             images: Default::default(),
+            embeddings: Default::default(),
+            retrieval: Default::default(),
+            batches: Default::default(),
+            deferred: Default::default(),
+            background: Default::default(),
+            audio: Default::default(),
+            interactions: Default::default(),
+            gemini_file_search: Default::default(),
+            glm_knowledge: Default::default(),
             pricing: Default::default(),
             signing: profile.signing.clone(),
             azure: profile.azure.clone(),
@@ -85,7 +95,28 @@ impl CodecContext {
             request_model: request_model.to_owned(),
             stream: mode == RequestMode::Stream,
             file_account_scope: None,
+            account_scope: None,
+            file_validation_time: None,
         }
+    }
+    /// Set the caller's non-secret identity for account-bound execution state.
+    pub fn with_account_scope(mut self, scope: Option<&str>) -> Self {
+        self.account_scope = scope.map(str::to_owned);
+        self
+    }
+    pub fn account_scope(&self) -> Option<&str> {
+        self.account_scope.as_deref()
+    }
+    /// Supply the wall-clock instant used for provider-file expiry validation.
+    /// High-level calls refresh this from the client clock before dispatch.
+    /// Direct callers normally omit it and use the current system time.
+    pub fn with_file_validation_time(mut self, now: std::time::SystemTime) -> Self {
+        self.file_validation_time = Some(now);
+        self
+    }
+    pub fn file_validation_time(&self) -> std::time::SystemTime {
+        self.file_validation_time
+            .unwrap_or_else(std::time::SystemTime::now)
     }
     pub fn with_file_scope(mut self, scope: Option<&str>) -> Self {
         self.file_account_scope = scope.map(str::to_owned);
@@ -113,19 +144,19 @@ impl CodecContext {
 /// caller-owned conversation and never carry upload/cache or credential state.
 #[derive(Clone, Copy)]
 pub struct EncodeRequest<'a> {
-    request: &'a CompletionRequest,
+    request: &'a ChatRequest,
     media: &'a [PreparedMedia<'a>],
     bindings: &'a [ContentBinding<'a>],
 }
 impl<'a> EncodeRequest<'a> {
-    pub fn new(request: &'a CompletionRequest) -> Self {
+    pub fn new(request: &'a ChatRequest) -> Self {
         Self {
             request,
             media: &[],
             bindings: &[],
         }
     }
-    pub fn request(self) -> &'a CompletionRequest {
+    pub fn request(self) -> &'a ChatRequest {
         self.request
     }
     pub fn blocks(self) -> impl Iterator<Item = &'a crate::protocol::ContentBlock> {

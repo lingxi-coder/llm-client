@@ -15,7 +15,7 @@ fn estimate(provider: &str, model: &str) -> Result<LocalTokenEstimate, LocalToke
         .with_region(Region::International)
         .build()
         .unwrap();
-    let request:CompletionRequest=serde_json::from_value(json!({"model":model,"messages":[{"role":"user","content":[{"type":"text","text":"hello 世界"}]}]})).unwrap();
+    let request:ChatRequest=serde_json::from_value(json!({"model":model,"messages":[{"role":"user","content":[{"type":"text","text":"hello 世界"}]}]})).unwrap();
     c.estimate_local_tokens(&request)
 }
 #[test]

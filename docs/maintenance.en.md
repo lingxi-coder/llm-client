@@ -17,7 +17,7 @@ Architecture changes also require `cargo test --all-features --locked`, independ
 
 Preserve model `features` and verified `pricing.rules` during catalog refreshes. Effort is not a unit-price dimension. Fast uses only model-specific published multipliers or fixed rates; preserve affected buckets, currency, context bands, validity dates, sources and verification dates. Leave unverified fast prices unset.
 
-## Publishing 0.1.0
+## Publishing 0.2.0
 
 This repository publishes one crate, `lingxi-llm-client`, which includes its own protocol types. Publishing requires permission for this crate and network access to crates.io. Before publishing, check the lockfile, licenses, README, archive contents, and CI results. There is no automated publishing workflow.
 

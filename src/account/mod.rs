@@ -7,7 +7,7 @@
 mod execution;
 mod service;
 pub use execution::{AccountExecutionOptions, AccountFetchContext, AccountReport};
-pub(crate) use service::Service;
+pub(crate) use service::{Registry, Service};
 #[path = "providers/admin/mod.rs"]
 mod admin;
 #[path = "providers/local/mod.rs"]

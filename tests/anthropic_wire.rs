@@ -14,7 +14,7 @@ mod wire_api;
 
 use lingxi_llm_client::codecs::anthropic::classify_error;
 use lingxi_llm_client::protocol::{
-    CompletionRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
+    ChatRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
     ModelCapabilitySupport, ProviderId, ProviderProfile, StopReason, StreamEvent, ThinkingConfig,
     ToolChoice, ToolUseId, Usage,
 };
@@ -54,15 +54,18 @@ fn route() -> ResolvedRoute {
     }
 }
 
-fn request(content: Vec<ContentBlock>) -> CompletionRequest {
-    CompletionRequest {
+fn request(content: Vec<ContentBlock>) -> ChatRequest {
+    ChatRequest {
+        prompt_cache: Default::default(),
+        output_format: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        web_search: None,
-        file_search: None,
-        previous_response_id: None,
+        anthropic_client_toolsets: Vec::new(),
+        hosted_tools: vec![],
+        continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content,
         }],
@@ -76,7 +79,7 @@ fn request(content: Vec<ContentBlock>) -> CompletionRequest {
     }
 }
 
-fn encode(req: &CompletionRequest, extra: Value) -> Result<Value, LlmError> {
+fn encode(req: &ChatRequest, extra: Value) -> Result<Value, LlmError> {
     let http = AnthropicMessagesCodec.encode_request(
         lingxi_llm_client::EncodeRequest::new(req),
         &wire_api::context(
@@ -319,13 +322,17 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
     req.system = vec![
         lingxi_llm_client::protocol::SystemBlock {
             text: "stable".to_owned(),
-            cacheable: true,
         },
         lingxi_llm_client::protocol::SystemBlock {
             text: "volatile".to_owned(),
-            cacheable: false,
         },
     ];
+    req.prompt_cache
+        .breakpoints
+        .push(lingxi_llm_client::protocol::CacheBreakpoint {
+            position: lingxi_llm_client::protocol::CachePosition::System { index: 0 },
+            ttl: lingxi_llm_client::protocol::CacheTtl::FiveMinutes,
+        });
 
     let http = AnthropicMessagesCodec
         .encode_request(
@@ -429,10 +436,16 @@ fn an_unknown_event_type_is_tolerated() {
     ]);
     assert_eq!(
         events.len(),
-        2,
-        "this wire's contract is that a client tolerates types it has never \
-         seen: {events:?}"
+        3,
+        "unknown types are tolerated and preserved as observational frames: {events:?}"
     );
+    assert!(matches!(
+        events.get(1),
+        Some(StreamEvent::ProviderEvent {
+            protocol: lingxi_llm_client::protocol::ProtocolFamily::AnthropicMessages,
+            payload,
+        }) if payload["type"] == "something_added_next_year"
+    ));
 }
 
 #[test]
@@ -596,6 +609,7 @@ fn a_tool_result_carries_its_error_flag() {
             content: "no such file".to_owned(),
             is_error: true,
             blocks: None,
+            toolset_name: None,
         }]),
         Value::Null,
     )
@@ -844,6 +858,8 @@ fn strict_tools_are_enabled_only_when_requested() {
             description: "Lookup".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             strict,
+            defer_loading: false,
+            allowed_callers: vec![],
         });
         let body = encode(&req, Value::Null).unwrap();
         assert_eq!(

@@ -9,7 +9,7 @@ use super::decode;
 use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
-use crate::protocol::{LlmError, ProtocolFamily, StopReason, StreamEvent, ToolUseId};
+use crate::protocol::{LlmError, ProtocolFamily, ResponseId, StopReason, StreamEvent, ToolUseId};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
@@ -17,9 +17,11 @@ pub struct OpenAiStreamDecoder {
     inference: crate::codecs::inference::StreamInference,
     started: bool,
     separate_reasoning: bool,
+    qwen_cache: bool,
     next_block: usize,
     text_block: Option<usize>,
     reasoning_block: Option<usize>,
+    audio_block: Option<usize>,
     native_reasoning: super::reasoning::ReasoningStream,
     /// Wire index → (block, id, name). A provider streams a tool call's
     /// arguments in fragments keyed by its own index, not by the call id, and
@@ -84,14 +86,22 @@ impl EventDecoder for OpenAiStreamDecoder {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                response_id: None,
+                response_id: root
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(ResponseId::new),
             });
         }
 
         // Usage may arrive on its own frame after the last choice, so it is
         // recorded whenever seen rather than read at the end.
         if let Some(u) = root.get("usage").filter(|v| !v.is_null()) {
-            self.usage_raw = Some(decode::normalize_usage(u, self.separate_reasoning));
+            self.usage_raw = Some(decode::normalize_usage(
+                u,
+                self.separate_reasoning,
+                self.qwen_cache,
+            ));
             self.search
                 .emit(web_search_decode::with_usage(None, Some(u)), &mut out);
         }
@@ -149,6 +159,29 @@ impl EventDecoder for OpenAiStreamDecoder {
                     });
                 }
             }
+            if let Some(audio) = delta.get("audio").filter(|value| !value.is_null()) {
+                let block = *self.audio_block.get_or_insert_with(|| {
+                    let block = self.next_block;
+                    self.next_block += 1;
+                    block
+                });
+                let mut native = serde_json::Map::new();
+                if let Some(id) = root.get("id") {
+                    native.insert("response_id".into(), id.clone());
+                }
+                if let Some(model) = root.get("model") {
+                    native.insert("model".into(), model.clone());
+                }
+                if let Some(index) = choice.get("index") {
+                    native.insert("choice_index".into(), index.clone());
+                }
+                native.insert("audio".into(), audio.clone());
+                out.push(StreamEvent::ProviderContent {
+                    block,
+                    protocol: ProtocolFamily::OpenAiChat,
+                    value: Value::Object(native),
+                });
+            }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
                     self.tool_fragment(call, &mut out);
@@ -194,6 +227,7 @@ impl OpenAiStreamDecoder {
         Self {
             inference: crate::codecs::inference::StreamInference::new(context),
             separate_reasoning: super::separate_reasoning(&context.profile.extra),
+            qwen_cache: crate::codecs::qwen_cache::applies(context),
             ..Default::default()
         }
     }
@@ -234,6 +268,8 @@ impl OpenAiStreamDecoder {
         out.push(StreamEvent::ToolCallDelta {
             block: slot.block,
             id: slot.id.clone(),
+            caller: None,
+            toolset_name: None,
             name: slot.name.clone(),
             arguments_fragment: fragment.to_owned(),
             provider_id: None,

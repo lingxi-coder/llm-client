@@ -82,7 +82,7 @@ fn raw_tier(profile: &ProviderProfile) -> Result<&Value, LlmError> {
 /// Recognize existing body defaults so typed controls cannot contradict them,
 /// and their cost implications are retained on high-level responses.
 pub(crate) fn controls(
-    req: &CompletionRequest,
+    req: &ChatRequest,
     profile: &ProviderProfile,
 ) -> Result<(ThinkingConfig, Option<ServiceTier>), LlmError> {
     let b = &profile.extra["body"];
@@ -224,10 +224,36 @@ fn tier_from_raw(raw: Option<&str>) -> Option<ServiceTier> {
 }
 
 pub(crate) fn validate(
-    req: &CompletionRequest,
+    req: &ChatRequest,
     profile: &ProviderProfile,
     model: &str,
 ) -> Result<(), LlmError> {
+    if (!req.anthropic_client_toolsets.is_empty()
+        || crate::codecs::anthropic_client_toolset_history::has_metadata(req))
+        && !crate::codecs::anthropic_client_toolsets::supports_profile(profile)
+    {
+        return Err(unsupported(
+            "Anthropic client toolsets and toolset_name require first-party Anthropic Messages or Vertex Claude",
+        ));
+    }
+    if req
+        .messages
+        .iter()
+        .any(|message| message.anthropic.is_some())
+        && !crate::codecs::anthropic_conversation::supports_profile(profile)
+    {
+        return Err(unsupported(
+            "Anthropic per-message controls require the first-party Messages or Vertex Claude protocol",
+        ));
+    }
+    if req.hosted_anthropic_web_fetch().is_some()
+        && !crate::codecs::anthropic_code_execution::is_official_profile(profile)
+        && profile.protocol != ProtocolFamily::FoundryClaude
+    {
+        return Err(unsupported(
+            "Anthropic Web Fetch requires Anthropic Messages or Foundry Claude",
+        ));
+    }
     let (thinking, tier) = controls(req, profile)?;
     let f = features(profile, model);
     let reject = |what: &str| {
@@ -238,6 +264,23 @@ pub(crate) fn validate(
     };
     let rw = profile.reasoning_wire();
     let thinking = effective_thinking(thinking, rw);
+    if let Some(effort) = current_message_effort(req, profile) {
+        if let Some(message) = f.effort_mode_error(thinking.mode, effort) {
+            return Err(invalid(message));
+        }
+        if f.supports_effort(thinking.mode, effort) == CapabilitySupport::Unsupported {
+            return Err(reject("the requested per-message effort"));
+        }
+        if thinking.mode == Some(ThinkingMode::Disabled)
+            && (model == "claude-opus-5-5"
+                || (model == "claude-opus-5"
+                    && matches!(effort, ReasoningEffort::XHigh | ReasoningEffort::Max)))
+        {
+            return Err(invalid(
+                "the active Anthropic message effort requires thinking on this model",
+            ));
+        }
+    }
     if thinking != ThinkingConfig::default() && rw == ReasoningWire::Unavailable {
         return Err(reject("a verified reasoning control mapping"));
     }
@@ -377,7 +420,7 @@ pub(crate) fn validate(
 }
 
 pub(crate) fn apply(
-    req: &CompletionRequest,
+    req: &ChatRequest,
     context: &CodecContext,
     body: &mut Map<String, Value>,
     headers: &mut Vec<(String, String)>,
@@ -535,7 +578,7 @@ fn append_beta(headers: &mut Vec<(String, String)>, beta: &str) {
         headers.push(("anthropic-beta".into(), beta.into()));
     }
 }
-fn merge_json(target: &mut Value, incoming: &Value, path: &str) -> Result<(), LlmError> {
+pub(crate) fn merge_json(target: &mut Value, incoming: &Value, path: &str) -> Result<(), LlmError> {
     if let (Some(dst), Some(src)) = (target.as_object_mut(), incoming.as_object()) {
         for (key, value) in src {
             if let Some(old) = dst.get_mut(key) {
@@ -550,13 +593,43 @@ fn merge_json(target: &mut Value, incoming: &Value, path: &str) -> Result<(), Ll
     Ok(())
 }
 
+// Per-message effort begins at the next user turn, including a tool-result
+// turn. This reports the current request without mutating its stable prefix.
+fn current_message_effort(req: &ChatRequest, profile: &ProviderProfile) -> Option<ReasoningEffort> {
+    if !crate::codecs::anthropic_conversation::supports_profile(profile) {
+        return None;
+    }
+    let mut pending = None;
+    let mut active = None;
+    for message in &req.messages {
+        if message.role == MessageRole::System {
+            if let Some(effort) = message
+                .anthropic
+                .as_ref()
+                .and_then(|options| options.effort)
+            {
+                pending = Some(match effort {
+                    AnthropicMessageEffort::Low => ReasoningEffort::Low,
+                    AnthropicMessageEffort::Medium => ReasoningEffort::Medium,
+                    AnthropicMessageEffort::High => ReasoningEffort::High,
+                    AnthropicMessageEffort::XHigh => ReasoningEffort::XHigh,
+                    AnthropicMessageEffort::Max => ReasoningEffort::Max,
+                });
+            }
+        } else if message.role == MessageRole::User {
+            active = pending;
+        }
+    }
+    active
+}
+
 pub(crate) fn requested(
-    req: &CompletionRequest,
+    req: &ChatRequest,
     p: &ProviderProfile,
 ) -> Result<InferenceReport, LlmError> {
     let (t, tier) = controls(req, p)?;
     Ok(InferenceReport {
-        requested_effort: t.effort,
+        requested_effort: current_message_effort(req, p).or(t.effort),
         requested_service_tier: tier,
         requested_raw_service_tier: raw_tier(p)?.as_str().map(str::to_owned),
         ..Default::default()

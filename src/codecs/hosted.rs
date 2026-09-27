@@ -16,7 +16,7 @@
 use crate::codecs::{anthropic::AnthropicMessagesCodec, gemini, openai::chat::OpenAiChatCodec};
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::codecs::{StreamDecoder, WireCodec};
-use crate::protocol::{CompletionResponse, LlmError, ProtocolFamily};
+use crate::protocol::{ChatResponse, LlmError, ProtocolFamily};
 use crate::transport::{HttpRequest, HttpResponse};
 
 use serde_json::Value;
@@ -31,17 +31,23 @@ pub struct AzureOpenAiCodec;
 impl WireCodec for AzureOpenAiCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        gemini::encode::validate_hosted_tool_request(
+            req,
+            context.profile(),
+            context.request_model(),
+        )
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::AzureOpenAi
@@ -83,7 +89,7 @@ impl WireCodec for AzureOpenAiCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         OpenAiChatCodec.decode_response(resp, context)
     }
 
@@ -100,17 +106,17 @@ pub struct FoundryClaudeCodec;
 impl WireCodec for FoundryClaudeCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        AnthropicMessagesCodec.validate_request(req, context)
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::FoundryClaude
@@ -129,7 +135,7 @@ impl WireCodec for FoundryClaudeCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         AnthropicMessagesCodec.decode_response(resp, context)
     }
 
@@ -153,17 +159,17 @@ const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
 impl WireCodec for VertexClaudeCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        AnthropicMessagesCodec.validate_request(req, context)
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::VertexClaude
@@ -204,7 +210,7 @@ impl WireCodec for VertexClaudeCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         AnthropicMessagesCodec.decode_response(resp, context)
     }
 
@@ -220,17 +226,24 @@ pub struct VertexGeminiCodec;
 impl WireCodec for VertexGeminiCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
+        gemini::encode::validate_audio_input(req)?;
+        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        gemini::encode::validate_hosted_tool_request(
+            req,
+            context.profile(),
+            context.request_model(),
+        )
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::VertexGemini
@@ -257,7 +270,7 @@ impl WireCodec for VertexGeminiCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         GeminiLike.decode_response(resp, context)
     }
 
@@ -270,9 +283,9 @@ use crate::codecs::gemini::GeminiCodec as GeminiLike;
 
 fn edit_body(
     http: &mut crate::codecs::json::WireRequest<'_>,
-    f: impl FnOnce(&mut serde_json::Map<String, Value>),
+    f: impl FnOnce(&mut crate::codecs::json::WireValue<'_>),
 ) -> Result<(), LlmError> {
-    f(http.body.object_mut());
+    f(&mut http.body);
     Ok(())
 }
 fn strip_body_key(
@@ -301,16 +314,17 @@ const BEDROCK_ANTHROPIC_VERSION: &str = "bedrock-2023-05-31";
 impl WireCodec for BedrockClaudeCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())
     }
     fn family(&self) -> ProtocolFamily {
@@ -349,7 +363,7 @@ impl WireCodec for BedrockClaudeCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         AnthropicMessagesCodec.decode_response(resp, context)
     }
 

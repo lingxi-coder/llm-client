@@ -144,8 +144,18 @@ pub(crate) fn decode_metadata(
     account_scope: Option<&str>,
     value: &Value,
 ) -> Result<ProviderFileMetadata, LlmError> {
-    let value = value.get("file").unwrap_or(value);
     let adapter = adapter(profile).ok_or_else(|| unsupported("file metadata decoding"))?;
+    decode_metadata_for_adapter(profile, account_scope, value, adapter, &profile.base_url)
+}
+
+pub(crate) fn decode_metadata_for_adapter(
+    profile: &ProviderProfile,
+    account_scope: Option<&str>,
+    value: &Value,
+    adapter: Adapter,
+    endpoint_identity: &str,
+) -> Result<ProviderFileMetadata, LlmError> {
+    let value = value.get("file").unwrap_or(value);
     let file_id = value
         .get("id")
         .or_else(|| value.get("file_id"))
@@ -157,6 +167,11 @@ pub(crate) fn decode_metadata(
     let purpose = value
         .get("purpose")
         .and_then(Value::as_str)
+        .map(str::to_owned);
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("state").and_then(Value::as_str))
         .map(str::to_owned);
     let uri = value
         .get("uri")
@@ -174,7 +189,7 @@ pub(crate) fn decode_metadata(
     let file = ProviderFileRef {
         provider_id: profile.provider_id.clone(),
         profile_name: profile.profile_name.clone(),
-        endpoint_fingerprint: provider_file_endpoint_fingerprint(&profile.base_url),
+        endpoint_fingerprint: provider_file_endpoint_fingerprint(endpoint_identity),
         account_scope: account_scope.map(str::to_owned),
         protocol,
         file_id,
@@ -199,6 +214,7 @@ pub(crate) fn decode_metadata(
             .get("expires_at")
             .or_else(|| value.get("expirationTime"))
             .and_then(json_optional_scalar_string),
+        processing_status: status.clone(),
         // Gemini only returns content for generated files with a download URI.
         // `download` uses the canonical API endpoint, so credentials are never
         // forwarded to the metadata-provided URI.
@@ -226,10 +242,6 @@ pub(crate) fn decode_metadata(
             .get("created_at")
             .or_else(|| value.get("createTime"))
             .and_then(json_optional_scalar_string),
-        status: value
-            .get("status")
-            .or_else(|| value.get("state"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        status,
     })
 }

@@ -4,7 +4,7 @@
 //! An OpenAI-compatible endpoint is rarely only OpenAI-compatible. Aggregators
 //! take a `provider` object choosing which upstream serves the call, a `models`
 //! array for their own fallback, `transforms`, an end-user id; several want
-//! attribution headers. None of that belongs in `CompletionRequest`, which is
+//! attribution headers. None of that belongs in `ChatRequest`, which is
 //! the neutral shape, and none of it can be special-cased by provider name —
 //! gate 30 keeps provider names out of this crate entirely. So it arrives as
 //! data on the profile and is merged here.

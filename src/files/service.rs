@@ -12,6 +12,11 @@ pub struct FileService<'a> {
     pub(in crate::files) authenticator: Option<&'a dyn Authenticator>,
     pub(in crate::files) credential: Option<&'a Secret<String>>,
     pub(in crate::files) account_scope: Option<&'a str>,
+    /// An explicit service route for APIs whose availability is a typed
+    /// hosting choice rather than a fact inferable from provider ID and URL.
+    adapter_override: Option<Adapter>,
+    /// Canonical identity endpoint for an explicitly selected hosted route.
+    endpoint_identity: Option<String>,
     pub(in crate::files) qwen_rate_limiter: Option<Arc<QwenFileRateLimiter>>,
     pub(in crate::files) gemini_upload_timeout: Option<Duration>,
     pub(in crate::files) gemini_processing_timeout: Option<Duration>,
@@ -33,11 +38,114 @@ impl<'a> FileService<'a> {
             authenticator,
             credential,
             account_scope,
+            adapter_override: None,
+            endpoint_identity: None,
             qwen_rate_limiter: None,
             gemini_upload_timeout: None,
             gemini_processing_timeout: None,
             gemini_request_deadline: None,
         }
+    }
+
+    /// Bind the Anthropic Files API to a Microsoft Foundry resource explicitly
+    /// marked as Anthropic-hosted. Files are resource/account scoped; this
+    /// constructor intentionally does not require a chat model catalog row.
+    /// The endpoint must be the HTTPS `https://{resource}.services.ai.azure.com/anthropic`
+    /// base, and `account_scope` must be a stable, non-secret identifier for
+    /// the account/resource credentials used by this service.
+    pub fn new_foundry(
+        http: &'a dyn Transport,
+        profile: &'a ProviderProfile,
+        hosting: crate::protocol::FoundryHosting,
+        authenticator: Option<&'a dyn Authenticator>,
+        credential: Option<&'a Secret<String>>,
+        account_scope: &'a str,
+    ) -> Result<Self, LlmError> {
+        if profile.protocol != ProtocolFamily::FoundryClaude {
+            return Err(unsupported(
+                "Foundry Files API requires the Foundry Claude protocol",
+            ));
+        }
+        if hosting != crate::protocol::FoundryHosting::Anthropic {
+            return Err(unsupported(
+                "Foundry Files API requires an Anthropic-hosted deployment",
+            ));
+        }
+        if account_scope.trim().is_empty() || account_scope.chars().any(char::is_control) {
+            return Err(LlmError::InvalidRequest {
+                message: "Foundry file operations require a stable, nonempty account scope".into(),
+            });
+        }
+        let endpoint_identity =
+            crate::protocol::AnthropicContainerScope::normalize_foundry_endpoint(&profile.base_url)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Foundry Files API requires the HTTPS Anthropic resource endpoint"
+                        .into(),
+                })?;
+        let mut service = Self::new(
+            http,
+            profile,
+            authenticator,
+            credential,
+            Some(account_scope),
+        );
+        service.adapter_override = Some(Adapter::Anthropic);
+        service.endpoint_identity = Some(endpoint_identity);
+        Ok(service)
+    }
+
+    /// Construct a Foundry Files service from an actual model row in the
+    /// profile. Services-only profiles should use [`Self::new_foundry`], which
+    /// takes an explicit hosting assertion and does not invent chat models.
+    pub fn new_foundry_for_model(
+        http: &'a dyn Transport,
+        profile: &'a ProviderProfile,
+        selected_model: &ModelProfile,
+        authenticator: Option<&'a dyn Authenticator>,
+        credential: Option<&'a Secret<String>>,
+        account_scope: &'a str,
+    ) -> Result<Self, LlmError> {
+        if !profile.models.iter().any(|model| model == selected_model) {
+            return Err(unsupported(
+                "selected Foundry model row does not belong to this profile",
+            ));
+        }
+        let deployment = selected_model.foundry.as_ref().ok_or_else(|| {
+            unsupported("Foundry Files API requires explicit hosting on the selected model row")
+        })?;
+        Self::new_foundry(
+            http,
+            profile,
+            deployment.hosting,
+            authenticator,
+            credential,
+            account_scope,
+        )
+    }
+
+    fn adapter(&self) -> Option<Adapter> {
+        self.adapter_override.or_else(|| adapter(self.profile))
+    }
+
+    fn endpoint_identity(&self) -> String {
+        self.endpoint_identity
+            .clone()
+            .or_else(|| provider_file_endpoint_identity(self.profile))
+            .unwrap_or_else(|| self.profile.base_url.clone())
+    }
+
+    fn decode_metadata(&self, value: &Value) -> Result<ProviderFileMetadata, LlmError> {
+        let adapter = self
+            .adapter()
+            .ok_or_else(|| unsupported("file metadata decoding"))?;
+        let endpoint_identity = self.endpoint_identity();
+        decode_metadata_for_adapter(
+            self.profile,
+            self.account_scope,
+            value,
+            adapter,
+            &endpoint_identity,
+        )
     }
 
     /// Bound the Gemini upload transfer. Video files default to and are capped
@@ -88,7 +196,13 @@ impl<'a> FileService<'a> {
     /// The caller must still check model vision/file modality when present.
     #[must_use]
     pub fn capabilities(&self, model: &str, media_type: &str) -> FileCapabilities {
-        capabilities(self.profile, model, media_type)
+        let Some(adapter) = self.adapter() else {
+            return FileCapabilities::unsupported();
+        };
+        let mut result =
+            capabilities_for_media_type(capabilities_for_adapter(adapter), adapter, media_type);
+        result.model_input = model_reference_for(self.profile, model, media_type, adapter);
+        result
     }
 
     /// Return upload and model-input support for a specific purpose. This
@@ -100,7 +214,23 @@ impl<'a> FileService<'a> {
         media_type: &str,
         purpose: FilePurpose,
     ) -> FileCapabilities {
-        capabilities_for_purpose(self.profile, model, media_type, purpose)
+        let Some(adapter) = self.adapter() else {
+            return FileCapabilities::unsupported();
+        };
+        let mut result = capabilities_for_media_type(
+            purpose_capabilities(adapter, purpose, media_type),
+            adapter,
+            media_type,
+        );
+        result.model_input = if matches!(
+            purpose,
+            FilePurpose::ModelInput | FilePurpose::VideoUnderstanding
+        ) {
+            model_reference_for(self.profile, model, media_type, adapter)
+        } else {
+            ModelFileReference::Unsupported
+        };
+        result
     }
 
     /// Upload bytes using a provider-supported purpose.
@@ -112,6 +242,156 @@ impl<'a> FileService<'a> {
         self.upload_with_expiration(file, purpose, None).await
     }
 
+    /// Upload a one-shot byte stream using a provider-supported purpose.
+    /// The declared size is validated before authentication or network work;
+    /// the stream must end at exactly that size. This method never retries or
+    /// polls. A Gemini file that is still processing is returned in a
+    /// `ProviderFileProcessing` error so the caller can resume it explicitly.
+    pub async fn upload_stream(
+        &self,
+        file: UploadFileStream,
+        purpose: FilePurpose,
+    ) -> Result<ProviderFileRef, FileUploadError> {
+        let (filename, media_type, size_bytes, body) = file.into_parts();
+        let (adapter, _) =
+            self.preflight_upload(&filename, &media_type, size_bytes, purpose, true)?;
+        if adapter == Adapter::Gemini {
+            let is_video = media_type.to_ascii_lowercase().starts_with("video/");
+            let timeout = self.gemini_upload_timeout.unwrap_or(if is_video {
+                GEMINI_VIDEO_FILE_TIMEOUT
+            } else {
+                FILE_TIMEOUT
+            });
+            let timeout = if is_video {
+                timeout.min(GEMINI_VIDEO_FILE_TIMEOUT)
+            } else {
+                timeout
+            };
+            return self
+                .upload_gemini_stream(filename, media_type, size_bytes, body, timeout)
+                .await;
+        }
+        self.upload_multipart_stream(
+            filename,
+            media_type,
+            size_bytes,
+            purpose,
+            body,
+            FILE_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Stream a caller-managed OpenAI Batch JSONL file without buffering its
+    /// multipart body. The declared size must match the input stream exactly.
+    /// A connection failure can leave an accepted upload with an unknown ID;
+    /// this method never retries it.
+    pub async fn upload_batch_stream(
+        &self,
+        filename: &str,
+        media_type: &str,
+        size_bytes: u64,
+        body: BoxStream<'static, Result<Bytes, LlmError>>,
+        timeout: Option<Duration>,
+    ) -> Result<ProviderFileRef, LlmError> {
+        validate_media_type(media_type)?;
+        let adapter = self.adapter().ok_or_else(|| unsupported("batch upload"))?;
+        if adapter != Adapter::OpenAi {
+            return Err(unsupported("batch streaming upload"));
+        }
+        if !filename.ends_with(".jsonl")
+            || !matches!(
+                media_type,
+                "application/x-ndjson" | "application/jsonl" | "application/json"
+            )
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "batch input must be a .jsonl file with a JSONL media type".into(),
+            });
+        }
+        if self
+            .account_scope
+            .is_none_or(|scope| scope.trim().is_empty())
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "batch file upload requires a nonempty account scope".into(),
+            });
+        }
+        if size_bytes == 0 || size_bytes > 200_000_000 {
+            return Err(LlmError::RequestTooLarge {
+                message: "batch input must contain 1–200000000 bytes".into(),
+            });
+        }
+        let timeout = timeout.unwrap_or(FILE_TIMEOUT);
+        if timeout.is_zero() {
+            return Err(LlmError::InvalidRequest {
+                message: "batch upload timeout must be positive".into(),
+            });
+        }
+        let boundary = multipart_boundary();
+        let (prefix, suffix) = multipart_batch_parts(filename, media_type, &boundary);
+        let content_length = size_bytes
+            .checked_add(prefix.len() as u64)
+            .and_then(|len| len.checked_add(suffix.len() as u64))
+            .ok_or_else(|| LlmError::RequestTooLarge {
+                message: "batch multipart size overflows".into(),
+            })?;
+        let deadline = crate::runtime::Deadline::after(Some(timeout));
+        let request = deadline
+            .run(self.request(
+                "POST",
+                files_url(self.profile, adapter),
+                Bytes::new(),
+                Some(format!("multipart/form-data; boundary={boundary}")),
+            ))
+            .await??;
+        if !request.body.is_empty() {
+            return Err(LlmError::UnsupportedCapability {
+                message: "batch streaming authenticator must not replace the request body".into(),
+            });
+        }
+        let parts = stream_batch_body(prefix, body, size_bytes, suffix);
+        let request = crate::transport::HttpStreamRequest {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body: parts,
+            content_length,
+            timeout: deadline.remaining()?,
+        };
+        let response = crate::transport::HttpExecutor::new(self.http)
+            .with_deadline(deadline)
+            .send_stream(request)
+            .await?;
+        let response =
+            crate::transport::HttpExecutor::collect_response(response, Some(1024 * 1024)).await?;
+        let value = adapter_json_success(adapter, &response, "batch file upload")?;
+        let mut metadata = self.decode_metadata(&value)?;
+        if metadata
+            .file
+            .purpose
+            .as_deref()
+            .is_some_and(|purpose| purpose != "batch")
+        {
+            return Err(provider_shape(
+                "batch upload returned a different file purpose",
+            ));
+        }
+        if metadata.file.media_type.is_none() {
+            metadata.file.media_type = Some(media_type.into());
+        }
+        if metadata.file.filename.is_none() {
+            metadata.file.filename = Some(filename.into());
+        }
+        if metadata.file.purpose.is_none() {
+            metadata.file.purpose = Some("batch".into());
+        }
+        if metadata.file.size_bytes.is_none() {
+            metadata.file.size_bytes = Some(size_bytes);
+        }
+        Ok(metadata.file)
+    }
+
     /// Automatic uploads receive a bounded lifetime where supported. Explicit
     /// FileService uploads retain their existing caller-managed lifetime.
     pub(crate) async fn upload_automatic(
@@ -120,7 +400,7 @@ impl<'a> FileService<'a> {
         purpose: FilePurpose,
     ) -> Result<ProviderFileRef, LlmError> {
         let expiration = matches!(
-            adapter(self.profile),
+            self.adapter(),
             Some(Adapter::Anthropic | Adapter::OpenAi | Adapter::Xai)
         )
         .then_some(AUTOMATIC_FILE_TTL.as_secs());
@@ -128,7 +408,7 @@ impl<'a> FileService<'a> {
         let uploaded = loop {
             match self.upload_with_expiration(file, purpose, expiration).await {
                 Err(LlmError::RateLimited { .. })
-                    if adapter(self.profile) == Some(Adapter::Qwen) && retries < 3 =>
+                    if self.adapter() == Some(Adapter::Qwen) && retries < 3 =>
                 {
                     async_delay(Duration::from_millis(500 * (1 << retries))).await;
                     retries += 1;
@@ -136,7 +416,7 @@ impl<'a> FileService<'a> {
                 result => break result?,
             }
         };
-        if adapter(self.profile) == Some(Adapter::Anthropic)
+        if self.adapter() == Some(Adapter::Anthropic)
             && serde_json::to_string(&uploaded.file_id).map_or(true, |encoded| {
                 encoded.len() > MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES
             })
@@ -158,34 +438,13 @@ impl<'a> FileService<'a> {
         purpose: FilePurpose,
         expires_in_seconds: Option<u64>,
     ) -> Result<ProviderFileRef, LlmError> {
-        validate_media_type(&file.media_type)?;
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("upload"))?;
-        let caps = capabilities_for_media_type(
-            purpose_capabilities(adapter, purpose, &file.media_type),
-            adapter,
+        let (adapter, _) = self.preflight_upload(
+            &file.filename,
             &file.media_type,
-        );
-        if !caps.upload {
-            return Err(unsupported("upload for this purpose"));
-        }
-        if matches!(
+            u64::try_from(file.bytes.len()).unwrap_or(u64::MAX),
             purpose,
-            FilePurpose::ModelInput | FilePurpose::VideoUnderstanding
-        ) && self
-            .account_scope
-            .is_none_or(|scope| scope.trim().is_empty())
-        {
-            return Err(LlmError::InvalidRequest {
-                message: "model-input file uploads require a nonempty account scope".into(),
-            });
-        }
-        if let Some(limit) = caps.max_upload_bytes {
-            if u64::try_from(file.bytes.len()).unwrap_or(u64::MAX) > limit {
-                return Err(LlmError::RequestTooLarge {
-                    message: format!("file exceeds the provider limit of {limit} bytes"),
-                });
-            }
-        }
+            false,
+        )?;
 
         if adapter == Adapter::Gemini {
             return self.upload_gemini(file).await;
@@ -213,7 +472,7 @@ impl<'a> FileService<'a> {
             .execute(req)
             .await?;
         let value = adapter_json_success(adapter, &response, "file upload")?;
-        let mut metadata = decode_metadata(self.profile, self.account_scope, &value)?;
+        let mut metadata = self.decode_metadata(&value)?;
         // The API may omit MIME metadata on upload, but the input is known here.
         if metadata.file.media_type.is_none() {
             metadata.file.media_type = Some(file.media_type.clone());
@@ -227,10 +486,367 @@ impl<'a> FileService<'a> {
         Ok(metadata.file)
     }
 
+    fn preflight_upload(
+        &self,
+        filename: &str,
+        media_type: &str,
+        size_bytes: u64,
+        purpose: FilePurpose,
+        require_nonempty_batch: bool,
+    ) -> Result<(Adapter, FileCapabilities), LlmError> {
+        validate_media_type(media_type)?;
+        let adapter = self.adapter().ok_or_else(|| unsupported("upload"))?;
+        let caps = capabilities_for_media_type(
+            purpose_capabilities(adapter, purpose, media_type),
+            adapter,
+            media_type,
+        );
+        if !caps.upload {
+            return Err(unsupported("upload for this purpose"));
+        }
+        if purpose == FilePurpose::Batch
+            && (!filename.ends_with(".jsonl")
+                || !matches!(
+                    media_type,
+                    "application/x-ndjson" | "application/jsonl" | "application/json"
+                ))
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "batch input must be a .jsonl file with a JSONL media type".into(),
+            });
+        }
+        if require_nonempty_batch && purpose == FilePurpose::Batch && size_bytes == 0 {
+            return Err(LlmError::RequestTooLarge {
+                message: "batch input must contain at least one byte".into(),
+            });
+        }
+        if matches!(
+            purpose,
+            FilePurpose::ModelInput
+                | FilePurpose::VideoUnderstanding
+                | FilePurpose::Batch
+                | FilePurpose::AsyncTtsInput
+        ) && self
+            .account_scope
+            .is_none_or(|scope| scope.trim().is_empty())
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "model-input, batch, video-understanding, and async TTS uploads require a nonempty account scope".into(),
+            });
+        }
+        if let Some(limit) = caps.max_upload_bytes {
+            if size_bytes > limit {
+                return Err(LlmError::RequestTooLarge {
+                    message: format!("file exceeds the provider limit of {limit} bytes"),
+                });
+            }
+        }
+        Ok((adapter, caps))
+    }
+
+    async fn upload_multipart_stream(
+        &self,
+        filename: String,
+        media_type: String,
+        size_bytes: u64,
+        purpose: FilePurpose,
+        body: BoxStream<'static, Result<Bytes, LlmError>>,
+        timeout: Duration,
+    ) -> Result<ProviderFileRef, FileUploadError> {
+        let adapter = self.adapter().ok_or_else(|| unsupported("upload"))?;
+        let boundary = multipart_boundary();
+        let (prefix, suffix) =
+            multipart_parts(adapter, purpose, &filename, &media_type, &boundary, None);
+        let content_length = size_bytes
+            .checked_add(prefix.len() as u64)
+            .and_then(|length| length.checked_add(suffix.len() as u64))
+            .ok_or_else(|| LlmError::RequestTooLarge {
+                message: "file multipart size overflows".into(),
+            })?;
+        let url = if adapter == Adapter::MiniMax {
+            format!("{}/upload", files_url(self.profile, adapter))
+        } else {
+            files_url(self.profile, adapter)
+        };
+        let deadline = crate::runtime::Deadline::after(Some(timeout));
+        let mut request = deadline
+            .run(self.request(
+                "POST",
+                url,
+                Bytes::new(),
+                Some(format!("multipart/form-data; boundary={boundary}")),
+            ))
+            .await??;
+        if !request.body.is_empty() {
+            return Err(unsupported(
+                "stream upload authenticator must not replace the request body",
+            )
+            .into());
+        }
+        if adapter == Adapter::Qwen {
+            deadline.run(self.pace_qwen_upload()).await?;
+        }
+        request.timeout = deadline.remaining()?;
+        let request = crate::transport::HttpStreamRequest {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body: multipart_upload_stream(prefix, body, size_bytes, suffix),
+            content_length,
+            timeout: deadline.remaining()?,
+        };
+        let response = crate::transport::HttpExecutor::new(self.http)
+            .with_deadline(deadline)
+            .send_stream(request)
+            .await
+            .map_err(|error| match error {
+                LlmError::UnsupportedCapability { .. } => FileUploadError::Llm(error),
+                source => unknown_upload_outcome("multipart upload", source, None),
+            })?;
+        let response =
+            crate::transport::HttpExecutor::collect_response(response, Some(1024 * 1024))
+                .await
+                .map_err(|source| {
+                    unknown_upload_outcome("multipart upload response", source, None)
+                })?;
+        self.decode_stream_upload_response(adapter, &response, &filename, &media_type, purpose)
+    }
+
+    async fn upload_gemini_stream(
+        &self,
+        filename: String,
+        media_type: String,
+        size_bytes: u64,
+        body: BoxStream<'static, Result<Bytes, LlmError>>,
+        timeout: Duration,
+    ) -> Result<ProviderFileRef, FileUploadError> {
+        let started = Instant::now();
+        let upload_deadline =
+            started
+                .checked_add(timeout)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Gemini upload timeout is too large".into(),
+                })?;
+        let upload_deadline = self
+            .gemini_request_deadline
+            .map_or(upload_deadline, |deadline| upload_deadline.min(deadline));
+        let start_url = gemini_upload_url(self.profile);
+        let start_body = serde_json::json!({"file": {"display_name": filename}});
+        let mut start_request = crate::runtime::Deadline::at(Some(upload_deadline))
+            .run(
+                self.request(
+                    "POST",
+                    start_url,
+                    Bytes::from(
+                        serde_json::to_vec(&start_body)
+                            .map_err(|error| provider_shape(&error.to_string()))?,
+                    ),
+                    Some("application/json".into()),
+                ),
+            )
+            .await??;
+        start_request.timeout = Some(gemini_timeout_remaining(
+            upload_deadline,
+            timeout,
+            "upload",
+        )?);
+        start_request.headers.extend([
+            ("x-goog-upload-protocol".into(), "resumable".into()),
+            ("x-goog-upload-command".into(), "start".into()),
+            (
+                "x-goog-upload-header-content-length".into(),
+                size_bytes.to_string(),
+            ),
+            (
+                "x-goog-upload-header-content-type".into(),
+                media_type.clone(),
+            ),
+        ]);
+        let start = crate::transport::HttpExecutor::new(self.http)
+            .execute(start_request)
+            .await
+            .map_err(|source| {
+                unknown_upload_outcome("Gemini resumable upload initiation", source, None)
+            })?;
+        status_result(&start, "Gemini file upload start").map_err(|source| {
+            if start.status >= 500 {
+                unknown_upload_outcome("Gemini resumable upload initiation", source, None)
+            } else {
+                FileUploadError::Llm(source)
+            }
+        })?;
+        let upload_url = start.header("x-goog-upload-url").ok_or_else(|| {
+            unknown_upload_outcome(
+                "Gemini resumable upload initiation",
+                provider_shape("Gemini upload start omitted x-goog-upload-url"),
+                None,
+            )
+        })?;
+        if !same_origin(upload_url, &self.profile.base_url) {
+            return Err(LlmError::PermissionDenied {
+                message: "Gemini returned an upload URL outside the configured API origin".into(),
+            }
+            .into());
+        }
+        let request = crate::transport::HttpStreamRequest {
+            method: "POST".into(),
+            url: upload_url.to_owned(),
+            headers: vec![
+                ("content-length".into(), size_bytes.to_string()),
+                ("x-goog-upload-offset".into(), "0".into()),
+                ("x-goog-upload-command".into(), "upload, finalize".into()),
+            ],
+            body: exact_upload_stream(body, size_bytes),
+            content_length: size_bytes,
+            timeout: Some(
+                gemini_timeout_remaining(upload_deadline, timeout, "upload").map_err(|source| {
+                    unknown_upload_outcome("Gemini resumable upload body", source, None)
+                })?,
+            ),
+        };
+        let response = crate::transport::HttpExecutor::new(self.http)
+            .with_deadline(crate::runtime::Deadline::at(Some(upload_deadline)))
+            .send_stream(request)
+            .await
+            .map_err(|source| {
+                unknown_upload_outcome("Gemini resumable upload body", source, None)
+            })?;
+        let response =
+            crate::transport::HttpExecutor::collect_response(response, Some(1024 * 1024))
+                .await
+                .map_err(|source| {
+                    unknown_upload_outcome("Gemini resumable upload response", source, None)
+                })?;
+        if !(200..300).contains(&response.status) {
+            let source = status_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+                "Gemini file upload",
+            );
+            return Err(if response.status >= 500 {
+                unknown_upload_outcome("Gemini resumable upload", source, None)
+            } else {
+                FileUploadError::Llm(source)
+            });
+        }
+        let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
+            unknown_upload_outcome(
+                "Gemini file upload response",
+                provider_shape(&format!(
+                    "Gemini file upload response was not JSON: {error}"
+                )),
+                None,
+            )
+        })?;
+        let file_value = value.get("file").unwrap_or(&value);
+        let mut metadata = self.decode_metadata(file_value).map_err(|source| {
+            unknown_upload_outcome("Gemini file upload response", source, None)
+        })?;
+        metadata.file.media_type = Some(media_type.clone());
+        metadata.file.filename = Some(filename);
+        metadata.file.size_bytes.get_or_insert(size_bytes);
+        match file_value.get("state").and_then(Value::as_str) {
+            Some("FAILED") => {
+                return Err(FileUploadError::Llm(provider_shape(
+                    "Gemini file processing failed",
+                )));
+            }
+            Some("PROCESSING") => {
+                return Err(FileUploadError::Llm(LlmError::ProviderFileProcessing {
+                    message: "Gemini file is still processing; resume it explicitly".into(),
+                    file: Box::new(metadata.file.model_reference()),
+                }));
+            }
+            Some("ACTIVE") | None => {}
+            Some(_) => {
+                return Err(FileUploadError::Llm(gemini_processing_unresolved(
+                    &metadata.file,
+                    provider_shape("Gemini file upload returned an unknown processing state"),
+                )));
+            }
+        }
+        if metadata.file.uri.as_deref().is_none_or(str::is_empty) {
+            return Err(FileUploadError::Llm(gemini_processing_unresolved(
+                &metadata.file,
+                provider_shape("Gemini file upload omitted the model-input URI"),
+            )));
+        }
+        Ok(metadata.file)
+    }
+
+    fn decode_stream_upload_response(
+        &self,
+        adapter: Adapter,
+        response: &HttpResponse,
+        filename: &str,
+        media_type: &str,
+        purpose: FilePurpose,
+    ) -> Result<ProviderFileRef, FileUploadError> {
+        if !(200..300).contains(&response.status) {
+            let source = status_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+                "file upload",
+            );
+            return Err(if response.status >= 500 {
+                unknown_upload_outcome("multipart upload response", source, None)
+            } else {
+                FileUploadError::Llm(source)
+            });
+        }
+        let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
+            unknown_upload_outcome(
+                "multipart upload response",
+                provider_shape(&format!("file upload response was not JSON: {error}")),
+                None,
+            )
+        })?;
+        if adapter == Adapter::MiniMax {
+            if let Err(source) = check_minimax_base_response(&value, "file upload") {
+                return Err(
+                    if minimax_base_response_code(&value).is_some_and(|code| code != 0) {
+                        FileUploadError::Llm(source)
+                    } else {
+                        unknown_upload_outcome("multipart upload response", source, None)
+                    },
+                );
+            }
+        }
+        let mut metadata = self
+            .decode_metadata(&value)
+            .map_err(|source| unknown_upload_outcome("multipart upload response", source, None))?;
+        if let Some(expected_purpose) = purpose_name(adapter, purpose) {
+            if metadata
+                .file
+                .purpose
+                .as_deref()
+                .is_some_and(|actual_purpose| actual_purpose != expected_purpose)
+            {
+                return Err(unknown_upload_outcome(
+                    "multipart upload response",
+                    provider_shape("file upload response returned a different purpose"),
+                    Some(metadata.file),
+                ));
+            }
+        }
+        if metadata.file.media_type.is_none() {
+            metadata.file.media_type = Some(media_type.into());
+        }
+        if metadata.file.filename.is_none() {
+            metadata.file.filename = Some(filename.into());
+        }
+        if metadata.file.purpose.is_none() {
+            metadata.file.purpose = purpose_name(adapter, purpose).map(str::to_owned);
+        }
+        Ok(metadata.file)
+    }
+
     /// Retrieve metadata for a provider-owned file.
     pub async fn get(&self, file: &ProviderFileRef) -> Result<ProviderFileMetadata, LlmError> {
         self.check_ref(file)?;
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("metadata retrieval"))?;
+        let adapter = self
+            .adapter()
+            .ok_or_else(|| unsupported("metadata retrieval"))?;
         if !capabilities_for_adapter(adapter).retrieve_metadata {
             return Err(unsupported("metadata retrieval"));
         }
@@ -251,18 +867,45 @@ impl<'a> FileService<'a> {
             .execute(req)
             .await?;
         let value = adapter_json_success(adapter, &response, "file metadata")?;
-        let mut metadata = decode_metadata(self.profile, self.account_scope, &value)?;
+        let mut metadata = self.decode_metadata(&value)?;
+        if adapter == Adapter::Anthropic && metadata.file.file_id != file.file_id {
+            return Err(provider_shape(
+                "Anthropic file metadata returned a different file ID than requested",
+            ));
+        }
         // Some file APIs omit MIME in metadata responses. Preserve caller-known
         // metadata only for the same file; never replace a server-stated value.
         if metadata.file.file_id == file.file_id && metadata.file.media_type.is_none() {
             metadata.file.media_type.clone_from(&file.media_type);
+        }
+        let native_file = value.get("file").unwrap_or(&value);
+        if metadata.file.file_id == file.file_id
+            && native_file.get("expires_at").is_none()
+            && native_file.get("expirationTime").is_none()
+        {
+            // An omitted field provides no new lifetime information. An
+            // explicit null, however, is the provider clearing expiration.
+            metadata.file.expires_at.clone_from(&file.expires_at);
+        }
+        if metadata.file.file_id == file.file_id
+            && native_file.get("status").is_none()
+            && native_file.get("state").is_none()
+        {
+            // An omitted status does not erase the last provider-reported
+            // state. Explicit null clears it because decode_metadata returns
+            // None and this fallback is skipped.
+            metadata
+                .file
+                .processing_status
+                .clone_from(&file.processing_status);
+            metadata.status.clone_from(&file.processing_status);
         }
         Ok(metadata)
     }
 
     /// List provider-owned files. The cursor is opaque.
     pub async fn list(&self, cursor: Option<&str>) -> Result<ProviderFilePage, LlmError> {
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("file listing"))?;
+        let adapter = self.adapter().ok_or_else(|| unsupported("file listing"))?;
         if adapter == Adapter::MiniMax {
             return Err(LlmError::InvalidRequest {
                 message: "MiniMax file listing requires list_for_purpose with an explicit purpose"
@@ -270,6 +913,91 @@ impl<'a> FileService<'a> {
             });
         }
         self.list_inner(adapter, None, cursor).await
+    }
+
+    /// Retrieve metadata for up to 100 known Anthropic Files IDs in one
+    /// request. Pass references produced in this exact endpoint/account scope;
+    /// IDs that are missing or inaccessible are omitted by the provider and
+    /// remain absent from the returned page.
+    pub async fn list_by_ids(
+        &self,
+        files: &[ProviderFileRef],
+    ) -> Result<ProviderFilePage, LlmError> {
+        let adapter = self
+            .adapter()
+            .ok_or_else(|| unsupported("file metadata lookup by IDs"))?;
+        if adapter != Adapter::Anthropic {
+            return Err(unsupported("file metadata lookup by IDs"));
+        }
+        if self
+            .account_scope
+            .is_none_or(|scope| scope.trim().is_empty())
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "file metadata lookup by IDs requires a nonempty account scope".into(),
+            });
+        }
+        if files.len() > 100 {
+            return Err(LlmError::InvalidRequest {
+                message: "Anthropic file metadata lookup accepts at most 100 IDs".into(),
+            });
+        }
+        let mut requested = std::collections::BTreeSet::new();
+        for file in files {
+            self.check_ref(file)?;
+            if !requested.insert(file.file_id.as_str()) {
+                return Err(LlmError::InvalidRequest {
+                    message: "file metadata lookup IDs must be distinct".into(),
+                });
+            }
+        }
+        if files.is_empty() {
+            return Ok(ProviderFilePage {
+                files: Vec::new(),
+                next_cursor: None,
+            });
+        }
+
+        let query = files
+            .iter()
+            .map(|file| format!("ids%5B%5D={}", query_value(&file.file_id)))
+            .collect::<Vec<_>>()
+            .join("&");
+        let url = format!("{}?{query}", files_url(self.profile, adapter));
+        let req = self.request("GET", url, Bytes::new(), None).await?;
+        let response = crate::transport::HttpExecutor::new(self.http)
+            .execute(req)
+            .await?;
+        let value = adapter_json_success(adapter, &response, "file metadata lookup")?;
+        let rows = value
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| provider_shape("Anthropic file ID lookup has no data array"))?;
+        if value
+            .get("next_page")
+            .is_some_and(|next_page| !next_page.is_null())
+        {
+            return Err(provider_shape(
+                "Anthropic file ID lookup unexpectedly returned a pagination cursor",
+            ));
+        }
+        let mut returned = std::collections::BTreeSet::new();
+        let mut metadata = Vec::with_capacity(rows.len());
+        for row in rows {
+            let metadata_row = self.decode_metadata(row)?;
+            if !requested.contains(metadata_row.file.file_id.as_str())
+                || !returned.insert(metadata_row.file.file_id.clone())
+            {
+                return Err(provider_shape(
+                    "Anthropic file ID lookup returned an unrequested or duplicate ID",
+                ));
+            }
+            metadata.push(metadata_row);
+        }
+        Ok(ProviderFilePage {
+            files: metadata,
+            next_cursor: None,
+        })
     }
 
     /// List files for an API that requires a purpose filter (MiniMax), or
@@ -280,7 +1008,7 @@ impl<'a> FileService<'a> {
         purpose: FilePurpose,
         cursor: Option<&str>,
     ) -> Result<ProviderFilePage, LlmError> {
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("file listing"))?;
+        let adapter = self.adapter().ok_or_else(|| unsupported("file listing"))?;
         if !matches!(adapter, Adapter::MiniMax | Adapter::OpenAi | Adapter::Qwen) {
             return Err(unsupported("file listing filtered by purpose"));
         }
@@ -337,7 +1065,7 @@ impl<'a> FileService<'a> {
         };
         let files = rows
             .iter()
-            .map(|row| decode_metadata(self.profile, self.account_scope, row))
+            .map(|row| self.decode_metadata(row))
             .collect::<Result<Vec<_>, _>>()?;
         let next_cursor = match cursor_field {
             CursorField::OpenAi => value
@@ -377,7 +1105,7 @@ impl<'a> FileService<'a> {
     /// attachment.
     pub async fn delete(&self, file: &ProviderFileRef) -> Result<(), LlmError> {
         self.check_ref(file)?;
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("file deletion"))?;
+        let adapter = self.adapter().ok_or_else(|| unsupported("file deletion"))?;
         if !capabilities_for_adapter(adapter).delete {
             return Err(unsupported("file deletion"));
         }
@@ -436,7 +1164,7 @@ impl<'a> FileService<'a> {
     /// uploaded files are retrievable. The accumulated body is capped at 64 MiB.
     pub async fn download(&self, file: &ProviderFileRef) -> Result<ProviderFileContent, LlmError> {
         self.check_ref(file)?;
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("file download"))?;
+        let adapter = self.adapter().ok_or_else(|| unsupported("file download"))?;
         let support = capabilities_for_adapter(adapter).download;
         if support == DownloadSupport::Unsupported {
             return Err(unsupported("file download"));
@@ -515,7 +1243,9 @@ impl<'a> FileService<'a> {
     /// Moonshot/Kimi documents this operation in the supported adapter set.
     pub async fn extract_text(&self, file: &ProviderFileRef) -> Result<String, LlmError> {
         self.check_ref(file)?;
-        let adapter = adapter(self.profile).ok_or_else(|| unsupported("text extraction"))?;
+        let adapter = self
+            .adapter()
+            .ok_or_else(|| unsupported("text extraction"))?;
         if !capabilities_for_adapter(adapter).extract_text {
             return Err(unsupported("text extraction"));
         }
@@ -545,7 +1275,7 @@ impl<'a> FileService<'a> {
             headers.push(("content-type".into(), content_type));
         }
         crate::wire_options::merge_headers(self.profile, &mut headers);
-        if adapter(self.profile) == Some(Adapter::Anthropic) {
+        if self.adapter() == Some(Adapter::Anthropic) {
             headers.retain(|(name, _)| !name.eq_ignore_ascii_case("anthropic-version"));
             let version = self
                 .profile
@@ -586,7 +1316,7 @@ impl<'a> FileService<'a> {
             || file.provider_id != self.profile.provider_id
             || file.protocol != self.profile.protocol
             || file.endpoint_fingerprint
-                != provider_file_endpoint_fingerprint(&self.profile.base_url)
+                != provider_file_endpoint_fingerprint(&self.endpoint_identity())
             || file.account_scope.as_deref() != self.account_scope
         {
             return Err(LlmError::PermissionDenied {
@@ -597,4 +1327,77 @@ impl<'a> FileService<'a> {
         }
         Ok(())
     }
+}
+
+fn unknown_upload_outcome(
+    operation: &'static str,
+    source: LlmError,
+    reference: Option<ProviderFileRef>,
+) -> FileUploadError {
+    FileUploadError::OutcomeUnknown {
+        operation,
+        source: Box::new(source),
+        reference: reference.map(Box::new),
+    }
+}
+
+fn minimax_base_response_code(value: &Value) -> Option<i64> {
+    value
+        .get("base_resp")?
+        .get("status_code")
+        .and_then(|status| status.as_i64().or_else(|| status.as_str()?.parse().ok()))
+}
+
+struct BatchStreamParts {
+    prefix: Option<Bytes>,
+    file: BoxStream<'static, Result<Bytes, LlmError>>,
+    remaining: u64,
+    file_finished: bool,
+    suffix: Option<Bytes>,
+}
+
+fn stream_batch_body(
+    prefix: Bytes,
+    file: BoxStream<'static, Result<Bytes, LlmError>>,
+    size_bytes: u64,
+    suffix: Bytes,
+) -> BoxStream<'static, Result<Bytes, LlmError>> {
+    stream::try_unfold(
+        BatchStreamParts {
+            prefix: Some(prefix),
+            file,
+            remaining: size_bytes,
+            file_finished: false,
+            suffix: Some(suffix),
+        },
+        |mut state| async move {
+            if let Some(prefix) = state.prefix.take() {
+                return Ok(Some((prefix, state)));
+            }
+            if !state.file_finished {
+                match state.file.next().await {
+                    Some(Ok(chunk)) => {
+                        if chunk.len() as u64 > state.remaining {
+                            return Err(LlmError::InvalidRequest {
+                                message: "batch upload stream exceeds declared size".into(),
+                            });
+                        }
+                        state.remaining -= chunk.len() as u64;
+                        return Ok(Some((chunk, state)));
+                    }
+                    Some(Err(error)) => return Err(error),
+                    None => {
+                        state.file_finished = true;
+                        if state.remaining != 0 {
+                            return Err(LlmError::InvalidRequest {
+                                message: "batch upload stream is shorter than declared size".into(),
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(state.suffix.take().map(|suffix| (suffix, state)))
+        },
+    )
+    .boxed()
 }

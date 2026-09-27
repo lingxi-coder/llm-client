@@ -6,12 +6,22 @@
 //! a profile naming an OpenAI-compatible provider needs no capability entry —
 //! only a `ProviderProfile` (gate 30).
 
+pub(crate) mod code_interpreter;
 pub(crate) mod inference;
 mod input;
 mod json;
+pub(crate) mod openrouter_server_tools;
 pub use input::{CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode};
 pub mod anthropic;
+pub(crate) mod anthropic_client_toolset_history;
+pub(crate) mod anthropic_client_toolsets;
+pub(crate) mod anthropic_code_execution;
+pub(crate) mod anthropic_conversation;
+pub(crate) mod anthropic_mcp;
+pub(crate) mod anthropic_tool_search;
+pub(crate) mod anthropic_web_fetch;
 pub(crate) mod file_search_decode;
+pub(crate) mod foundry;
 pub mod gemini;
 pub mod hosted;
 pub mod openai;
@@ -21,8 +31,8 @@ pub(crate) mod web_search;
 pub(crate) mod web_search_decode;
 
 use crate::protocol::{
-    CompletionRequest, CompletionResponse, LlmError, ProtocolFamily, ProviderFileSource,
-    ProviderProfile, StreamEvent,
+    ChatRequest, ChatResponse, LlmError, ProtocolFamily, ProviderFileSource, ProviderProfile,
+    StreamEvent,
 };
 use crate::transport::{HttpRequest, HttpResponse};
 
@@ -31,12 +41,34 @@ use std::sync::Arc;
 /// A Responses continuation id is endpoint-side state, not an optional hint.
 /// Refuse it on every other wire rather than silently starting a fresh turn.
 pub(crate) fn reject_responses_continuation(
-    req: &CompletionRequest,
+    req: &ChatRequest,
     family: ProtocolFamily,
 ) -> Result<(), LlmError> {
-    if req.previous_response_id.is_some() {
+    if req.continuation.is_some() {
         return Err(LlmError::UnsupportedCapability {
             message: format!("{family:?} cannot continue a Responses id"),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn reject_code_interpreter(
+    req: &ChatRequest,
+    family: ProtocolFamily,
+) -> Result<(), LlmError> {
+    if req.anthropic_mcp_servers().next().is_some()
+        && !matches!(
+            family,
+            ProtocolFamily::AnthropicMessages | ProtocolFamily::FoundryClaude
+        )
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: format!("{family:?} cannot encode the Anthropic MCP connector"),
+        });
+    }
+    if req.hosted_code_interpreter().is_some() {
+        return Err(LlmError::UnsupportedCapability {
+            message: format!("{family:?} cannot encode Code Interpreter"),
         });
     }
     Ok(())
@@ -49,7 +81,12 @@ pub(crate) fn validate_provider_file<'a>(
     profile: &ProviderProfile,
     opts: &CodecContext,
 ) -> Result<&'a ProviderFileSource, LlmError> {
-    crate::files::validate_provider_file(file, profile, opts.file_scope())
+    crate::files::validate_provider_file_at(
+        file,
+        profile,
+        opts.file_scope(),
+        opts.file_validation_time(),
+    )
 }
 
 pub(crate) fn unresolved_attachment_error() -> LlmError {
@@ -71,7 +108,7 @@ pub trait WireCodec: Send + Sync + 'static {
     /// Validate control settings before uploads or authentication have side effects.
     fn validate_request(
         &self,
-        _req: &CompletionRequest,
+        _req: &ChatRequest,
         _context: &CodecContext,
     ) -> Result<(), LlmError> {
         Ok(())
@@ -79,7 +116,7 @@ pub trait WireCodec: Send + Sync + 'static {
     /// Request metadata for pricing and reporting. Built-in codecs also read native body defaults.
     fn request_inference(
         &self,
-        req: &CompletionRequest,
+        req: &ChatRequest,
         _context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         Ok(crate::protocol::InferenceReport {
@@ -106,7 +143,7 @@ pub trait WireCodec: Send + Sync + 'static {
         &self,
         response: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError>;
+    ) -> Result<ChatResponse, LlmError>;
     fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder>;
 }
 
@@ -152,3 +189,8 @@ pub(crate) fn builtin() -> Vec<Arc<dyn WireCodec>> {
         Arc::new(crate::codecs::openai::responses::OpenAiResponsesCodec),
     ]
 }
+
+pub(crate) mod structured;
+
+pub(crate) mod cache;
+pub(crate) mod qwen_cache;

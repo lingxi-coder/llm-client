@@ -1,0 +1,15 @@
+operation,concurrency,samples,p50_ns,p95_ns,allocations_per_sample,allocated_bytes_per_sample
+builtin_cold_parse_borrowed,1,1,17931375,17931375,113067.00,34237122.00
+builtin_warm_borrowed,1,1024,2,2,0.00,0.00
+builtin_warm_owned,1,1024,417667,479708,10510.00,1102702.00
+build_one_profile_mock_transport,1,1024,3292,3417,82.00,8073.00
+client_clone_drop,1,1024,5,5,0.00,0.00
+snapshot_capture_drop,1,1024,22,22,0.00,0.00
+snapshot_resolve,1,1024,459,583,11.00,168.00
+live_resolve,1,1024,459,583,11.00,168.00
+shared_prepare,1,1024,10875,13000,95.00,34354.00
+shared_complete,1,1024,23583,27667,199.00,42991.00
+shared_prepare,16,16384,11333,21625,95.00,34354.00
+shared_complete,16,16384,24208,47042,199.00,42991.00
+shared_prepare,64,65536,11917,22125,95.00,34354.00
+shared_complete,64,65536,25417,47959,199.00,42991.00

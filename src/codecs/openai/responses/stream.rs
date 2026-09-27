@@ -15,7 +15,7 @@ use serde_json::Value;
 pub struct ResponsesStreamDecoder {
     inference: crate::codecs::inference::StreamInference,
     started: bool,
-    reasoning_items: std::collections::BTreeSet<usize>,
+    native_items: std::collections::BTreeSet<usize>,
     /// output index → (call id, name), learned from `output_item.added`.
     calls: Vec<(usize, ToolUseId, String)>,
     /// The provider's usage object as sent. Kept raw so the report can be
@@ -29,6 +29,10 @@ pub struct ResponsesStreamDecoder {
     stop: Option<StopReason>,
     saw_tool_call: bool,
     saw_refusal: bool,
+    requires_action: bool,
+    openai_approval_semantics: bool,
+    openai_tool_search_semantics: bool,
+    qwen_code_interpreter: bool,
     done: bool,
     search: SearchStream,
     file_search: FileSearchStream,
@@ -78,7 +82,7 @@ impl EventDecoder for ResponsesStreamDecoder {
             }
             Some("response.output_item.done") => {
                 let item = &root["item"];
-                self.emit_reasoning(index(&root), item, &mut out);
+                self.emit_native(index(&root), item, &mut out);
                 self.saw_refusal |= decode::has_refusal(item);
                 if item.get("type").and_then(Value::as_str) == Some("file_search_call") {
                     self.file_search
@@ -130,6 +134,8 @@ impl EventDecoder for ResponsesStreamDecoder {
                     out.push(StreamEvent::ToolCallDelta {
                         block: index(&root),
                         id,
+                        caller: None,
+                        toolset_name: None,
                         name,
                         arguments_fragment: String::new(),
                         provider_id: None,
@@ -151,12 +157,23 @@ impl EventDecoder for ResponsesStreamDecoder {
                     block: index(&root),
                     text: delta(&root),
                 }),
+            Some(
+                "response.code_interpreter_call.in_progress"
+                | "response.code_interpreter_call.interpreting"
+                | "response.code_interpreter_call.completed",
+            ) if self.qwen_code_interpreter => out.push(StreamEvent::ProviderContent {
+                block: index(&root),
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                value: root.clone(),
+            }),
             Some("response.function_call_arguments.delta") => {
                 let i = index(&root);
                 if let Some((_, id, name)) = self.calls.iter().find(|(c, _, _)| *c == i) {
                     out.push(StreamEvent::ToolCallDelta {
                         block: i,
                         id: id.clone(),
+                        caller: None,
+                        toolset_name: None,
                         name: name.clone(),
                         arguments_fragment: delta(&root),
                         provider_id: None,
@@ -167,7 +184,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                 let response = root.get("response").unwrap_or(&Value::Null);
                 if let Some(items) = response.get("output").and_then(Value::as_array) {
                     for (index, item) in items.iter().enumerate() {
-                        self.emit_reasoning(index, item, &mut out);
+                        self.emit_native(index, item, &mut out);
                     }
                 }
                 self.file_search.emit(response, &mut out);
@@ -185,7 +202,11 @@ impl EventDecoder for ResponsesStreamDecoder {
                     .get("output")
                     .and_then(Value::as_array)
                     .is_some_and(|items| items.iter().any(decode::has_refusal));
-                self.stop = Some(decode::stop_reason(response));
+                self.stop = Some(decode::stop_reason_with_approval_support(
+                    response,
+                    self.openai_approval_semantics,
+                    self.openai_tool_search_semantics,
+                ));
                 self.finish_into(&mut out);
             }
             Some("response.failed") => {
@@ -235,8 +256,15 @@ impl EventDecoder for ResponsesStreamDecoder {
 }
 
 impl ResponsesStreamDecoder {
-    fn emit_reasoning(&mut self, block: usize, item: &Value, out: &mut Vec<StreamEvent>) {
-        if item["type"].as_str() == Some("reasoning") && self.reasoning_items.insert(block) {
+    fn emit_native(&mut self, block: usize, item: &Value, out: &mut Vec<StreamEvent>) {
+        self.requires_action |= self.openai_approval_semantics
+            && item["type"] == "mcp_approval_request"
+            || self.openai_tool_search_semantics && decode::is_client_tool_search_call(item);
+        if item["type"]
+            .as_str()
+            .is_some_and(|kind| !matches!(kind, "message" | "function_call"))
+            && self.native_items.insert(block)
+        {
             out.push(StreamEvent::ProviderContent {
                 block,
                 protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
@@ -257,6 +285,8 @@ impl ResponsesStreamDecoder {
                 .is_some_and(|reason| *reason != StopReason::EndTurn)
             {
                 self.stop.clone().unwrap()
+            } else if self.requires_action {
+                StopReason::Other("requires_action".into())
             } else if self.saw_tool_call {
                 StopReason::ToolUse
             } else if self.saw_refusal {
@@ -274,6 +304,14 @@ impl ResponsesStreamDecoder {
     pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
         Self {
             inference: crate::codecs::inference::StreamInference::new(context),
+            openai_approval_semantics: context.profile().provider_id.as_str() != "xai",
+            openai_tool_search_semantics: super::encode::is_official_openai_responses_profile(
+                context.profile(),
+            ),
+            qwen_code_interpreter: super::qwen_hosted::supports_code_interpreter(
+                context.profile(),
+                context.request_model(),
+            ),
             ..Self::default()
         }
     }

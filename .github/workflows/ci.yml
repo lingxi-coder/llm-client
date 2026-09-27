@@ -12,19 +12,25 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: [default, tokenizers-all]
+        include:
+          - features: default
+            args: --features default
+          - features: tokenizers-all
+            args: --features tokenizers-all
+          - features: all
+            args: --all-features
     steps:
       - uses: actions/checkout@v6.1.0
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt clippy
       - name: Test
-        run: cargo test --locked --features '${{ matrix.features }}'
+        run: cargo test --locked ${{ matrix.args }}
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint
-        run: cargo clippy --all-targets --locked --features '${{ matrix.features }}' -- -D warnings
+        run: cargo clippy --all-targets --locked ${{ matrix.args }} -- -D warnings
       - name: Check Rustdoc
-        run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --features '${{ matrix.features }}'
+        run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked ${{ matrix.args }}
       - name: Compile bilingual documentation and extension APIs downstream
         if: matrix.features == 'default'
         run: cargo test --manifest-path tests/downstream-docs/Cargo.toml --locked --offline --target-dir target

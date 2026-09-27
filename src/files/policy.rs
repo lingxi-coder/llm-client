@@ -1,5 +1,6 @@
 //! Provider-specific file capabilities and validation.
 use super::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn automatic_file_cache_ttl(profile: &ProviderProfile) -> Option<Duration> {
     matches!(
@@ -22,12 +23,14 @@ pub(crate) fn valid_qwen_file_id(file_id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+const MINIMAX_VOICE_AUDIO_MAX_UPLOAD_BYTES: u64 = 20_000_000;
+
 pub(crate) fn is_qwen_long_model(model: &str) -> bool {
     model.eq_ignore_ascii_case("qwen-long") || model.to_ascii_lowercase().starts_with("qwen-long-")
 }
 
 pub(crate) fn validate_qwen_long_inputs(
-    request: &CompletionRequest,
+    request: &ChatRequest,
     resolved: &[(usize, usize)],
 ) -> Result<(), LlmError> {
     validate_qwen_long_blocks(request.messages.iter().enumerate().flat_map(|(mi, m)| {
@@ -254,6 +257,10 @@ pub(crate) fn is_qwen_file_type(media_type: &str) -> bool {
 
 pub(crate) fn purpose_name(adapter: Adapter, purpose: FilePurpose) -> Option<&'static str> {
     match (adapter, purpose) {
+        (Adapter::OpenAi, FilePurpose::Batch) => Some("batch"),
+        // xAI treats `purpose` as an optional OpenAI-compatibility echo; its
+        // documented Batch upload sends only the file field.
+        (Adapter::Xai, FilePurpose::Batch) => None,
         (Adapter::OpenAi, FilePurpose::ModelInput) => Some("user_data"),
         (Adapter::Xai, FilePurpose::ModelInput) => Some("assistants"),
         (Adapter::Moonshot | Adapter::Qwen, FilePurpose::Extraction | FilePurpose::ModelInput) => {
@@ -442,8 +449,21 @@ pub(crate) fn adapter(profile: &ProviderProfile) -> Option<Adapter> {
         ("zhipu", "api.z.ai") => Some(Adapter::Zai),
         ("zhipu", "open.bigmodel.cn") => Some(Adapter::Zhipu),
         ("qwen", host) if is_qwen_files_host(host) => Some(Adapter::Qwen),
-        ("minimax", "api.minimaxi.com" | "api.minimax.io") => Some(Adapter::MiniMax),
+        ("minimax", "api.minimaxi.com" | "api.minimax.cn" | "api.minimax.io") => {
+            Some(Adapter::MiniMax)
+        }
         _ => None,
+    }
+}
+
+/// Canonical endpoint identity for provider file references. Foundry's Files
+/// API is resource-scoped and uses one normalized Anthropic resource base;
+/// ordinary service discovery still does not infer that route from a URL.
+pub(crate) fn provider_file_endpoint_identity(profile: &ProviderProfile) -> Option<String> {
+    if profile.protocol == ProtocolFamily::FoundryClaude {
+        crate::protocol::AnthropicContainerScope::normalize_foundry_endpoint(&profile.base_url)
+    } else {
+        Some(profile.base_url.clone())
     }
 }
 
@@ -490,7 +510,7 @@ pub(crate) fn capabilities_for_adapter(adapter: Adapter) -> FileCapabilities {
             download: DownloadSupport::UploadedFiles,
             extract_text: false,
             model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(512 * 1024 * 1024),
+            max_upload_bytes: Some(50_000_000),
             retention: None,
         },
         Adapter::OpenRouter => FileCapabilities {
@@ -570,6 +590,18 @@ pub(crate) fn purpose_capabilities(
     media_type: &str,
 ) -> FileCapabilities {
     match (adapter, purpose) {
+        (Adapter::OpenAi, FilePurpose::Batch) => {
+            let mut capabilities = capabilities_for_adapter(adapter);
+            capabilities.max_upload_bytes = Some(200_000_000);
+            capabilities
+        }
+        (Adapter::Xai, FilePurpose::Batch) => {
+            // The Files REST reference currently caps /v1/files at 50 MB,
+            // despite the Batch guide's separate 200 MB file-batch limit.
+            let mut capabilities = capabilities_for_adapter(adapter);
+            capabilities.max_upload_bytes = Some(50_000_000);
+            capabilities
+        }
         (Adapter::Moonshot, FilePurpose::Extraction) => FileCapabilities {
             upload: true,
             ..capabilities_for_adapter(adapter)
@@ -599,6 +631,9 @@ pub(crate) fn purpose_capabilities(
             let mut capabilities = capabilities_for_adapter(adapter);
             capabilities.upload = true;
             capabilities.max_upload_bytes = None;
+            if matches!(purpose, FilePurpose::VoiceClone | FilePurpose::PromptAudio) {
+                capabilities.max_upload_bytes = Some(MINIMAX_VOICE_AUDIO_MAX_UPLOAD_BYTES);
+            }
             if matches!(
                 purpose,
                 FilePurpose::VideoUnderstanding | FilePurpose::VideoGenerationInput
@@ -653,11 +688,12 @@ pub(crate) fn capabilities_for_media_type(
     capabilities
 }
 
-pub(crate) fn validate_direct_provider_file_inputs<'a>(
+pub(crate) fn validate_direct_provider_file_inputs_at<'a>(
     blocks: impl IntoIterator<Item = &'a ContentBlock>,
     profile: &ProviderProfile,
     model: &str,
     account_scope: Option<&str>,
+    now: SystemTime,
 ) -> Result<(), LlmError> {
     for block in blocks {
         let (file, media_prefix) = match block {
@@ -673,7 +709,7 @@ pub(crate) fn validate_direct_provider_file_inputs<'a>(
             } => (file, Some("video/")),
             _ => continue,
         };
-        validate_provider_file(file, profile, account_scope)?;
+        validate_provider_file_at(file, profile, account_scope, now)?;
         let media_type = file
             .media_type
             .as_deref()
@@ -712,7 +748,45 @@ pub(crate) fn validate_direct_provider_file_inputs<'a>(
     }
     Ok(())
 }
-pub(crate) fn validate_provider_file<'a>(
+pub(crate) fn validate_provider_file_at<'a>(
+    file: &'a crate::protocol::ProviderFileSource,
+    profile: &ProviderProfile,
+    account_scope: Option<&str>,
+    now: SystemTime,
+) -> Result<&'a crate::protocol::ProviderFileSource, LlmError> {
+    validate_provider_file_identity(file, profile, account_scope)?;
+    validate_file_expiration_at(file.expires_at.as_deref(), now)?;
+    validate_provider_file_readiness(file, profile)?;
+    Ok(file)
+}
+
+pub(crate) fn validate_provider_file_readiness(
+    file: &crate::protocol::ProviderFileSource,
+    profile: &ProviderProfile,
+) -> Result<(), LlmError> {
+    let Some(status) = file.processing_status.as_deref() else {
+        return Ok(());
+    };
+    match (adapter(profile), status) {
+        (Some(Adapter::Gemini), "PROCESSING")
+        | (Some(Adapter::Qwen), "uploaded" | "processing") => {
+            Err(LlmError::ProviderFileProcessing {
+                message: format!("provider file is still processing ({status})"),
+                file: Box::new(file.clone()),
+            })
+        }
+        (Some(Adapter::Gemini), "FAILED") | (Some(Adapter::Qwen), "error") => {
+            Err(LlmError::InvalidRequest {
+                message: format!("provider file processing failed ({status})"),
+            })
+        }
+        // Unknown and absent statuses remain unknown; they are not treated as
+        // ready or failed based on another provider's status vocabulary.
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn validate_provider_file_identity<'a>(
     file: &'a crate::protocol::ProviderFileSource,
     profile: &ProviderProfile,
     account_scope: Option<&str>,
@@ -722,11 +796,13 @@ pub(crate) fn validate_provider_file<'a>(
             message: "provider file inputs require an explicit account scope".into(),
         });
     };
+    let endpoint_identity = provider_file_endpoint_identity(profile);
     if file.protocol != profile.protocol
         || file.provider_id != profile.provider_id
         || file.profile_name != profile.profile_name
-        || file.endpoint_fingerprint
-            != crate::files::provider_file_endpoint_fingerprint(&profile.base_url)
+        || endpoint_identity.as_deref().is_none_or(|endpoint| {
+            file.endpoint_fingerprint != crate::files::provider_file_endpoint_fingerprint(endpoint)
+        })
         || file.account_scope.as_deref() != Some(active_account_scope)
     {
         return Err(LlmError::UnsupportedCapability {
@@ -743,6 +819,64 @@ pub(crate) fn validate_provider_file<'a>(
     }
     Ok(file)
 }
+
+/// Validate a provider timestamp without changing its representation in the
+/// reference. Integer values are Unix seconds; textual values are RFC 3339.
+pub(crate) fn validate_file_expiration_at(
+    expires_at: Option<&str>,
+    now: SystemTime,
+) -> Result<(), LlmError> {
+    let Some(expires_at) = expires_at else {
+        return Ok(());
+    };
+    let expiry = parse_provider_file_expiration(expires_at)?;
+    if expiry <= now {
+        return Err(LlmError::InvalidRequest {
+            message: "provider file reference has expired".into(),
+        });
+    }
+    Ok(())
+}
+
+fn parse_provider_file_expiration(value: &str) -> Result<SystemTime, LlmError> {
+    let nanos_since_epoch = if let Ok(seconds) = value.parse::<i64>() {
+        i128::from(seconds)
+            .checked_mul(1_000_000_000)
+            .ok_or_else(invalid_expiration)?
+    } else {
+        let datetime =
+            chrono::DateTime::parse_from_rfc3339(value).map_err(|_| invalid_expiration())?;
+        i128::from(datetime.timestamp())
+            .checked_mul(1_000_000_000)
+            .and_then(|nanos| nanos.checked_add(i128::from(datetime.timestamp_subsec_nanos())))
+            .ok_or_else(invalid_expiration)?
+    };
+    system_time_from_unix_nanos(nanos_since_epoch).ok_or_else(invalid_expiration)
+}
+
+fn system_time_from_unix_nanos(nanos_since_epoch: i128) -> Option<SystemTime> {
+    const NANOS_PER_SECOND: i128 = 1_000_000_000;
+    let (magnitude, subtract) = if nanos_since_epoch < 0 {
+        (nanos_since_epoch.checked_neg()?, true)
+    } else {
+        (nanos_since_epoch, false)
+    };
+    let seconds = u64::try_from(magnitude / NANOS_PER_SECOND).ok()?;
+    let subsecond_nanos = u32::try_from(magnitude % NANOS_PER_SECOND).ok()?;
+    let duration = Duration::new(seconds, subsecond_nanos);
+    if subtract {
+        UNIX_EPOCH.checked_sub(duration)
+    } else {
+        UNIX_EPOCH.checked_add(duration)
+    }
+}
+
+fn invalid_expiration() -> LlmError {
+    LlmError::InvalidRequest {
+        message: "provider file expiration timestamp is malformed or unrepresentable".into(),
+    }
+}
+
 /// Pure, valid placeholder used to validate the entire wire request before uploads.
 pub(crate) fn projected_reference(
     profile: &ProviderProfile,
@@ -771,13 +905,78 @@ pub(crate) fn projected_reference(
         protocol: profile.protocol,
         provider_id: profile.provider_id.clone(),
         profile_name: profile.profile_name.clone(),
-        endpoint_fingerprint: provider_file_endpoint_fingerprint(&profile.base_url),
+        endpoint_fingerprint: provider_file_endpoint_fingerprint(
+            &provider_file_endpoint_identity(profile).unwrap_or_else(|| profile.base_url.clone()),
+        ),
         account_scope: scope.map(str::to_owned),
         file_id: file_id.into(),
         uri,
+        expires_at: None,
+        processing_status: None,
         media_type: Some(media_type.into()),
         purpose: adapter
             .and_then(|adapter| purpose_name(adapter, purpose))
             .map(str::to_owned),
+    }
+}
+
+#[cfg(test)]
+mod expiration_tests {
+    use super::*;
+
+    fn at(seconds: u64, nanos: u32) -> SystemTime {
+        UNIX_EPOCH + Duration::new(seconds, nanos)
+    }
+
+    #[test]
+    fn expiration_accepts_absent_and_unexpired_values_and_expires_at_equality() {
+        assert!(validate_file_expiration_at(None, UNIX_EPOCH).is_ok());
+        assert!(validate_file_expiration_at(Some("1"), UNIX_EPOCH).is_ok());
+        assert!(validate_file_expiration_at(Some("1"), at(1, 0)).is_err());
+    }
+
+    #[test]
+    fn expiration_rfc3339_fractional_seconds_are_compared_exactly() {
+        let expiration = "2030-01-01T00:00:00.500Z";
+        let boundary = parse_provider_file_expiration(expiration).unwrap();
+        assert!(
+            validate_file_expiration_at(Some(expiration), boundary - Duration::from_nanos(1))
+                .is_ok()
+        );
+        assert!(validate_file_expiration_at(Some(expiration), boundary).is_err());
+        assert!(
+            validate_file_expiration_at(Some(expiration), boundary + Duration::from_nanos(1))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn expiration_rfc3339_offsets_compare_as_the_same_instant() {
+        let positive_offset = "2030-01-01T02:00:00+02:00";
+        let negative_offset = "2029-12-31T19:00:00-05:00";
+        assert_eq!(
+            parse_provider_file_expiration(positive_offset).unwrap(),
+            parse_provider_file_expiration(negative_offset).unwrap()
+        );
+        let boundary = parse_provider_file_expiration(positive_offset).unwrap();
+        assert!(validate_file_expiration_at(Some(negative_offset), boundary).is_err());
+    }
+
+    #[test]
+    fn expiration_rejects_malformed_and_unrepresentable_values() {
+        for value in ["", "not-a-date", "9223372036854775808"] {
+            assert!(matches!(
+                validate_file_expiration_at(Some(value), UNIX_EPOCH),
+                Err(LlmError::InvalidRequest { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn pre_epoch_integer_expiration_is_already_expired_at_epoch() {
+        assert!(matches!(
+            validate_file_expiration_at(Some("-1"), UNIX_EPOCH),
+            Err(LlmError::InvalidRequest { .. })
+        ));
     }
 }

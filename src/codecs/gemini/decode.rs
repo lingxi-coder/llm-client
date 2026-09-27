@@ -1,8 +1,8 @@
 //! Response and error decoding for `generateContent`.
 
 use crate::protocol::{
-    CompletionResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, StopReason,
-    ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
+    StopReason, ToolUseId, Usage,
 };
 use crate::transport::HttpResponse;
 use serde_json::Value;
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 static NEXT_LOCAL_CALL_ID: AtomicU64 = AtomicU64::new(0);
 
-pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
+pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatResponse, LlmError> {
     let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
     if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
@@ -41,16 +41,21 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
     let mut saw_tool_call = false;
     let mut used_ids = provider_call_ids(parts);
     for part in parts {
-        if let Some(block) = decode_part(part, &mut saw_tool_call, &mut used_ids) {
+        if let Some(block) = decode_part(part, protocol, &mut saw_tool_call, &mut used_ids) {
             content.push(block);
         }
     }
 
-    Ok(CompletionResponse {
+    Ok(ChatResponse {
         inference: Default::default(),
+        response_cache: None,
         web_search: crate::codecs::web_search_decode::gemini(&candidate),
         file_search: None,
+        openrouter_container: None,
+        anthropic_container: None,
+        anthropic_usage: None,
         message: ConversationMessage {
+            anthropic: None,
             role: MessageRole::Assistant,
             content,
         },
@@ -74,6 +79,7 @@ pub fn response(resp: &HttpResponse) -> Result<CompletionResponse, LlmError> {
             .unwrap_or_default()
             .to_owned(),
         response_id: None,
+        continuation: None,
         executed_profile: None,
     })
 }
@@ -108,6 +114,7 @@ pub(super) fn call_id(call: &Value, used_ids: &mut HashSet<String>) -> (ToolUseI
 
 fn decode_part(
     part: &Value,
+    protocol: ProtocolFamily,
     saw_tool_call: &mut bool,
     used_ids: &mut HashSet<String>,
 ) -> Option<ContentBlock> {
@@ -124,7 +131,20 @@ fn decode_part(
             name,
             input: call.get("args").cloned().unwrap_or(Value::Null),
             provider_id,
+            caller: None,
+            toolset_name: None,
             thought_signature,
+        });
+    }
+    if part.get("executableCode").is_some()
+        || part.get("codeExecutionResult").is_some()
+        || part.get("inlineData").is_some()
+        || part.get("toolCall").is_some()
+        || part.get("toolResponse").is_some()
+    {
+        return Some(ContentBlock::ProviderContent {
+            protocol,
+            value: part.clone(),
         });
     }
     let text = part.get("text").and_then(Value::as_str)?.to_owned();

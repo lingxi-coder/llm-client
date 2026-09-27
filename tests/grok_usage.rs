@@ -4,7 +4,7 @@ mod wire_api;
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::codecs::openai::chat::OpenAiChatCodec;
-use lingxi_llm_client::protocol::{AuthStrategy, CompletionRequest, LlmError, Region, StreamEvent};
+use lingxi_llm_client::protocol::{AuthStrategy, ChatRequest, LlmError, Region, StreamEvent};
 use lingxi_llm_client::{
     builtin_providers, HttpRequest, HttpResponse, LlmClientBuilder, RequestOptions, StreamResponse,
     Transport, WireCodec,
@@ -61,9 +61,10 @@ async fn builtin_grok_normalizes_buffered_and_streamed_reasoning_for_pricing() {
     .with_region(Region::International)
     .build()
     .unwrap();
-    let req: CompletionRequest =
+    let req: ChatRequest =
         serde_json::from_value(json!({"model":"grok-4.20","messages":[]})).unwrap();
     let complete = client
+        .chat()
         .complete(&req, &RequestOptions::default())
         .await
         .unwrap();
@@ -81,6 +82,7 @@ async fn builtin_grok_normalizes_buffered_and_streamed_reasoning_for_pricing() {
         .unwrap();
     assert!(cost.total_cost > 0.0);
     let mut streamed = client
+        .chat()
         .stream(&req, &RequestOptions::default())
         .await
         .unwrap();
@@ -153,7 +155,7 @@ impl WireCodec for ProfileCodec {
         &self,
         response: &HttpResponse,
         context: &lingxi_llm_client::CodecContext,
-    ) -> Result<lingxi_llm_client::protocol::CompletionResponse, LlmError> {
+    ) -> Result<lingxi_llm_client::protocol::ChatResponse, LlmError> {
         assert_eq!(response.status, 429);
         assert_eq!(context.profile().profile_name, "grok");
         Err(LlmError::QuotaExceeded {
@@ -179,14 +181,17 @@ async fn profile_error_hook_is_used_for_both_request_modes() {
     let mut builder = LlmClientBuilder::with_transport(Arc::new(Http { status: 429 }), &[profile]);
     builder.register_codec(Arc::new(ProfileCodec));
     let client = builder.with_region(Region::International).build().unwrap();
-    let req: CompletionRequest =
+    let req: ChatRequest =
         serde_json::from_value(json!({"model":"grok-4.20","messages":[]})).unwrap();
     assert!(matches!(
-        client.complete(&req, &RequestOptions::default()).await,
+        client
+            .chat()
+            .complete(&req, &RequestOptions::default())
+            .await,
         Err(LlmError::QuotaExceeded { .. })
     ));
     assert!(matches!(
-        client.stream(&req, &RequestOptions::default()).await,
+        client.chat().stream(&req, &RequestOptions::default()).await,
         Err(LlmError::QuotaExceeded { .. })
     ));
 }

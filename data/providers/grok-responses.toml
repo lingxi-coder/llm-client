@@ -23,6 +23,9 @@ docs_url = "https://docs.x.ai"
 connection = { group = "xai-responses", connection_id = "responses", order = 0 }
 # catalog provenance: derived from the aggregator slice by stripping its x-ai/ qualifier; this vendor publishes no first-party slice, and the prices are the aggregator's
 
+[extra]
+xai_remote_mcp = "xai_responses"
+
 [[model]]
 id = "grok-4.20"
 name = "Grok 4.20"

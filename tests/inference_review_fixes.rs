@@ -17,7 +17,7 @@ fn client(p: &ProviderProfile) -> LlmClient {
         .build()
         .unwrap()
 }
-fn request(model: &str, thinking: Value) -> CompletionRequest {
+fn request(model: &str, thinking: Value) -> ChatRequest {
     serde_json::from_value(
         json!({"model":model,"messages":[],"max_tokens":8192,"thinking":thinking}),
     )
@@ -76,8 +76,8 @@ fn gemini_effort_lists_match_model_specific_thinking_levels() {
     }
 }
 
-#[test]
-fn effort_mode_queries_and_validation_share_wire_constraints() {
+#[tokio::test]
+async fn effort_mode_queries_and_validation_share_wire_constraints() {
     for (name, id, codec, disabled_effort) in [
         (
             "openai",
@@ -101,16 +101,24 @@ fn effort_mode_queries_and_validation_share_wire_constraints() {
         let mut p = preset(name);
         if codec.family() == ProtocolFamily::OpenAiChat {
             p.protocol = ProtocolFamily::OpenAiChat;
+            p.background = ServiceSetting::Disabled;
             p.inference.reasoning = Some(ReasoningWire::OpenAiChat);
         }
         p.models.retain(|m| m.request_model == id);
-        let c = client(&p);
+        let (c, c_config) =
+            LlmClientBuilder::with_transport(Arc::new(support::NoHttp), std::slice::from_ref(&p))
+                .with_region(Region::International)
+                .build_managed()
+                .unwrap();
         let f = &c.models()[0].info.features;
         assert_eq!(f, &p.models[0].info.features);
-        assert_eq!(f, &c.profiles()[0].models[0].info.features);
+        assert_eq!(f, &c.snapshot().profiles()[0].models[0].info.features);
         assert_eq!(
             f,
-            &c.configured_models(name).unwrap()[0].model.info.features
+            &c_config.configured_models(name).await.unwrap()[0]
+                .model
+                .info
+                .features
         );
         assert_eq!(f.effort.with_disabled_thinking, disabled_effort);
         assert_eq!(

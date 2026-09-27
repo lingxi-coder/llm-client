@@ -1,8 +1,8 @@
 //! Published prices selected by model and service tier, never by effort.
-use super::{pricing, LlmClient, ResolvedRoute};
+use super::{pricing, ClientSnapshot, ResolvedRoute};
 use crate::protocol::*;
 
-impl LlmClient {
+impl ClientSnapshot {
     /// Query published unit rates. Effort changes consumption, not unit prices.
     pub fn price_quote(
         &self,
@@ -22,7 +22,8 @@ impl LlmClient {
         let mut context = context.clone();
         if context.unix_seconds.is_none() {
             context.unix_seconds = Some(
-                self.clock
+                self.runtime
+                    .clock
                     .now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_secs()),

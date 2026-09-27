@@ -7,7 +7,7 @@ pub(super) fn is_qwen_long(profile: &ProviderProfile, model: &str) -> bool {
 pub(super) fn preflight_qwen_long_files(
     profile: &ProviderProfile,
     model: &str,
-    request: &CompletionRequest,
+    request: &ChatRequest,
     attachments: &[ResolvedAttachmentPayload],
     opts: &RequestOptions,
 ) -> Result<(), LlmError> {
@@ -36,7 +36,7 @@ pub(super) fn preflight_qwen_long_files(
             } => file,
             _ => continue,
         };
-        let file = crate::files::validate_provider_file(
+        let file = crate::files::validate_provider_file_identity(
             file,
             profile,
             opts.file_account_scope.as_deref(),
@@ -100,9 +100,7 @@ pub(super) fn is_image_media_type(media_type: &str) -> bool {
     media_type.trim().to_ascii_lowercase().starts_with("image/")
 }
 
-pub(super) fn validate_image_attachment_media_types(
-    request: &CompletionRequest,
-) -> Result<(), LlmError> {
+pub(super) fn validate_image_attachment_media_types(request: &ChatRequest) -> Result<(), LlmError> {
     for block in request.messages.iter().flat_map(|message| &message.content) {
         let ContentBlock::Image {
             source: ImageSource::Attachment { attachment },
@@ -144,7 +142,7 @@ pub(super) fn validate_image_attachment_media_types(
 }
 
 pub(super) fn validate_anthropic_document_media_types(
-    request: &CompletionRequest,
+    request: &ChatRequest,
 ) -> Result<(), LlmError> {
     for block in request.messages.iter().flat_map(|message| &message.content) {
         let ContentBlock::Document { source, .. } = block else {
@@ -167,18 +165,44 @@ pub(super) fn validate_anthropic_document_media_types(
     Ok(())
 }
 
-pub(super) fn uses_first_party_openai_file_inputs(profile: &ProviderProfile) -> bool {
-    profile.provider_id.as_str() == "openai"
-        && matches!(
-            profile.protocol,
-            ProtocolFamily::OpenAiResponses | ProtocolFamily::OpenAiChat
-        )
-        && url::Url::parse(&profile.base_url)
-            .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.openai.com"))
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FirstPartyEndpoint {
+    Other,
+    OpenAi,
+    Anthropic,
+    Gemini,
+}
+
+pub(super) struct FilePlanOptions {
+    pub file_validation_time: std::time::SystemTime,
+    pub endpoint: FirstPartyEndpoint,
+    pub inline_image_data_budget_bytes: Option<usize>,
+}
+
+pub(crate) fn first_party_endpoint(profile: &ProviderProfile) -> FirstPartyEndpoint {
+    let expected_host = match (profile.provider_id.as_str(), profile.protocol) {
+        ("openai", ProtocolFamily::OpenAiResponses | ProtocolFamily::OpenAiChat) => {
+            "api.openai.com"
+        }
+        ("anthropic", ProtocolFamily::AnthropicMessages) => "api.anthropic.com",
+        ("google", ProtocolFamily::GeminiGenerateContent) => "generativelanguage.googleapis.com",
+        _ => return FirstPartyEndpoint::Other,
+    };
+    let Ok(url) = url::Url::parse(&profile.base_url) else {
+        return FirstPartyEndpoint::Other;
+    };
+    if url.scheme() != "https" || url.host_str() != Some(expected_host) {
+        return FirstPartyEndpoint::Other;
+    }
+    match expected_host {
+        "api.openai.com" => FirstPartyEndpoint::OpenAi,
+        "api.anthropic.com" => FirstPartyEndpoint::Anthropic,
+        _ => FirstPartyEndpoint::Gemini,
+    }
 }
 
 pub(super) fn first_party_image_formats(
-    profile: &ProviderProfile,
+    endpoint: FirstPartyEndpoint,
 ) -> Option<(&'static str, &'static [&'static str])> {
     const OPENAI: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
     const ANTHROPIC: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
@@ -189,28 +213,19 @@ pub(super) fn first_party_image_formats(
         "image/heic",
         "image/heif",
     ];
-    if uses_first_party_openai_file_inputs(profile) {
-        return Some(("OpenAI", OPENAI));
+    match endpoint {
+        FirstPartyEndpoint::OpenAi => Some(("OpenAI", OPENAI)),
+        FirstPartyEndpoint::Anthropic => Some(("Anthropic", ANTHROPIC)),
+        FirstPartyEndpoint::Gemini => Some(("Gemini", GEMINI)),
+        FirstPartyEndpoint::Other => None,
     }
-    if uses_first_party_anthropic_messages(profile) {
-        return Some(("Anthropic", ANTHROPIC));
-    }
-    if profile.provider_id.as_str() == "google"
-        && profile.protocol == ProtocolFamily::GeminiGenerateContent
-        && url::Url::parse(&profile.base_url).is_ok_and(|url| {
-            url.scheme() == "https" && url.host_str() == Some("generativelanguage.googleapis.com")
-        })
-    {
-        return Some(("Gemini", GEMINI));
-    }
-    None
 }
 
 pub(super) fn validate_first_party_image_media_types(
-    request: &CompletionRequest,
-    profile: &ProviderProfile,
+    request: &ChatRequest,
+    endpoint: FirstPartyEndpoint,
 ) -> Result<(), LlmError> {
-    let Some((provider, formats)) = first_party_image_formats(profile) else {
+    let Some((provider, formats)) = first_party_image_formats(endpoint) else {
         return Ok(());
     };
     for block in request.messages.iter().flat_map(|message| &message.content) {
@@ -238,7 +253,7 @@ pub(super) fn validate_first_party_image_media_types(
 }
 
 pub(super) fn validate_gemini_video_media_types(
-    request: &CompletionRequest,
+    request: &ChatRequest,
     profile: &ProviderProfile,
 ) -> Result<(), LlmError> {
     if profile.provider_id.as_str() != "google"
@@ -265,13 +280,6 @@ pub(super) fn validate_gemini_video_media_types(
     Ok(())
 }
 
-pub(crate) fn uses_first_party_anthropic_messages(profile: &ProviderProfile) -> bool {
-    profile.provider_id.as_str() == "anthropic"
-        && profile.protocol == ProtocolFamily::AnthropicMessages
-        && url::Url::parse(&profile.base_url)
-            .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.anthropic.com"))
-}
-
 pub(super) fn base64_decoded_len(data: &str) -> Result<u64, LlmError> {
     let bytes = data.as_bytes();
     let invalid = || LlmError::InvalidRequest {
@@ -295,7 +303,7 @@ pub(super) fn base64_decoded_len(data: &str) -> Result<u64, LlmError> {
 }
 
 pub(super) fn validate_first_party_openai_documents(
-    request: &CompletionRequest,
+    request: &ChatRequest,
     protocol: ProtocolFamily,
 ) -> Result<(), LlmError> {
     let api = if protocol == ProtocolFamily::OpenAiChat {
@@ -352,23 +360,29 @@ impl AttachmentManager {
         &self,
         profile: &ProviderProfile,
         model: &str,
-        request: &CompletionRequest,
+        request: &ChatRequest,
         attachments: &'a [ResolvedAttachmentPayload],
         opts: &RequestOptions,
-        inline_image_data_budget_bytes: Option<usize>,
+        planning: FilePlanOptions,
     ) -> Result<AttachmentPlan<'a>, LlmError> {
+        let FilePlanOptions {
+            file_validation_time,
+            endpoint,
+            inline_image_data_budget_bytes,
+        } = planning;
         const MAX_INLINE_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
         let mut uploads = Vec::new();
-        crate::files::validate_direct_provider_file_inputs(
+        crate::files::validate_direct_provider_file_inputs_at(
             request.messages.iter().flat_map(|m| &m.content),
             profile,
             model,
             opts.file_account_scope.as_deref(),
+            file_validation_time,
         )?;
-        validate_first_party_image_media_types(request, profile)?;
+        validate_first_party_image_media_types(request, endpoint)?;
         validate_gemini_video_media_types(request, profile)?;
         preflight_qwen_long_files(profile, model, request, attachments, opts)?;
-        if uses_first_party_openai_file_inputs(profile) {
+        if endpoint == FirstPartyEndpoint::OpenAi {
             validate_first_party_openai_documents(request, profile.protocol)?;
         }
         if profile.protocol == ProtocolFamily::AnthropicMessages {

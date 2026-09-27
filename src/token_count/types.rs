@@ -31,12 +31,18 @@ pub struct LocalTokenEstimate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalTokenEstimateOmission {
+    /// Provider-added instructions for output formatting are not exposed.
+    StructuredOutputInstructions,
     ImageInput,
     DocumentInput,
     VideoInput,
+    AudioInput,
     ProviderFileInput,
     HostedWebSearchContext,
     HostedFileSearchContext,
+    HostedToolSearchContext,
+    /// Anthropic defines and renders client-toolset member schemas remotely.
+    ProviderClientToolsetDefinitions,
     PreviousResponseState,
     ProviderOpaqueContent,
     ProviderSignature,

@@ -9,6 +9,7 @@
 
 mod decode;
 pub(crate) mod encode;
+pub(crate) mod openrouter_cache;
 mod reasoning;
 mod stream;
 
@@ -16,7 +17,7 @@ pub use decode::classify_error;
 
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::codecs::{StreamDecoder, WireCodec};
-use crate::protocol::{CompletionResponse, LlmError, ProtocolFamily};
+use crate::protocol::{ChatResponse, LlmError, ProtocolFamily};
 use crate::transport::{HttpRequest, HttpResponse};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -31,16 +32,20 @@ impl OpenAiChatCodec {
 impl WireCodec for OpenAiChatCodec {
     fn request_inference(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
         crate::codecs::inference::requested(req, context.profile())
     }
     fn validate_request(
         &self,
-        req: &crate::protocol::CompletionRequest,
+        req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
+        crate::codecs::qwen_cache::validate(req, context)?;
+        openrouter_cache::validate(req, context)?;
+        encode::validate_audio_request(req, context.profile(), context)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())
     }
     fn family(&self) -> ProtocolFamily {
@@ -64,14 +69,17 @@ impl WireCodec for OpenAiChatCodec {
         &self,
         resp: &HttpResponse,
         context: &CodecContext,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         let _ = context;
-        decode::response_with_usage_mode(resp, separate_reasoning(&context.profile.extra)).map(
-            |mut response| {
-                response.inference = crate::codecs::inference::response(resp, context.profile());
-                response
-            },
+        decode::response_with_usage_mode(
+            resp,
+            separate_reasoning(&context.profile.extra),
+            crate::codecs::qwen_cache::applies(context),
         )
+        .map(|mut response| {
+            response.inference = crate::codecs::inference::response(resp, context.profile());
+            response
+        })
     }
     fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
         let _ = context;
