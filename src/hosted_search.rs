@@ -81,14 +81,19 @@ pub fn parse_response_content(content: &[Value]) -> Vec<SearchResultEntry> {
     }
     out
 }
-/// Whether a decoded provider block announces a hosted search operation.
+/// Whether a decoded provider block identifies a hosted search operation.
+/// Responses supplies the native call when it completes; this is still a
+/// progress update before the final model response. Citations are not calls.
 pub fn search_started(block: &Value) -> bool {
     let block = block
         .get("value")
         .filter(|_| block.get("type").and_then(Value::as_str) == Some("provider_content"))
         .unwrap_or(block);
-    block.get("type").and_then(Value::as_str) == Some("server_tool_use")
-        && block.get("name").and_then(Value::as_str) == Some("web_search")
+    match block.get("type").and_then(Value::as_str) {
+        Some("server_tool_use") => block.get("name").and_then(Value::as_str) == Some("web_search"),
+        Some("web_search_call") => true,
+        _ => false,
+    }
 }
 pub fn supports(profile: &crate::protocol::ProviderProfile) -> bool {
     supports_with_config(profile, &Default::default())
@@ -132,5 +137,29 @@ pub fn append_citations(results: &mut Vec<SearchResultEntry>, observations: Opti
         results.push(SearchResultEntry::Hit(
             json!({"tool_use_id":null,"content":hits}),
         ));
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    #[test]
+    fn native_search_calls_are_distinct_from_citations_and_client_tools() {
+        for block in [
+            json!({"type":"server_tool_use","name":"web_search"}),
+            json!({"type":"web_search_call","id":"ws_1","status":"completed"}),
+        ] {
+            assert!(search_started(&block));
+            assert!(search_started(
+                &json!({"type":"provider_content","value":block})
+            ));
+        }
+        for block in [
+            json!({"type":"url_citation","url":"https://example.com"}),
+            json!({"type":"function_call","name":"web_search"}),
+            json!({"type":"server_tool_use","name":"web_fetch"}),
+        ] {
+            assert!(!search_started(&block));
+        }
     }
 }

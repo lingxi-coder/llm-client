@@ -174,7 +174,7 @@ struct ResponsesConnection {
     socket: Arc<Mutex<Option<Socket>>>,
     headers: Vec<(String, String)>,
     cancel: tokio::sync::watch::Sender<bool>,
-    idle_timeout: Duration,
+    idle_timeout: Option<Duration>,
 }
 pub(crate) async fn responses(
     transport: &HttpTransport,
@@ -223,10 +223,13 @@ impl WebSocketConnection for ResponsesConnection {
                     message: "WebSocket connection is busy or no longer usable".into(),
                 })?;
         let text = String::from_utf8(payload.to_vec()).map_err(|_| invalid())?;
-        tokio::time::timeout(self.idle_timeout, socket.send(Message::Text(text)))
-            .await
-            .map_err(|_| timeout())?
-            .map_err(|_| interrupted())?;
+        tokio::time::timeout(
+            self.idle_timeout.unwrap_or(Duration::from_secs(60)),
+            socket.send(Message::Text(text)),
+        )
+        .await
+        .map_err(|_| timeout())?
+        .map_err(|_| interrupted())?;
         let slot = Arc::downgrade(&self.socket);
         let cancel = self.cancel.subscribe();
         let idle_timeout = self.idle_timeout;
@@ -235,15 +238,17 @@ impl WebSocketConnection for ResponsesConnection {
             async move {
                 let mut socket = state?;
                 loop {
-                    let read = tokio::select! {
-                        biased;
-                        _ = cancel.changed() => return Some((Err(interrupted()), (None, cancel))),
-                        value = tokio::time::timeout(idle_timeout, socket.next()) => value,
-                    };
-                    let frame = match read {
-                        Ok(Some(Ok(frame))) => frame,
-                        Err(_) => return Some((Err(timeout()), (None, cancel))),
-                        _ => return Some((Err(interrupted()), (None, cancel))),
+                    let frame = match guarded_io(idle_timeout, &mut cancel, async {
+                        socket
+                            .next()
+                            .await
+                            .ok_or_else(interrupted)?
+                            .map_err(|_| interrupted())
+                    })
+                    .await
+                    {
+                        Ok(frame) => frame,
+                        Err(error) => return Some((Err(error), (None, cancel))),
                     };
                     match frame {
                         Message::Text(text) => {
@@ -272,8 +277,14 @@ impl WebSocketConnection for ResponsesConnection {
                             return Some((Ok(Bytes::from(text)), (next, cancel)));
                         }
                         Message::Ping(_) => {
-                            if socket.flush().await.is_err() {
-                                return Some((Err(interrupted()), (None, cancel)));
+                            if let Err(error) = guarded_io(
+                                Some(idle_timeout.unwrap_or(Duration::from_secs(60))),
+                                &mut cancel,
+                                async { socket.flush().await.map_err(|_| interrupted()) },
+                            )
+                            .await
+                            {
+                                return Some((Err(error), (None, cancel)));
                             }
                         }
                         Message::Pong(_) => {}
@@ -301,5 +312,54 @@ impl WebSocketConnection for ResponsesConnection {
                 .map_err(|_| interrupted())?;
         }
         Ok(())
+    }
+}
+
+// Both socket reads and Pong writes must observe close(), even under backpressure.
+async fn guarded_io<T>(
+    limit: Option<Duration>,
+    cancel: &mut tokio::sync::watch::Receiver<bool>,
+    operation: impl std::future::Future<Output = Result<T, LlmError>>,
+) -> Result<T, LlmError> {
+    if *cancel.borrow() {
+        return Err(interrupted());
+    }
+    let deadline = async {
+        match limit {
+            Some(limit) => tokio::time::sleep(limit).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = cancel.changed() => Err(interrupted()),
+        _ = deadline => Err(timeout()),
+        result = operation => result,
+    }
+}
+
+#[cfg(test)]
+mod guarded_io_tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn blocked_pong_write_observes_deadline_and_cancellation() {
+        let (close, mut cancel) = tokio::sync::watch::channel(false);
+        let error = guarded_io::<()>(
+            Some(Duration::from_secs(5)),
+            &mut cancel,
+            std::future::pending(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, LlmError::TransportTimeout { .. }));
+        let task = tokio::spawn(async move {
+            guarded_io::<()>(None, &mut cancel, std::future::pending()).await
+        });
+        tokio::task::yield_now().await;
+        close.send(true).unwrap();
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(LlmError::StreamInterrupted { .. })
+        ));
     }
 }

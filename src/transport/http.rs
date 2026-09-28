@@ -16,7 +16,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct HttpTransport {
     pub(super) client: reqwest::Client,
-    pub(super) read_timeout: Duration,
+    pub(super) read_timeout: Option<Duration>,
 }
 
 impl HttpTransport {
@@ -26,25 +26,32 @@ impl HttpTransport {
 
     /// Build with a custom timeout for each idle response-body read.
     pub fn with_read_timeout(read_timeout: Duration) -> Result<Self, LlmError> {
-        let mut transport =
-            Self::with_client_configurator(|builder| builder.read_timeout(read_timeout))?;
-        transport.read_timeout = read_timeout;
-        Ok(transport)
+        Self::with_read_timeout_and_client_configurator(Some(read_timeout), |builder| builder)
     }
 
-    /// Customize connection settings, such as a private CA, client TLS identity
-    /// or proxy, while retaining this transport's request execution policy.
-    ///
-    /// The configurator receives the default connection and idle-read timeouts.
-    /// Redirects and automatic retries are disabled after it returns, so these
-    /// policies cannot accidentally replay a request or forward credentials.
+    /// Customize TLS/proxy settings with the default 60-second idle-read limit.
+    /// Use `with_read_timeout_and_client_configurator` to select a different
+    /// limit consistently for HTTP and Responses WebSocket.
     pub fn with_client_configurator(
         configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
     ) -> Result<Self, LlmError> {
-        let builder = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(60));
-        let client = configure(builder)
+        Self::with_read_timeout_and_client_configurator(Some(Duration::from_secs(60)), configure)
+    }
+
+    /// Configure the HTTP and Responses idle-read policy together. `None`
+    /// leaves read deadlines to the caller (for example a host watchdog).
+    /// The configurator should only set connection/TLS/proxy settings; a
+    /// supplied idle limit is applied after it, as are no-redirect/no-retry.
+    pub fn with_read_timeout_and_client_configurator(
+        read_timeout: Option<Duration>,
+        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) -> Result<Self, LlmError> {
+        let mut builder =
+            configure(reqwest::Client::builder().connect_timeout(Duration::from_secs(30)));
+        if let Some(timeout) = read_timeout {
+            builder = builder.read_timeout(timeout);
+        }
+        let client = builder
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .build()
@@ -53,7 +60,7 @@ impl HttpTransport {
             })?;
         Ok(Self {
             client,
-            read_timeout: Duration::from_secs(60),
+            read_timeout,
         })
     }
 

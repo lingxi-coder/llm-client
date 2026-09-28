@@ -170,8 +170,11 @@ async fn configured_idle_timeout_bounds_silent_responses() {
         socket.next().await.unwrap().unwrap();
         let _ = socket.next().await;
     });
-    let transport =
-        HttpTransport::with_read_timeout(std::time::Duration::from_millis(100)).unwrap();
+    let transport = HttpTransport::with_read_timeout_and_client_configurator(
+        Some(std::time::Duration::from_millis(100)),
+        |b| b.connect_timeout(std::time::Duration::from_secs(2)),
+    )
+    .unwrap();
     let mut connection = transport.connect_websocket(request(url)).await.unwrap();
     let mut response = connection.send(Bytes::from_static(b"{}")).await.unwrap();
     let error = tokio::time::timeout(std::time::Duration::from_secs(2), response.body.next())
@@ -218,4 +221,36 @@ async fn handshake_rejections_are_classified_without_echoing_provider_secrets() 
         }
         server.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn host_owned_idle_policy_keeps_responses_alive_past_five_minutes() {
+    use futures::poll;
+    use std::time::Duration;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/responses", listener.local_addr().unwrap());
+    let (finish, waiting) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket.next().await.unwrap().unwrap();
+        waiting.await.unwrap();
+        socket
+            .send(Message::Text(r#"{"type":"response.completed"}"#.into()))
+            .await
+            .unwrap();
+    });
+    let transport = HttpTransport::with_read_timeout_and_client_configurator(None, |b| b).unwrap();
+    let mut connection = transport.connect_websocket(request(url)).await.unwrap();
+    let mut response = connection.send(Bytes::from_static(b"{}")).await.unwrap();
+    tokio::time::pause();
+    let next = response.body.next();
+    tokio::pin!(next);
+    assert!(poll!(&mut next).is_pending());
+    tokio::time::advance(Duration::from_secs(301)).await;
+    assert!(poll!(&mut next).is_pending());
+    tokio::time::resume();
+    finish.send(()).unwrap();
+    assert!(next.await.unwrap().unwrap().ends_with(b"completed\"}"));
+    server.await.unwrap();
 }
