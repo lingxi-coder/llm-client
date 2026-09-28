@@ -139,6 +139,11 @@ impl ResponsesSession {
             self.identity = Some(identity);
         }
         if self.fallback_to_http() {
+            if !allow_http {
+                return Err(LlmError::InvalidRequest {
+                    message: "Responses WebSocket is unavailable; HTTP fallback is disabled".into(),
+                });
+            }
             self.bind_draft(draft);
             return Ok(());
         }

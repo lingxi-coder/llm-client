@@ -724,3 +724,79 @@ async fn streaming_deadline_keeps_unknown_outcome_after_dispatch_without_retry()
     );
     assert_eq!(transport.0.load(Ordering::Relaxed), 1);
 }
+
+#[tokio::test]
+async fn request_local_auth_overrides_registry_for_file_list_and_upload() {
+    struct RequestAuth;
+    #[async_trait]
+    impl Authenticator for RequestAuth {
+        async fn apply(
+            &self,
+            request: &mut HttpRequest,
+            _: &ProviderProfile,
+            _: Option<&Secret<String>>,
+        ) -> Result<(), LlmError> {
+            request
+                .headers
+                .push(("authorization".into(), "Bearer request-token".into()));
+            Ok(())
+        }
+    }
+    let transport = Arc::new(RecordingTransport::new([
+        response(json!({"data":[]})),
+        response(
+            json!({"id":"file-1","filename":"note.txt","mime_type":"text/plain","size_bytes":5,"type":"file"}),
+        ),
+        response(json!({"data":[]})),
+    ]));
+    // The registered authenticator requires a credential; the request override
+    // must work without one and must not leak to the next operation.
+    let client = client("anthropic", transport.clone());
+    let provider = client.provider::<AnthropicClient>("selected").unwrap();
+    let local = RequestOptions {
+        authenticator: Some(lingxi_llm_client::client::options::RequestAuthenticator(
+            Arc::new(RequestAuth),
+        )),
+        account_scope: Some("account".into()),
+        ..Default::default()
+    };
+    provider.files().list(None, &local).await.unwrap();
+    provider
+        .files()
+        .upload(
+            &UploadFile {
+                filename: "note.txt".into(),
+                media_type: "text/plain".into(),
+                bytes: Bytes::from_static(b"hello"),
+            },
+            FilePurpose::ModelInput,
+            &local,
+        )
+        .await
+        .unwrap();
+    provider
+        .files()
+        .list(None, &options("registry-key", "account"))
+        .await
+        .unwrap();
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in &requests[..2] {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == "Bearer request-token"));
+        assert!(!request
+            .headers
+            .iter()
+            .any(|(k, _)| k == "x-injected-auth" || k == "x-api-key"));
+    }
+    assert!(requests[2]
+        .headers
+        .iter()
+        .any(|(k, v)| k == "x-injected-auth" && v == "registry-key"));
+    assert!(!requests[2]
+        .headers
+        .iter()
+        .any(|(k, _)| k == "authorization"));
+}

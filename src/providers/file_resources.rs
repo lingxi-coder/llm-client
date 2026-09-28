@@ -50,11 +50,17 @@ impl<'a, P> ProviderFiles<'a, P> {
             .ok_or_else(|| LlmError::InvalidRequest {
                 message: "file operations require an explicit nonempty account scope".into(),
             })?;
-        let authenticator = snapshot
-            .runtime
-            .authenticators
-            .get(&profile.auth)
-            .map(|value| value.as_ref());
+        let authenticator = options
+            .authenticator
+            .as_ref()
+            .map(|value| value.0.as_ref())
+            .or_else(|| {
+                snapshot
+                    .runtime
+                    .authenticators
+                    .get(&profile.auth)
+                    .map(|value| value.as_ref())
+            });
         let mut service = match self.hosting {
             Some(hosting) => FileService::new_foundry(
                 snapshot.runtime.http.as_ref(),

@@ -402,3 +402,43 @@ async fn dispatch_rejects_drafts_mutated_after_session_preparation() {
     ));
     assert!(http.sent.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn cached_http_fallback_still_rejects_websocket_only_prewarm() {
+    let http = Arc::new(RecordingTransport::default());
+    http.reject_next_upgrade.store(1, Ordering::SeqCst);
+    let client = client(http.clone(), profile());
+    let mut session = ResponsesSession::new();
+    for _ in 0..2 {
+        let mut draft = client
+            .prepare_draft_on(
+                "primary",
+                &request(),
+                &options("account", "key"),
+                RequestMode::Stream,
+            )
+            .await
+            .unwrap();
+        assert!(session.prepare(&mut draft, true, false).await.is_err());
+        assert!(session.fallback_to_http());
+        // A rejected preparation must not leave a dispatchable binding.
+        assert!(session
+            .dispatch(draft.seal().await.unwrap(), || panic!(
+                "must not admit rejected prewarm"
+            ))
+            .await
+            .is_err());
+    }
+    assert_eq!(http.handshakes.lock().unwrap().len(), 1);
+    assert!(http.sent.lock().unwrap().is_empty());
+    let mut allowed = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &options("account", "key"),
+            RequestMode::Stream,
+        )
+        .await
+        .unwrap();
+    assert!(session.prepare(&mut allowed, false, true).await.is_ok());
+}
