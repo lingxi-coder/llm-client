@@ -13,6 +13,9 @@ pub struct ResponsesSession {
     connection: Option<Box<dyn WebSocketConnection>>,
     // A digest avoids retaining authentication headers or signed URLs.
     identity: Option<[u8; 32]>,
+    // Retain the transport allocation while its connection/fallback is cached.
+    // Arc identity is stable and cannot alias a later allocation after drop.
+    transport: Option<Arc<dyn crate::Transport>>,
     prepared_binding: Option<Arc<()>>,
     state: Arc<Mutex<ResponsesWebSocketSessionState>>,
     logical_body: serde_json::Value,
@@ -28,6 +31,7 @@ impl ResponsesSession {
         Self {
             connection: None,
             identity: None,
+            transport: None,
             prepared_binding: None,
             state: Arc::new(Mutex::new(ResponsesWebSocketSessionState {
                 connection_healthy: true,
@@ -89,6 +93,7 @@ impl ResponsesSession {
     async fn reset_identity(&mut self) -> Result<(), LlmError> {
         let connection = self.connection.take();
         self.identity = None;
+        let _retired_transport = self.transport.take();
         self.reset_state(false);
         if let Some(mut connection) = connection {
             connection.close().await?;
@@ -114,14 +119,17 @@ impl ResponsesSession {
     ) -> Result<(), LlmError> {
         self.prepare_using(draft, prewarm, allow_http, None).await
     }
+    /// Prepare using an owned transport snapshot. Changing it invalidates the
+    /// cached connection, continuation and HTTP fallback before any generation.
     pub async fn prepare_using(
         &mut self,
         draft: &mut RequestDraft,
         prewarm: bool,
         allow_http: bool,
-        transport: Option<&dyn crate::Transport>,
+        transport: Option<Arc<dyn crate::Transport>>,
     ) -> Result<(), LlmError> {
         self.prepared_binding = None;
+        let transport = transport.unwrap_or_else(|| draft.transport());
         // Authenticate the handshake once per preparation so custom
         // authenticators and rotated credentials participate in the binding.
         // If a connection is needed, these exact bytes open it without another
@@ -134,9 +142,14 @@ impl ResponsesSession {
             }
         };
         let identity = session_identity(draft, &handshake);
-        if self.identity.as_ref() != Some(&identity) {
+        let same_transport = self
+            .transport
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &transport));
+        if self.identity.as_ref() != Some(&identity) || !same_transport {
             self.reset_identity().await?;
             self.identity = Some(identity);
+            self.transport = Some(transport.clone());
         }
         if self.fallback_to_http() {
             if !allow_http {
@@ -152,7 +165,7 @@ impl ResponsesSession {
         }
         if self.connection.is_none() {
             let opened = draft
-                .connect_websocket_handshake_using(handshake, transport)
+                .connect_websocket_handshake_using(handshake, Some(transport.as_ref()))
                 .await;
             match opened {
                 Ok(connection) => {
@@ -224,12 +237,25 @@ impl ResponsesSession {
                 message: "prepared call does not match the session's current preparation".into(),
             });
         }
+        let selected = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "session transport must be prepared before dispatch".into(),
+            })?;
+        if transport.is_some_and(|transport| {
+            (transport as *const dyn crate::Transport as *const ())
+                != (selected.as_ref() as *const dyn crate::Transport as *const ())
+        }) {
+            return Err(LlmError::InvalidRequest {
+                message: "dispatch transport differs from the prepared session transport".into(),
+            });
+        }
         self.prepared_binding = None;
         if self.fallback_to_http() {
-            return match transport {
-                Some(transport) => call.dispatch_once_using(transport, on_dispatch).await,
-                None => call.dispatch_once_with(on_dispatch).await,
-            };
+            return call
+                .dispatch_once_using(selected.as_ref(), on_dispatch)
+                .await;
         }
         let connection = self
             .connection
@@ -262,6 +288,9 @@ fn session_identity(draft: &RequestDraft, handshake: &crate::HttpRequest) -> [u8
     let mut headers: Vec<_> = handshake
         .headers
         .iter()
+        // Request tracing changes each turn; it is not connection identity.
+        // Keep all other headers so credential and custom policy changes rebind.
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("x-request-id"))
         .map(|(name, value)| (name.to_ascii_lowercase(), value))
         .collect();
     headers.sort_unstable();

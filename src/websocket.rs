@@ -30,6 +30,8 @@ pub struct ResponsesWebSocketSessionState {
     pub last_request_body: Option<serde_json::Value>,
     pub last_response_id: Option<String>,
     pub last_added_response_items: Vec<serde_json::Value>,
+    /// Authoritative completed output, not output_item.added placeholders.
+    pub last_response_output: Option<Vec<serde_json::Value>>,
     pub last_response_from_prewarm: bool,
     pub last_logical_request_body: Option<serde_json::Value>,
     pub last_wire_request_body: Option<serde_json::Value>,
@@ -86,13 +88,25 @@ pub fn incremental_responses_body(
     }
     let previous_input = previous_body.get("input")?.as_array()?;
     let current_input = logical_body.get("input")?.as_array()?;
-    if current_input.len() < previous_input.len() {
+    let previous_output = state.last_response_output.as_ref()?;
+    let prefix_len = previous_input.len().checked_add(previous_output.len())?;
+    if current_input.len() < prefix_len {
         return None;
     }
     if !previous_input
         .iter()
         .zip(current_input.iter())
         .all(|(previous, current)| previous == current)
+    {
+        return None;
+    }
+
+    if !previous_output
+        .iter()
+        .zip(&current_input[previous_input.len()..prefix_len])
+        .all(|(output, replay)| {
+            response_item_for_comparison(output) == response_item_for_comparison(replay)
+        })
     {
         return None;
     }
@@ -107,9 +121,44 @@ pub fn incremental_responses_body(
     );
     map.insert(
         "input".to_string(),
-        serde_json::Value::Array(current_input[previous_input.len()..].to_vec()),
+        serde_json::Value::Array(current_input[prefix_len..].to_vec()),
     );
     Some(body)
+}
+
+// Strip only response-envelope/rendering metadata for item types whose replay
+// representation is known. Unknown items require an exact match; uncertainty
+// falls back to full history instead of guessing a continuation prefix.
+fn response_item_for_comparison(item: &serde_json::Value) -> serde_json::Value {
+    let mut item = item.clone();
+    let Some(map) = item.as_object_mut() else {
+        return item;
+    };
+    let message = map.get("type").and_then(serde_json::Value::as_str) == Some("message")
+        || (!map.contains_key("type")
+            && map.get("role").and_then(serde_json::Value::as_str) == Some("assistant"));
+    let function = map.get("type").and_then(serde_json::Value::as_str) == Some("function_call");
+    if message || function {
+        map.remove("id");
+        map.remove("status");
+    }
+    if message {
+        map.insert("type".into(), serde_json::json!("message"));
+        if let Some(parts) = map
+            .get_mut("content")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for part in parts {
+                if part.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
+                    if let Some(part) = part.as_object_mut() {
+                        part.remove("annotations");
+                        part.remove("logprobs");
+                    }
+                }
+            }
+        }
+    }
+    item
 }
 
 pub fn record_responses_wire_request(
@@ -170,6 +219,12 @@ pub fn observe_response_frame(
             state.last_request_body = Some(logical_body.clone());
             state.last_response_id = response_id;
             state.last_added_response_items = items_added.clone();
+            state.last_response_output = root
+                .get("response")
+                .and_then(|response| response.get("output"))
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .or_else(|| from_prewarm.then(Vec::new));
             state.last_response_from_prewarm = from_prewarm;
             state.connection_healthy = true;
         }
@@ -195,8 +250,51 @@ pub fn clear_continuation(
     state.last_request_body = None;
     state.last_response_id = None;
     state.last_added_response_items.clear();
+    state.last_response_output = None;
     state.last_response_from_prewarm = false;
     if connection_unhealthy {
         state.connection_healthy = false;
+    }
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn continuation_requires_completed_output_and_matching_full_prefix() {
+        let state = Arc::new(Mutex::new(ResponsesWebSocketSessionState::default()));
+        let input =
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]});
+        let call =
+            json!({"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"});
+        let output = json!({"type":"function_call","id":"fc_1","status":"completed","call_id":"call_1","name":"lookup","arguments":"{}"});
+        let result = json!({"type":"function_call_output","call_id":"call_1","output":"done"});
+        let previous = json!({"model":"wire","input":[input.clone()]});
+        let current = json!({"model":"wire","input":[input.clone(),call.clone(),result.clone()]});
+        let observe = |frame| {
+            observe_response_frame(
+                &state,
+                &previous,
+                false,
+                &mut vec![],
+                &mut false,
+                &serde_json::to_vec(&frame).unwrap(),
+            )
+        };
+        // Missing authoritative output must not be confused with an empty output.
+        observe(json!({"type":"response.completed","response":{"id":"r1"}}));
+        assert!(incremental_responses_body(&state, &current).is_none());
+        observe(json!({"type":"response.completed","response":{"id":"r1","output":[output]}}));
+        assert_eq!(
+            incremental_responses_body(&state, &current).unwrap()["input"],
+            json!([result])
+        );
+        let mut changed = current.clone();
+        changed["input"][1]["arguments"] = json!("{\"different\":true}");
+        assert!(incremental_responses_body(&state, &changed).is_none());
+        assert!(incremental_responses_body(&state, &previous).is_none());
+        clear_continuation(&state, false);
+        assert!(incremental_responses_body(&state, &current).is_none());
     }
 }

@@ -22,6 +22,7 @@ struct RecordingTransport {
     sent: Arc<Mutex<Vec<Value>>>,
     closes: Arc<AtomicUsize>,
     reject_next_upgrade: AtomicUsize,
+    output: Vec<Value>,
 }
 #[async_trait]
 impl Transport for RecordingTransport {
@@ -41,12 +42,14 @@ impl Transport for RecordingTransport {
         Ok(Box::new(RecordingConnection {
             sent: self.sent.clone(),
             closes: self.closes.clone(),
+            output: self.output.clone(),
         }))
     }
 }
 struct RecordingConnection {
     sent: Arc<Mutex<Vec<Value>>>,
     closes: Arc<AtomicUsize>,
+    output: Vec<Value>,
 }
 #[async_trait]
 impl WebSocketConnection for RecordingConnection {
@@ -55,7 +58,7 @@ impl WebSocketConnection for RecordingConnection {
         sent.push(serde_json::from_slice(&body).unwrap());
         let frame = json!({
             "type":"response.completed",
-            "response":{"id":format!("resp_{}", sent.len()), "model":"wire", "status":"completed", "output":[]}
+            "response":{"id":format!("resp_{}", sent.len()), "model":"wire", "status":"completed", "output":self.output}
         });
         let created = json!({
             "type":"response.created",
@@ -441,4 +444,244 @@ async fn cached_http_fallback_still_rejects_websocket_only_prewarm() {
         .await
         .unwrap();
     assert!(session.prepare(&mut allowed, false, true).await.is_ok());
+}
+
+#[tokio::test]
+async fn trace_header_changes_preserve_connection_and_continuation() {
+    for prewarm in [false, true] {
+        let http = Arc::new(RecordingTransport::default());
+        let client = client(http.clone(), profile());
+        let mut session = ResponsesSession::new();
+        let options = options("account-a", "key-a");
+        for (index, trace) in ["request-1", "request-2"].into_iter().enumerate() {
+            let mut draft = client
+                .prepare_draft_on("primary", &request(), &options, RequestMode::Stream)
+                .await
+                .unwrap();
+            draft
+                .request_mut()
+                .headers
+                .push(("x-request-id".into(), trace.into()));
+            session
+                .prepare(&mut draft, prewarm && index == 0, false)
+                .await
+                .unwrap();
+            let mut stream = session
+                .dispatch(draft.seal().await.unwrap(), || Ok(()))
+                .await
+                .unwrap()
+                .into_stream()
+                .ok()
+                .unwrap();
+            while let Some(batch) = stream.next_batch().await {
+                for event in batch.events {
+                    event.unwrap();
+                }
+            }
+        }
+        assert_eq!(
+            http.sent.lock().unwrap()[1]["previous_response_id"],
+            "resp_1"
+        );
+        assert_eq!(http.closes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            http.handshakes.lock().unwrap().len(),
+            1,
+            "trace header must not force reconnect"
+        );
+        assert_eq!(
+            session
+                .last_request_snapshot()
+                .wire_used_prewarm_response_id,
+            prewarm
+        );
+    }
+}
+
+#[tokio::test]
+async fn full_history_continuation_omits_completed_assistant_output() {
+    let http = Arc::new(RecordingTransport {
+        output: vec![
+            json!({"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Hello","annotations":[],"logprobs":[]} ]}),
+        ],
+        ..Default::default()
+    });
+    let client = client(http.clone(), profile());
+    let mut session = ResponsesSession::new();
+    let options = options("account", "key");
+    let first = serde_json::from_value(json!({"model":"test","messages":[{"role":"user","content":[{"type":"text","text":"Hi"}]}]})).unwrap();
+    let next = serde_json::from_value(json!({"model":"test","messages":[{"role":"user","content":[{"type":"text","text":"Hi"}]},{"role":"assistant","content":[{"type":"text","text":"Hello"}]},{"role":"user","content":[{"type":"text","text":"Next"}]}]})).unwrap();
+    run(&client, "primary", &first, &options, &mut session).await;
+    run(&client, "primary", &next, &options, &mut session).await;
+    let sent = http.sent.lock().unwrap();
+    assert_eq!(sent[1]["previous_response_id"], "resp_1");
+    assert_eq!(sent[1]["input"].as_array().unwrap().len(), 1);
+    assert_eq!(sent[1]["input"][0]["content"][0]["text"], "Next");
+}
+
+#[tokio::test]
+async fn replacing_client_transport_reconnects_but_shared_transport_reuses() {
+    let a = Arc::new(RecordingTransport::default());
+    let b = Arc::new(RecordingTransport::default());
+    let ca = client(a.clone(), profile());
+    let cb = client(b.clone(), profile());
+    let cb2 = client(b.clone(), profile());
+    let mut session = ResponsesSession::new();
+    let options = options("account", "key");
+    run(&ca, "primary", &request(), &options, &mut session).await;
+    run(&cb, "primary", &request(), &options, &mut session).await;
+    assert_eq!(a.handshakes.lock().unwrap().len(), 1);
+    assert_eq!(a.closes.load(Ordering::SeqCst), 1);
+    assert_eq!(a.sent.lock().unwrap().len(), 1);
+    assert_eq!(b.handshakes.lock().unwrap().len(), 1);
+    assert!(b.sent.lock().unwrap()[0]
+        .get("previous_response_id")
+        .is_none());
+    run(&cb2, "primary", &request(), &options, &mut session).await;
+    assert_eq!(b.handshakes.lock().unwrap().len(), 1);
+    assert_eq!(b.sent.lock().unwrap()[1]["previous_response_id"], "resp_1");
+}
+
+#[tokio::test]
+async fn explicit_transport_replacement_rebinds_before_dispatch() {
+    let a = Arc::new(RecordingTransport::default());
+    let b = Arc::new(RecordingTransport::default());
+    let client = client(a.clone(), profile());
+    let options = options("account", "key");
+    let mut session = ResponsesSession::new();
+    run(&client, "primary", &request(), &options, &mut session).await;
+    let mut draft = client
+        .prepare_draft_on("primary", &request(), &options, RequestMode::Stream)
+        .await
+        .unwrap();
+    session
+        .prepare_using(&mut draft, false, false, Some(b.clone()))
+        .await
+        .unwrap();
+    let mut stream = session
+        .dispatch(draft.seal().await.unwrap(), || Ok(()))
+        .await
+        .unwrap()
+        .into_stream()
+        .ok()
+        .unwrap();
+    while let Some(batch) = stream.next_batch().await {
+        for event in batch.events {
+            event.unwrap();
+        }
+    }
+    assert_eq!(a.closes.load(Ordering::SeqCst), 1);
+    assert_eq!(a.sent.lock().unwrap().len(), 1);
+    assert_eq!(b.handshakes.lock().unwrap().len(), 1);
+    assert!(b.sent.lock().unwrap()[0]
+        .get("previous_response_id")
+        .is_none());
+    // Changing the dispatch transport after preparation must fail before admission.
+    let mut draft = client
+        .prepare_draft_on("primary", &request(), &options, RequestMode::Stream)
+        .await
+        .unwrap();
+    session
+        .prepare_using(&mut draft, false, false, Some(b.clone()))
+        .await
+        .unwrap();
+    assert!(session
+        .dispatch_using(
+            draft.seal().await.unwrap(),
+            || panic!("wrong transport must not admit"),
+            Some(a.as_ref())
+        )
+        .await
+        .is_err());
+    assert_eq!(b.sent.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn changing_transport_clears_cached_http_fallback() {
+    let a = Arc::new(RecordingTransport::default());
+    a.reject_next_upgrade.store(1, Ordering::SeqCst);
+    let b = Arc::new(RecordingTransport::default());
+    let client = client(a.clone(), profile());
+    let options = options("account", "key");
+    let mut session = ResponsesSession::new();
+    let mut draft = client
+        .prepare_draft_on("primary", &request(), &options, RequestMode::Stream)
+        .await
+        .unwrap();
+    session.prepare(&mut draft, false, true).await.unwrap();
+    assert!(session.fallback_to_http());
+    let mut next = client
+        .prepare_draft_on("primary", &request(), &options, RequestMode::Stream)
+        .await
+        .unwrap();
+    session
+        .prepare_using(&mut next, false, false, Some(b.clone()))
+        .await
+        .unwrap();
+    assert!(!session.fallback_to_http());
+    assert_eq!(b.handshakes.lock().unwrap().len(), 1);
+    assert!(session
+        .dispatch(draft.seal().await.unwrap(), || panic!(
+            "old transport draft must not admit"
+        ))
+        .await
+        .is_err());
+    assert!(session
+        .dispatch(next.seal().await.unwrap(), || Ok(()))
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn http_fallback_uses_the_transport_selected_during_preparation() {
+    #[derive(Default)]
+    struct HttpOnly(AtomicUsize);
+    #[async_trait]
+    impl Transport for HttpOnly {
+        async fn send(&self, _: HttpRequest) -> Result<StreamResponse, LlmError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(lingxi_llm_client::HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: br#"{"id":"r","output":[]}"#.as_slice().into(),
+            }
+            .into())
+        }
+        async fn connect_websocket(
+            &self,
+            _: HttpRequest,
+        ) -> Result<Box<dyn WebSocketConnection>, LlmError> {
+            Err(LlmError::Transport {
+                message: "426 Upgrade Required".into(),
+            })
+        }
+    }
+    let default_transport = Arc::new(HttpOnly::default());
+    let selected = Arc::new(HttpOnly::default());
+    let client = LlmClientBuilder::with_transport(default_transport.clone(), &[profile()])
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut session = ResponsesSession::new();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &options("account", "key"),
+            RequestMode::Stream,
+        )
+        .await
+        .unwrap();
+    session
+        .prepare_using(&mut draft, false, true, Some(selected.clone()))
+        .await
+        .unwrap();
+    assert!(session.fallback_to_http());
+    let received = session
+        .dispatch(draft.seal().await.unwrap(), || Ok(()))
+        .await
+        .unwrap();
+    received.collect().await.unwrap().finish().await;
+    assert_eq!(selected.0.load(Ordering::SeqCst), 1);
+    assert_eq!(default_transport.0.load(Ordering::SeqCst), 0);
 }

@@ -165,6 +165,9 @@ pub struct RequestDraft {
     account_scope: Option<String>,
 }
 impl RequestDraft {
+    pub(super) fn transport(&self) -> Arc<dyn Transport> {
+        self.call.http.clone()
+    }
     pub async fn connect_websocket(
         &self,
     ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
