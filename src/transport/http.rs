@@ -165,14 +165,24 @@ fn response_headers(response: &reqwest::Response) -> Vec<(String, String)> {
         .collect()
 }
 
-fn certificate_error(error: &dyn std::error::Error) -> bool {
+fn certificate_error(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(error) = current {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("certificate") || message.contains("unknownissuer") {
+        if matches!(
+            error.downcast_ref::<rustls::Error>(),
+            Some(rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented)
+        ) {
             return true;
         }
-        current = error.source();
+        // io::Error may expose the inner error's source rather than the inner
+        // error itself; inspect its payload so a wrapped rustls error is retained.
+        current = error
+            .downcast_ref::<std::io::Error>()
+            .and_then(|io| {
+                io.get_ref()
+                    .map(|inner| inner as &(dyn std::error::Error + 'static))
+            })
+            .or_else(|| error.source());
     }
     false
 }
@@ -180,13 +190,13 @@ fn certificate_error(error: &dyn std::error::Error) -> bool {
 // Do not expose reqwest error strings: URLs, query credentials and underlying
 // proxy errors may carry secrets. Preserve actionable categories instead.
 pub(super) fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmError {
-    if certificate_error(&err) {
-        LlmError::TlsCert {
-            message: "TLS certificate validation failed".into(),
-        }
-    } else if err.is_timeout() {
+    if err.is_timeout() {
         LlmError::TransportTimeout {
             message: "HTTP request timed out".into(),
+        }
+    } else if certificate_error(&err) {
+        LlmError::TlsCert {
+            message: "TLS certificate validation failed".into(),
         }
     } else if err.is_builder() {
         LlmError::InvalidRequest {
@@ -235,5 +245,18 @@ impl Transport for HttpTransport {
                 .map(|chunk| chunk.map_err(|err| network_error(err, true)))
                 .boxed(),
         })
+    }
+}
+
+#[cfg(test)]
+mod certificate_tests {
+    use super::*;
+    #[test]
+    fn certificate_classification_requires_a_tls_error_not_matching_text() {
+        let text = std::io::Error::other("certificate unknownissuer");
+        assert!(!certificate_error(&text));
+        let tls = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        assert!(certificate_error(&tls));
+        assert!(certificate_error(&std::io::Error::other(tls)));
     }
 }

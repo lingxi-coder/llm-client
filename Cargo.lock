@@ -946,6 +946,7 @@ dependencies = [
  "jsonschema",
  "reqwest",
  "ring",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

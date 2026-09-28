@@ -708,3 +708,31 @@ async fn builtin_builder_completes_and_streams_with_api_key_and_bearer_authentic
         }
     }
 }
+
+#[tokio::test]
+async fn certificate_in_url_does_not_change_connection_or_timeout_category() {
+    let transport = HttpTransport::with_client_configurator(|b| b.no_proxy()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/certificate/v1/messages",
+        listener.local_addr().unwrap()
+    );
+    let request = || HttpRequest {
+        method: "POST".into(),
+        url: url.clone(),
+        headers: vec![],
+        body: Bytes::new(),
+        timeout: Some(Duration::from_millis(50)),
+    };
+    // A listening TCP socket that never answers HTTP causes a request deadline.
+    assert!(matches!(
+        transport.send(request()).await,
+        Err(LlmError::TransportTimeout { .. })
+    ));
+    drop(listener);
+    // The same URL without a listener is an ordinary connection failure.
+    assert!(matches!(
+        transport.send(request()).await,
+        Err(LlmError::Transport { .. })
+    ));
+}

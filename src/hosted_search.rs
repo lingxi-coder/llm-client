@@ -163,3 +163,51 @@ mod progress_tests {
         }
     }
 }
+
+/// Tracks query occurrences in cumulative grounding snapshots. Citations alone
+/// do not establish a search count, and repeated snapshots add no progress.
+#[derive(Default)]
+pub struct SearchProgress {
+    queries: std::collections::BTreeMap<String, u64>,
+}
+impl SearchProgress {
+    /// Number of newly observed searches (not the number of result citations).
+    pub fn observe(&mut self, result: &crate::protocol::WebSearchResult) -> u64 {
+        let Some(queries) = result
+            .metadata
+            .pointer("/groundingMetadata/webSearchQueries")
+            .and_then(Value::as_array)
+        else {
+            return 0;
+        };
+        let mut snapshot = std::collections::BTreeMap::new();
+        for query in queries.iter().filter_map(Value::as_str) {
+            *snapshot.entry(query.to_owned()).or_insert(0_u64) += 1;
+        }
+        let mut added = 0;
+        for (query, count) in snapshot {
+            let previous = self.queries.entry(query).or_default();
+            added += count.saturating_sub(*previous);
+            *previous = (*previous).max(count);
+        }
+        added
+    }
+}
+
+#[cfg(test)]
+mod query_progress_tests {
+    use super::*;
+    #[test]
+    fn grounding_snapshots_count_queries_not_citations_or_repeated_snapshots() {
+        let mut progress = SearchProgress::default();
+        let result = |queries| crate::protocol::WebSearchResult {
+            metadata: json!({"groundingMetadata":{"webSearchQueries":queries}}),
+            ..Default::default()
+        };
+        assert_eq!(progress.observe(&result(json!(["rust"]))), 1);
+        assert_eq!(progress.observe(&result(json!(["rust"]))), 0);
+        assert_eq!(progress.observe(&result(json!(["rust", "rust docs"]))), 1);
+        assert_eq!(progress.observe(&result(json!(["rust"]))), 0);
+        assert_eq!(progress.observe(&Default::default()), 0);
+    }
+}
