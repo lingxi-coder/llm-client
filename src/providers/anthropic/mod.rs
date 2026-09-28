@@ -24,3 +24,6 @@ pub(crate) mod structured;
 pub(crate) mod attachments;
 
 pub mod request_policy;
+
+mod connector;
+pub use connector::ConnectorTextAccumulator;
