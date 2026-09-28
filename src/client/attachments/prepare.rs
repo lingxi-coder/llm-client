@@ -13,6 +13,7 @@ impl AttachmentManager {
     ) -> Result<PreparedAttachments<'a>, LlmError> {
         let ProviderFilePreparation {
             file_validation_time,
+            clock,
             endpoint,
             planning_profile,
             opts,
@@ -127,7 +128,9 @@ impl AttachmentManager {
                         Some(lock) => Some(lock.lock().await),
                         None => None,
                     };
-                    let cached = cache_key.as_ref().and_then(|key| self.cached_file(key));
+                    let cached = cache_key
+                        .as_ref()
+                        .and_then(|key| self.cached_file(key, clock.now()));
                     let file = if let Some(file) = cached {
                         file
                     } else {

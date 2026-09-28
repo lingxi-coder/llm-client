@@ -66,6 +66,6 @@ while let Some(event) = events.next().await? {
 
 调用方可在接收另一半事件流时排队发送多段文本，队列长度由本地配置限制。默认本地限制为每段 16 KiB、最多 8 段待处理文本、每条 WebSocket 消息 1 MiB、每个会话解码音频 64 MiB。这些是客户端边界，不代表 MiniMax 服务限制。`task_finish` 要求 MiniMax 完成队列并结束任务；继续读取事件直到 `TaskFinished`。
 
-服务不会自动重连或重放文本。如果 `task_continue` 或 `task_finish` 可能已到达 MiniMax 后发送失败，结果为 `OutcomeUnknown`；不要自动重复提交。若在 `task_finished` 前断开，调用方收到 `Interrupted`，此前已交付的音频 chunk 仍由调用方持有。丢弃 session 两端会释放注入的 transport；需要显式取消时调用 `abort` 发送 WebSocket close。
+服务不会自动重连或重放文本。如果 `task_continue` 或 `task_finish` 可能已到达 MiniMax 后发送失败，结果为 `OutcomeUnknown`；不要自动重复提交。如果在写入期间取消 `send_text` 或 `finish` future，发送端会失效并释放 transport 写入端；后续发送返回 `Closed`。仅丢弃尚未轮询的 future 不会使会话失效。若在 `task_finished` 前断开，调用方收到 `Interrupted`，此前已交付的音频 chunk 仍由调用方持有。丢弃 session 两端会释放注入的 transport；需要显式取消时调用 `abort` 发送 WebSocket close。
 
 契约依据 MiniMax 的[国际版普通 T2A WebSocket 文档](https://platform.minimax.io/docs/api-reference/speech-t2a-websocket)和[大陆普通 T2A WebSocket 文档](https://platform.minimax.cn/docs/api-reference/speech-t2a-websocket)。两页分别明确给出 `.io` 与 `.cn` 的完整 WSS endpoint，并记录 Bearer 认证、`connected_success` / `task_started` 握手、`task_continue` / `task_finish`、十六进制音频、`is_final`、队列行为和终止事件。这里实现的是普通单向 T2A WebSocket，不是单独的 Bidi WebSocket 协议。

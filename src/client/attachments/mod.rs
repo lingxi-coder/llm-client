@@ -107,6 +107,7 @@ pub(crate) struct ResolvedRequest<'a> {
 
 pub(crate) struct ProviderFilePreparation<'a> {
     pub file_validation_time: std::time::SystemTime,
+    pub clock: &'a dyn crate::transport::Clock,
     pub endpoint: FirstPartyEndpoint,
     /// Selected-model data for capability checks; authentication uses the original profile.
     pub planning_profile: &'a ProviderProfile,

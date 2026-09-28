@@ -4,7 +4,7 @@ use futures::{
     channel::mpsc,
     executor::block_on,
     stream::{self, BoxStream},
-    StreamExt,
+    FutureExt, StreamExt,
 };
 use lingxi_llm_client::{
     files::provider_file_endpoint_fingerprint,
@@ -39,6 +39,8 @@ enum ContinueBehavior {
     FailWrite,
     TaskFailed,
     PartialThenClose,
+    PendingContinue,
+    PendingFinish,
 }
 
 struct FakeTransport {
@@ -134,6 +136,15 @@ impl RealtimeSink for FakeSink {
         };
         let event: Value = serde_json::from_slice(bytes).unwrap();
         self.sent.lock().unwrap().push(frame);
+        if (event["event"] == "task_continue"
+            && matches!(self.continue_behavior, ContinueBehavior::PendingContinue))
+            || (event["event"] == "task_finish"
+                && matches!(self.continue_behavior, ContinueBehavior::PendingFinish))
+        {
+            // The frame has reached the transport, but its write/flush has
+            // not resolved. Dropping this future models timeout/select cancel.
+            futures::future::pending::<()>().await;
+        }
         match event["event"].as_str() {
             Some("task_start") => {
                 self.respond(json!({
@@ -773,6 +784,67 @@ fn uncertain_text_write_is_not_retried() {
                 .count(),
             1
         );
+    });
+}
+
+#[test]
+fn cancelled_writes_invalidate_the_sender_without_another_transport_write() {
+    block_on(async {
+        for behavior in [
+            ContinueBehavior::PendingContinue,
+            ContinueBehavior::PendingFinish,
+        ] {
+            let (fake, peer) = fake_transport(behavior);
+            let service = service(transport(fake)).unwrap();
+            let (mut input, mut events) = service
+                .connect(&Secret::from("key".to_owned()), &request(), limits())
+                .await
+                .unwrap()
+                .into_parts();
+            if matches!(behavior, ContinueBehavior::PendingContinue) {
+                assert!(input
+                    .send_text("possibly received")
+                    .now_or_never()
+                    .is_none());
+            } else {
+                assert!(input.finish().now_or_never().is_none());
+            }
+            let sent_count = sent_json(&peer).len();
+            assert_eq!(sent_count, 2); // task_start and the cancelled write
+            assert!(matches!(
+                input.send_text("must not replay").await,
+                Err(MiniMaxStreamingTtsError::Closed)
+            ));
+            assert!(matches!(
+                input.finish().await,
+                Err(MiniMaxStreamingTtsError::Closed)
+            ));
+            assert_eq!(sent_json(&peer).len(), sent_count);
+            // Dropping the owned sink releases its inbound sender. Reading
+            // observes interruption rather than hanging on a retained sink.
+            assert!(matches!(
+                events.next().now_or_never(),
+                Some(Err(MiniMaxStreamingTtsError::Interrupted { .. }))
+            ));
+        }
+    });
+}
+
+#[test]
+fn dropping_an_unpolled_write_does_not_invalidate_the_sender() {
+    block_on(async {
+        let (fake, peer) = fake_transport(ContinueBehavior::Audio);
+        let service = service(transport(fake)).unwrap();
+        let (mut input, _events) = service
+            .connect(&Secret::from("key".to_owned()), &request(), limits())
+            .await
+            .unwrap()
+            .into_parts();
+        drop(input.send_text("never sent"));
+        drop(input.finish());
+        assert!(input.send_text("").await.is_err());
+        input.send_text("valid segment").await.unwrap();
+        assert_eq!(sent_json(&peer).len(), 2);
     });
 }
 

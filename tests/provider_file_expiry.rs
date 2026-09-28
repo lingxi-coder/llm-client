@@ -457,12 +457,14 @@ async fn expiry_is_rechecked_after_resolver_and_after_authentication_awaits() {
 }
 
 #[tokio::test]
-async fn automatic_upload_expiry_remains_visible_after_scope_projection_and_cached_reuse() {
+async fn automatic_upload_is_replaced_when_provider_expiry_reaches_the_clock() {
     let mut profile = profile(ProtocolFamily::OpenAiResponses);
     profile.auth = AuthStrategy::ApiKey;
     let transport = Arc::new(Http::new(vec![
         json!({"id":"file_auto","bytes":8,"filename":"doc.pdf","purpose":"user_data","expires_at":NOW+1}),
         json!({"id":"resp_1","model":"gpt-4.1","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1}}),
+        json!({"id":"file_replacement","bytes":8,"filename":"doc.pdf","purpose":"user_data","expires_at":NOW+100}),
+        json!({"id":"resp_2","model":"gpt-4.1","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":1}}),
     ]));
     let counts = Arc::new(Counts::default());
     let clock = Arc::new(TestClock(AtomicU64::new(NOW)));
@@ -491,15 +493,19 @@ async fn automatic_upload_expiry_remains_visible_after_scope_projection_and_cach
     };
     client.chat().complete(&request, &options).await.unwrap();
     clock.0.store(NOW + 1, Ordering::SeqCst);
-    assert!(matches!(
-        client.chat().complete(&request, &options).await,
-        Err(LlmError::InvalidRequest { .. })
-    ));
+    client.chat().complete(&request, &options).await.unwrap();
     let requests = transport.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 4);
     assert!(requests[0].url.ends_with("/files"));
     assert!(requests[1].url.ends_with("/responses"));
-    assert_eq!(counts.auth.load(Ordering::SeqCst), 2);
+    assert!(requests[2].url.ends_with("/files"));
+    assert!(requests[3].url.ends_with("/responses"));
+    let body: Value = serde_json::from_slice(&requests[3].body).unwrap();
+    assert_eq!(
+        body["input"][0]["content"][0]["file_id"],
+        "file_replacement"
+    );
+    assert_eq!(counts.auth.load(Ordering::SeqCst), 4);
 }
 
 #[tokio::test]

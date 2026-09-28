@@ -254,3 +254,119 @@ async fn gemini_audio_and_automatic_files_complete_together() {
     );
     assert_eq!(http.0.load(Ordering::Relaxed), 3);
 }
+
+struct ExpiryClock(std::sync::atomic::AtomicU64);
+impl lingxi_llm_client::transport::Clock for ExpiryClock {
+    fn now(&self) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + Duration::from_secs(self.0.load(Ordering::SeqCst))
+    }
+}
+
+struct ExpiringGeminiUpload {
+    calls: AtomicUsize,
+    uploads: AtomicUsize,
+}
+#[async_trait]
+impl Transport for ExpiringGeminiUpload {
+    async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (headers, body) = if request.url.contains("/upload/") {
+            (
+                vec![(
+                    "x-goog-upload-url".into(),
+                    "https://generativelanguage.googleapis.com/session".into(),
+                )],
+                Bytes::new(),
+            )
+        } else if request.url.ends_with("/session") {
+            let upload = self.uploads.fetch_add(1, Ordering::SeqCst) + 1;
+            let expiry = if upload == 1 {
+                "2000000001"
+            } else {
+                "2000001000"
+            };
+            (vec![], Bytes::from(json!({"file":{
+                "name":format!("files/test{upload}"),
+                "uri":format!("https://generativelanguage.googleapis.com/v1beta/files/test{upload}"),
+                "state":"ACTIVE","mimeType":"application/pdf","expirationTime":expiry
+            }}).to_string()))
+        } else {
+            let upload = self.uploads.load(Ordering::SeqCst);
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(
+                body["contents"][0]["parts"][0]["fileData"]["fileUri"],
+                format!("https://generativelanguage.googleapis.com/v1beta/files/test{upload}")
+            );
+            let response =
+                json!({"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]});
+            let body = if request.url.contains(":streamGenerateContent") {
+                format!("data: {response}\n\n")
+            } else {
+                response.to_string()
+            };
+            (vec![], Bytes::from(body))
+        };
+        Ok(HttpResponse {
+            status: 200,
+            headers,
+            body,
+        }
+        .into())
+    }
+}
+
+#[tokio::test]
+async fn expired_automatic_files_are_reuploaded_and_fresh_files_are_reused() {
+    for streaming in [false, true] {
+        let profile: ProviderProfile = serde_json::from_value(json!({
+            "profile_name":"p","provider_id":"google","base_url":"https://generativelanguage.googleapis.com/v1beta",
+            "protocol":"gemini_generate_content","auth":"none",
+            "models":[{"display_model":"m","request_model":"m","billing_model":"m","capability_support":{"documents":"supported"}}]
+        })).unwrap();
+        let request: ChatRequest = serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{
+            "type":"document","source":{"type":"attachment","attachment":attachment("pdf","application/pdf")}
+        }]}]})).unwrap();
+        let http = Arc::new(ExpiringGeminiUpload {
+            calls: AtomicUsize::new(0),
+            uploads: AtomicUsize::new(0),
+        });
+        let clock = Arc::new(ExpiryClock(std::sync::atomic::AtomicU64::new(
+            2_000_000_000,
+        )));
+        let mut builder = LlmClientBuilder::with_transport(http.clone(), &[profile]);
+        builder.with_attachment_resolver(Arc::new(Resolver));
+        builder.with_clock(clock.clone());
+        let client = builder.with_region(Region::International).build().unwrap();
+        let options = RequestOptions {
+            file_account_scope: Some("account".into()),
+            ..Default::default()
+        };
+        // Original upload, cache hit, expiry/reupload, and a hit on the replacement.
+        for (index, expected_calls) in [3, 4, 7, 8].into_iter().enumerate() {
+            if index == 2 {
+                clock.0.store(2_000_000_002, Ordering::SeqCst);
+            }
+            if streaming {
+                let mut stream = client.chat().stream(&request, &options).await.unwrap();
+                let mut ended = false;
+                while let Some(event) = stream.next().await {
+                    ended |= matches!(event.unwrap(), StreamEvent::End { .. });
+                }
+                assert!(ended);
+            } else {
+                assert_eq!(
+                    client
+                        .chat()
+                        .complete(&request, &options)
+                        .await
+                        .unwrap()
+                        .message
+                        .text(),
+                    "ok"
+                );
+            }
+            assert_eq!(http.calls.load(Ordering::SeqCst), expected_calls);
+        }
+        assert_eq!(http.uploads.load(Ordering::SeqCst), 2);
+    }
+}

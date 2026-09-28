@@ -79,6 +79,7 @@ pub struct BackgroundChatEventStream {
     decoder: Box<dyn StreamDecoder>,
     account_scope: String,
     finished: bool,
+    replay_until: Option<BackgroundEventCursor>,
 }
 
 impl BackgroundChatEventStream {
@@ -96,6 +97,7 @@ impl BackgroundChatEventStream {
             decoder,
             account_scope,
             finished: false,
+            replay_until: None,
         }
     }
 
@@ -103,6 +105,43 @@ impl BackgroundChatEventStream {
     /// On an interruption, already returned deltas remain valid partial output;
     /// the error retains the last safe cursor for a later resume.
     pub async fn next_event(
+        &mut self,
+    ) -> Result<Option<BackgroundChatEvent>, BackgroundChatStreamError> {
+        loop {
+            let event = match self.next_decoded_event().await {
+                Ok(event) => event,
+                Err(mut error) => {
+                    // A failed state rebuild must not roll the caller's durable
+                    // checkpoint backwards to an already delivered event.
+                    if let Some(checkpoint) = &self.replay_until {
+                        match &mut error {
+                            BackgroundChatStreamError::Native(
+                                BackgroundStreamError::Interrupted { cursor, .. }
+                                | BackgroundStreamError::InvalidEvent { cursor, .. },
+                            ) => *cursor = Some(Box::new(checkpoint.clone())),
+                            BackgroundChatStreamError::Decode { cursor, events, .. } => {
+                                *cursor = checkpoint.clone();
+                                events.clear();
+                            }
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            let Some(event) = event else {
+                return Ok(None);
+            };
+            if self.replay_until.as_ref().is_some_and(|checkpoint| {
+                event.cursor.sequence_number <= checkpoint.sequence_number
+            }) {
+                continue;
+            }
+            self.replay_until = None;
+            return Ok(Some(event));
+        }
+    }
+
+    async fn next_decoded_event(
         &mut self,
     ) -> Result<Option<BackgroundChatEvent>, BackgroundChatStreamError> {
         if self.finished {
@@ -320,6 +359,9 @@ impl BackgroundEventStream {
                 let mut reference = self.reference_template.take().ok_or_else(|| {
                     self.invalid("stream has no bound job reference", native.clone())
                 })?;
+                if !reference.response_id.is_empty() && reference.response_id != id {
+                    return Err(self.invalid("response id differs from stream reference", native));
+                }
                 reference.response_id = id.into();
                 BackgroundEventCursor {
                     reference,
@@ -396,8 +438,8 @@ impl BackgroundService<'_> {
             .await
     }
 
-    /// Resume provider-neutral decoding strictly after the last delivered
-    /// event. This reconnects to the existing response and never resubmits it.
+    /// Rebuild decoder state by replaying the existing response, then deliver
+    /// only events after the cursor. This never resubmits the response.
     pub async fn resume_chat_stream(
         self,
         cursor: BackgroundEventCursor,
@@ -463,13 +505,12 @@ impl Pinned<'_> {
         let codec = self.codec_arc()?;
         let context = CodecContext::new(profile, &cursor.reference.model, RequestMode::Stream);
         let account_scope = cursor.reference.account_scope.clone();
-        let native = self.resume_stream(cursor, options).await?;
-        Ok(BackgroundChatEventStream::new(
-            native,
-            codec,
-            context,
-            account_scope,
-        ))
+        let native = self
+            .resume_stream_inner(cursor.clone(), options, true)
+            .await?;
+        let mut stream = BackgroundChatEventStream::new(native, codec, context, account_scope);
+        stream.replay_until = Some(cursor);
+        Ok(stream)
     }
 
     async fn submit_stream(
@@ -565,6 +606,15 @@ impl Pinned<'_> {
         cursor: BackgroundEventCursor,
         options: &RequestOptions,
     ) -> Result<BackgroundEventStream, BackgroundError> {
+        self.resume_stream_inner(cursor, options, false).await
+    }
+
+    async fn resume_stream_inner(
+        &self,
+        cursor: BackgroundEventCursor,
+        options: &RequestOptions,
+        replay: bool,
+    ) -> Result<BackgroundEventStream, BackgroundError> {
         let reference = &cursor.reference;
         let (profile, route, scope) = self.route(&reference.profile_name, options)?;
         if reference.provider_id != profile.provider_id
@@ -584,9 +634,11 @@ impl Pinned<'_> {
         url.path_segments_mut()
             .map_err(|_| invalid("invalid background endpoint"))?
             .push(&reference.response_id);
-        url.query_pairs_mut()
-            .append_pair("stream", "true")
-            .append_pair("starting_after", &cursor.sequence_number.to_string());
+        url.query_pairs_mut().append_pair("stream", "true");
+        if !replay {
+            url.query_pairs_mut()
+                .append_pair("starting_after", &cursor.sequence_number.to_string());
+        }
         let mut http = HttpRequest {
             method: "GET".into(),
             url: url.into(),
@@ -601,7 +653,11 @@ impl Pinned<'_> {
             .with_deadline(deadline)
             .send(http)
             .await?;
-        open_stream(response, Some(cursor), None).await
+        if replay {
+            open_stream(response, None, Some(cursor.reference)).await
+        } else {
+            open_stream(response, Some(cursor), None).await
+        }
     }
 }
 

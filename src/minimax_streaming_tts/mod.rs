@@ -864,6 +864,29 @@ struct SharedState {
     audio_bytes: usize,
 }
 
+impl SharedState {
+    async fn send_once(
+        &mut self,
+        frame: RealtimeFrame,
+        operation: &'static str,
+    ) -> Result<(), MiniMaxStreamingTtsError> {
+        let mut sink = self.sink.take().ok_or(MiniMaxStreamingTtsError::Closed)?;
+        // Keep the state failed until the write completes. Cancellation drops
+        // the owned sink and leaves this flag set, just like an uncertain error.
+        // The caller holds the shared lock through the write and state update.
+        self.failed = true;
+        sink.send(frame)
+            .await
+            .map_err(|source| MiniMaxStreamingTtsError::OutcomeUnknown {
+                operation,
+                reason: source.to_string(),
+            })?;
+        self.sink = Some(sink);
+        self.failed = false;
+        Ok(())
+    }
+}
+
 /// Text sender half. `send_text` queues one bounded segment; the service does
 /// not replay it if the send result becomes uncertain.
 pub struct MiniMaxStreamingTtsInput {
@@ -888,6 +911,8 @@ impl MiniMaxStreamingTtsInput {
 
     /// Queue one text segment. Multiple segments may be queued in order up to
     /// `max_pending_segments`; audio results remain a provider-native stream.
+    /// Cancelling an in-progress write invalidates the sender and drops its
+    /// transport half because the provider may already have received the text.
     pub async fn send_text(&mut self, text: &str) -> Result<(), MiniMaxStreamingTtsError> {
         if text.trim().is_empty() {
             return Err(invalid("text segment must not be empty"));
@@ -912,23 +937,14 @@ impl MiniMaxStreamingTtsInput {
                 max: self.limits.max_pending_segments,
             });
         }
-        let sink = shared
-            .sink
-            .as_mut()
-            .ok_or(MiniMaxStreamingTtsError::Closed)?;
-        if let Err(source) = sink.send(frame).await {
-            shared.failed = true;
-            return Err(MiniMaxStreamingTtsError::OutcomeUnknown {
-                operation: "task_continue",
-                reason: source.to_string(),
-            });
-        }
+        shared.send_once(frame, "task_continue").await?;
         shared.pending_segments += 1;
         Ok(())
     }
 
     /// Tell MiniMax to drain all queued segments and close the task. Continue
     /// reading events until `TaskFinished`; a failed write is outcome-unknown.
+    /// Cancelling an in-progress write also invalidates the sender.
     pub async fn finish(&mut self) -> Result<(), MiniMaxStreamingTtsError> {
         let mut shared = self.shared.lock().await;
         if shared.failed || shared.finished {
@@ -945,17 +961,7 @@ impl MiniMaxStreamingTtsInput {
             }
             .into());
         }
-        let sink = shared
-            .sink
-            .as_mut()
-            .ok_or(MiniMaxStreamingTtsError::Closed)?;
-        if let Err(source) = sink.send(frame).await {
-            shared.failed = true;
-            return Err(MiniMaxStreamingTtsError::OutcomeUnknown {
-                operation: "task_finish",
-                reason: source.to_string(),
-            });
-        }
+        shared.send_once(frame, "task_finish").await?;
         shared.finishing = true;
         Ok(())
     }

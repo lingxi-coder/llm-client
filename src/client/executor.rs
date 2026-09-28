@@ -500,6 +500,7 @@ impl<'client> RequestExecutor<'client> {
                 &req.attachments,
                 ProviderFilePreparation {
                     file_validation_time: self.clock.now(),
+                    clock: self.clock,
                     endpoint,
                     cache_namespace: self.state.cache_namespace,
                     cache_generation: self.state.cache_generations[&profile.profile_name],

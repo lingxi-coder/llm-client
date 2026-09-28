@@ -168,12 +168,24 @@ impl AttachmentManager {
                 lock
             })
     }
-    pub(super) fn cached_file(&self, key: &FileCacheKey) -> Option<files::ProviderFileRef> {
+    pub(super) fn cached_file(
+        &self,
+        key: &FileCacheKey,
+        now: std::time::SystemTime,
+    ) -> Option<files::ProviderFileRef> {
         let mut cache = self
             .provider_file_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         prune_expired_provider_files(&mut cache, Instant::now());
+        // Provider expiry can precede the retention TTL measured after upload
+        // and processing. Evict here so automatic attachments can be reuploaded
+        // instead of repeatedly failing the final request preflight.
+        if cache.get(key).is_some_and(|entry| {
+            files::validate_file_expiration_at(entry.file.expires_at.as_deref(), now).is_err()
+        }) {
+            cache.remove(key);
+        }
         cache.get(key).map(|entry| entry.file.clone())
     }
     pub(super) fn cache_file(

@@ -50,7 +50,7 @@ async fn stream_job(client: &LlmClient, request: &ChatRequest, options: &Request
 }
 ```
 
-需要 provider-neutral 输出时，使用 `submit_chat_stream()` 和 `resume_chat_stream()`。每个事件会保留原生 JSON 和游标，并附上解码后的 `StreamEvent`。终态 `response.completed` 或 `response.incomplete` 事件还会提供重建后的 `ChatResponse`。`response.failed` 仍作为错误返回，并保留原生事件和游标。此前交付的增量已经由调用方收到，属于调用方持有的部分结果。恢复后的解码器从游标之后开始；若需要连续的事件历史，请由调用方保留恢复前已收到的增量。终态事件包含完整 response，因此恢复后仍可独立重建完整 `ChatResponse`。
+需要 provider-neutral 输出时，使用 `submit_chat_stream()` 和 `resume_chat_stream()`。每个事件会保留原生 JSON 和游标，并附上解码后的 `StreamEvent`。终态 `response.completed` 或 `response.incomplete` 事件还会提供重建后的 `ChatResponse`。`response.failed` 仍作为错误返回，并保留原生事件和游标。此前交付的增量已经由调用方收到，属于调用方持有的部分结果。Chat 恢复会从头读取已有 response 的事件流，重建工具调用映射等解码状态，并跳过保存的游标及之前的事件，只交付后续事件；若需要连续的事件历史，请由调用方保留此前增量。这会增加重放读取，不会重新提交 response。原生 `resume_stream()` 仍直接使用 `starting_after`。重放期间若断线，错误保留原先保存的游标。终态事件包含完整 response，因此恢复后仍可独立重建完整 `ChatResponse`。
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};

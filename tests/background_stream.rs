@@ -227,7 +227,7 @@ async fn chat_stream_resume_keeps_cursor_and_rebuilds_response_without_resubmitt
     assert_eq!(requests[1].method, "GET");
     assert_eq!(
         requests[1].url,
-        "https://api.openai.com/v1/responses/resp_1?stream=true&starting_after=1"
+        "https://api.openai.com/v1/responses/resp_1?stream=true"
     );
 }
 
@@ -442,4 +442,188 @@ async fn provider_http_error_is_not_exposed_as_an_event_stream() {
         Err(BackgroundError::Provider { status: 429, .. })
     ));
     assert_eq!(mock.requests.lock().unwrap().len(), 1);
+}
+
+fn tool_added_event() -> Vec<u8> {
+    format!("data: {}\n\n", json!({
+        "type":"response.output_item.added", "sequence_number":1, "output_index":0,
+        "item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":""}
+    })).into_bytes()
+}
+
+fn tool_arguments_event() -> Vec<u8> {
+    format!(
+        "data: {}\n\n",
+        json!({
+            "type":"response.function_call_arguments.delta", "sequence_number":2,
+            "output_index":0,"item_id":"fc_1","delta":"{\"city\":\"Paris\"}"
+        })
+    )
+    .into_bytes()
+}
+
+#[tokio::test]
+async fn chat_resume_rebuilds_tool_mapping_without_redelivering_history() {
+    let (client, mock) = setup(vec![
+        Reply {
+            status: 200,
+            frames: vec![
+                Ok(event("response.created", 0, true)),
+                Ok(tool_added_event()),
+                Err(LlmError::Transport {
+                    message: "disconnect".into(),
+                }),
+            ],
+        },
+        Reply {
+            status: 200,
+            frames: vec![
+                Ok(event("response.created", 0, true)),
+                Ok(tool_added_event()),
+                Ok(tool_arguments_event()),
+                Ok(full_terminal_event(
+                    "response.completed",
+                    3,
+                    "completed",
+                    json!([{
+                        "type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Paris\"}"
+                    }]),
+                )),
+            ],
+        },
+    ]);
+    let mut stream = client
+        .background()
+        .submit_chat_stream("openai", &request(), &options("acct"))
+        .await
+        .unwrap();
+    stream.next_event().await.unwrap();
+    let added = stream.next_event().await.unwrap().unwrap();
+    assert!(added
+        .events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ToolCallDelta { .. })));
+    assert!(stream.next_event().await.is_err());
+    // Only the durable cursor is retained across recovery, not the old decoder.
+    let cursor = serde_json::from_str(&serde_json::to_string(&added.cursor).unwrap()).unwrap();
+    let mut resumed = client
+        .background()
+        .resume_chat_stream(cursor, &options("acct"))
+        .await
+        .unwrap();
+    let delta = resumed.next_event().await.unwrap().unwrap();
+    assert_eq!(delta.cursor.sequence_number, 2);
+    assert!(
+        matches!(delta.events.as_slice(), [StreamEvent::ToolCallDelta { id, name, arguments_fragment, .. }]
+        if id.as_str() == "call_1" && name == "weather" && arguments_fragment == "{\"city\":\"Paris\"}")
+    );
+    let terminal = resumed.next_event().await.unwrap().unwrap();
+    assert!(terminal.terminal);
+    assert!(terminal.response.is_some());
+    assert!(resumed.next_event().await.unwrap().is_none());
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "GET");
+    assert_eq!(
+        requests[1].url,
+        "https://api.openai.com/v1/responses/resp_1?stream=true"
+    );
+}
+
+#[tokio::test]
+async fn interrupted_chat_replay_preserves_last_delivered_cursor() {
+    let (client, _) = setup(vec![
+        Reply {
+            status: 200,
+            frames: vec![
+                Ok(event("response.created", 0, true)),
+                Ok(tool_added_event()),
+            ],
+        },
+        Reply {
+            status: 200,
+            frames: vec![
+                Ok(event("response.created", 0, true)),
+                Err(LlmError::Transport {
+                    message: "replay disconnected".into(),
+                }),
+            ],
+        },
+        Reply {
+            status: 200,
+            frames: vec![
+                Ok(event("response.created", 0, true)),
+                Ok(tool_added_event()),
+                Ok(tool_arguments_event()),
+            ],
+        },
+    ]);
+    let mut stream = client
+        .background()
+        .submit_chat_stream("openai", &request(), &options("acct"))
+        .await
+        .unwrap();
+    stream.next_event().await.unwrap();
+    let checkpoint = stream.next_event().await.unwrap().unwrap().cursor;
+    let mut resumed = client
+        .background()
+        .resume_chat_stream(checkpoint.clone(), &options("acct"))
+        .await
+        .unwrap();
+    let error = resumed.next_event().await.unwrap_err();
+    let BackgroundChatStreamError::Native(BackgroundStreamError::Interrupted {
+        cursor: Some(cursor),
+        ..
+    }) = error
+    else {
+        panic!("expected interruption")
+    };
+    assert_eq!(*cursor, checkpoint);
+    let mut resumed = client
+        .background()
+        .resume_chat_stream(*cursor, &options("acct"))
+        .await
+        .unwrap();
+    assert_eq!(
+        resumed
+            .next_event()
+            .await
+            .unwrap()
+            .unwrap()
+            .cursor
+            .sequence_number,
+        2
+    );
+}
+
+#[tokio::test]
+async fn chat_replay_rejects_a_different_response_id() {
+    let (client, _) = setup(vec![
+        Reply {
+            status: 200,
+            frames: vec![Ok(event("response.created", 0, true))],
+        },
+        Reply {
+            status: 200,
+            frames: vec![Ok(String::from_utf8(event("response.created", 0, true))
+                .unwrap()
+                .replace("resp_1", "resp_other")
+                .into_bytes())],
+        },
+    ]);
+    let mut stream = client
+        .background()
+        .submit_chat_stream("openai", &request(), &options("acct"))
+        .await
+        .unwrap();
+    let cursor = stream.next_event().await.unwrap().unwrap().cursor;
+    let mut resumed = client
+        .background()
+        .resume_chat_stream(cursor.clone(), &options("acct"))
+        .await
+        .unwrap();
+    let error = resumed.next_event().await.unwrap_err();
+    assert!(
+        matches!(error,BackgroundChatStreamError::Native(BackgroundStreamError::InvalidEvent {cursor:Some(checkpoint),..}) if *checkpoint == cursor)
+    );
 }
