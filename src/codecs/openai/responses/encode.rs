@@ -51,7 +51,7 @@ pub fn request<'a>(
         opts.file_scope(),
         opts.file_validation_time(),
     )?;
-    if req.continuation.is_some()
+    if req.has_response_continuation()
         && !profile
             .extra
             .get("supports_previous_response_id")

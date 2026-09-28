@@ -1,6 +1,8 @@
 //! Built-in HTTP transport, injectable network interfaces and clocks.
 
 mod http;
+#[cfg(feature = "responses-websocket")]
+pub(crate) mod websocket;
 pub use http::HttpTransport;
 
 use crate::protocol::LlmError;

@@ -400,6 +400,7 @@ fn fetch_cache_markers_follow_mcp_wire_order_and_share_the_four_slot_limit() {
     assert_eq!(tools[0]["type"], "mcp_toolset");
     assert_eq!(tools[1]["name"], "web_fetch");
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -411,6 +412,7 @@ fn fetch_cache_markers_follow_mcp_wire_order_and_share_the_four_slot_limit() {
             thought_signature: None,
         }]));
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 1, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });

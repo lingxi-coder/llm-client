@@ -50,6 +50,7 @@ fn encode(request: &ChatRequest) -> Result<Value, LlmError> {
 
 fn breakpoint(position: CachePosition) -> CacheBreakpoint {
     CacheBreakpoint {
+        scope: None,
         position,
         ttl: CacheTtl::ThirtyMinutes,
     }
@@ -226,12 +227,14 @@ fn profile_cache_fields_and_other_responses_adapters_are_rejected() {
 fn unsupported_breakpoint_shapes_are_rejected() {
     let mut request = request("gpt-5.6-sol");
     request.prompt_cache.breakpoints = vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::Tool { index: 0 },
         ttl: CacheTtl::ThirtyMinutes,
     }];
     assert!(encode(&request).is_err());
 
     request.prompt_cache.breakpoints = vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     }];

@@ -14,10 +14,10 @@ use lingxi_llm_client::{
     },
     providers::minimax::tts::MiniMaxTtsRegion,
     protocol::Secret,
-    realtime::{RealtimeTransport, RustlsWebSocketTransport},
+    realtime::{RealtimeTransport, HttpTransport},
 };
 
-let transport: Arc<dyn RealtimeTransport> = Arc::new(RustlsWebSocketTransport);
+let transport: Arc<dyn RealtimeTransport> = Arc::new(HttpTransport::new()?);
 let service = MiniMaxStreamingTtsService::new(
     transport,
     MiniMaxStreamingTtsConfig::new(

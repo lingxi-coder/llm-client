@@ -71,7 +71,7 @@ pub(crate) trait ChatBackend: Send + Sync {
                 message: "exact token counting is unavailable for this protocol".into(),
             });
         }
-        if req.continuation.is_some()
+        if req.has_response_continuation()
             && context.profile().protocol != ProtocolFamily::OpenAiResponses
         {
             return Err(LlmError::UnsupportedCapability {
@@ -176,10 +176,10 @@ pub(crate) trait ChatBackend: Send + Sync {
             || super::anthropic::code_execution::has_execution(req);
         let hosted = stateful || remote_mcp || super::google::chat::has_hosted_tools(req);
         ReplayPolicy {
-            pin_to_connection: req.continuation.is_some()
+            pin_to_connection: req.has_response_continuation()
                 || opts.openrouter_response_cache.is_some()
                 || hosted,
-            repair_missing_files: req.continuation.is_none() && !hosted,
+            repair_missing_files: !req.has_response_continuation() && !hosted,
             allow_failover: !stateful,
         }
     }

@@ -11,6 +11,9 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Request-local authentication supplied by an embedding host. Used only for
+    /// the selected primary profile; never forwarded to fallback accounts.
+    pub authenticator: Option<RequestAuthenticator>,
     /// Optional host policy applied before signing the final wire bytes.
     pub finalizer: Option<std::sync::Arc<dyn RequestFinalizer>>,
     /// The secret this request authenticates with, if the profile needs one.
@@ -58,4 +61,13 @@ pub trait RequestFinalizer: std::fmt::Debug + Send + Sync {
         request: &mut crate::HttpRequest,
         profile: &crate::protocol::ProviderProfile,
     ) -> Result<(), crate::protocol::LlmError>;
+}
+
+/// Redacted, cloneable request-local authenticator. It is never persisted.
+#[derive(Clone)]
+pub struct RequestAuthenticator(pub std::sync::Arc<dyn crate::Authenticator>);
+impl std::fmt::Debug for RequestAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RequestAuthenticator(<redacted>)")
+    }
 }

@@ -380,6 +380,7 @@ fn toolset_cache_markers_follow_fetch_and_share_global_limit() {
     r.prompt_cache.automatic = Some(CacheTtl::FiveMinutes);
     assert!(encode(&r, &profile(), MODEL).is_ok());
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });

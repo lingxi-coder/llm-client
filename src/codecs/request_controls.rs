@@ -7,6 +7,15 @@ pub(super) fn apply(
     body: &mut Map<String, Value>,
 ) -> Result<(), LlmError> {
     let controls = &req.controls;
+    if let (Some(previous), Some(scoped)) =
+        (&controls.responses.previous_response_id, &req.continuation)
+    {
+        if previous != scoped.response_id.as_str() {
+            return Err(LlmError::InvalidRequest {
+                message: "conflicting explicit and scoped response continuation".into(),
+            });
+        }
+    }
     let claude = matches!(
         family,
         P::AnthropicMessages | P::VertexClaude | P::BedrockClaude | P::FoundryClaude

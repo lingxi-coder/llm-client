@@ -2,7 +2,7 @@
 
 `realtime::GeminiLiveSession` 使用现有的 `RealtimeTransport` 建立 Google Gemini Live `BidiGenerateContent` 会话。宿主通过 endpoint 或请求头提供认证，运行返回的 `RealtimeDriver`，并负责工具授权、音频设备和播放状态。
 
-内置 `RustlsWebSocketTransport` 需要启用 `realtime-websocket` feature。宿主也可以注入自己的 `RealtimeTransport`。
+内置 `HttpTransport` 需要启用 `realtime-websocket` feature。宿主也可以注入自己的 `RealtimeTransport`。
 
 Google 原始 WebSocket endpoint 为 `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`。标准 API key 可放在 `?key=...` 查询参数中。Google 文档还说明，短期 token 可通过 `access_token` 查询参数或 `Authorization: Token ...` 请求头传入。请勿将这些值写入日志。
 
@@ -10,10 +10,10 @@ Google 原始 WebSocket endpoint 为 `wss://generativelanguage.googleapis.com/ws
 use std::sync::Arc;
 use lingxi_llm_client::realtime::{
     GeminiLiveConfig, GeminiLiveEvent, GeminiLiveSession, RealtimeConnectRequest,
-    RealtimeInput, RealtimeLimits, RealtimeTransport, RustlsWebSocketTransport,
+    RealtimeInput, RealtimeLimits, RealtimeTransport, HttpTransport,
 };
 
-let transport: Arc<dyn RealtimeTransport> = Arc::new(RustlsWebSocketTransport);
+let transport: Arc<dyn RealtimeTransport> = Arc::new(HttpTransport::new()?);
 let mut config = GeminiLiveConfig::new("gemini-3.8-live", "google-account-a");
 config.system_instruction = Some("Answer briefly.".into());
 config.enable_session_resumption = true;

@@ -2,7 +2,7 @@
 
 `realtime::GeminiLiveSession` uses the existing `RealtimeTransport` contract to establish a Google Gemini Live `BidiGenerateContent` session. The host supplies authentication in the endpoint or headers, runs the returned `RealtimeDriver`, and owns tool authorization, audio devices, and playback state.
 
-The built-in `RustlsWebSocketTransport` requires the `realtime-websocket` dependency feature. A host can also inject its own `RealtimeTransport`.
+The built-in `HttpTransport` requires the `realtime-websocket` dependency feature. A host can also inject its own `RealtimeTransport`.
 
 Google's raw WebSocket endpoint is `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`. A standard API key can be passed as the `?key=...` query parameter. Google documents short-lived tokens in either the `access_token` query parameter or an `Authorization: Token ...` header. Keep these values out of logs.
 
@@ -10,10 +10,10 @@ Google's raw WebSocket endpoint is `wss://generativelanguage.googleapis.com/ws/g
 use std::sync::Arc;
 use lingxi_llm_client::realtime::{
     GeminiLiveConfig, GeminiLiveEvent, GeminiLiveSession, RealtimeConnectRequest,
-    RealtimeInput, RealtimeLimits, RealtimeTransport, RustlsWebSocketTransport,
+    RealtimeInput, RealtimeLimits, RealtimeTransport, HttpTransport,
 };
 
-let transport: Arc<dyn RealtimeTransport> = Arc::new(RustlsWebSocketTransport);
+let transport: Arc<dyn RealtimeTransport> = Arc::new(HttpTransport::new()?);
 let mut config = GeminiLiveConfig::new("gemini-3.8-live", "google-account-a");
 config.system_instruction = Some("Answer briefly.".into());
 config.enable_session_resumption = true;

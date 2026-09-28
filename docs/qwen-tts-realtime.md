@@ -1,6 +1,6 @@
 # Qwen 独立 TTS Realtime
 
-`qwen_tts_realtime` 实现独立 Qwen-TTS Realtime 原生 WebSocket 协议：增量文本输入、流式音频输出、文本缓冲提交/清除，以及正常结束会话。它复用可注入的 `RealtimeTransport`；可选 `realtime-websocket` 特性提供 `RustlsWebSocketTransport`。宿主并行驱动输入与事件读取，客户端不启动后台 driver，不自动重连、重放文本、播放音频或刷新凭证。
+`qwen_tts_realtime` 实现独立 Qwen-TTS Realtime 原生 WebSocket 协议：增量文本输入、流式音频输出、文本缓冲提交/清除，以及正常结束会话。它复用可注入的 `RealtimeTransport`；可选 `realtime-websocket` 特性提供 `HttpTransport`。宿主并行驱动输入与事件读取，客户端不启动后台 driver，不自动重连、重放文本、播放音频或刷新凭证。
 
 显式选择地域：
 

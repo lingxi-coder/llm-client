@@ -51,7 +51,11 @@ fn encode(
 }
 
 fn breakpoint(position: CachePosition, ttl: CacheTtl) -> CacheBreakpoint {
-    CacheBreakpoint { position, ttl }
+    CacheBreakpoint {
+        scope: None,
+        position,
+        ttl,
+    }
 }
 
 #[test]

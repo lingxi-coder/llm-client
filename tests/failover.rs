@@ -2521,3 +2521,53 @@ async fn total_timeout_expires_during_authentication_before_a_request_is_sent() 
         assert!(http.hops().is_empty(), "expired work must never be sent");
     }
 }
+
+#[test]
+fn an_explicit_legacy_response_id_also_pins_the_connection() {
+    let http = ScriptedTransport::new(vec![
+        (
+            "https://one.test",
+            Err(LlmError::Overloaded {
+                message: "busy".to_owned(),
+            }),
+        ),
+        ("https://two.test", Ok(200)),
+    ]);
+    let c = stateful_pair(http.clone());
+
+    let mut next = continuing("m-1");
+    next.controls.responses.previous_response_id = next.continuation.take().map(|reference| reference.response_id.as_str().to_owned());
+    let err = block_on(c.chat().complete(
+        &next,
+        &RequestOptions {
+            account_scope: Some("account-1".into()),
+            ..Default::default()
+        },
+    ))
+    .expect_err("the connection holding the state is the only one that can serve this");
+    assert!(matches!(err, LlmError::Overloaded { .. }), "{err}");
+    assert_eq!(
+        http.hops(),
+        vec!["https://one.test/chat"],
+        "the sibling was never tried; it does not have the previous response"
+    );
+
+    // The same script, without the continuation, walks both — so the stop
+    // above is the continuation and not the route.
+    let http = ScriptedTransport::new(vec![
+        (
+            "https://one.test",
+            Err(LlmError::Overloaded {
+                message: "busy".to_owned(),
+            }),
+        ),
+        ("https://two.test", Ok(200)),
+    ]);
+    let c = stateful_pair(http.clone());
+    block_on(
+        c.chat()
+            .complete(&request("m-1"), &RequestOptions::default()),
+    )
+    .unwrap();
+    assert_eq!(http.hops().len(), 2);
+}

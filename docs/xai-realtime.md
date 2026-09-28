@@ -2,16 +2,16 @@
 
 `realtime::XaiRealtimeSession` 将 xAI 原生 `/v1/realtime` WebSocket 协议接入现有的 `RealtimeTransport` 和有界实时队列。宿主通过连接请求提供认证，并在自己的事件循环中同时运行返回的 `RealtimeDriver`。默认音频传输是 JSON/Base64；输入和输出也可分别配置为原始二进制 WebSocket 帧。
 
-启用 `realtime-websocket` feature 后可使用内置 `RustlsWebSocketTransport`。直接会话 endpoint 为 `wss://api.x.ai/v1/realtime?model=grok-voice-latest`；xAI 也文档化了 `grok-voice-think-fast-2.0`。认证通过 `Authorization: Bearer ...` 请求头传入。对于客户端直连，xAI 文档说明可使用短期 client secret，放在同一 Bearer 请求头或 `Sec-WebSocket-Protocol: xai-client-secret.<token>` 中。请勿将 API key 或 client secret 写入日志。
+启用 `realtime-websocket` feature 后可使用内置 `HttpTransport`。直接会话 endpoint 为 `wss://api.x.ai/v1/realtime?model=grok-voice-latest`；xAI 也文档化了 `grok-voice-think-fast-2.0`。认证通过 `Authorization: Bearer ...` 请求头传入。对于客户端直连，xAI 文档说明可使用短期 client secret，放在同一 Bearer 请求头或 `Sec-WebSocket-Protocol: xai-client-secret.<token>` 中。请勿将 API key 或 client secret 写入日志。
 
 ```rust,ignore
 use std::sync::Arc;
 use lingxi_llm_client::realtime::{
     RealtimeConnectRequest, RealtimeInput, RealtimeLimits, RealtimeTransport,
-    RustlsWebSocketTransport, XaiRealtimeConfig, XaiRealtimeSession,
+    HttpTransport, XaiRealtimeConfig, XaiRealtimeSession,
 };
 
-let transport: Arc<dyn RealtimeTransport> = Arc::new(RustlsWebSocketTransport);
+let transport: Arc<dyn RealtimeTransport> = Arc::new(HttpTransport::new()?);
 let request = RealtimeConnectRequest {
     endpoint: "wss://api.x.ai/v1/realtime?model=grok-voice-latest".into(),
     headers: vec![("Authorization".into(), format!("Bearer {xai_token}"))],

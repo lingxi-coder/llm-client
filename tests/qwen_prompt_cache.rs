@@ -28,6 +28,7 @@ fn request() -> ChatRequest {
 }
 fn breakpoint(position: CachePosition) -> CacheBreakpoint {
     CacheBreakpoint {
+        scope: None,
         position,
         ttl: CacheTtl::FiveMinutes,
     }
@@ -185,6 +186,7 @@ fn invalid_ttl_positions_and_ignored_controls_fail_preflight_and_encoding() {
     cases.push(req);
     let mut req = request();
     req.prompt_cache.breakpoints = vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::OneHour,
     }];

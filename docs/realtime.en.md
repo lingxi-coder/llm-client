@@ -4,17 +4,17 @@
 low-latency, bidirectional model APIs. The host runs the driver and owns
 credentials, tools, audio capture, playback, permissions, and conversation
 state. The network backend is optional: enable the `realtime-websocket`
-feature to use `RustlsWebSocketTransport`. It requires a Tokio runtime and a
+feature to use `HttpTransport`. It requires a Tokio runtime and a
 `wss://` endpoint, and never reconnects a live session automatically.
 
 ```rust,ignore
 use std::sync::Arc;
 use lingxi_llm_client::realtime::{
     OpenAiRealtimeCodec, RealtimeConnectRequest, RealtimeInput, RealtimeLimits,
-    RealtimeSession, RustlsWebSocketTransport,
+    RealtimeSession, HttpTransport,
 };
 
-let transport = RustlsWebSocketTransport;
+let transport = HttpTransport::new()?;
 let (session, driver) = RealtimeSession::connect(
     &transport,
     RealtimeConnectRequest {
@@ -34,7 +34,7 @@ while let Some(event) = events.next().await {
 ```
 
 Enable `features = ["realtime-websocket"]` in the dependency declaration to
-import `RustlsWebSocketTransport`.
+import `HttpTransport`.
 
 The built-in transport uses tokio-tungstenite, Rustls, and bundled Mozilla root
 certificates for the WebSocket handshake and TLS. It sends the host-provided

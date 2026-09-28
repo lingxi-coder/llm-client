@@ -8,34 +8,24 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use std::borrow::Cow;
-use tokio_tungstenite::{
-    connect_async_with_config,
-    tungstenite::{
-        client::IntoClientRequest,
-        handshake::client::Request,
-        http::{header::HeaderName, header::HeaderValue},
-        protocol::{frame::coding::CloseCode, frame::CloseFrame, WebSocketConfig},
-        Error as WebSocketError, Message,
-    },
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    handshake::client::Request,
+    http::{header::HeaderName, header::HeaderValue},
+    protocol::{frame::coding::CloseCode, frame::CloseFrame},
+    Error as WebSocketError, Message,
 };
 
-/// WebSocket transport using Rustls and Mozilla's bundled root certificates.
-///
-/// The endpoint must use `wss://`; this transport never sends credentials over
-/// an unencrypted `ws://` connection. `connect` must run inside a Tokio
-/// runtime. It does not retry or reconnect sessions.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RustlsWebSocketTransport;
-
+/// Realtime uses the same configured network client as HTTP and Responses.
 #[async_trait]
-impl RealtimeTransport for RustlsWebSocketTransport {
+impl RealtimeTransport for crate::HttpTransport {
     async fn connect(
         &self,
         request: RealtimeConnectRequest,
     ) -> Result<RealtimeConnection, RealtimeError> {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(RealtimeError::InvalidConfig {
-                message: "RustlsWebSocketTransport requires a Tokio runtime".into(),
+                message: "HttpTransport realtime requires a Tokio runtime".into(),
             });
         }
         if request.max_frame_bytes == 0 {
@@ -45,12 +35,27 @@ impl RealtimeTransport for RustlsWebSocketTransport {
         }
 
         let handshake = build_handshake_request(&request)?;
-        let config = websocket_config(request.max_frame_bytes);
-        // Small audio/text messages are latency-sensitive; bypass Nagle's
-        // coalescing delay on this session-oriented transport.
-        let (socket, _response) = connect_async_with_config(handshake, Some(config), true)
+        let wire = crate::HttpRequest {
+            method: "GET".into(),
+            url: request.endpoint.clone(),
+            headers: request.headers,
+            body: Default::default(),
+            timeout: None,
+        };
+        drop(handshake);
+        let (socket, _) = crate::transport::websocket::connect(self, wire, request.max_frame_bytes)
             .await
-            .map_err(safe_websocket_error)?;
+            .map_err(|error| match error {
+                crate::protocol::LlmError::InvalidRequest { message } => {
+                    RealtimeError::InvalidConfig { message }
+                }
+                crate::protocol::LlmError::TlsCert { message } => {
+                    RealtimeError::TlsCert { message }
+                }
+                other => RealtimeError::Transport {
+                    message: other.to_string(),
+                },
+            })?;
         let (outbound, inbound) = socket.split();
         let inbound = inbound
             .map(|result| result.map_err(safe_websocket_error))
@@ -144,11 +149,14 @@ fn validate_endpoint(endpoint: &str) -> Result<(), RealtimeError> {
     Ok(())
 }
 
-fn websocket_config(max_frame_bytes: usize) -> WebSocketConfig {
-    WebSocketConfig {
+#[cfg(test)]
+fn websocket_config(
+    max_frame_bytes: usize,
+) -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
         max_message_size: Some(max_frame_bytes),
         max_frame_size: Some(max_frame_bytes),
-        ..WebSocketConfig::default()
+        ..Default::default()
     }
 }
 

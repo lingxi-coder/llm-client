@@ -164,14 +164,17 @@ fn cache_patches_preserve_borrowed_schema_system_and_structured_tool_results() {
     }
     req.prompt_cache.breakpoints = vec![
         CacheBreakpoint {
+            scope: None,
             position: CachePosition::Tool { index: 0 },
             ttl: CacheTtl::FiveMinutes,
         },
         CacheBreakpoint {
+            scope: None,
             position: CachePosition::System { index: 0 },
             ttl: CacheTtl::FiveMinutes,
         },
         CacheBreakpoint {
+            scope: None,
             position: CachePosition::Message { index: 2, block: 0 },
             ttl: CacheTtl::FiveMinutes,
         },

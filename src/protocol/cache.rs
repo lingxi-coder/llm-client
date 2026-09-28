@@ -62,6 +62,8 @@ pub enum CachePosition {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheBreakpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<super::CacheScope>,
     pub position: CachePosition,
     pub ttl: CacheTtl,
 }

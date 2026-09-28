@@ -12,10 +12,11 @@ use std::time::Duration;
 /// Connections have a 30-second timeout and reads have a 60-second idle
 /// timeout by default. [`HttpRequest::timeout`] controls the total deadline,
 /// including streaming body reads.
-/// WebSocket sessions are not supported by this implementation.
+/// Responses WebSocket sessions are available with `responses-websocket`.
 #[derive(Clone)]
 pub struct HttpTransport {
-    client: reqwest::Client,
+    pub(super) client: reqwest::Client,
+    pub(super) read_timeout: Duration,
 }
 
 impl HttpTransport {
@@ -25,7 +26,10 @@ impl HttpTransport {
 
     /// Build with a custom timeout for each idle response-body read.
     pub fn with_read_timeout(read_timeout: Duration) -> Result<Self, LlmError> {
-        Self::with_client_configurator(|builder| builder.read_timeout(read_timeout))
+        let mut transport =
+            Self::with_client_configurator(|builder| builder.read_timeout(read_timeout))?;
+        transport.read_timeout = read_timeout;
+        Ok(transport)
     }
 
     /// Customize connection settings, such as a private CA, client TLS identity
@@ -47,7 +51,10 @@ impl HttpTransport {
             .map_err(|_| LlmError::Transport {
                 message: "could not initialize HTTP client".into(),
             })?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            read_timeout: Duration::from_secs(60),
+        })
     }
 
     async fn send_request(&self, req: HttpRequest) -> Result<reqwest::Response, LlmError> {
@@ -151,10 +158,26 @@ fn response_headers(response: &reqwest::Response) -> Vec<(String, String)> {
         .collect()
 }
 
+fn certificate_error(error: &dyn std::error::Error) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("certificate") || message.contains("unknownissuer") {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 // Do not expose reqwest error strings: URLs, query credentials and underlying
 // proxy errors may carry secrets. Preserve actionable categories instead.
-fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmError {
-    if err.is_timeout() {
+pub(super) fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmError {
+    if certificate_error(&err) {
+        LlmError::TlsCert {
+            message: "TLS certificate validation failed".into(),
+        }
+    } else if err.is_timeout() {
         LlmError::TransportTimeout {
             message: "HTTP request timed out".into(),
         }
@@ -175,6 +198,14 @@ fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmError {
 
 #[async_trait]
 impl Transport for HttpTransport {
+    #[cfg(feature = "responses-websocket")]
+    async fn connect_websocket(
+        &self,
+        request: HttpRequest,
+    ) -> Result<Box<dyn super::WebSocketConnection>, LlmError> {
+        super::websocket::responses(self, request).await
+    }
+
     async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError> {
         let response = self.send_request(req).await?;
         Ok(StreamResponse {

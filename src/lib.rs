@@ -93,3 +93,5 @@ pub use transport::{
 };
 
 pub mod embeddings;
+
+pub mod hosted_search;

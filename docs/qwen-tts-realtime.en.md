@@ -1,6 +1,6 @@
 # Qwen standalone TTS Realtime
 
-`qwen_tts_realtime` implements Qwen-TTS Realtime's native WebSocket protocol: incremental text input, streamed audio, buffer commit/clear, and graceful session finish. It uses the injectable `RealtimeTransport`; the optional `realtime-websocket` feature provides `RustlsWebSocketTransport`. There is no background driver, implicit reconnect, text replay, audio playback, or credential refresh.
+`qwen_tts_realtime` implements Qwen-TTS Realtime's native WebSocket protocol: incremental text input, streamed audio, buffer commit/clear, and graceful session finish. It uses the injectable `RealtimeTransport`; the optional `realtime-websocket` feature provides `HttpTransport`. There is no background driver, implicit reconnect, text replay, audio playback, or credential refresh.
 
 The route is selected explicitly:
 

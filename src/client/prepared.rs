@@ -125,11 +125,16 @@ impl ClientSnapshot {
         );
         Ok(RequestDraft {
             semantic_body: None,
-            authenticator: self
-                .runtime
-                .authenticators
-                .get(&selected.profile.auth)
-                .cloned(),
+            authenticator: options
+                .authenticator
+                .as_ref()
+                .map(|auth| auth.0.clone())
+                .or_else(|| {
+                    self.runtime
+                        .authenticators
+                        .get(&selected.profile.auth)
+                        .cloned()
+                }),
             credential: options.credential.clone(),
             account_scope: options.account_scope.clone(),
             call: PreparedCall {

@@ -168,7 +168,7 @@ impl PinnedDeferredService<'_> {
         options: &RequestOptions,
     ) -> Result<DeferredJob, DeferredError> {
         let (profile, route, scope) = self.route(profile_name, options)?;
-        if request.continuation.is_some() || !request.hosted_tools.is_empty() {
+        if request.has_response_continuation() || !request.hosted_tools.is_empty() {
             return Err(LlmError::UnsupportedCapability {
                 message: "deferred Chat cannot encode Responses continuation or hosted tools"
                     .into(),

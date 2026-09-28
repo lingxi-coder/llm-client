@@ -325,11 +325,19 @@ impl<'client> RequestExecutor<'client> {
         let authenticator = if profile.auth == AuthStrategy::None {
             None
         } else {
-            self.authenticators.get(&profile.auth).map(Arc::as_ref)
+            opts.authenticator
+                .as_ref()
+                .filter(|_| attempt.profile.profile_name == route.profile_name)
+                .map(|auth| auth.0.as_ref())
+                .or_else(|| self.authenticators.get(&profile.auth).map(Arc::as_ref))
         };
         let automatic_cleanup = self.attachments.cleanup_lease(
             profile,
-            self.authenticators.get(&profile.auth).cloned(),
+            opts.authenticator
+                .as_ref()
+                .filter(|_| attempt.profile.profile_name == route.profile_name)
+                .map(|auth| auth.0.clone())
+                .or_else(|| self.authenticators.get(&profile.auth).cloned()),
             credential,
             attempt_opts.file_account_scope.clone(),
             opts.file_account_scope.as_deref(),

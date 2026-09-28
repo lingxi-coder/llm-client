@@ -239,6 +239,7 @@ fn fetch_and_mcp_cache() -> ChatRequest {
         .into(),
     );
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -261,6 +262,7 @@ fn foundry_mcp_fetch_and_messages_share_cache_count_and_ttl_order() {
         text: "Instruction".into(),
     });
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -303,6 +305,7 @@ async fn invalid_foundry_combined_cache_fails_before_attachment_reads() {
         text: "Instruction".into(),
     });
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -344,6 +347,7 @@ fn vertex_client_toolsets_share_the_same_cache_marker_budget() {
     ]);
     r.prompt_cache.automatic = Some(CacheTtl::FiveMinutes);
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -352,6 +356,7 @@ fn vertex_client_toolsets_share_the_same_cache_marker_budget() {
         text: "Instruction".into(),
     });
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::FiveMinutes,
     });

@@ -31,6 +31,21 @@ fn uses_anthropic_marker_rules(context: &CodecContext) -> bool {
         )
 }
 pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), LlmError> {
+    if req
+        .prompt_cache
+        .breakpoints
+        .iter()
+        .any(|point| point.scope.is_some())
+        && !matches!(
+            context.profile().protocol,
+            ProtocolFamily::AnthropicMessages
+                | ProtocolFamily::FoundryClaude
+                | ProtocolFamily::VertexClaude
+                | ProtocolFamily::BedrockClaude
+        )
+    {
+        return Err(unsupported("cache scope requires a Claude protocol"));
+    }
     let native_openai_responses_controls = req.prompt_cache.prompt_cache_key.is_some()
         || req.prompt_cache.prompt_cache_options.is_some()
         || req.prompt_cache.prompt_cache_retention.is_some();
@@ -406,7 +421,10 @@ pub(crate) fn apply(
         body.insert("cache_control".into(), automatic);
     }
     for breakpoint in &req.prompt_cache.breakpoints {
-        let value = control(breakpoint.ttl);
+        let mut value = control(breakpoint.ttl);
+        if let Some(scope) = breakpoint.scope {
+            value["scope"] = serde_json::to_value(scope).expect("cache scope");
+        }
         match breakpoint.position {
             CachePosition::Tool { index } => {
                 body.get_mut("tools")
@@ -427,6 +445,8 @@ pub(crate) fn apply(
                 if let Some(existing) = block.get("cache_control") {
                     if uses_anthropic_marker_rules(context)
                         && parse_anthropic_cache_control(existing)? == breakpoint.ttl
+                        && (breakpoint.scope.is_none()
+                            || existing.get("scope") == value.get("scope"))
                     {
                         // Preserve the provider-native block exactly when the
                         // typed breakpoint describes the same TTL.

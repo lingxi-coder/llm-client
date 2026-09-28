@@ -1,15 +1,15 @@
 # Realtime 双向会话
 
-`lingxi-llm-client::realtime` 提供与 provider 无关的低延迟双向会话接口。宿主负责运行驱动，并继续管理凭据、工具、音频采集与播放、权限和对话状态。默认不启用网络后端；启用 `realtime-websocket` feature 后可以使用基于 Rustls 的 `RustlsWebSocketTransport`。它要求 Tokio runtime 和 `wss://` endpoint，不会自动重连实时会话。
+`lingxi-llm-client::realtime` 提供与 provider 无关的低延迟双向会话接口。宿主负责运行驱动，并继续管理凭据、工具、音频采集与播放、权限和对话状态。默认不启用网络后端；启用 `realtime-websocket` feature 后可以使用基于 Rustls 的 `HttpTransport`。它要求 Tokio runtime 和 `wss://` endpoint，不会自动重连实时会话。
 
 ```rust,ignore
 use std::sync::Arc;
 use lingxi_llm_client::realtime::{
     OpenAiRealtimeCodec, RealtimeConnectRequest, RealtimeInput, RealtimeLimits,
-    RealtimeSession, RustlsWebSocketTransport,
+    RealtimeSession, HttpTransport,
 };
 
-let transport = RustlsWebSocketTransport;
+let transport = HttpTransport::new()?;
 let (session, driver) = RealtimeSession::connect(
     &transport,
     RealtimeConnectRequest {
@@ -28,7 +28,7 @@ while let Some(event) = events.next().await {
 }
 ```
 
-在依赖配置中启用 `features = ["realtime-websocket"]`，即可导入 `RustlsWebSocketTransport`。
+在依赖配置中启用 `features = ["realtime-websocket"]`，即可导入 `HttpTransport`。
 
 内置传输使用 tokio-tungstenite、Rustls 和打包的 Mozilla 根证书完成 WebSocket 握手及 TLS，并按原样发送宿主提供的请求头。Tungstenite 处理 ping/pong；传输返回写入端和每次产出一个完整数据消息的输入流。传输不会在后台自动重试或重连，也不会从 endpoint 或请求头日志输出凭据。驱动被丢弃时会释放传输两端。未启用 `realtime-websocket` 时，宿主仍可注入自己的 `RealtimeTransport`。
 

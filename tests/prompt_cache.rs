@@ -49,14 +49,17 @@ fn tool_system_message_breakpoints_and_automatic_cache_encode_without_losing_con
         automatic: Some(CacheTtl::FiveMinutes),
         breakpoints: vec![
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::Tool { index: 0 },
                 ttl: CacheTtl::OneHour,
             },
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::System { index: 0 },
                 ttl: CacheTtl::FiveMinutes,
             },
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::Message { index: 0, block: 0 },
                 ttl: CacheTtl::FiveMinutes,
             },
@@ -77,16 +80,19 @@ fn tool_system_message_breakpoints_and_automatic_cache_encode_without_losing_con
 fn invalid_locations_ttl_order_and_unsupported_protocol_are_rejected() {
     let mut r = req();
     r.prompt_cache.breakpoints = vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 4, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     }];
     assert!(encode(&r, "anthropic", &AnthropicMessagesCodec).is_err());
     r.prompt_cache.breakpoints = vec![
         CacheBreakpoint {
+            scope: None,
             position: CachePosition::System { index: 0 },
             ttl: CacheTtl::FiveMinutes,
         },
         CacheBreakpoint {
+            scope: None,
             position: CachePosition::Message { index: 0, block: 0 },
             ttl: CacheTtl::OneHour,
         },
@@ -107,6 +113,7 @@ fn anthropic_mcp_breakpoint_composes_with_policy_in_wire_prefix_order() {
     request.prompt_cache = PromptCachePolicy {
         automatic: Some(CacheTtl::FiveMinutes),
         breakpoints: vec![CacheBreakpoint {
+            scope: None,
             position: CachePosition::System { index: 0 },
             ttl: CacheTtl::FiveMinutes,
         }],
@@ -135,14 +142,17 @@ fn anthropic_mcp_marker_counts_toward_four_and_orders_before_messages() {
         automatic: Some(CacheTtl::FiveMinutes),
         breakpoints: vec![
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::Tool { index: 0 },
                 ttl: CacheTtl::OneHour,
             },
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::System { index: 0 },
                 ttl: CacheTtl::FiveMinutes,
             },
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::Message { index: 0, block: 0 },
                 ttl: CacheTtl::FiveMinutes,
             },
@@ -159,6 +169,7 @@ fn anthropic_mcp_marker_counts_toward_four_and_orders_before_messages() {
     // policy breakpoint must fail preflight instead of reaching Anthropic.
     request.prompt_cache = PromptCachePolicy {
         breakpoints: vec![CacheBreakpoint {
+            scope: None,
             position: CachePosition::Message { index: 0, block: 0 },
             ttl: CacheTtl::OneHour,
         }],
@@ -192,6 +203,7 @@ fn anthropic_native_and_typed_message_cache_controls_are_deduplicated_and_preser
         }),
     };
     request.prompt_cache.breakpoints = vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     }];
@@ -228,10 +240,12 @@ fn anthropic_raw_automatic_duplicate_counts_once_and_keeps_native_form() {
         automatic: Some(CacheTtl::FiveMinutes),
         breakpoints: vec![
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::Tool { index: 0 },
                 ttl: CacheTtl::OneHour,
             },
             CacheBreakpoint {
+                scope: None,
                 position: CachePosition::System { index: 0 },
                 ttl: CacheTtl::FiveMinutes,
             },
@@ -261,6 +275,7 @@ fn anthropic_mcp_preflight_counts_merged_system_but_ignores_refused_raw_tools() 
     request.prompt_cache = PromptCachePolicy {
         automatic: Some(CacheTtl::FiveMinutes),
         breakpoints: vec![CacheBreakpoint {
+            scope: None,
             position: CachePosition::Tool { index: 0 },
             ttl: CacheTtl::OneHour,
         }],

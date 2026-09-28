@@ -331,6 +331,7 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
     req.prompt_cache
         .breakpoints
         .push(lingxi_llm_client::protocol::CacheBreakpoint {
+            scope: None,
             position: lingxi_llm_client::protocol::CachePosition::System { index: 0 },
             ttl: lingxi_llm_client::protocol::CacheTtl::FiveMinutes,
         });

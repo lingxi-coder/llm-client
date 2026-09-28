@@ -884,6 +884,7 @@ fn inline_web_fetch_cache_marker_is_counted_at_its_message_position_only() {
     request.prompt_cache = PromptCachePolicy {
         breakpoints: (0..3)
             .map(|index| CacheBreakpoint {
+                scope: None,
                 position: CachePosition::Tool { index },
                 ttl: CacheTtl::FiveMinutes,
             })
@@ -898,6 +899,7 @@ fn inline_web_fetch_cache_marker_is_counted_at_its_message_position_only() {
     );
 
     request.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 1, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });

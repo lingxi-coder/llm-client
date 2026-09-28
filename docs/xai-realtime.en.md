@@ -2,16 +2,16 @@
 
 `realtime::XaiRealtimeSession` adapts xAI's native `/v1/realtime` WebSocket protocol to the existing `RealtimeTransport` and bounded realtime queues. The host supplies authentication through the connection request and runs the returned `RealtimeDriver` concurrently with its event loop. JSON/base64 is the default audio transport; input and output can independently use raw binary WebSocket frames.
 
-The built-in `RustlsWebSocketTransport` is available with the `realtime-websocket` feature. Direct sessions use `wss://api.x.ai/v1/realtime?model=grok-voice-latest`; xAI also documents `grok-voice-think-fast-2.0`. Authentication uses an `Authorization: Bearer ...` header. For client-side connections, xAI documents short-lived client secrets through the same bearer header or the `Sec-WebSocket-Protocol: xai-client-secret.<token>` value. Keep API keys and client secrets out of logs.
+The built-in `HttpTransport` is available with the `realtime-websocket` feature. Direct sessions use `wss://api.x.ai/v1/realtime?model=grok-voice-latest`; xAI also documents `grok-voice-think-fast-2.0`. Authentication uses an `Authorization: Bearer ...` header. For client-side connections, xAI documents short-lived client secrets through the same bearer header or the `Sec-WebSocket-Protocol: xai-client-secret.<token>` value. Keep API keys and client secrets out of logs.
 
 ```rust,ignore
 use std::sync::Arc;
 use lingxi_llm_client::realtime::{
     RealtimeConnectRequest, RealtimeInput, RealtimeLimits, RealtimeTransport,
-    RustlsWebSocketTransport, XaiRealtimeConfig, XaiRealtimeSession,
+    HttpTransport, XaiRealtimeConfig, XaiRealtimeSession,
 };
 
-let transport: Arc<dyn RealtimeTransport> = Arc::new(RustlsWebSocketTransport);
+let transport: Arc<dyn RealtimeTransport> = Arc::new(HttpTransport::new()?);
 let request = RealtimeConnectRequest {
     endpoint: "wss://api.x.ai/v1/realtime?model=grok-voice-latest".into(),
     headers: vec![("Authorization".into(), format!("Bearer {xai_token}"))],

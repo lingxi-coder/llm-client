@@ -1,9 +1,7 @@
 #![cfg(feature = "realtime-websocket")]
 
 use futures::executor::block_on;
-use lingxi_llm_client::realtime::{
-    RealtimeConnectRequest, RealtimeError, RealtimeTransport, RustlsWebSocketTransport,
-};
+use lingxi_llm_client::realtime::{RealtimeConnectRequest, RealtimeError, RealtimeTransport};
 
 fn request(endpoint: &str, headers: Vec<(String, String)>) -> RealtimeConnectRequest {
     RealtimeConnectRequest {
@@ -15,7 +13,8 @@ fn request(endpoint: &str, headers: Vec<(String, String)>) -> RealtimeConnectReq
 
 #[tokio::test]
 async fn rustls_transport_rejects_plaintext_endpoints_before_connecting() {
-    let error = RustlsWebSocketTransport
+    let error = lingxi_llm_client::HttpTransport::new()
+        .unwrap()
         .connect(request(
             "ws://example.invalid/realtime?token=do-not-log",
             vec![],
@@ -30,7 +29,8 @@ async fn rustls_transport_rejects_plaintext_endpoints_before_connecting() {
 
 #[tokio::test]
 async fn rustls_transport_rejects_endpoint_user_info_without_exposing_it() {
-    let error = RustlsWebSocketTransport
+    let error = lingxi_llm_client::HttpTransport::new()
+        .unwrap()
         .connect(request(
             "wss://user:secret@example.invalid/realtime",
             vec![],
@@ -45,7 +45,8 @@ async fn rustls_transport_rejects_endpoint_user_info_without_exposing_it() {
 
 #[tokio::test]
 async fn rustls_transport_rejects_invalid_headers_without_exposing_values() {
-    let error = RustlsWebSocketTransport
+    let error = lingxi_llm_client::HttpTransport::new()
+        .unwrap()
         .connect(request(
             "wss://example.invalid/realtime",
             vec![(
@@ -64,7 +65,9 @@ async fn rustls_transport_rejects_invalid_headers_without_exposing_values() {
 #[test]
 fn rustls_transport_requires_a_tokio_runtime() {
     let error = block_on(
-        RustlsWebSocketTransport.connect(request("wss://example.invalid/realtime", vec![])),
+        lingxi_llm_client::HttpTransport::new()
+            .unwrap()
+            .connect(request("wss://example.invalid/realtime", vec![])),
     )
     .err()
     .expect("transport should fail without a Tokio runtime");

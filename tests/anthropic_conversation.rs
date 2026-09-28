@@ -164,6 +164,7 @@ fn nested_inline_cache_controls_count_in_message_order() {
     assert!(encode(&req, &profile(), MODEL).is_err());
     req.messages[1].content = vec![native(a.clone())];
     req.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 1, block: 0 },
         ttl: CacheTtl::OneHour,
     });
@@ -176,6 +177,7 @@ fn nested_inline_cache_controls_count_in_message_order() {
     deferred["tool"]["definition"]["defer_loading"] = json!(true);
     req.messages[1].content = vec![native(deferred)];
     req.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 1, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -313,6 +315,7 @@ fn inline_mcp_keeps_connection_top_level_and_toolset_only_in_history() {
     req.messages.push(ConversationMessage::user_text("Next"));
     for index in [0, 2, 3] {
         req.prompt_cache.breakpoints.push(CacheBreakpoint {
+            scope: None,
             position: CachePosition::Message { index, block: 0 },
             ttl: if index == 0 {
                 CacheTtl::OneHour

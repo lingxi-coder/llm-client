@@ -1,7 +1,7 @@
 //! Provider-neutral, executor-neutral primitives for bidirectional sessions.
 //!
 //! Hosts can supply a [`RealtimeTransport`] or enable the optional
-//! `realtime-websocket` feature for the Rustls-backed `RustlsWebSocketTransport`.
+//! `realtime-websocket` feature for the Rustls-backed `HttpTransport`.
 //! The host runs the returned [`RealtimeDriver`] on its executor; the built-in
 //! WebSocket transport specifically requires a Tokio runtime.
 
@@ -29,8 +29,7 @@ const MAX_QUEUE_CAPACITY: usize = 65_536;
 /// memory/latency guard, not a provider limit.
 pub const MAX_REALTIME_TOOL_RESULTS: usize = 128;
 
-#[cfg(feature = "realtime-websocket")]
-pub use websocket::RustlsWebSocketTransport;
+// HttpTransport implements RealtimeTransport with this feature enabled.
 
 /// A WebSocket-style data frame. Ping/Pong/Close stay outside provider data
 /// frames: callers may request Ping through [`RealtimeSink::ping`], while the
@@ -256,6 +255,8 @@ impl RealtimeClose {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RealtimeError {
+    #[error("realtime TLS certificate validation failed: {message}")]
+    TlsCert { message: String },
     #[error("invalid realtime configuration: {message}")]
     InvalidConfig { message: String },
     #[error("invalid realtime input: {message}")]
@@ -695,3 +696,6 @@ fn preflight_input(input: &RealtimeInput, max: usize) -> Result<(), RealtimeErro
     }
     Ok(())
 }
+
+#[cfg(feature = "realtime-websocket")]
+pub use crate::HttpTransport;

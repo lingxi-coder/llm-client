@@ -93,6 +93,7 @@ fn scoped_messages_reject_cache_effort_tool_changes_and_wrong_roles() {
     let mut r = req();
     r.messages.push(scoped());
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 1, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });
@@ -317,6 +318,7 @@ async fn invalid_message_controls_fail_before_transport() {
     r.messages[0].native_options.clear();
     r.messages.push(scoped());
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 1, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     });

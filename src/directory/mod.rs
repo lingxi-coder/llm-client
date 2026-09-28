@@ -259,3 +259,5 @@ pub(crate) fn builtin() -> Vec<Arc<dyn ModelDirectory>> {
         Arc::new(GeminiDirectory),
     ]
 }
+
+pub mod probe;
