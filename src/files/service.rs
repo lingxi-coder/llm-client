@@ -6,6 +6,7 @@ use super::*;
 /// Construct this from the same profile, authenticator and per-attempt
 /// credential used for a model request. File IDs are therefore never silently
 /// reused across failover connections.
+#[derive(Clone)]
 pub struct FileService<'a> {
     pub(crate) http: &'a dyn Transport,
     pub(crate) profile: &'a ProviderProfile,
@@ -21,6 +22,7 @@ pub struct FileService<'a> {
     pub(crate) gemini_upload_timeout: Option<Duration>,
     pub(crate) gemini_processing_timeout: Option<Duration>,
     pub(crate) request_deadline: Option<Instant>,
+    operation_timeout: Option<Duration>,
 }
 
 impl<'a> FileService<'a> {
@@ -44,6 +46,7 @@ impl<'a> FileService<'a> {
             gemini_upload_timeout: None,
             gemini_processing_timeout: None,
             request_deadline: None,
+            operation_timeout: None,
         }
     }
 
@@ -148,9 +151,56 @@ impl<'a> FileService<'a> {
         )
     }
 
-    pub(crate) fn with_request_deadline(mut self, deadline: Instant) -> Self {
-        self.request_deadline = Some(deadline);
+    pub(crate) fn with_request_deadline(self, deadline: Instant) -> Self {
+        self.with_deadline(deadline)
+    }
+
+    /// Set a fresh total budget for each file operation. The budget includes
+    /// authentication, rate-limit waits, uploads, response reads, and all steps
+    /// of operations such as Gemini upload/processing and metadata/download.
+    /// Existing provider-specific phase limits may shorten this budget.
+    /// Without this option, existing provider-specific defaults are preserved.
+    pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, LlmError> {
+        if timeout.is_zero() {
+            return Err(LlmError::InvalidRequest {
+                message: "file operation timeout must be positive".into(),
+            });
+        }
+        if tokio::time::Instant::now().checked_add(timeout).is_none() {
+            return Err(LlmError::InvalidRequest {
+                message: "file operation timeout is too large".into(),
+            });
+        }
+        self.operation_timeout = Some(timeout);
+        Ok(self)
+    }
+
+    /// Apply an absolute deadline shared by related file operations. When a
+    /// per-operation timeout is also configured, the earlier deadline wins.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.request_deadline = Some(
+            self.request_deadline
+                .map_or(deadline, |old| old.min(deadline)),
+        );
         self
+    }
+
+    pub(crate) fn scoped_operation(&self) -> Self {
+        let mut service = self.clone();
+        if let Some(timeout) = service.operation_timeout.take() {
+            let now = tokio::time::Instant::now().into_std();
+            service = service.with_deadline(now.checked_add(timeout).unwrap_or(now));
+        }
+        service
+    }
+
+    pub(crate) fn deadline(&self) -> crate::runtime::Deadline {
+        crate::runtime::Deadline::at(self.request_deadline)
+    }
+
+    pub(crate) fn executor(&self) -> crate::transport::HttpExecutor<'_> {
+        crate::transport::HttpExecutor::new(self.http).with_deadline(self.deadline())
     }
 
     /// Return capabilities for this concrete profile, model and media type.
@@ -200,7 +250,8 @@ impl<'a> FileService<'a> {
         file: &UploadFile,
         purpose: FilePurpose,
     ) -> Result<ProviderFileRef, LlmError> {
-        self.upload_with_expiration(file, purpose, None).await
+        let service = self.scoped_operation();
+        service.upload_with_expiration(file, purpose, None).await
     }
 
     /// Upload a one-shot byte stream using a provider-supported purpose.
@@ -213,12 +264,13 @@ impl<'a> FileService<'a> {
         file: UploadFileStream,
         purpose: FilePurpose,
     ) -> Result<ProviderFileRef, FileUploadError> {
+        let service = self.scoped_operation();
         let (filename, media_type, size_bytes, body) = file.into_parts();
         let (adapter, _) =
-            self.preflight_upload(&filename, &media_type, size_bytes, purpose, true)?;
+            service.preflight_upload(&filename, &media_type, size_bytes, purpose, true)?;
         if adapter == Adapter::Gemini {
             let is_video = media_type.to_ascii_lowercase().starts_with("video/");
-            let timeout = self.gemini_upload_timeout.unwrap_or(if is_video {
+            let timeout = service.gemini_upload_timeout.unwrap_or(if is_video {
                 GEMINI_VIDEO_FILE_TIMEOUT
             } else {
                 FILE_TIMEOUT
@@ -228,19 +280,20 @@ impl<'a> FileService<'a> {
             } else {
                 timeout
             };
-            return self
+            return service
                 .upload_gemini_stream(filename, media_type, size_bytes, body, timeout)
                 .await;
         }
-        self.upload_multipart_stream(
-            filename,
-            media_type,
-            size_bytes,
-            purpose,
-            body,
-            FILE_TIMEOUT,
-        )
-        .await
+        service
+            .upload_multipart_stream(
+                filename,
+                media_type,
+                size_bytes,
+                purpose,
+                body,
+                FILE_TIMEOUT,
+            )
+            .await
     }
 
     /// Stream a caller-managed OpenAI Batch JSONL file without buffering its
@@ -255,8 +308,11 @@ impl<'a> FileService<'a> {
         body: BoxStream<'static, Result<Bytes, LlmError>>,
         timeout: Option<Duration>,
     ) -> Result<ProviderFileRef, LlmError> {
+        let service = self.scoped_operation();
         validate_media_type(media_type)?;
-        let adapter = self.adapter().ok_or_else(|| unsupported("batch upload"))?;
+        let adapter = service
+            .adapter()
+            .ok_or_else(|| unsupported("batch upload"))?;
         if adapter != Adapter::OpenAi {
             return Err(unsupported("batch streaming upload"));
         }
@@ -270,7 +326,7 @@ impl<'a> FileService<'a> {
                 message: "batch input must be a .jsonl file with a JSONL media type".into(),
             });
         }
-        if self
+        if service
             .account_scope
             .is_none_or(|scope| scope.trim().is_empty())
         {
@@ -297,11 +353,11 @@ impl<'a> FileService<'a> {
             .ok_or_else(|| LlmError::RequestTooLarge {
                 message: "batch multipart size overflows".into(),
             })?;
-        let deadline = crate::runtime::Deadline::at(self.request_deadline).cap(Some(timeout));
+        let deadline = crate::runtime::Deadline::at(service.request_deadline).cap(Some(timeout));
         let request = deadline
-            .run(self.request(
+            .run(service.request(
                 "POST",
-                files_url(self.profile, adapter),
+                files_url(service.profile, adapter),
                 Bytes::new(),
                 Some(format!("multipart/form-data; boundary={boundary}")),
             ))
@@ -320,14 +376,15 @@ impl<'a> FileService<'a> {
             content_length,
             timeout: deadline.remaining()?,
         };
-        let response = crate::transport::HttpExecutor::new(self.http)
+        let response = service
+            .executor()
             .with_deadline(deadline)
             .send_stream(request)
             .await?;
         let response =
             crate::transport::HttpExecutor::collect_response(response, Some(1024 * 1024)).await?;
         let value = adapter_json_success(adapter, &response, "batch file upload")?;
-        let mut metadata = self.decode_metadata(&value)?;
+        let mut metadata = service.decode_metadata(&value)?;
         if metadata
             .file
             .purpose
@@ -360,31 +417,38 @@ impl<'a> FileService<'a> {
         file: &UploadFile,
         purpose: FilePurpose,
     ) -> Result<ProviderFileRef, LlmError> {
+        let service = self.scoped_operation();
         let expiration = matches!(
-            self.adapter(),
+            service.adapter(),
             Some(Adapter::Anthropic | Adapter::OpenAi | Adapter::Xai)
         )
         .then_some(AUTOMATIC_FILE_TTL.as_secs());
         let mut retries = 0;
         let uploaded = loop {
-            match self.upload_with_expiration(file, purpose, expiration).await {
+            match service
+                .upload_with_expiration(file, purpose, expiration)
+                .await
+            {
                 Err(LlmError::RateLimited { .. })
-                    if self.adapter() == Some(Adapter::Qwen) && retries < 3 =>
+                    if service.adapter() == Some(Adapter::Qwen) && retries < 3 =>
                 {
-                    async_delay(Duration::from_millis(500 * (1 << retries))).await;
+                    service
+                        .deadline()
+                        .run(async_delay(Duration::from_millis(500 * (1 << retries))))
+                        .await?;
                     retries += 1;
                 }
                 result => break result?,
             }
         };
-        if self.adapter() == Some(Adapter::Anthropic)
+        if service.adapter() == Some(Adapter::Anthropic)
             && serde_json::to_string(&uploaded.file_id).map_or(true, |encoded| {
                 encoded.len() > MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES
             })
         {
             // A provider ID longer than the preflight bound cannot safely be
             // substituted into a request that was checked before upload.
-            let _ = self.delete(&uploaded).await;
+            let _ = service.delete(&uploaded).await;
             return Err(LlmError::UnsupportedCapability {
                 message: "Anthropic returned a file ID too long for automatic request preparation"
                     .into(),
@@ -428,10 +492,11 @@ impl<'a> FileService<'a> {
             ))
             .await??;
         if adapter == Adapter::Qwen {
-            deadline.run(self.pace_qwen_upload()).await?;
+            deadline.run(self.pace_qwen_upload()).await??;
         }
         deadline.remaining()?;
-        let response = crate::transport::HttpExecutor::new(self.http)
+        let response = self
+            .executor()
             .with_deadline(deadline)
             .execute(req)
             .await
@@ -579,7 +644,7 @@ impl<'a> FileService<'a> {
             .into());
         }
         if adapter == Adapter::Qwen {
-            deadline.run(self.pace_qwen_upload()).await?;
+            deadline.run(self.pace_qwen_upload()).await??;
         }
         request.timeout = deadline.remaining()?;
         let request = crate::transport::HttpStreamRequest {
@@ -590,7 +655,8 @@ impl<'a> FileService<'a> {
             content_length,
             timeout: deadline.remaining()?,
         };
-        let response = crate::transport::HttpExecutor::new(self.http)
+        let response = self
+            .executor()
             .with_deadline(deadline)
             .send_stream(request)
             .await
@@ -676,8 +742,9 @@ impl<'a> FileService<'a> {
 
     /// Retrieve metadata for a provider-owned file.
     pub async fn get(&self, file: &ProviderFileRef) -> Result<ProviderFileMetadata, LlmError> {
-        self.check_ref(file)?;
-        let adapter = self
+        let service = self.scoped_operation();
+        service.check_ref(file)?;
+        let adapter = service
             .adapter()
             .ok_or_else(|| unsupported("metadata retrieval"))?;
         if !capabilities_for_adapter(adapter).retrieve_metadata {
@@ -686,21 +753,19 @@ impl<'a> FileService<'a> {
         let url = if adapter == Adapter::MiniMax {
             format!(
                 "{}?file_id={}",
-                file_url(self.profile, adapter, &file.file_id),
+                file_url(service.profile, adapter, &file.file_id),
                 query_value(&file.file_id)
             )
         } else {
-            file_url(self.profile, adapter, &file.file_id)
+            file_url(service.profile, adapter, &file.file_id)
         };
-        let req = self.request("GET", url, Bytes::new(), None).await?;
+        let req = service.request("GET", url, Bytes::new(), None).await?;
         if adapter == Adapter::Qwen {
-            self.pace_qwen_metadata().await;
+            service.pace_qwen_metadata().await?;
         }
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await?;
+        let response = service.executor().execute(req).await?;
         let value = adapter_json_success(adapter, &response, "file metadata")?;
-        let mut metadata = self.decode_metadata(&value)?;
+        let mut metadata = service.decode_metadata(&value)?;
         if adapter == Adapter::Anthropic && metadata.file.file_id != file.file_id {
             return Err(provider_shape(
                 "Anthropic file metadata returned a different file ID than requested",
@@ -738,14 +803,17 @@ impl<'a> FileService<'a> {
 
     /// List provider-owned files. The cursor is opaque.
     pub async fn list(&self, cursor: Option<&str>) -> Result<ProviderFilePage, LlmError> {
-        let adapter = self.adapter().ok_or_else(|| unsupported("file listing"))?;
+        let service = self.scoped_operation();
+        let adapter = service
+            .adapter()
+            .ok_or_else(|| unsupported("file listing"))?;
         if adapter == Adapter::MiniMax {
             return Err(LlmError::InvalidRequest {
                 message: "MiniMax file listing requires list_for_purpose with an explicit purpose"
                     .into(),
             });
         }
-        self.list_inner(adapter, None, cursor).await
+        service.list_inner(adapter, None, cursor).await
     }
 
     /// List files for an API that requires a purpose filter (MiniMax), or
@@ -756,7 +824,10 @@ impl<'a> FileService<'a> {
         purpose: FilePurpose,
         cursor: Option<&str>,
     ) -> Result<ProviderFilePage, LlmError> {
-        let adapter = self.adapter().ok_or_else(|| unsupported("file listing"))?;
+        let service = self.scoped_operation();
+        let adapter = service
+            .adapter()
+            .ok_or_else(|| unsupported("file listing"))?;
         if !matches!(adapter, Adapter::MiniMax | Adapter::OpenAi | Adapter::Qwen) {
             return Err(unsupported("file listing filtered by purpose"));
         }
@@ -769,7 +840,7 @@ impl<'a> FileService<'a> {
         if adapter == Adapter::MiniMax && cursor.is_some() {
             return Err(unsupported("MiniMax file-list pagination"));
         }
-        self.list_inner(adapter, Some(purpose), cursor).await
+        service.list_inner(adapter, Some(purpose), cursor).await
     }
 
     pub(crate) async fn list_inner(
@@ -784,11 +855,9 @@ impl<'a> FileService<'a> {
         let (url, cursor_field) = list_url(self.profile, adapter, purpose, cursor);
         let req = self.request("GET", url, Bytes::new(), None).await?;
         if adapter == Adapter::Qwen {
-            self.pace_qwen_metadata().await;
+            self.pace_qwen_metadata().await?;
         }
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await?;
+        let response = self.executor().execute(req).await?;
         let value = adapter_json_success(adapter, &response, "file listing")?;
         if !value.is_object() {
             return Err(provider_shape("file list response is not an object"));
@@ -852,8 +921,11 @@ impl<'a> FileService<'a> {
     /// Delete provider-owned storage. This does not delete the app's original
     /// attachment.
     pub async fn delete(&self, file: &ProviderFileRef) -> Result<(), LlmError> {
-        self.check_ref(file)?;
-        let adapter = self.adapter().ok_or_else(|| unsupported("file deletion"))?;
+        let service = self.scoped_operation();
+        service.check_ref(file)?;
+        let adapter = service
+            .adapter()
+            .ok_or_else(|| unsupported("file deletion"))?;
         if !capabilities_for_adapter(adapter).delete {
             return Err(unsupported("file deletion"));
         }
@@ -868,7 +940,7 @@ impl<'a> FileService<'a> {
                 .ok_or_else(|| unsupported("MiniMax deletion for this purpose"))?;
             (
                 "POST",
-                format!("{}/delete", files_url(self.profile, adapter)),
+                format!("{}/delete", files_url(service.profile, adapter)),
                 Bytes::from(
                     serde_json::to_vec(
                         &serde_json::json!({"file_id": file.file_id, "purpose": purpose}),
@@ -880,18 +952,16 @@ impl<'a> FileService<'a> {
         } else {
             (
                 "DELETE",
-                file_url(self.profile, adapter, &file.file_id),
+                file_url(service.profile, adapter, &file.file_id),
                 Bytes::new(),
                 None,
             )
         };
-        let req = self.request(method, url, body, content_type).await?;
+        let req = service.request(method, url, body, content_type).await?;
         if adapter == Adapter::Qwen {
-            self.pace_qwen_metadata().await;
+            service.pace_qwen_metadata().await?;
         }
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await?;
+        let response = service.executor().execute(req).await?;
         adapter_status_result(adapter, &response, "file deletion")?;
         if adapter == Adapter::Qwen {
             let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
@@ -911,8 +981,11 @@ impl<'a> FileService<'a> {
     /// Download original provider bytes where the provider documents that
     /// uploaded files are retrievable. The accumulated body is capped at 64 MiB.
     pub async fn download(&self, file: &ProviderFileRef) -> Result<ProviderFileContent, LlmError> {
-        self.check_ref(file)?;
-        let adapter = self.adapter().ok_or_else(|| unsupported("file download"))?;
+        let service = self.scoped_operation();
+        service.check_ref(file)?;
+        let adapter = service
+            .adapter()
+            .ok_or_else(|| unsupported("file download"))?;
         let support = capabilities_for_adapter(adapter).download;
         if support == DownloadSupport::Unsupported {
             return Err(unsupported("file download"));
@@ -921,7 +994,7 @@ impl<'a> FileService<'a> {
             support,
             DownloadSupport::GeneratedFilesOnly | DownloadSupport::ProviderMarkedDownloadable
         ) {
-            let metadata = self.get(file).await?;
+            let metadata = service.get(file).await?;
             if metadata.file.downloadable != Some(true) {
                 return Err(unsupported("download of this uploaded file"));
             }
@@ -934,16 +1007,14 @@ impl<'a> FileService<'a> {
         let url = if adapter == Adapter::MiniMax {
             format!(
                 "{}?file_id={}",
-                content_url(self.profile, adapter, &file.file_id),
+                content_url(service.profile, adapter, &file.file_id),
                 query_value(&file.file_id)
             )
         } else {
-            content_url(self.profile, adapter, &file.file_id)
+            content_url(service.profile, adapter, &file.file_id)
         };
-        let req = self.request("GET", url, Bytes::new(), None).await?;
-        let mut response = crate::transport::HttpExecutor::new(self.http)
-            .send(req)
-            .await?;
+        let req = service.request("GET", url, Bytes::new(), None).await?;
+        let mut response = service.executor().send(req).await?;
         if !(200..300).contains(&response.status) {
             let mut body = BytesMut::new();
             while let Some(frame) = response.body.next().await {
@@ -990,8 +1061,9 @@ impl<'a> FileService<'a> {
     /// distinct from downloading the original binary; currently only
     /// Moonshot/Kimi documents this operation in the supported adapter set.
     pub async fn extract_text(&self, file: &ProviderFileRef) -> Result<String, LlmError> {
-        self.check_ref(file)?;
-        let adapter = self
+        let service = self.scoped_operation();
+        service.check_ref(file)?;
+        let adapter = service
             .adapter()
             .ok_or_else(|| unsupported("text extraction"))?;
         if !capabilities_for_adapter(adapter).extract_text {
@@ -999,13 +1071,11 @@ impl<'a> FileService<'a> {
         }
         let url = format!(
             "{}/{}/content",
-            files_url(self.profile, adapter),
+            files_url(service.profile, adapter),
             path_segment(&file.file_id)
         );
-        let req = self.request("GET", url, Bytes::new(), None).await?;
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await?;
+        let req = service.request("GET", url, Bytes::new(), None).await?;
+        let response = service.executor().execute(req).await?;
         status_result(&response, "file text extraction")?;
         String::from_utf8(response.body.to_vec())
             .map_err(|error| provider_shape(&format!("extracted file text is not UTF-8: {error}")))
@@ -1040,6 +1110,7 @@ impl<'a> FileService<'a> {
             body,
             timeout: Some(FILE_TIMEOUT),
         };
+        let deadline = self.deadline().cap(request.timeout);
         if self.profile.auth != AuthStrategy::None {
             let authenticator =
                 self.authenticator
@@ -1049,12 +1120,11 @@ impl<'a> FileService<'a> {
                             self.profile.profile_name
                         ),
                     })?;
-            let deadline = crate::runtime::Deadline::at(self.request_deadline).cap(request.timeout);
             deadline
                 .run(authenticator.apply(&mut request, self.profile, self.credential))
                 .await??;
-            request.timeout = deadline.remaining()?;
         }
+        request.timeout = deadline.remaining()?;
         Ok(request)
     }
 

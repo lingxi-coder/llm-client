@@ -25,11 +25,24 @@ impl HttpTransport {
 
     /// Build with a custom timeout for each idle response-body read.
     pub fn with_read_timeout(read_timeout: Duration) -> Result<Self, LlmError> {
-        let client = reqwest::Client::builder()
+        Self::with_client_configurator(|builder| builder.read_timeout(read_timeout))
+    }
+
+    /// Customize connection settings, such as a private CA, client TLS identity
+    /// or proxy, while retaining this transport's request execution policy.
+    ///
+    /// The configurator receives the default connection and idle-read timeouts.
+    /// Redirects and automatic retries are disabled after it returns, so these
+    /// policies cannot accidentally replay a request or forward credentials.
+    pub fn with_client_configurator(
+        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) -> Result<Self, LlmError> {
+        let builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60));
+        let client = configure(builder)
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(read_timeout)
             .build()
             .map_err(|_| LlmError::Transport {
                 message: "could not initialize HTTP client".into(),
@@ -83,12 +96,22 @@ impl HttpTransport {
             return Err(invalid());
         }
         let mut headers = reqwest::header::HeaderMap::new();
+        let mut saw_content_length = false;
         for (name, value) in req.headers {
             let name =
                 reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
-            if name == reqwest::header::CONTENT_LENGTH || name == reqwest::header::TRANSFER_ENCODING
-            {
+            if name == reqwest::header::TRANSFER_ENCODING {
                 return Err(invalid());
+            }
+            if name == reqwest::header::CONTENT_LENGTH {
+                // Resumable provider uploads include their exact byte count in
+                // both places. Normalize an agreeing header; reject ambiguous
+                // framing before polling the single-use body.
+                if saw_content_length || value != req.content_length.to_string() {
+                    return Err(invalid());
+                }
+                saw_content_length = true;
+                continue;
             }
             let mut value =
                 reqwest::header::HeaderValue::from_str(&value).map_err(|_| invalid())?;

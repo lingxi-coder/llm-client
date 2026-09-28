@@ -45,6 +45,8 @@ pub struct HttpRequest {
 
 /// An outgoing request with a streamed body and an exact declared byte count.
 /// The body is consumed once; transports must not replay it or follow redirects.
+/// An optional Content-Length header must be unique and match `content_length`;
+/// the built-in transport normalizes it and rejects Transfer-Encoding.
 pub struct HttpStreamRequest {
     pub method: String,
     pub url: String,

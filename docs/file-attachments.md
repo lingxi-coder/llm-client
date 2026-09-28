@@ -107,6 +107,17 @@ without a documented purpose filter return `UnsupportedCapability`.
 After a direct Qwen upload, use `get` to wait for `processed` before sending its
 ID to the model; automatic app attachments perform that wait in the client.
 
+`FileService::with_timeout(duration)` sets a fresh total budget for each file
+operation, including authentication, rate-limit waits, dispatch, and response
+reads. Multi-step workflows such as upload/processing and metadata/download
+share this budget. Reusing a service starts a fresh budget for each independent
+call. `with_deadline(instant)` applies an absolute deadline across calls; when
+both are configured, the earlier deadline wins. Provider-specific phase limits
+still apply, and existing defaults remain unchanged when no total budget is
+set. Timeouts do not trigger retries. A streamed upload that times out after
+dispatch still returns `FileUploadError::OutcomeUnknown`, since the provider
+may have accepted it.
+
 Microsoft Foundry's Files API is available only for deployments explicitly
 hosted on Anthropic. Use `FileService::new_foundry(...,
 FoundryHosting::Anthropic, ...)` to opt in without a chat model catalog, or

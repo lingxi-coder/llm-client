@@ -6,10 +6,11 @@ impl FileService<'_> {
         &self,
         file: &ProviderFileSource,
     ) -> Result<ProviderFileRef, LlmError> {
-        if crate::files::adapter(self.profile) != Some(Adapter::Gemini) {
+        let service = self.scoped_operation();
+        if crate::files::adapter(service.profile) != Some(Adapter::Gemini) {
             return Err(unsupported("Gemini file processing"));
         }
-        if self
+        if service
             .account_scope
             .is_none_or(|scope| scope.trim().is_empty())
             || file.file_id.trim().is_empty()
@@ -34,13 +35,13 @@ impl FileService<'_> {
             downloadable: None,
             purpose: file.purpose.clone(),
         };
-        self.check_ref(&pending)?;
+        service.check_ref(&pending)?;
         if pending.processing_status.as_deref() == Some("FAILED") {
             return Err(LlmError::InvalidRequest {
                 message: "Gemini file processing failed and cannot be resumed".into(),
             });
         }
-        let timeout = self
+        let timeout = service
             .gemini_processing_timeout
             .unwrap_or(DEFAULT_GEMINI_PROCESSING_TIMEOUT);
         let deadline =
@@ -49,10 +50,11 @@ impl FileService<'_> {
                 .ok_or_else(|| LlmError::InvalidRequest {
                     message: "Gemini processing timeout is too large".into(),
                 })?;
-        let deadline = self
+        let deadline = service
             .request_deadline
             .map_or(deadline, |limit| deadline.min(limit));
-        self.wait_for_gemini_file_active(&pending, deadline, timeout)
+        service
+            .wait_for_gemini_file_active(&pending, deadline, timeout)
             .await
     }
 
@@ -183,10 +185,10 @@ impl FileService<'_> {
                 file.media_type.clone(),
             ),
         ]);
-        let start = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await
-            .map_err(|error| buffered_upload_error("Gemini resumable upload initiation", error))?;
+        let start =
+            self.executor().execute(req).await.map_err(|error| {
+                buffered_upload_error("Gemini resumable upload initiation", error)
+            })?;
         status_result(&start, "Gemini file upload start")?;
         let upload_url =
             start
@@ -216,7 +218,8 @@ impl FileService<'_> {
                 "upload",
             )?),
         };
-        let response = crate::transport::HttpExecutor::new(self.http)
+        let response = self
+            .executor()
             .execute(upload_req)
             .await
             .map_err(|error| buffered_upload_error("Gemini resumable upload body", error))?;
@@ -249,12 +252,13 @@ impl FileService<'_> {
         &self,
         file: &UploadFile,
     ) -> Result<crate::providers::google::files_wire::GeminiFile, LlmError> {
-        if self.profile.protocol != ProtocolFamily::GeminiGenerateContent {
+        let service = self.scoped_operation();
+        if service.profile.protocol != ProtocolFamily::GeminiGenerateContent {
             return Err(LlmError::InvalidRequest {
                 message: "file upload requires a gemini provider profile".into(),
             });
         }
-        let (value, _, _, _) = self.upload_gemini_response(file).await?;
+        let (value, _, _, _) = service.upload_gemini_response(file).await?;
         crate::providers::google::files_wire::parse_upload_response(&value)
             .map_err(|error| unknown_buffered_upload_outcome("Gemini file upload response", error))
     }
@@ -266,7 +270,8 @@ impl FileService<'_> {
         interval: Duration,
         max_wait: Duration,
     ) -> Result<crate::providers::google::files_wire::GeminiFile, LlmError> {
-        if self.profile.protocol != ProtocolFamily::GeminiGenerateContent {
+        let service = self.scoped_operation();
+        if service.profile.protocol != ProtocolFamily::GeminiGenerateContent {
             return Err(LlmError::InvalidRequest {
                 message: "file upload requires a gemini provider profile".into(),
             });
@@ -278,19 +283,19 @@ impl FileService<'_> {
             })?;
         loop {
             let mut request = crate::providers::google::files_wire::file_status_request(
-                &self.profile.base_url,
+                &service.profile.base_url,
                 name,
             );
-            if let Some(auth) = self.authenticator {
-                auth.apply(&mut request, self.profile, self.credential)
-                    .await?;
+            if let Some(auth) = service.authenticator {
+                service
+                    .deadline()
+                    .run(auth.apply(&mut request, service.profile, service.credential))
+                    .await??;
             }
             // max_wait bounds poll scheduling; allow a poll exactly at the
             // deadline, matching explicit split-phase lifecycle semantics.
             request.timeout = Some(FILE_TIMEOUT);
-            let response = crate::transport::HttpExecutor::new(self.http)
-                .execute(request)
-                .await?;
+            let response = service.executor().execute(request).await?;
             status_result(&response, "Gemini file status")?;
             let value: Value = serde_json::from_slice(&response.body)
                 .map_err(|e| provider_shape(&e.to_string()))?;
@@ -312,7 +317,7 @@ impl FileService<'_> {
                     ),
                 });
             }
-            async_delay(interval).await;
+            service.deadline().run(async_delay(interval)).await?;
         }
     }
 
@@ -340,7 +345,7 @@ impl FileService<'_> {
                     .min(FILE_TIMEOUT),
             );
             let response = gemini_processing_call(
-                crate::transport::HttpExecutor::new(self.http).execute(request),
+                self.executor().execute(request),
                 deadline,
                 processing_timeout,
                 pending,
@@ -609,7 +614,8 @@ impl FileService<'_> {
                 media_type.clone(),
             ),
         ]);
-        let start = crate::transport::HttpExecutor::new(self.http)
+        let start = self
+            .executor()
             .execute(start_request)
             .await
             .map_err(|source| {
@@ -651,7 +657,8 @@ impl FileService<'_> {
                 })?,
             ),
         };
-        let response = crate::transport::HttpExecutor::new(self.http)
+        let response = self
+            .executor()
             .with_deadline(crate::runtime::Deadline::at(Some(upload_deadline)))
             .send_stream(request)
             .await

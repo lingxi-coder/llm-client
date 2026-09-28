@@ -7,7 +7,8 @@ impl FileService<'_> {
         file: &ProviderFileRef,
         timeout: Option<Duration>,
     ) -> Result<ProviderFileMetadata, LlmError> {
-        if crate::files::adapter(self.profile) != Some(Adapter::Qwen) {
+        let service = self.scoped_operation();
+        if crate::files::adapter(service.profile) != Some(Adapter::Qwen) {
             return Err(unsupported("Qwen file processing"));
         }
         if !valid_qwen_file_id(&file.file_id) {
@@ -24,15 +25,15 @@ impl FileService<'_> {
                     message: "Qwen file parsing timed out".into(),
                 });
             }
-            let mut request = self
+            let mut request = service
                 .request(
                     "GET",
-                    file_url(self.profile, Adapter::Qwen, &file.file_id),
+                    file_url(service.profile, Adapter::Qwen, &file.file_id),
                     Bytes::new(),
                     None,
                 )
                 .await?;
-            self.pace_qwen_metadata().await;
+            service.pace_qwen_metadata().await?;
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(LlmError::TransportTimeout {
@@ -40,17 +41,18 @@ impl FileService<'_> {
                 });
             }
             request.timeout = Some(remaining.min(FILE_TIMEOUT));
-            let response = crate::transport::HttpExecutor::new(self.http)
-                .execute(request)
-                .await?;
+            let response = service.executor().execute(request).await?;
             let value = match adapter_json_success(Adapter::Qwen, &response, "file metadata") {
                 Err(LlmError::RateLimited { .. }) => {
-                    async_delay(QWEN_FILE_POLL_INTERVAL.min(remaining)).await;
+                    service
+                        .deadline()
+                        .run(async_delay(QWEN_FILE_POLL_INTERVAL.min(remaining)))
+                        .await?;
                     continue;
                 }
                 result => result?,
             };
-            let mut metadata = decode_metadata(self.profile, self.account_scope, &value)?;
+            let mut metadata = decode_metadata(service.profile, service.account_scope, &value)?;
             if metadata.file.file_id != file.file_id {
                 return Err(provider_shape(
                     "Qwen file metadata returned another file ID",
@@ -88,7 +90,10 @@ impl FileService<'_> {
                 Some("processed") => return Ok(metadata),
                 Some("error") => return Err(provider_shape("Qwen file parsing failed")),
                 Some("uploaded" | "processing") => {
-                    async_delay(QWEN_FILE_POLL_INTERVAL.min(remaining)).await;
+                    service
+                        .deadline()
+                        .run(async_delay(QWEN_FILE_POLL_INTERVAL.min(remaining)))
+                        .await?;
                 }
                 _ => return Err(provider_shape("Qwen file metadata has an unknown status")),
             }
@@ -247,15 +252,17 @@ impl FileService<'_> {
         self.qwen_rate_limiter = Some(limiter);
         self
     }
-    pub(crate) async fn pace_qwen_upload(&self) {
+    pub(crate) async fn pace_qwen_upload(&self) -> Result<(), LlmError> {
         if let Some(limiter) = &self.qwen_rate_limiter {
-            limiter.wait_upload().await;
+            self.deadline().run(limiter.wait_upload()).await?;
         }
+        Ok(())
     }
-    pub(crate) async fn pace_qwen_metadata(&self) {
+    pub(crate) async fn pace_qwen_metadata(&self) -> Result<(), LlmError> {
         if let Some(limiter) = &self.qwen_rate_limiter {
-            limiter.wait_metadata().await;
+            self.deadline().run(limiter.wait_metadata()).await?;
         }
+        Ok(())
     }
 }
 

@@ -67,9 +67,20 @@ pub fn incremental_responses_body(
     state: &Arc<Mutex<ResponsesWebSocketSessionState>>,
     logical_body: &serde_json::Value,
 ) -> Option<serde_json::Value> {
+    // An explicit continuation selects a branch, including a deliberate null
+    // that starts a new one. Only implicit full-history requests may be shrunk
+    // against the session's cached response.
+    if logical_body.get("previous_response_id").is_some() {
+        return None;
+    }
     let state = state.lock().expect("responses ws state");
     let previous_id = state.last_response_id.as_ref()?;
     let previous_body = state.last_request_body.as_ref()?;
+    // A cached response built on an explicit branch is not a representation of
+    // this caller's full history and cannot seed a later implicit continuation.
+    if previous_body.get("previous_response_id").is_some() {
+        return None;
+    }
     if non_input_responses_body(previous_body) != non_input_responses_body(logical_body) {
         return None;
     }
@@ -107,12 +118,16 @@ pub fn record_responses_wire_request(
     wire_body: &serde_json::Value,
 ) {
     let mut state = state.lock().expect("responses ws state");
-    let used_previous_response_id = wire_body.get("previous_response_id").is_some();
+    let previous_response_id = wire_body
+        .get("previous_response_id")
+        .and_then(serde_json::Value::as_str);
+    let used_previous_response_id = previous_response_id.is_some();
     state.last_logical_request_body = Some(logical_body.clone());
     state.last_wire_request_body = Some(wire_body.clone());
     state.last_wire_used_previous_response_id = used_previous_response_id;
-    state.last_wire_used_prewarm_response_id =
-        used_previous_response_id && state.last_response_from_prewarm;
+    state.last_wire_used_prewarm_response_id = used_previous_response_id
+        && state.last_response_from_prewarm
+        && previous_response_id == state.last_response_id.as_deref();
 }
 
 fn non_input_responses_body(body: &serde_json::Value) -> serde_json::Value {

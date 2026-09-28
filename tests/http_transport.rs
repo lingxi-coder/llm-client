@@ -6,7 +6,8 @@ use lingxi_llm_client::protocol::{
     StreamEvent, ToolChoice,
 };
 use lingxi_llm_client::{
-    HttpExecutor, HttpRequest, HttpTransport, LlmClientBuilder, RequestOptions, Transport,
+    HttpExecutor, HttpRequest, HttpStreamRequest, HttpTransport, LlmClientBuilder, RequestOptions,
+    Transport,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -381,6 +382,116 @@ async fn every_http_entry_point_returns_redirect_without_following() {
             assert_eq!(reply.body, "redirect");
         }
         task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn configurator_cannot_enable_redirects_or_automatic_retries() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let classifications = Arc::new(AtomicUsize::new(0));
+    let observed = classifications.clone();
+    let http = HttpTransport::with_client_configurator(|builder| {
+        builder
+            .redirect(reqwest::redirect::Policy::limited(4))
+            .retry(
+                reqwest::retry::for_host("127.0.0.1").classify_fn(move |result| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    result.retryable()
+                }),
+            )
+    })
+    .unwrap();
+    for (status, expected) in [("307 Temporary Redirect", 307), ("503 Unavailable", 503)] {
+        for streaming in [false, true] {
+            let (url, task) = server(response(
+                status,
+                "Location: http://127.0.0.1:1/secret\r\n",
+                "body",
+            ))
+            .await;
+            let reply = if streaming {
+                http.send_stream(HttpStreamRequest {
+                    method: "POST".into(),
+                    url,
+                    headers: vec![],
+                    body: futures::stream::once(async { Ok(Bytes::from_static(b"payload")) })
+                        .boxed(),
+                    content_length: 7,
+                    timeout: Some(Duration::from_secs(3)),
+                })
+                .await
+                .unwrap()
+            } else {
+                http.send(request(url)).await.unwrap()
+            };
+            assert_eq!(reply.status, expected);
+            task.await.unwrap();
+        }
+    }
+    assert_eq!(classifications.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn streamed_upload_normalizes_matching_provider_content_length() {
+    for name in ["content-length", "Content-Length"] {
+        let (url, task) = server(response("200 OK", "", "uploaded")).await;
+        let reply = HttpTransport::new()
+            .unwrap()
+            .send_stream(HttpStreamRequest {
+                method: "POST".into(),
+                url,
+                headers: vec![(name.into(), "7".into())],
+                body: futures::stream::once(async { Ok(Bytes::from_static(b"payload")) }).boxed(),
+                content_length: 7,
+                timeout: Some(Duration::from_secs(3)),
+            })
+            .await
+            .unwrap();
+        assert_eq!(reply.status, 200);
+        let wire = task.await.unwrap().to_ascii_lowercase();
+        assert_eq!(wire.matches("content-length: 7\r\n").count(), 1);
+        assert!(!wire.contains("transfer-encoding"));
+        assert!(wire.ends_with("\r\n\r\npayload"));
+    }
+}
+
+#[tokio::test]
+async fn streamed_upload_rejects_ambiguous_framing_before_consuming_input() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    for headers in [
+        vec![("Content-Length".into(), "8".into())],
+        vec![("Content-Length".into(), "7, 7".into())],
+        vec![
+            ("Content-Length".into(), "7".into()),
+            ("content-length".into(), "7".into()),
+        ],
+        vec![("Transfer-Encoding".into(), "chunked".into())],
+    ] {
+        let polled = Arc::new(AtomicBool::new(false));
+        let observed = polled.clone();
+        let result = HttpTransport::new()
+            .unwrap()
+            .send_stream(HttpStreamRequest {
+                method: "POST".into(),
+                url: "http://127.0.0.1:1/upload".into(),
+                headers,
+                body: futures::stream::once(async move {
+                    observed.store(true, Ordering::SeqCst);
+                    Ok(Bytes::from_static(b"payload"))
+                })
+                .boxed(),
+                content_length: 7,
+                timeout: Some(Duration::from_secs(3)),
+            })
+            .await;
+        assert!(matches!(result, Err(LlmError::InvalidRequest { .. })));
+        assert!(!polled.load(Ordering::SeqCst));
     }
 }
 

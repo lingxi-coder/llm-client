@@ -23,6 +23,7 @@ pub struct PreparedCall {
     mode: RequestMode,
     continuation: Option<crate::protocol::ContinuationRef>,
     file_expirations: Vec<String>,
+    session_binding: Option<Arc<()>>,
 }
 
 impl ClientSnapshot {
@@ -130,10 +131,12 @@ impl ClientSnapshot {
                 .get(&selected.profile.auth)
                 .cloned(),
             credential: options.credential.clone(),
+            account_scope: options.account_scope.clone(),
             call: PreparedCall {
                 prepared,
                 continuation,
                 file_expirations,
+                session_binding: None,
                 http: self.runtime.http.clone(),
                 clock: self.runtime.clock.clone(),
                 deadline: options
@@ -154,6 +157,7 @@ pub struct RequestDraft {
     call: PreparedCall,
     authenticator: Option<Arc<dyn crate::Authenticator>>,
     credential: Option<crate::protocol::Secret<String>>,
+    account_scope: Option<String>,
 }
 impl RequestDraft {
     pub async fn connect_websocket(
@@ -165,6 +169,14 @@ impl RequestDraft {
         &self,
         transport: &dyn crate::Transport,
     ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
+        let handshake = self.websocket_handshake().await?;
+        self.connect_websocket_handshake_using(handshake, Some(transport))
+            .await
+    }
+    pub(super) fn account_scope(&self) -> Option<&str> {
+        self.account_scope.as_deref()
+    }
+    pub(super) async fn websocket_handshake(&self) -> Result<HttpRequest, LlmError> {
         let mut handshake = self.call.prepared.http.clone();
         handshake.method = "GET".into();
         handshake.body = Default::default();
@@ -175,15 +187,26 @@ impl RequestDraft {
                     .await??;
             }
         }
+        Ok(handshake)
+    }
+    pub(super) async fn connect_websocket_handshake_using(
+        &self,
+        handshake: HttpRequest,
+        transport: Option<&dyn crate::Transport>,
+    ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
         self.call
-            .connect_websocket_request(handshake, transport)
+            .connect_websocket_request(handshake, transport.unwrap_or(self.call.http.as_ref()))
             .await
     }
     pub fn request(&self) -> &HttpRequest {
         &self.call.prepared.http
     }
     pub fn request_mut(&mut self) -> &mut HttpRequest {
+        self.call.session_binding = None;
         &mut self.call.prepared.http
+    }
+    pub(super) fn bind_session(&mut self, binding: Arc<()>) {
+        self.call.session_binding = Some(binding);
     }
     /// Set exact JSON bytes while retaining a safe semantic view for final
     /// inference facts, including when strings contain lone UTF-16 surrogates.
@@ -193,6 +216,7 @@ impl RequestDraft {
         overrides: &std::collections::BTreeMap<String, Vec<u16>>,
     ) -> Result<(), LlmError> {
         let bytes: bytes::Bytes = crate::exact_json::serialize(&value, overrides)?.into();
+        self.call.session_binding = None;
         self.call.prepared.http.body = bytes.clone();
         self.semantic_body = Some((bytes, value));
         Ok(())
@@ -252,6 +276,11 @@ impl RequestDraft {
 }
 
 impl PreparedCall {
+    pub(super) fn is_bound_to_session(&self, binding: &Arc<()>) -> bool {
+        self.session_binding
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, binding))
+    }
     fn validate_file_expirations(&self) -> Result<(), LlmError> {
         let now = self.clock.now();
         for expiry in &self.file_expirations {

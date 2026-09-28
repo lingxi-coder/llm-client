@@ -7,12 +7,9 @@ use crate::{
         ProviderFileMetadata, ProviderFilePage, ProviderFileRef, UploadFile, UploadFileStream,
     },
     protocol::{FoundryHosting, LlmError, ProviderFileSource},
-    runtime::{ClientSnapshot, Deadline},
+    runtime::ClientSnapshot,
 };
-use std::{
-    marker::PhantomData,
-    time::{Duration, Instant},
-};
+use std::{marker::PhantomData, time::Duration};
 
 /// A credential-free file resource. Each operation captures one configuration revision.
 /// Provider-specific operations are available only on the corresponding client resource.
@@ -81,6 +78,13 @@ impl<'a, P> ProviderFiles<'a, P> {
         if let Some(timeout) = self.processing_timeout {
             service = service.with_gemini_processing_timeout(timeout);
         }
+        if let Some(timeout) = options.total_timeout {
+            // A zero RequestOptions budget denotes an already expired operation.
+            if timeout.is_zero() {
+                return Err(crate::runtime::timeout_error());
+            }
+            service = service.with_timeout(timeout)?;
+        }
         Ok(service)
     }
 
@@ -104,16 +108,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<ProviderFileRef, LlmError> {
         let snapshot = self.binding.pin()?;
-        let mut service = self.service(&snapshot, options)?;
-        if let Some(timeout) = options.total_timeout {
-            let deadline =
-                Instant::now()
-                    .checked_add(timeout)
-                    .ok_or_else(|| LlmError::InvalidRequest {
-                        message: "file upload timeout is too large".into(),
-                    })?;
-            service = service.with_request_deadline(deadline);
-        }
+        let service = self.service(&snapshot, options)?;
         service.upload(file, purpose).await
     }
 
@@ -126,16 +121,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         let snapshot = self.binding.pin()?;
         // The upload core enforces the deadline and preserves an unknown
         // outcome if the deadline elapses after upload dispatch.
-        let mut service = self.service(&snapshot, options)?;
-        if let Some(timeout) = options.total_timeout {
-            let deadline =
-                Instant::now()
-                    .checked_add(timeout)
-                    .ok_or_else(|| LlmError::InvalidRequest {
-                        message: "file upload timeout is too large".into(),
-                    })?;
-            service = service.with_request_deadline(deadline);
-        }
+        let service = self.service(&snapshot, options)?;
         service.upload_stream(file, purpose).await
     }
 
@@ -145,9 +131,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<ProviderFileMetadata, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(self.service(&snapshot, options)?.get(file))
-            .await?
+        self.service(&snapshot, options)?.get(file).await
     }
 
     pub async fn list(
@@ -156,9 +140,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<ProviderFilePage, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(self.service(&snapshot, options)?.list(cursor))
-            .await?
+        self.service(&snapshot, options)?.list(cursor).await
     }
 
     pub async fn list_for_purpose(
@@ -168,12 +150,9 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<ProviderFilePage, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(
-                self.service(&snapshot, options)?
-                    .list_for_purpose(purpose, cursor),
-            )
-            .await?
+        self.service(&snapshot, options)?
+            .list_for_purpose(purpose, cursor)
+            .await
     }
 
     pub async fn delete(
@@ -182,9 +161,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<(), LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(self.service(&snapshot, options)?.delete(file))
-            .await?
+        self.service(&snapshot, options)?.delete(file).await
     }
 
     pub async fn download(
@@ -193,9 +170,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<ProviderFileContent, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(self.service(&snapshot, options)?.download(file))
-            .await?
+        self.service(&snapshot, options)?.download(file).await
     }
 
     pub async fn extract_text(
@@ -204,9 +179,7 @@ impl<'a, P> ProviderFiles<'a, P> {
         options: &RequestOptions,
     ) -> Result<String, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(self.service(&snapshot, options)?.extract_text(file))
-            .await?
+        self.service(&snapshot, options)?.extract_text(file).await
     }
 }
 
@@ -238,9 +211,7 @@ impl ProviderFiles<'_, super::AnthropicClient> {
         options: &RequestOptions,
     ) -> Result<ProviderFilePage, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(self.service(&snapshot, options)?.list_by_ids(files))
-            .await?
+        self.service(&snapshot, options)?.list_by_ids(files).await
     }
 }
 
@@ -263,16 +234,7 @@ impl ProviderFiles<'_, super::GoogleClient> {
         options: &RequestOptions,
     ) -> Result<super::google::files_wire::GeminiFile, LlmError> {
         let snapshot = self.binding.pin()?;
-        let mut service = self.service(&snapshot, options)?;
-        if let Some(timeout) = options.total_timeout {
-            let deadline =
-                Instant::now()
-                    .checked_add(timeout)
-                    .ok_or_else(|| LlmError::InvalidRequest {
-                        message: "file upload timeout is too large".into(),
-                    })?;
-            service = service.with_request_deadline(deadline);
-        }
+        let service = self.service(&snapshot, options)?;
         service.upload_gemini_unpolled(file).await
     }
 
@@ -284,12 +246,9 @@ impl ProviderFiles<'_, super::GoogleClient> {
         options: &RequestOptions,
     ) -> Result<super::google::files_wire::GeminiFile, LlmError> {
         let snapshot = self.binding.pin()?;
-        Deadline::after(options.total_timeout)
-            .run(
-                self.service(&snapshot, options)?
-                    .poll_gemini_active(name, interval, max_wait),
-            )
-            .await?
+        self.service(&snapshot, options)?
+            .poll_gemini_active(name, interval, max_wait)
+            .await
     }
 
     pub async fn resume_processing(
@@ -298,16 +257,7 @@ impl ProviderFiles<'_, super::GoogleClient> {
         options: &RequestOptions,
     ) -> Result<ProviderFileRef, LlmError> {
         let snapshot = self.binding.pin()?;
-        let mut service = self.service(&snapshot, options)?;
-        if let Some(timeout) = options.total_timeout {
-            let deadline =
-                Instant::now()
-                    .checked_add(timeout)
-                    .ok_or_else(|| LlmError::InvalidRequest {
-                        message: "file processing timeout is too large".into(),
-                    })?;
-            service = service.with_request_deadline(deadline);
-        }
+        let service = self.service(&snapshot, options)?;
         service.resume_gemini_processing(file).await
     }
 }

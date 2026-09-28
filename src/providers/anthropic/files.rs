@@ -24,13 +24,14 @@ impl FileService<'_> {
         &self,
         files: &[ProviderFileRef],
     ) -> Result<ProviderFilePage, LlmError> {
-        let adapter = self
+        let service = self.scoped_operation();
+        let adapter = service
             .adapter()
             .ok_or_else(|| unsupported("file metadata lookup by IDs"))?;
         if adapter != Adapter::Anthropic {
             return Err(unsupported("file metadata lookup by IDs"));
         }
-        if self
+        if service
             .account_scope
             .is_none_or(|scope| scope.trim().is_empty())
         {
@@ -45,7 +46,7 @@ impl FileService<'_> {
         }
         let mut requested = std::collections::BTreeSet::new();
         for file in files {
-            self.check_ref(file)?;
+            service.check_ref(file)?;
             if !requested.insert(file.file_id.as_str()) {
                 return Err(LlmError::InvalidRequest {
                     message: "file metadata lookup IDs must be distinct".into(),
@@ -64,11 +65,9 @@ impl FileService<'_> {
             .map(|file| format!("ids%5B%5D={}", query_value(&file.file_id)))
             .collect::<Vec<_>>()
             .join("&");
-        let url = format!("{}?{query}", files_url(self.profile));
-        let req = self.request("GET", url, Bytes::new(), None).await?;
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await?;
+        let url = format!("{}?{query}", files_url(service.profile));
+        let req = service.request("GET", url, Bytes::new(), None).await?;
+        let response = service.executor().execute(req).await?;
         let value = adapter_json_success(adapter, &response, "file metadata lookup")?;
         let rows = value
             .get("data")
@@ -85,7 +84,7 @@ impl FileService<'_> {
         let mut returned = std::collections::BTreeSet::new();
         let mut metadata = Vec::with_capacity(rows.len());
         for row in rows {
-            let metadata_row = self.decode_metadata(row)?;
+            let metadata_row = service.decode_metadata(row)?;
             if !requested.contains(metadata_row.file.file_id.as_str())
                 || !returned.insert(metadata_row.file.file_id.clone())
             {
