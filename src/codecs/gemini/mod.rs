@@ -12,7 +12,7 @@
 
 pub(crate) mod decode;
 pub(crate) mod encode;
-mod native;
+pub(crate) mod native;
 mod stream;
 
 pub use decode::classify_error;
@@ -40,8 +40,12 @@ impl WireCodec for GeminiCodec {
     ) -> Result<(), LlmError> {
         encode::validate_audio_input(req)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
-        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
-        encode::validate_hosted_tool_request(req, context.profile(), context.request_model())
+        crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
+        crate::providers::google::hosted_tools::validate_hosted_tool_request(
+            req,
+            context.profile(),
+            context.request_model(),
+        )
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::GeminiGenerateContent

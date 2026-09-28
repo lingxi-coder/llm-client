@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::protocol::{
-    AnthropicMcpConfig, AnthropicMcpToolConfig, ChatRequest, ConnectionSpec, ContentBlock,
-    ConversationMessage, FailoverTriggers, HostedTool, LlmError, ProtocolFamily, ProviderProfile,
-    Region, Secret,
+    ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage, FailoverTriggers, LlmError,
+    ProtocolFamily, ProviderProfile, Region, Secret,
 };
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig, AnthropicMcpToolConfig};
 use lingxi_llm_client::{
     AnthropicMessagesCodec, CodecContext, EncodeRequest, FoundryClaudeCodec, HttpRequest,
     LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport, WireCodec,
@@ -71,21 +71,24 @@ fn beta_values(headers: &[(String, String)]) -> Vec<String> {
 #[test]
 fn foundry_uses_the_2025_connector_and_preserves_custom_deployment_and_beta_merge() {
     let mut request = make_request();
-    request.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("workspace")
-            .with_default_config(AnthropicMcpToolConfig {
-                enabled: Some(false),
-                defer_loading: None,
-            })
-            .with_tool_config(
-                "search",
-                AnthropicMcpToolConfig {
-                    enabled: Some(true),
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("workspace")
+                .with_default_config(AnthropicMcpToolConfig {
+                    enabled: Some(false),
                     defer_loading: None,
-                },
-            )
-            .unwrap(),
-    ));
+                })
+                .with_tool_config(
+                    "search",
+                    AnthropicMcpToolConfig {
+                        enabled: Some(true),
+                        defer_loading: None,
+                    },
+                )
+                .unwrap(),
+        )
+        .into(),
+    );
     let profile = foundry_profile(json!({
         "betas": ["prompt-caching-2024-07-31", "mcp-client-2025-11-20"],
         "headers": {"anthropic-beta":"token-counting-2024-11-01,mcp-client-2025-11-20"}
@@ -130,18 +133,24 @@ fn foundry_uses_the_2025_connector_and_preserves_custom_deployment_and_beta_merg
 fn foundry_rejects_pinned_lists_inline_toolsets_and_listing_replay() {
     let profile = foundry_profile(Value::Null);
     let mut pinned_empty = make_request();
-    pinned_empty.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("workspace").with_tools(Vec::new()).unwrap(),
-    ));
+    pinned_empty.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("workspace").with_tools(Vec::new()).unwrap(),
+        )
+        .into(),
+    );
     assert!(matches!(
         encode(&pinned_empty, &profile),
         Err(LlmError::UnsupportedCapability { message }) if message.contains("pinned MCP tool lists")
     ));
 
     let mut inline = make_request();
-    inline.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("workspace").with_inline_toolset(true),
-    ));
+    inline.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("workspace").with_inline_toolset(true),
+        )
+        .into(),
+    );
     assert!(matches!(
         encode(&inline, &profile),
         Err(LlmError::UnsupportedCapability { .. })
@@ -282,9 +291,12 @@ async fn foundry_mcp_authorization_is_injected_per_request_and_mismatch_fails_pr
         .build()
         .unwrap();
     let mut request = make_request();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
     assert!(!serde_json::to_string(&request).unwrap().contains(MCP_TOKEN));
 
     let mut good_options = RequestOptions::default();
@@ -380,9 +392,12 @@ async fn uncertain_foundry_mcp_replay_is_not_retried_or_failed_over() {
 #[test]
 fn typed_mcp_stays_rejected_on_a_non_foundry_compatible_messages_profile() {
     let mut request = make_request();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
     let mut profile = foundry_profile(Value::Null);
     profile.provider_id = "compatible_gateway".into();
     profile.protocol = ProtocolFamily::AnthropicMessages;

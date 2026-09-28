@@ -71,7 +71,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
@@ -88,7 +88,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
 
 fn user(text: &str) -> ConversationMessage {
     ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
@@ -129,7 +129,7 @@ fn the_conversation_is_a_flat_list_of_items() {
     let req = request(vec![
         user("hi"),
         ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: ToolUseId::new("call-1"),
@@ -142,7 +142,7 @@ fn the_conversation_is_a_flat_list_of_items() {
             }],
         },
         ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
@@ -1025,7 +1025,7 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
     use lingxi_llm_client::protocol::DocumentSource;
     let text = "hello 世界";
     let req = request(vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::Text {
@@ -1072,7 +1072,7 @@ fn text_documents_are_base64_encoded_on_gemini_and_responses() {
 fn responses_document_urls_use_file_url() {
     use lingxi_llm_client::protocol::DocumentSource;
     let req = request(vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::Url {
@@ -1271,7 +1271,7 @@ fn responses_reasoning_round_trips_before_tool_outputs() {
         let req = request(vec![
             decoded.message,
             ConversationMessage {
-                anthropic: None,
+                native_options: Vec::new(),
                 role: MessageRole::User,
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: ToolUseId::new("call_1"),
@@ -1357,7 +1357,7 @@ fn responses_tool_results_preserve_structured_and_text_outputs() {
         ]),
     ] {
         let req = request(vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call_1"),

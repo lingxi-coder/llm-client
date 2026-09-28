@@ -1,6 +1,6 @@
 # xAI Remote MCP（Responses）
 
-此适配器在 xAI 的 OpenAI 兼容 Responses 路由上配置由 xAI 托管调用的 MCP 服务。当前 xAI Responses 专用配置为 `HostedTool::XaiRemoteMcp(XaiRemoteMcpConfig)`，只包含公开连接参数：`server_label`、HTTPS `server_url`、可选 `server_description` 和可选 `allowed_tools`。`allowed_tools` 为空表示不限制服务端公布的工具；非空时只开放列出的名称。
+此适配器在 xAI 的 OpenAI 兼容 Responses 路由上配置由 xAI 托管调用的 MCP 服务。当前 xAI Responses 专用配置为 `XaiHostedTool::RemoteMcp(XaiRemoteMcpConfig)`，只包含公开连接参数：`server_label`、HTTPS `server_url`、可选 `server_description` 和可选 `allowed_tools`。`allowed_tools` 为空表示不限制服务端公布的工具；非空时只开放列出的名称。
 
 配置只接受启用 xAI Responses MCP 的官方配置档：`provider_id = "xai"`、`protocol = "open_ai_responses"`、`base_url = "https://api.x.ai/v1"`，以及 `extra.xai_remote_mcp = "xai_responses"`。它不会把既有 Grok Chat 路由切换到 Responses。编码后的 MCP 工具使用 xAI 文档示例确认的 `type: "mcp"`、`server_url`、`server_label`，并仅在配置了时附带 `server_description` 和 `allowed_tools`。
 

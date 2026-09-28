@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeCategoryCreateRequest, QwenKnowledgeCategoryListRequest,
         QwenKnowledgeDispatch, QwenKnowledgeError, QwenKnowledgeRegion, QwenKnowledgeScope,
         QwenKnowledgeService,
@@ -92,12 +92,7 @@ fn make_service<'a>(
     region: QwenKnowledgeRegion,
     account: &str,
 ) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-category-key".to_owned()),
-        scope(region, account, "llm-category-workspace"),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(region, account, "llm-category-workspace")).unwrap()
 }
 
 #[tokio::test]
@@ -123,7 +118,10 @@ async fn list_categories_sends_current_filter_fields_and_preserves_native_rows()
         .with_next_token("cursor-before")
         .with_max_result(40);
 
-    let page = service.list_categories(&request).await.unwrap();
+    let page = service
+        .list_categories(&request, &request_options())
+        .await
+        .unwrap();
 
     assert_eq!(page.categories.len(), 1);
     assert_eq!(page.categories[0].reference.category_id(), "cate_child_1");
@@ -131,7 +129,7 @@ async fn list_categories_sends_current_filter_fields_and_preserves_native_rows()
     assert!(!page.categories[0].is_default);
     assert_eq!(
         page.categories[0].category_type,
-        lingxi_llm_client::qwen_knowledge::QwenKnowledgeCategoryType::Unstructured
+        lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeCategoryType::Unstructured
     );
     assert_eq!(
         page.categories[0].native["future_category_field"]["preserved"],
@@ -183,12 +181,15 @@ async fn list_categories_returns_cursor_and_rejects_nonprogressing_or_duplicate_
     ]);
     let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     let first = service
-        .list_categories(&QwenKnowledgeCategoryListRequest::new())
+        .list_categories(&QwenKnowledgeCategoryListRequest::new(), &request_options())
         .await
         .unwrap();
     let cursor = first.next_token.clone().unwrap();
     let second = service
-        .list_categories(&QwenKnowledgeCategoryListRequest::new().with_next_token(cursor.clone()))
+        .list_categories(
+            &QwenKnowledgeCategoryListRequest::new().with_next_token(cursor.clone()),
+            &request_options(),
+        )
         .await
         .unwrap();
 
@@ -229,7 +230,10 @@ async fn list_categories_returns_cursor_and_rejects_nonprogressing_or_duplicate_
     ] {
         let mock = Mock::new([response(200, success(data))]);
         let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
-        let error = service.list_categories(&request).await.unwrap_err();
+        let error = service
+            .list_categories(&request, &request_options())
+            .await
+            .unwrap_err();
         assert!(matches!(error, QwenKnowledgeError::InvalidResponse { .. }));
     }
 }
@@ -250,7 +254,10 @@ async fn create_category_encodes_optional_parent_and_connector_and_returns_scope
         .with_parent_category(parent)
         .with_connector_ref(connector);
 
-    let result = service.create_category(&request).await.unwrap();
+    let result = service
+        .create_category(&request, &request_options())
+        .await
+        .unwrap();
     assert_eq!(result.reference.category_id(), "cate_created_1");
     assert_eq!(result.reference.scope().account_scope(), "account-1");
     assert_eq!(result.category_name.as_deref(), Some("created from server"));
@@ -292,7 +299,10 @@ async fn create_category_validates_name_and_parent_scope_before_dispatch() {
         QwenKnowledgeCategoryCreateRequest::new("child").with_parent_category(other_parent),
         QwenKnowledgeCategoryCreateRequest::new("child").with_connector_ref(other_connector),
     ] {
-        let error = service.create_category(&request).await.unwrap_err();
+        let error = service
+            .create_category(&request, &request_options())
+            .await
+            .unwrap_err();
         assert!(matches!(
             error,
             QwenKnowledgeError::InvalidInput(_)
@@ -309,6 +319,7 @@ async fn create_category_validates_name_and_parent_scope_before_dispatch() {
     let list_error = service
         .list_categories(
             &QwenKnowledgeCategoryListRequest::new().with_connector_ref(foreign_connector),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -323,6 +334,7 @@ async fn create_category_validates_name_and_parent_scope_before_dispatch() {
     let forged_error = service
         .create_category(
             &QwenKnowledgeCategoryCreateRequest::new("child").with_connector_ref(forged_ref),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -334,7 +346,10 @@ async fn create_category_validates_name_and_parent_scope_before_dispatch() {
         serde_json::to_value(service.scope().category_ref("cate_category_1").unwrap()).unwrap();
     forged_category["category_type"] = json!("SESSION_FILE");
     let forged_category = serde_json::from_value(forged_category).unwrap();
-    let namespace_error = service.delete_category(&forged_category).await.unwrap_err();
+    let namespace_error = service
+        .delete_category(&forged_category, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         namespace_error,
         QwenKnowledgeError::Llm(LlmError::PermissionDenied { .. })
@@ -350,7 +365,10 @@ async fn delete_category_uses_scoped_reference_and_retains_native_response() {
     )]);
     let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     let category = service.scope().category_ref("cate_delete_1").unwrap();
-    let result = service.delete_category(&category).await.unwrap();
+    let result = service
+        .delete_category(&category, &request_options())
+        .await
+        .unwrap();
     assert_eq!(result.reference, category);
     assert_eq!(result.request_id.as_deref(), Some("category-header-id"));
     assert_eq!(result.native["data"]["categoryId"], "cate_delete_1");
@@ -379,7 +397,10 @@ async fn category_scope_errors_and_unconfirmed_mutations_never_retry() {
     .unwrap();
     let mock = Mock::new([]);
     let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
-    let error = service.delete_category(&foreign).await.unwrap_err();
+    let error = service
+        .delete_category(&foreign, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         error,
         QwenKnowledgeError::Llm(LlmError::PermissionDenied { .. })
@@ -394,7 +415,10 @@ async fn category_scope_errors_and_unconfirmed_mutations_never_retry() {
         let mock = Mock::new([reply]);
         let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
         let category = service.scope().category_ref("cate_delete_1").unwrap();
-        let error = service.delete_category(&category).await.unwrap_err();
+        let error = service
+            .delete_category(&category, &request_options())
+            .await
+            .unwrap_err();
         assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
         assert_eq!(mock.requests.lock().unwrap().len(), 1);
     }
@@ -402,7 +426,10 @@ async fn category_scope_errors_and_unconfirmed_mutations_never_retry() {
     let mock = Mock::new([MockReply::Failure]);
     let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     let error = service
-        .create_category(&QwenKnowledgeCategoryCreateRequest::new("one"))
+        .create_category(
+            &QwenKnowledgeCategoryCreateRequest::new("one"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
@@ -416,7 +443,10 @@ async fn category_scope_errors_and_unconfirmed_mutations_never_retry() {
         let mock = Mock::new([response(200, success(data))]);
         let service = make_service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
         let error = service
-            .create_category(&QwenKnowledgeCategoryCreateRequest::new("one"))
+            .create_category(
+                &QwenKnowledgeCategoryCreateRequest::new("one"),
+                &request_options(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(
@@ -432,7 +462,7 @@ async fn unsupported_region_is_rejected_before_category_http_dispatch() {
     let mock = Mock::new([]);
     let service = make_service(&mock, QwenKnowledgeRegion::Singapore, "account-1");
     let error = service
-        .list_categories(&QwenKnowledgeCategoryListRequest::new())
+        .list_categories(&QwenKnowledgeCategoryListRequest::new(), &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -440,4 +470,11 @@ async fn unsupported_region_is_rejected_before_category_http_dispatch() {
         QwenKnowledgeError::Llm(LlmError::UnsupportedCapability { .. })
     ));
     assert!(mock.requests.lock().unwrap().is_empty());
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-category-key".to_owned())),
+        ..Default::default()
+    }
 }

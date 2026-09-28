@@ -362,7 +362,7 @@ async fn updating_another_profile_preserves_the_unchanged_upload_cache() {
     other.extra = json!({"headers": {"x-client-version": "new"}});
     config.add_provider(other.clone()).await.unwrap();
     let current = client.snapshot();
-    assert_eq!(current.provider("secondary").unwrap().extra, other.extra);
+    assert_eq!(current.profile("secondary").unwrap().extra, other.extra);
     current
         .chat()
         .complete_in("primary", &request(), &options())

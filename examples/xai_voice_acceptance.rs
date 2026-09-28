@@ -3,7 +3,7 @@
 
 use lingxi_llm_client::{
     protocol::Secret,
-    xai_audio::{XaiAudioConfig, XaiAudioCredentials, XaiAudioError, XaiAudioService},
+    providers::xai::audio::{XaiAudioConfig, XaiAudioCredentials, XaiAudioError, XaiAudioService},
     HttpTransport,
 };
 use serde_json::{json, Value};

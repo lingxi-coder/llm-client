@@ -9,15 +9,11 @@
 `QwenLiveTranslateRoute::new` 要求区域和单个 workspace ID，并构造该区域专用的 WebSocket endpoint。连接使用官方要求的 `model` 查询参数和 `Authorization: Bearer …` 握手 header。`QwenLiveTranslateScope` 将 profile、账户、region、workspace 和 endpoint fingerprint 绑定；API key 作为 `Secret<String>` 逐次传入，不保存在 scope 中。
 
 ```rust,no_run
+use lingxi_llm_client::providers::qwen::live_translate::{Qwen35LiveTranslateConfig, QwenLiveTranslateConfig, QwenLiveTranslateRegion, QwenLiveTranslateRoute, QwenLiveTranslateScope, QwenLiveTranslateSession};
 use std::sync::Arc;
 use lingxi_llm_client::{
     protocol::Secret,
-    realtime::{
-        Qwen35LiveTranslateConfig, QwenLiveTranslateConfig,
-        QwenLiveTranslateRegion, QwenLiveTranslateRoute,
-        QwenLiveTranslateScope, QwenLiveTranslateSession,
-        RealtimeDriver, RealtimeError, RealtimeLimits, RealtimeTransport,
-    },
+    realtime::{RealtimeDriver, RealtimeError, RealtimeLimits, RealtimeTransport},
 };
 
 async fn connect_live_translate(

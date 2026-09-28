@@ -296,42 +296,13 @@ pub struct ProviderFileSource {
     pub purpose: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnthropicClearAt {
-    Never,
-    NextUserMessage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AnthropicMessageEffort {
-    Low,
-    Medium,
-    High,
-    #[serde(rename = "xhigh")]
-    XHigh,
-    Max,
-}
-
-/// Anthropic-only metadata associated with one message. Codecs map these
-/// options to the provider's supported message-level fields.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct AnthropicMessageOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clear_at: Option<AnthropicClearAt>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<AnthropicMessageEffort>,
-}
-
 /// One message of the transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMessage {
     pub role: MessageRole,
     pub content: Vec<ContentBlock>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anthropic: Option<AnthropicMessageOptions>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_options: Vec<super::NativeExtension>,
 }
 
 impl ConversationMessage {
@@ -342,7 +313,7 @@ impl ConversationMessage {
                 text: text.into(),
                 thought_signature: None,
             }],
-            anthropic: None,
+            native_options: Vec::new(),
         }
     }
 
@@ -353,7 +324,7 @@ impl ConversationMessage {
                 text: text.into(),
                 thought_signature: None,
             }],
-            anthropic: None,
+            native_options: Vec::new(),
         }
     }
 
@@ -361,13 +332,8 @@ impl ConversationMessage {
         Self {
             role: MessageRole::Assistant,
             content,
-            anthropic: None,
+            native_options: Vec::new(),
         }
-    }
-
-    pub fn with_anthropic_options(mut self, options: AnthropicMessageOptions) -> Self {
-        self.anthropic = Some(options);
-        self
     }
 
     /// Every tool call this message requests, in order, as
@@ -405,6 +371,9 @@ impl ConversationMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::anthropic::types::{
+        AnthropicClearAt, AnthropicMessageEffort, AnthropicMessageOptions,
+    };
 
     #[test]
     fn tool_result_round_trips_with_and_without_blocks() {
@@ -521,7 +490,7 @@ mod tests {
         );
         let value = serde_json::to_value(&message).unwrap();
         assert_eq!(
-            value["anthropic"],
+            value["native_options"][0]["data"],
             serde_json::json!({
                 "clear_at":"next_user_message",
                 "effort":"xhigh"
@@ -533,11 +502,11 @@ mod tests {
             "content":[{"type":"text","text":"hello"}]
         }))
         .unwrap();
-        assert_eq!(legacy.anthropic, None);
+        assert!(legacy.native_options.is_empty());
         assert!(
             serde_json::to_value(ConversationMessage::user_text("hello"))
                 .unwrap()
-                .get("anthropic")
+                .get("native_options")
                 .is_none()
         );
         assert!(

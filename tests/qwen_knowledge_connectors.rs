@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeCategoryRef, QwenKnowledgeCategoryType, QwenKnowledgeConnectorCreateRequest,
         QwenKnowledgeConnectorLookup, QwenKnowledgeDispatch, QwenKnowledgeError,
         QwenKnowledgeOssImportFile, QwenKnowledgeOssImportRequest, QwenKnowledgeParser,
@@ -74,12 +74,7 @@ fn scope(account: &str) -> QwenKnowledgeScope {
 }
 
 fn service<'a>(mock: &'a Mock, account: &str) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-connector-api-key".to_owned()),
-        scope(account),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(account)).unwrap()
 }
 
 fn create_response(connector_id: &str) -> Value {
@@ -99,7 +94,10 @@ async fn create_connector_uses_documented_file_shape_and_binds_result_scope() {
         "Product docs",
         "Connector for product documentation",
     );
-    let result = service.create_connector(&request).await.unwrap();
+    let result = service
+        .create_connector(&request, &request_options())
+        .await
+        .unwrap();
 
     assert_eq!(result.reference.connector_id(), "conn_abc123");
     assert_eq!(result.reference.scope(), service.scope());
@@ -152,11 +150,15 @@ async fn custom_connector_and_get_by_name_use_documented_fields_and_status_only_
         .create_connector(
             &QwenKnowledgeConnectorCreateRequest::new("My custom data", "My bucket connector")
                 .with_custom_oss("cn-beijing", "my-docs-bucket"),
+            &request_options(),
         )
         .await
         .unwrap();
     let details = service
-        .get_connector(&QwenKnowledgeConnectorLookup::by_name("My custom data"))
+        .get_connector(
+            &QwenKnowledgeConnectorLookup::by_name("My custom data"),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(details.reference, created.reference);
@@ -183,7 +185,10 @@ async fn connector_id_lookup_is_typed_and_cross_scope_is_rejected_before_http() 
     let service = service(&mock, "acct-1");
     let foreign = scope("acct-2").connector_ref("conn_foreign").unwrap();
     let error = service
-        .get_connector(&QwenKnowledgeConnectorLookup::by_id(foreign))
+        .get_connector(
+            &QwenKnowledgeConnectorLookup::by_id(foreign),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(&error, QwenKnowledgeError::Llm(_)));
@@ -212,7 +217,10 @@ async fn oss_import_encodes_parser_tags_and_file_ids_as_scoped_refs() {
     )
     .with_tags(["manual", "product"])
     .with_overwrite_file_by_oss_key(true);
-    let result = service.import_files_from_oss(&request).await.unwrap();
+    let result = service
+        .import_files_from_oss(&request, &request_options())
+        .await
+        .unwrap();
 
     let imported = result.imported_files.unwrap();
     assert_eq!(imported.len(), 2);
@@ -259,7 +267,10 @@ async fn empty_import_data_is_preserved_without_inventing_a_job_or_file_ids() {
             "manuals/guide.md",
         )],
     );
-    let result = service.import_files_from_oss(&request).await.unwrap();
+    let result = service
+        .import_files_from_oss(&request, &request_options())
+        .await
+        .unwrap();
     assert!(result.imported_files.is_none());
     assert_eq!(result.native["data"], json!({}));
 }
@@ -274,12 +285,15 @@ async fn documented_input_limits_and_session_parser_rules_fail_before_dispatch()
         })
         .collect::<Vec<_>>();
     let error = service
-        .import_files_from_oss(&QwenKnowledgeOssImportRequest::new(
-            "cate_1",
-            "docs-bucket",
-            "cn-beijing",
-            too_many_files,
-        ))
+        .import_files_from_oss(
+            &QwenKnowledgeOssImportRequest::new(
+                "cate_1",
+                "docs-bucket",
+                "cn-beijing",
+                too_many_files,
+            ),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::InvalidInput(_)));
@@ -293,17 +307,17 @@ async fn documented_input_limits_and_session_parser_rules_fail_before_dispatch()
     )
     .with_category_type(QwenKnowledgeCategoryType::SessionFile);
     let error = service
-        .import_files_from_oss(&session_override)
+        .import_files_from_oss(&session_override, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::InvalidInput(_)));
 
     let long_name = "x".repeat(21);
     let error = service
-        .create_connector(&QwenKnowledgeConnectorCreateRequest::new(
-            long_name,
-            "Description",
-        ))
+        .create_connector(
+            &QwenKnowledgeConnectorCreateRequest::new(long_name, "Description"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::InvalidInput(_)));
@@ -322,7 +336,7 @@ async fn typed_oss_category_refs_retain_scope_and_reject_forged_fingerprints() {
         [QwenKnowledgeOssImportFile::new("guide.md", "guide.md")],
     );
     let error = service
-        .import_files_from_oss(&foreign_request)
+        .import_files_from_oss(&foreign_request, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::Llm(_)));
@@ -338,7 +352,7 @@ async fn typed_oss_category_refs_retain_scope_and_reject_forged_fingerprints() {
         [QwenKnowledgeOssImportFile::new("guide.md", "guide.md")],
     );
     let error = service
-        .import_files_from_oss(&forged_request)
+        .import_files_from_oss(&forged_request, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::Llm(_)));
@@ -349,12 +363,15 @@ async fn typed_oss_category_refs_retain_scope_and_reject_forged_fingerprints() {
 async fn mutation_transport_and_malformed_response_errors_never_retry() {
     let timeout = Mock::new([Reply::Failure]);
     let error = service(&timeout, "acct-1")
-        .import_files_from_oss(&QwenKnowledgeOssImportRequest::new(
-            "cate_1",
-            "docs-bucket",
-            "cn-beijing",
-            [QwenKnowledgeOssImportFile::new("guide.md", "guide.md")],
-        ))
+        .import_files_from_oss(
+            &QwenKnowledgeOssImportRequest::new(
+                "cate_1",
+                "docs-bucket",
+                "cn-beijing",
+                [QwenKnowledgeOssImportFile::new("guide.md", "guide.md")],
+            ),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(&error, QwenKnowledgeError::OutcomeUnknown { .. }));
@@ -365,10 +382,10 @@ async fn mutation_transport_and_malformed_response_errors_never_retry() {
         "code":"Success","status_code":200,"requestId":"request-missing-id","data":{}
     }))]);
     let error = service(&malformed, "acct-1")
-        .create_connector(&QwenKnowledgeConnectorCreateRequest::new(
-            "A connector",
-            "A description",
-        ))
+        .create_connector(
+            &QwenKnowledgeConnectorCreateRequest::new("A connector", "A description"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -377,4 +394,11 @@ async fn mutation_transport_and_malformed_response_errors_never_retry() {
     ));
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
     assert_eq!(malformed.requests.lock().unwrap().len(), 1);
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-connector-api-key".to_owned())),
+        ..Default::default()
+    }
 }

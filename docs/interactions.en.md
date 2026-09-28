@@ -2,17 +2,20 @@
 
 [中文](interactions.md)
 
-`client.interactions()` calls Google's [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview), separate from `generateContent` Chat. The built-in `gemini` profile configures the `/v1beta/interactions` route and `x-goog-api-key` authentication. Requests and responses retain the native Interactions API structure, including multimodal `input`, tool declarations, `steps`, status, and usage.
+Bind `client.provider::<GoogleClient>(profile)?` to an exact profile, then use `provider.interactions()`. Each operation takes `RequestOptions`; the client retains no credential.
+
+`provider.interactions()` calls Google's [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview), separate from `generateContent` Chat. The built-in `gemini` profile configures the `/v1beta/interactions` route and `x-goog-api-key` authentication. Requests and responses retain the native Interactions API structure, including multimodal `input`, tool declarations, `steps`, status, and usage.
 
 `InteractionRequest::model()` and `::agent()` still accept string input. `InteractionInput` also encodes one native `Content` block, an array of `Content`, or an array of `Step` objects. Content blocks support text, images, audio, documents, and video; media can be provided as base64 `data` or a file `uri`:
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
-use lingxi_llm_client::interactions::{
+use lingxi_llm_client::providers::google::interactions::{
     InteractionContent, InteractionInput, InteractionRequest,
 };
 
-async fn describe_media(client: &LlmClient, options: &RequestOptions) {
+async fn describe_media(client: &LlmClient, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::google::GoogleClient>("gemini")?;
     let input = InteractionInput::content([
         InteractionContent::text("Summarize this recording and its cover image."),
         InteractionContent::image_data("BASE64_IMAGE", "image/png"),
@@ -22,16 +25,17 @@ async fn describe_media(client: &LlmClient, options: &RequestOptions) {
         ),
     ]);
     let request = InteractionRequest::model("gemini-3.8-flash", input);
-    let interaction = client.interactions().create("gemini", &request, options).await;
+    let interaction = provider.interactions().create(&request, options).await;
     // Inspect the native steps and usage on the returned interaction.
     let _ = interaction;
+    Ok(())
 }
 ```
 
 Declare client-executed functions with `InteractionTool::function`. Its `parameters` argument is the JSON Schema sent to Google. `generation_config` is sent as provided, so tool selection uses Google's `generation_config.tool_choice` shape:
 
 ```rust,no_run
-use lingxi_llm_client::interactions::{InteractionRequest, InteractionTool};
+use lingxi_llm_client::providers::google::interactions::{InteractionRequest, InteractionTool};
 use serde_json::json;
 
 let request = InteractionRequest::model("gemini-3.8-flash", "Weather in Paris?")
@@ -54,7 +58,7 @@ let request = InteractionRequest::model("gemini-3.8-flash", "Weather in Paris?")
 Tool execution stays with the caller. The response's `native["steps"]` preserves Google's `function_call` and other step objects. To return a function result, continue the stored interaction and provide a native `function_result` step, using the exact call ID returned by the model:
 
 ```rust,no_run
-use lingxi_llm_client::interactions::{InteractionInput, InteractionRequest, InteractionResult};
+use lingxi_llm_client::providers::google::interactions::{InteractionInput, InteractionRequest, InteractionResult};
 use serde_json::json;
 
 fn continue_with_result(prior: &InteractionResult, call_id: &str) -> InteractionRequest {

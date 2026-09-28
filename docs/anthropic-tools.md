@@ -5,13 +5,12 @@
 Anthropic Messages 支持 regex 和 BM25 两种托管工具目录搜索。将搜索方式设为 `ChatRequest.hosted_tools` 的 `AnthropicToolSearch`，再对需要按需发现的函数工具设置 `ToolSpec.defer_loading: true`：
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, HostedTool, ToolSpec,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
+use lingxi_llm_client::protocol::{ToolSpec};
 # let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model":"claude-opus-5-5","messages":[]})).unwrap();
-request.hosted_tools.push(HostedTool::AnthropicToolSearch(
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
     AnthropicToolSearchConfig { strategy: AnthropicToolSearchStrategy::Bm25 },
-));
+).into());
 request.tools.push(ToolSpec {
     tool_type: None,
     extra: serde_json::Value::Null,
@@ -20,7 +19,7 @@ request.tools.push(ToolSpec {
     input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
     strict: false,
     defer_loading: true,
-    allowed_callers: vec![],
+    native_options: Vec::new(),
 });
 ```
 

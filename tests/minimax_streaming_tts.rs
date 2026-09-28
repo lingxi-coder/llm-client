@@ -8,7 +8,8 @@ use futures::{
 };
 use lingxi_llm_client::{
     files::provider_file_endpoint_fingerprint,
-    minimax_streaming_tts::{
+    protocol::{ProviderId, Secret},
+    providers::minimax::streaming_tts::{
         MiniMaxStreamingTtsAudioFormat, MiniMaxStreamingTtsConfig, MiniMaxStreamingTtsEmotion,
         MiniMaxStreamingTtsError, MiniMaxStreamingTtsEvent, MiniMaxStreamingTtsLimits,
         MiniMaxStreamingTtsModel, MiniMaxStreamingTtsRequest, MiniMaxStreamingTtsService,
@@ -17,12 +18,11 @@ use lingxi_llm_client::{
         MiniMaxStreamingTtsVoiceSetting, MINIMAX_STREAMING_TTS_CHINA_ENDPOINT,
         MINIMAX_STREAMING_TTS_INTERNATIONAL_ENDPOINT,
     },
-    minimax_tts::MiniMaxTtsRegion,
-    minimax_voices::{
+    providers::minimax::tts::MiniMaxTtsRegion,
+    providers::minimax::voices::{
         MiniMaxVoiceKind, MiniMaxVoiceLanguageBoost, MiniMaxVoiceRef, MiniMaxVoicesRegion,
         MiniMaxVoicesScope,
     },
-    protocol::{ProviderId, Secret},
     realtime::{
         RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError, RealtimeFrame,
         RealtimeSink, RealtimeTransport,
@@ -633,7 +633,7 @@ fn complete_task_start_schema_is_typed_and_preserved_on_the_wire() {
         request.audio_setting.channel = 2;
         request.language_boost = Some(MiniMaxVoiceLanguageBoost::Chinese);
         request.pronunciation_dict = Some(
-            lingxi_llm_client::minimax_tts::MiniMaxTtsPronunciationDict {
+            lingxi_llm_client::providers::minimax::tts::MiniMaxTtsPronunciationDict {
                 tone: vec!["word/(wo3)(rd1)".into()],
             },
         );

@@ -9,7 +9,7 @@
 # ) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
     protocol::Secret,
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeCategoryCreateRequest, QwenKnowledgeCategoryListRequest,
         QwenKnowledgeRegion, QwenKnowledgeScope, QwenKnowledgeService,
     },
@@ -21,14 +21,18 @@ let scope = QwenKnowledgeScope::new(
     QwenKnowledgeRegion::Beijing,
     "llm-workspace-1",
 )?;
-let service = QwenKnowledgeService::new(http, Secret::new(api_key), scope)?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let service = QwenKnowledgeService::new(http, scope)?;
 
 let page = service
-    .list_categories(&QwenKnowledgeCategoryListRequest::new())
+    .list_categories(&QwenKnowledgeCategoryListRequest::new(), &request_options)
     .await?;
 if let Some(next_token) = page.next_token.clone() {
     let next_page = QwenKnowledgeCategoryListRequest::new().with_next_token(next_token);
-    let _next = service.list_categories(&next_page).await?;
+    let _next = service.list_categories(&next_page, &request_options).await?;
 }
 
 let parent = service.scope().category_ref("cate-parent-1")?;
@@ -38,10 +42,11 @@ let created = service
         &QwenKnowledgeCategoryCreateRequest::new("Product guides")
             .with_parent_category(parent)
             .with_connector_ref(connector),
+        &request_options,
     )
     .await?;
 // Deletion is irreversible; files in this category become uncategorized.
-let _deleted = service.delete_category(&created.reference).await?;
+let _deleted = service.delete_category(&created.reference, &request_options).await?;
 # Ok(())
 # }
 ```

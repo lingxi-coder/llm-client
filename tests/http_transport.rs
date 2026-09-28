@@ -524,12 +524,12 @@ fn completion() -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "test-model".into(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hello".into(),

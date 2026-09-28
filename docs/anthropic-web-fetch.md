@@ -1,18 +1,19 @@
 # Anthropic Messages Web Fetch
 
-`HostedTool::AnthropicWebFetch` 在第一方 Anthropic Messages 或明确标识的 Foundry Messages profile 上声明由提供方执行的抓取工具。Foundry 必须在对应 `ModelProfile` 行提供 hosting 和底层 Claude `model_id`；请求仍使用部署名。客户端不会自行下载 URL、生成宿主工具调用或自动重试结果不确定的执行；返回的原生块应保留用于续接。
+`AnthropicHostedTool::WebFetch` 在第一方 Anthropic Messages 或明确标识的 Foundry Messages profile 上声明由提供方执行的抓取工具。Foundry 必须在对应 `ModelProfile` 行提供 hosting 和底层 Claude `model_id`；请求仍使用部署名。客户端不会自行下载 URL、生成宿主工具调用或自动重试结果不确定的执行；返回的原生块应保留用于续接。
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicWebFetchConfig, AnthropicWebFetchVersion, ChatRequest, HostedTool};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicWebFetchConfig, AnthropicWebFetchVersion};
+use lingxi_llm_client::protocol::{ChatRequest, };
 # fn configure(request: &mut ChatRequest) {
-request.hosted_tools.push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(AnthropicWebFetchConfig {
     version: AnthropicWebFetchVersion::V20260318,
     max_uses: Some(3),
     allowed_domains: vec!["example.com".into()],
     citations: Some(true),
     max_content_tokens: Some(4096),
     ..Default::default()
-}));
+}).into());
 # }
 ```
 
@@ -36,7 +37,7 @@ request.hosted_tools.push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig 
 URL 来源策略保留省略时的默认值及显式空 `Only` / `Except` 列表：
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicFetchToolReference, AnthropicFetchToolResultsSources, AnthropicFetchUrlSources, AnthropicFetchUserInputSources};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicFetchToolReference, AnthropicFetchToolResultsSources, AnthropicFetchUrlSources, AnthropicFetchUserInputSources};
 let sources = AnthropicFetchUrlSources {
     user_input: Some(AnthropicFetchUserInputSources::All),
     client_tool_results: Some(AnthropicFetchToolResultsSources::Only {

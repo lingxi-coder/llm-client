@@ -9,15 +9,11 @@ Sources: Alibaba's [Qwen LiveTranslate model guide](https://help.aliyun.com/en/m
 `QwenLiveTranslateRoute::new` takes a region and one workspace ID and constructs the regional WebSocket endpoint. Connections use the documented `model` query parameter and `Authorization: Bearer …` handshake header. `QwenLiveTranslateScope` binds the profile, account, region, workspace, and endpoint fingerprint. The API key is passed per connection as `Secret<String>` and is not stored in the scope.
 
 ```rust,no_run
+use lingxi_llm_client::providers::qwen::live_translate::{Qwen35LiveTranslateConfig, QwenLiveTranslateConfig, QwenLiveTranslateRegion, QwenLiveTranslateRoute, QwenLiveTranslateScope, QwenLiveTranslateSession};
 use std::sync::Arc;
 use lingxi_llm_client::{
     protocol::Secret,
-    realtime::{
-        Qwen35LiveTranslateConfig, QwenLiveTranslateConfig,
-        QwenLiveTranslateRegion, QwenLiveTranslateRoute,
-        QwenLiveTranslateScope, QwenLiveTranslateSession,
-        RealtimeDriver, RealtimeError, RealtimeLimits, RealtimeTransport,
-    },
+    realtime::{RealtimeDriver, RealtimeError, RealtimeLimits, RealtimeTransport},
 };
 
 async fn connect_live_translate(

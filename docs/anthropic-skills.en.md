@@ -12,10 +12,12 @@ Each service and custom Skill reference is bound to an `AnthropicSkillScope`. A 
 
 ```rust,no_run
 use lingxi_llm_client::{
-    anthropic_skills::{AnthropicSkillFile, AnthropicSkillsService},
-    protocol::{
-        AnthropicCodeExecutionConfig, AnthropicSkillScope, ChatRequest, HostedTool, Secret,
+    providers::anthropic::{
+        skills::{AnthropicSkillFile, AnthropicSkillsService},
+        types::{AnthropicCodeExecutionConfig, AnthropicSkillScope},
+        native::AnthropicHostedTool,
     },
+    protocol::{ChatRequest, Secret},
     Transport,
 };
 
@@ -30,7 +32,11 @@ let scope = AnthropicSkillScope::new(
     "account-workspace-a",
 )?
 .with_workspace_id("wrkspc_01Example")?;
-let service = AnthropicSkillsService::new(http, credential, scope)?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(credential),
+    ..Default::default()
+};
+let service = AnthropicSkillsService::new(http, scope)?;
 let skill = service
     .create(
         vec![AnthropicSkillFile::from_bytes(
@@ -38,17 +44,18 @@ let skill = service
             b"---\nname: review\ndescription: Review documents.\n---\nUse the review checklist.".to_vec(),
         )],
         Some("Review documents"),
+        &request_options,
     )
     .await?;
 let messages_ref = skill
     .messages_reference()
     .ok_or("this Skill source cannot be attached to Messages")?;
-request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
+request.hosted_tools.push(AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig {
         skills: vec![messages_ref],
         ..Default::default()
     },
-));
+).into());
 # Ok(())
 # }
 ```
@@ -71,12 +78,12 @@ A single-Workspace credential can omit both Workspace values and bind through th
 
 Anthropic documents custom Skills upload through the Skills API on Microsoft Foundry when the deployment is **Hosted on Anthropic**. The service builds its routes from the Foundry resource base, so `/v1/skills` becomes `https://{resource}.services.ai.azure.com/anthropic/v1/skills`. Foundry scope is resource/account scoped and does not capture a chat deployment or model. It never sends `anthropic-workspace-id`.
 
-Construct the service with the Foundry `ProviderProfile`, an explicit `FoundryHosting::Anthropic`, a stable non-secret `account_scope`, the profile's authenticator, and its credential:
+Construct the service with the Foundry `ProviderProfile`, an explicit `FoundryHosting::Anthropic`, a stable non-secret `account_scope`, the profile's authenticator. Supply its credential through `RequestOptions` for every operation:
 
 ```rust,no_run
 use lingxi_llm_client::{
-    anthropic_skills::AnthropicSkillsService,
-    protocol::{FoundryHosting, ProviderProfile, Secret},
+    providers::anthropic::skills::AnthropicSkillsService,
+    protocol::{FoundryHosting, ProviderProfile},
     Authenticator, Transport,
 };
 
@@ -84,7 +91,6 @@ use lingxi_llm_client::{
 #     http: &'a dyn Transport,
 #     profile: &'a ProviderProfile,
 #     auth: &'a dyn Authenticator,
-#     credential: Secret<String>,
 # ) -> Result<AnthropicSkillsService<'a>, Box<dyn std::error::Error>> {
 let service = AnthropicSkillsService::new_foundry(
     http,
@@ -92,7 +98,6 @@ let service = AnthropicSkillsService::new_foundry(
     "foundry-resource-account-a",
     FoundryHosting::Anthropic,
     auth,
-    credential,
 )?;
 # Ok(service)
 # }

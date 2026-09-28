@@ -23,9 +23,7 @@ request.messages[0].content.push(ContentBlock::Audio {
 使用 `OpenRouterChatAudioOutput` 将文档规定的单次请求配置写入 `ChatRequest.metadata`；该 helper 会保留对象中的其他 metadata。所选模型必须在 `output_modalities` 中声明 `audio`，并且调用时必须使用 `.chat().stream(...)`。
 
 ```rust,ignore
-use lingxi_llm_client::protocol::message::{
-    OpenRouterChatAudioFormat, OpenRouterChatAudioOutput,
-};
+use lingxi_llm_client::protocol::{OpenRouterChatAudioFormat, OpenRouterChatAudioOutput};
 use lingxi_llm_client::protocol::{ProtocolFamily, StreamEvent};
 
 OpenRouterChatAudioOutput::new("alloy", OpenRouterChatAudioFormat::Mp3)

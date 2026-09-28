@@ -10,7 +10,7 @@ https://generativelanguage.googleapis.com/v1beta/cachedContents
 
 ```rust,no_run
 use lingxi_llm_client::{
-    gemini_context_cache::{
+    providers::google::context_cache::{
         GeminiContextCacheCreateRequest, GeminiContextCacheExpiration,
         GeminiContextCacheScope, GeminiContextCacheService,
     },

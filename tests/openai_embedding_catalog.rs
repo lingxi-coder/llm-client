@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    embeddings::{EmbeddingError, OpenAiEmbeddingModelPage},
+    embeddings::EmbeddingError,
     presets,
     protocol::{LlmError, ProviderProfile, Region, Secret, ServiceSetting},
+    providers::openai::embeddings::OpenAiEmbeddingModelPage,
     HttpRequest, LlmClient, LlmClientBuilder, RequestOptions, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
@@ -81,8 +82,10 @@ async fn openai_model_directory_filters_documented_ids_and_keeps_all_native_rows
     let (client, mock) = client(openai_profile(), 200, body);
 
     let page: OpenAiEmbeddingModelPage = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .embeddings()
-        .list_openai_models("openai", &options())
+        .list_models(&options())
         .await
         .unwrap();
 
@@ -116,8 +119,10 @@ async fn openai_catalog_requires_first_party_routes_before_transport() {
 
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .embeddings()
-            .list_openai_models("openai", &options())
+            .list_models(&options())
             .await,
         Err(EmbeddingError::Llm(LlmError::UnsupportedCapability { .. }))
     ));
@@ -134,8 +139,10 @@ async fn openai_catalog_rejects_duplicate_model_ids() {
 
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .embeddings()
-            .list_openai_models("openai", &options())
+            .list_models(&options())
             .await,
         Err(EmbeddingError::InvalidResponse(_))
     ));
@@ -149,8 +156,10 @@ async fn openai_catalog_rejects_disabled_and_wrong_region_before_transport() {
     let (disabled_client, disabled_mock) = client(disabled_profile, 200, json!({}));
     assert!(matches!(
         disabled_client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .embeddings()
-            .list_openai_models("openai", &options())
+            .list_models(&options())
             .await,
         Err(EmbeddingError::Llm(LlmError::UnsupportedCapability { .. }))
     ));
@@ -160,11 +169,8 @@ async fn openai_catalog_rejects_disabled_and_wrong_region_before_transport() {
     wrong_region_profile.regions = vec![Region::ChinaMainland];
     let (wrong_region_client, wrong_region_mock) = client(wrong_region_profile, 200, json!({}));
     assert!(matches!(
-        wrong_region_client
-            .embeddings()
-            .list_openai_models("openai", &options())
-            .await,
-        Err(EmbeddingError::Llm(LlmError::InvalidRequest { .. }))
+        wrong_region_client.provider::<lingxi_llm_client::providers::OpenAiClient>("openai"),
+        Err(lingxi_llm_client::providers::ProviderBindingError::UnavailableRegion { .. })
     ));
     assert!(wrong_region_mock.requests.lock().unwrap().is_empty());
 }
@@ -175,8 +181,10 @@ async fn openai_catalog_requires_credentials_before_transport() {
 
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .embeddings()
-            .list_openai_models("openai", &RequestOptions::default())
+            .list_models(&RequestOptions::default())
             .await,
         Err(EmbeddingError::Llm(LlmError::Authentication { .. }))
     ));

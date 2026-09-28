@@ -35,12 +35,12 @@ fn request() -> ChatRequest {
         output_format: Default::default(),
         controls: Default::default(),
         model: "GPT Audio".into(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "Transcribe this clip".into(),

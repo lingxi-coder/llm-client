@@ -2,13 +2,13 @@
 
 [中文](glm-batch.md)
 
-`LlmClient::glm_batch()` exposes a bounded lifecycle for Zhipu GLM's native Batch API: upload JSONL input, submit a 24-hour job, read state once, list one page of jobs, request cancellation, and stream successful or error result files. The only input endpoint exposed here is `/v4/chat/completions`, shown in Zhipu's official Java SDK Batch example. Each JSONL row uses `custom_id`, `method`, `url`, and `body`; the official example uses the `24h` completion window. See the [official Zhipu SDK Batch example](https://github.com/MetaGLM/zhipuai-sdk-java-v4#batch-processing), [Zhipu API introduction](https://docs.bigmodel.cn/cn/api/introduction), [List Batch Tasks API](https://docs.bigmodel.cn/api-reference/%E6%89%B9%E5%A4%84%E7%90%86-api/%E5%88%97%E5%87%BA%E6%89%B9%E5%A4%84%E7%90%86%E4%BB%BB%E5%8A%A1), and [official OpenAPI specification](https://docs.bigmodel.cn/openapi/openapi.json).
+`client.provider::<ZhipuClient>(profile)?.batch(scope)` exposes a bounded lifecycle for Zhipu GLM's native Batch API: upload JSONL input, submit a 24-hour job, read state once, list one page of jobs, request cancellation, and stream successful or error result files. The only input endpoint exposed here is `/v4/chat/completions`, shown in Zhipu's official Java SDK Batch example. Each JSONL row uses `custom_id`, `method`, `url`, and `body`; the official example uses the `24h` completion window. See the [official Zhipu SDK Batch example](https://github.com/MetaGLM/zhipuai-sdk-java-v4#batch-processing), [Zhipu API introduction](https://docs.bigmodel.cn/cn/api/introduction), [List Batch Tasks API](https://docs.bigmodel.cn/api-reference/%E6%89%B9%E5%A4%84%E7%90%86-api/%E5%88%97%E5%87%BA%E6%89%B9%E5%A4%84%E7%90%86%E4%BB%BB%E5%8A%A1), and [official OpenAPI specification](https://docs.bigmodel.cn/openapi/openapi.json).
 
 The service is pinned to the mainland BigModel root, `https://open.bigmodel.cn/api/paas/v4`. `GlmBatchRegion::International` is rejected when constructing a scope: the current [official Z.AI documentation index](https://docs.z.ai/llms.txt) does not publish a Batch lifecycle, so this module does not reuse mainland routing or credentials for the international service. The Zhipu SDK documents the API family and a Batch example; this module does not claim the international Z.AI host is a verified Batch endpoint.
 
 ```rust,no_run
 use lingxi_llm_client::{
-    glm_batch::{
+    providers::zhipu::batch::{
         GlmBatchChatRequest, GlmBatchInput, GlmBatchLine, GlmBatchMessage,
         GlmBatchMetadata, GlmBatchRegion, GlmBatchScope,
     },
@@ -26,7 +26,12 @@ async fn submit_glm_batch(
         "zhipu-account-42",
         GlmBatchRegion::ChinaMainland,
     )?;
-    let service = client.glm_batch(Secret::new(api_key), scope)?;
+    let provider = client.provider::<lingxi_llm_client::providers::zhipu::ZhipuClient>(scope.profile_name())?;
+    let request_options = lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new(api_key)),
+        ..Default::default()
+    };
+    let service = provider.batch(scope)?;
     let body = GlmBatchChatRequest::new(
         "glm-5.3",
         vec![GlmBatchMessage {
@@ -35,9 +40,9 @@ async fn submit_glm_batch(
         }],
     )?;
     let input = GlmBatchInput::new(vec![GlmBatchLine::new("record-1", body)?])?;
-    let input_file = service.upload_input(&input).await?;
+    let input_file = service.upload_input(&input, &request_options).await?;
     let job = service
-        .submit(&input_file, &GlmBatchMetadata::default())
+        .submit(&input_file, &GlmBatchMetadata::default(), &request_options)
         .await?;
     Ok(job.reference.batch_id().to_owned())
 }

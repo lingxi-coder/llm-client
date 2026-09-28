@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use lingxi_llm_client::{background::*, protocol::*, *};
+use lingxi_llm_client::{protocol::*, providers::openai::background::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -74,20 +74,26 @@ async fn submit_poll_complete_and_cancel_use_separate_routes() {
         Ok((200, result("cancelled"))),
     ]);
     let initial = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
-        .submit("openai", &request(), &options("account-a"))
+        .submit(&request(), &options("account-a"))
         .await
         .unwrap();
     assert_eq!(initial.status, BackgroundStatus::Queued);
     assert!(initial.response.is_none());
     let reference = initial.reference;
     let pending = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
         .get(&reference, &options("account-a"))
         .await
         .unwrap();
     assert!(!pending.status.is_terminal());
     let completed = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
         .get(&reference, &options("account-a"))
         .await
@@ -97,6 +103,8 @@ async fn submit_poll_complete_and_cancel_use_separate_routes() {
     assert_eq!(response.message.content.len(), 1);
     assert_eq!(response.continuation.unwrap().account_scope, "account-a");
     let cancelled = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
         .cancel(&reference, &options("account-a"))
         .await
@@ -132,11 +140,15 @@ async fn submit_poll_complete_and_cancel_use_separate_routes() {
 async fn scope_and_endpoint_are_checked_before_network() {
     let (client, mock) = setup(vec![Ok((200, result("queued")))]);
     let job = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
-        .submit("openai", &request(), &options("account-a"))
+        .submit(&request(), &options("account-a"))
         .await
         .unwrap();
     let error = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
         .get(&job.reference, &options("account-b"))
         .await
@@ -148,6 +160,8 @@ async fn scope_and_endpoint_are_checked_before_network() {
     let mut wrong = job.reference;
     wrong.endpoint_fingerprint = "other".into();
     let error = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
         .cancel(&wrong, &options("account-a"))
         .await
@@ -174,8 +188,10 @@ async fn continuation_scope_is_checked_before_submission() {
     });
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
-            .submit("openai", &req, &options("account-a"))
+            .submit(&req, &options("account-a"))
             .await,
         Err(BackgroundError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -190,8 +206,10 @@ async fn unknown_submit_and_cancel_outcomes_are_not_retried() {
     let (client, mock) = setup(vec![Err(transport_error())]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
-            .submit("openai", &request(), &options("account-a"))
+            .submit(&request(), &options("account-a"))
             .await,
         Err(BackgroundError::SubmitOutcomeUnknown { .. })
     ));
@@ -199,12 +217,16 @@ async fn unknown_submit_and_cancel_outcomes_are_not_retried() {
 
     let (client, mock) = setup(vec![Ok((200, result("queued"))), Err(transport_error())]);
     let job = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
-        .submit("openai", &request(), &options("account-a"))
+        .submit(&request(), &options("account-a"))
         .await
         .unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
             .cancel(&job.reference, &options("account-a"))
             .await,
@@ -218,8 +240,10 @@ async fn terminal_failure_is_preserved_without_decoding_as_success() {
     let body = json!({"id":"resp_1","status":"failed","error":{"message":"failed"}});
     let (client, _) = setup(vec![Ok((200, body.clone()))]);
     let job = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
-        .submit("openai", &request(), &options("account-a"))
+        .submit(&request(), &options("account-a"))
         .await
         .unwrap();
     assert_eq!(job.status, BackgroundStatus::Failed);
@@ -253,8 +277,10 @@ async fn deletion_is_scoped_and_requires_a_matching_receipt() {
         )),
     ]);
     let reference = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
-        .submit("openai", &request(), &options("account-a"))
+        .submit(&request(), &options("account-a"))
         .await
         .unwrap()
         .reference;
@@ -268,6 +294,8 @@ async fn deletion_is_scoped_and_requires_a_matching_receipt() {
             _ => wrong.model.clear(),
         }
         assert!(client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
             .delete(&wrong, &options("account-a"))
             .await
@@ -275,6 +303,8 @@ async fn deletion_is_scoped_and_requires_a_matching_receipt() {
         assert_eq!(mock.requests.lock().unwrap().len(), 1);
     }
     let receipt = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
         .delete(&reference, &options("account-a"))
         .await
@@ -315,12 +345,16 @@ async fn uncertain_deletions_preserve_reference_and_never_retry() {
     for failure in failures {
         let (client, mock) = setup(vec![Ok((200, result("completed"))), failure]);
         let reference = client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
-            .submit("openai", &request(), &options("account-a"))
+            .submit(&request(), &options("account-a"))
             .await
             .unwrap()
             .reference;
         match client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
             .delete(&reference, &options("account-a"))
             .await
@@ -342,13 +376,17 @@ async fn deletion_provider_rejection_is_not_a_success_receipt() {
         Ok((404, json!({"error":"not found"}))),
     ]);
     let reference = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .background()
-        .submit("openai", &request(), &options("account-a"))
+        .submit(&request(), &options("account-a"))
         .await
         .unwrap()
         .reference;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .background()
             .delete(&reference, &options("account-a"))
             .await,

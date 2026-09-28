@@ -1,17 +1,15 @@
 # Anthropic Browser / Computer client toolsets
 
-Declare stable `browser_toolset_20260801` / `computer_toolset_20260801` through `ChatRequest.anthropic_client_toolsets`. The host owns permission checks, execution and results. These declarations are separate from `hosted_tools`; this library does not open browsers or control a desktop.
+Declare stable `browser_toolset_20260801` / `computer_toolset_20260801` through `ChatRequest::set_anthropic_client_toolsets()`. The host owns permission checks, execution and results. These declarations are separate from `hosted_tools`; this library does not open browsers or control a desktop.
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicBrowserMember, AnthropicBrowserToolsetConfig, AnthropicClientToolConfig,
-    AnthropicClientToolset, ChatRequest,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicBrowserMember, AnthropicBrowserToolsetConfig, AnthropicClientToolConfig, AnthropicClientToolset};
+use lingxi_llm_client::protocol::{ChatRequest};
 # fn configure(request: &mut ChatRequest) {
 let mut browser = AnthropicBrowserToolsetConfig::default();
 browser.configs.insert(AnthropicBrowserMember::JavascriptExec,
     AnthropicClientToolConfig { enabled: Some(true), defer_loading: None });
-request.anthropic_client_toolsets.push(AnthropicClientToolset::Browser(browser));
+request.set_anthropic_client_toolsets(vec![AnthropicClientToolset::Browser(browser)]);
 # }
 ```
 

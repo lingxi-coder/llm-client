@@ -3,10 +3,10 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     files::provider_file_endpoint_fingerprint,
-    gemini_file_search::{
+    protocol::*,
+    providers::google::file_search::{
         GeminiFileSearchDocumentRef, GeminiFileSearchError, GeminiFileSearchStoreRef,
     },
-    protocol::*,
     transport::{HttpRequest, StreamResponse, Transport},
     *,
 };
@@ -80,7 +80,10 @@ fn store_ref() -> GeminiFileSearchStoreRef {
 #[tokio::test]
 async fn deletes_enforce_account_scope_and_follow_google_force_semantics() {
     let (client, mock) = setup();
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let store = store_ref();
     let document = GeminiFileSearchDocumentRef {
         store: store.clone(),

@@ -35,8 +35,9 @@ let web = HostedTool::WebSearch(WebSearchConfig {
 `RemoteMcpConfig` contains only non-secret server settings. OAuth tokens are injected for the current request through `RequestOptions.mcp_authorizations`, keyed by `server_label`; they do not enter serializable `ChatRequest` values or history. The caller must provide a fresh authorization token for every Responses creation request, including a request that continues after an approval decision. The client does not connect to the MCP server or execute MCP tools on the host.
 
 ```rust,no_run
+use lingxi_llm_client::providers::openai::types::{McpApprovalPolicy, RemoteMcpConfig};
 use lingxi_llm_client::{
-    protocol::{HostedTool, McpApprovalPolicy, RemoteMcpConfig, Secret},
+    protocol::{HostedTool, Secret},
     RequestOptions,
 };
 use std::collections::BTreeMap;
@@ -46,7 +47,7 @@ let remote = RemoteMcpConfig::new("docs", "https://mcp.example.test/mcp")?
     .with_description("Read-only documentation")
     .with_allowed_tools(["search", "fetch"])?
     .with_require_approval(McpApprovalPolicy::Always);
-let hosted_tool = HostedTool::RemoteMcp(remote);
+let hosted_tool: lingxi_llm_client::protocol::HostedTool = lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(remote).into();
 
 let mut options = RequestOptions::default();
 options.mcp_authorizations = BTreeMap::from([(

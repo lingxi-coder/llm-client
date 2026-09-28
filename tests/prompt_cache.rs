@@ -1,3 +1,4 @@
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{protocol::*, *};
 use serde_json::{json, Value};
 fn req() -> ChatRequest {
@@ -34,11 +35,12 @@ fn first_party_profile(extra: Value) -> ProviderProfile {
 }
 
 fn anthropic_mcp(ttl: AnthropicMcpCacheTtl) -> HostedTool {
-    HostedTool::AnthropicMcp(
+    lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
         AnthropicMcpConfig::new("server", "https://mcp.example.test/sse")
             .unwrap()
             .with_cache_control(AnthropicMcpCacheControl { ttl: Some(ttl) }),
     )
+    .into()
 }
 #[test]
 fn tool_system_message_breakpoints_and_automatic_cache_encode_without_losing_content() {

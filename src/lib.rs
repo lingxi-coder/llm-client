@@ -26,10 +26,7 @@ pub mod image_generation {}
 pub mod web_search {}
 
 pub mod account;
-pub mod anthropic_batch;
-pub mod anthropic_skills;
 pub mod auth;
-pub mod batches;
 pub mod client;
 pub mod codecs;
 pub mod configuration;
@@ -37,75 +34,35 @@ pub mod directory;
 pub mod exact_json;
 pub mod files;
 pub mod framing;
-pub mod gemini_batch;
-pub mod gemini_context_cache;
-pub mod gemini_file_search;
-pub mod gemini_speech;
-pub mod glm_async;
-pub mod glm_audio;
-pub mod glm_batch;
-pub mod glm_cloud_audio;
-pub mod glm_knowledge;
+pub mod hosting;
 pub mod images;
-pub mod interactions;
-pub mod kimi_batch;
-pub mod minimax_async_tts;
-pub mod minimax_audio;
-pub mod minimax_bidi_tts;
-pub mod minimax_streaming_tts;
-pub mod minimax_tts;
-pub mod minimax_voices;
-pub mod openai_containers;
-pub mod openrouter_audio;
-pub mod openrouter_batch;
-pub mod openrouter_rerank;
 pub mod presets;
 pub mod protocol;
-pub mod qwen_asr;
-pub mod qwen_asr_realtime;
-pub mod qwen_audio_generation;
-pub mod qwen_batch;
-pub mod qwen_knowledge;
-pub mod qwen_rerank;
-pub mod qwen_tts;
-pub mod qwen_tts_realtime;
+pub mod providers;
 pub mod realtime;
-pub mod retrieval;
 mod runtime;
 pub mod token_count;
 pub mod transport;
-pub mod vertex_speech;
 pub mod websocket;
 mod wire_options;
-pub mod xai_audio;
-pub mod xai_batch;
-pub mod xai_collections;
-pub mod xai_streaming_tts;
-pub mod xai_stt;
 
+pub use account::AccountRpc;
 pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator};
-pub use client::account::{
-    AccountRpc, CodexAccountSource, CopilotAccountSource, KimiCodeAccountSource,
-};
 pub use client::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 pub use client::{
     AccountBalance, AccountCostBucket, AccountCostUsage, AccountExecutionOptions, AccountFailure,
     AccountFetchContext, AccountIdentity, AccountMetric, AccountQuery, AccountQuotaWindow,
     AccountReport, AccountScope, AccountScopeKind, AccountSelector, AccountSnapshot,
     AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
-    AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, ChatService,
-    ClientConfigManager, ClientSnapshot, CollectedResponse, FrozenPricing, LlmClient,
-    LlmClientBuilder, LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission,
-    ModelStream, OpenRouterResponseCache, PreparedCall, ProviderStoreError, ProviderSyncOperation,
-    ProviderSyncResult, ReceivedCall, RequestDraft, RequestOptions, ResolveError, ResponsesSession,
-    RoutingCatalog, StreamBatch, StructuredStreamError, StructuredStreamResult, SubscriptionStatus,
-    MAX_ATTACHMENT_BYTES,
+    AccountUsageSource, AttachmentResolver, BuildError, ChatService, ClientConfigManager,
+    ClientSnapshot, CollectedResponse, FrozenPricing, LlmClient, LlmClientBuilder,
+    LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream,
+    PreparedCall, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, ReceivedCall,
+    RequestDraft, RequestOptions, ResolveError, ResponsesSession, RoutingCatalog, StreamBatch,
+    StructuredStreamError, StructuredStreamResult, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;
-pub use codecs::hosted::{
-    AzureOpenAiCodec, BedrockClaudeCodec, FoundryClaudeCodec, VertexClaudeCodec, VertexGeminiCodec,
-};
 pub use codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 pub use codecs::{
     CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode, StreamDecoder,
@@ -123,6 +80,9 @@ pub use files::{
     MAX_PROVIDER_FILE_DOWNLOAD_BYTES,
 };
 pub use framing::sse::SseFrameSplitter;
+pub use hosting::{
+    AzureOpenAiCodec, BedrockClaudeCodec, FoundryClaudeCodec, VertexClaudeCodec, VertexGeminiCodec,
+};
 pub use images::{ImageAdapter, ImageAuthenticator, ImageDispatch, ImageError, ImageService};
 pub use presets::{
     builtin as builtin_providers, builtin_catalog, merge as merge_providers, PresetError,
@@ -132,7 +92,4 @@ pub use transport::{
     StreamResponse, SystemClock, Transport,
 };
 
-pub mod audio;
-pub mod background;
-pub mod deferred;
 pub mod embeddings;

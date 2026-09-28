@@ -1,12 +1,11 @@
 # Anthropic Messages MCP Connector
 
-HostedTool::AnthropicMcp configures one remote MCP server and its matching Anthropic mcp_toolset. The first-party Messages API sends the mcp-client-2026-09-15 beta and supports the newer list-pinning and inline-toolset controls below. Both Microsoft Foundry hosting options, Azure and Anthropic, use the mcp-client-2025-11-20 beta for the base connector. Foundry MCP does not require a Foundry model identity or model allowlist.
+AnthropicHostedTool::Mcp configures one remote MCP server and its matching Anthropic mcp_toolset. The first-party Messages API sends the mcp-client-2026-09-15 beta and supports the newer list-pinning and inline-toolset controls below. Both Microsoft Foundry hosting options, Azure and Anthropic, use the mcp-client-2025-11-20 beta for the base connector. Foundry MCP does not require a Foundry model identity or model allowlist.
 
 ```rust
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig, AnthropicMcpToolConfig};
 use lingxi_llm_client::{
-    protocol::{
-        AnthropicMcpConfig, AnthropicMcpToolConfig, ChatRequest, HostedTool, Secret,
-    },
+    protocol::{ChatRequest, Secret},
     RequestOptions,
 };
 
@@ -20,7 +19,7 @@ let connector = AnthropicMcpConfig::new(
     defer_loading: Some(false),
 });
 
-request.hosted_tools.push(HostedTool::AnthropicMcp(connector));
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(connector).into());
 
 let mut options = RequestOptions::default();
 options.mcp_authorizations.insert(
@@ -38,7 +37,7 @@ Use `default_config` for defaults and `with_tool_config` for per-tool `enabled` 
 The mcp-client-2026-09-15 beta adds pinned tool lists and inline operations for the first-party Messages connector. Use with_tools there to send the list returned in an mcp_tool_listing block. The current public Foundry documentation establishes only the mcp-client-2025-11-20 base connector, not availability of those newer beta operations. This client therefore rejects pinned lists, replayed mcp_tool_listing blocks, and inline MCP additions on Foundry.
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicMcpConfig, AnthropicMcpTool};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig, AnthropicMcpTool};
 use serde_json::json;
 
 # fn pinned() -> Result<AnthropicMcpConfig, Box<dyn std::error::Error>> {

@@ -4,4 +4,5 @@
 //! but remain separate wires with separate encoders, decoders, and streams.
 
 pub mod chat;
+pub(crate) mod embeddings;
 pub mod responses;

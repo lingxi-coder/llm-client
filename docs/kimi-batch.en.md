@@ -6,7 +6,7 @@ Upload the input JSONL file through the Kimi Files API with `purpose="batch"` be
 
 ```rust,no_run
 use lingxi_llm_client::{
-    kimi_batch::{
+    providers::kimi::batch::{
         KimiBatchInputFileRef, KimiBatchListOptions, KimiBatchModel, KimiBatchScope,
         KimiBatchService, KimiBatchSubmitOptions,
     },
@@ -21,7 +21,11 @@ let scope = KimiBatchScope::new(
     "account-123",
     "https://api.moonshot.ai/v1",
 )?;
-let service = KimiBatchService::new(&http, Secret::new(api_key), scope.clone())?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let service = KimiBatchService::new(&http, scope.clone())?;
 let input = KimiBatchInputFileRef::new(
     scope,
     KimiBatchModel::KimiK2_6,
@@ -29,12 +33,12 @@ let input = KimiBatchInputFileRef::new(
 )?;
 
 let submitted = service
-    .submit(&input, KimiBatchSubmitOptions::default())
+    .submit(&input, KimiBatchSubmitOptions::default(), &request_options)
     .await?;
-let _page = service.list(&KimiBatchListOptions::new().limit(10)).await?;
-let latest = service.get(&submitted.reference).await?;
+let _page = service.list(&KimiBatchListOptions::new().limit(10), &request_options).await?;
+let latest = service.get(&submitted.reference, &request_options).await?;
 if let Some(output) = latest.output_ref() {
-    let mut chunks = service.stream_result(&output).await?;
+    let mut chunks = service.stream_result(&output, &request_options).await?;
     use futures::StreamExt;
     while let Some(chunk) = chunks.next().await {
         // Consume or persist each raw JSONL byte chunk as it arrives.

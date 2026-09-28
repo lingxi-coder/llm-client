@@ -20,8 +20,8 @@ ASR 使用 `glm-asr-2512`，以 multipart/form-data 发送 `file`、`model` 和 
 ```rust,ignore
 use bytes::Bytes;
 use lingxi_llm_client::{
-    audio::AudioInput,
-    glm_cloud_audio::{
+    providers::openai::audio::AudioInput,
+    providers::zhipu::cloud_audio::{
         GlmCloudAudioRegion, GlmCloudAudioScope, GlmCloudAudioService,
         GlmCloudTranscriptionOutput, GlmCloudTranscriptionRequest,
     },
@@ -58,7 +58,7 @@ if let GlmCloudTranscriptionOutput::Complete(transcript) =
 
 ```rust,ignore
 use futures::StreamExt;
-use lingxi_llm_client::glm_cloud_audio::GlmCloudSpeechRequest;
+use lingxi_llm_client::providers::zhipu::cloud_audio::GlmCloudSpeechRequest;
 
 let mut request = GlmCloudSpeechRequest::new("你好，欢迎使用语音合成。", "base64");
 request.voice = Some("tongtong".into());

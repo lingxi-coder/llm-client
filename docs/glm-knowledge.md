@@ -2,7 +2,9 @@
 
 [English](glm-knowledge.en.md)
 
-`client.glm_knowledge()` 提供智谱个人知识库的原生 API，与 `client.retrieval()` 的 OpenAI Vector Stores 路由分开。当前支持知识库分页列表、创建、详情、部分更新和删除；文档分页列表、URL 导入、流式 multipart 文件上传和知识库检索。接口依据智谱当前的[知识库列表](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E5%88%97%E8%A1%A8)、[知识库详情](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E8%AF%A6%E6%83%85)、[编辑知识库](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%BC%96%E8%BE%91%E7%9F%A5%E8%AF%86%E5%BA%93)、[删除知识库](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E5%88%A0%E9%99%A4%E7%9F%A5%E8%AF%86%E5%BA%93)、[文档列表](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E6%96%87%E6%A1%A3%E5%88%97%E8%A1%A8)、[上传 URL 文档](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0url%E6%96%87%E6%A1%A3)、[上传文件文档](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0%E6%96%87%E4%BB%B6%E6%96%87%E6%A1%A3)和[知识库检索](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E6%A3%80%E7%B4%A2)文档。
+先用 `client.provider::<ZhipuClient>(profile)?` 绑定具体 profile，再通过 `provider.knowledge()` 调用资源。每次操作传入 `RequestOptions`，client 不保存凭证。
+
+`provider.knowledge()` 提供智谱个人知识库的原生 API，与 `OpenAiClient::retrieval()` 的 OpenAI Vector Stores 路由分开。当前支持知识库分页列表、创建、详情、部分更新和删除；文档分页列表、URL 导入、流式 multipart 文件上传和知识库检索。接口依据智谱当前的[知识库列表](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E5%88%97%E8%A1%A8)、[知识库详情](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E8%AF%A6%E6%83%85)、[编辑知识库](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%BC%96%E8%BE%91%E7%9F%A5%E8%AF%86%E5%BA%93)、[删除知识库](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E5%88%A0%E9%99%A4%E7%9F%A5%E8%AF%86%E5%BA%93)、[文档列表](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E6%96%87%E6%A1%A3%E5%88%97%E8%A1%A8)、[上传 URL 文档](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0url%E6%96%87%E6%A1%A3)、[上传文件文档](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0%E6%96%87%E4%BB%B6%E6%96%87%E6%A1%A3)和[知识库检索](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E6%A3%80%E7%B4%A2)文档。
 
 把独立服务根配置在 Zhipu/GLM profile 的 `glm_knowledge` 路由中，API key 和账户身份按请求传入。`account_scope` 必须是调用方提供的非密钥、稳定账户标识；服务不读取或保存密钥。
 
@@ -17,9 +19,10 @@ glm_knowledge = { mode = "enabled", value = {
 
 ```rust,no_run
 # async fn example(client: &lingxi_llm_client::LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::zhipu::ZhipuClient>("glm-mainland")?;
 use lingxi_llm_client::{protocol::Secret, RequestOptions};
 use lingxi_llm_client::files::UploadFileStream;
-use lingxi_llm_client::glm_knowledge::{
+use lingxi_llm_client::providers::zhipu::knowledge::{
     GlmCreateKnowledgeRequest, GlmKnowledgeDocumentListRequest, GlmKnowledgeEmbedding,
     GlmKnowledgeListRequest, GlmKnowledgeRetrieveRequest, GlmKnowledgeService,
     GlmUpdateKnowledgeRequest, GlmUrlDocumentInput, GlmUploadFileDocumentsRequest,
@@ -31,9 +34,8 @@ let options = RequestOptions {
     credential: Some(Secret::new(api_key)),
     ..Default::default()
 };
-let service: GlmKnowledgeService<'_> = client.glm_knowledge();
+let service: GlmKnowledgeService<'_> = provider.knowledge();
 let knowledge = service.create_knowledge(
-    "glm-mainland",
     &GlmCreateKnowledgeRequest {
         embedding_id: GlmKnowledgeEmbedding::Embedding3,
         name: "Product docs".into(),
@@ -76,7 +78,6 @@ let uploaded = service.upload_file_documents(
     &options,
 ).await?;
 let page = service.list_knowledge(
-    "glm-mainland",
     &GlmKnowledgeListRequest { page: Some(1), size: Some(10) },
     &options,
 ).await?;

@@ -2,17 +2,20 @@
 
 [English](interactions.en.md)
 
-`client.interactions()` 调用独立于 `generateContent` Chat 的 Google [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)。内置 `gemini` profile 配置 `/v1beta/interactions` 路由和 `x-goog-api-key`。请求与响应保持 Interactions API 原生结构，包括多模态 `input`、工具声明、`steps`、状态和用量。
+先用 `client.provider::<GoogleClient>(profile)?` 绑定具体 profile，再通过 `provider.interactions()` 调用资源。每次操作传入 `RequestOptions`，client 不保存凭证。
+
+`provider.interactions()` 调用独立于 `generateContent` Chat 的 Google [Interactions API](https://ai.google.dev/gemini-api/docs/interactions-overview)。内置 `gemini` profile 配置 `/v1beta/interactions` 路由和 `x-goog-api-key`。请求与响应保持 Interactions API 原生结构，包括多模态 `input`、工具声明、`steps`、状态和用量。
 
 `InteractionRequest::model()` 和 `::agent()` 仍接受字符串输入。`InteractionInput` 还可编码单个原生 `Content`、`Content` 数组或 `Step` 数组。内容块支持文本、图片、音频、文档和视频；媒体可通过 base64 `data` 或文件 `uri` 传递：
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
-use lingxi_llm_client::interactions::{
+use lingxi_llm_client::providers::google::interactions::{
     InteractionContent, InteractionInput, InteractionRequest,
 };
 
-async fn describe_media(client: &LlmClient, options: &RequestOptions) {
+async fn describe_media(client: &LlmClient, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::google::GoogleClient>("gemini")?;
     let input = InteractionInput::content([
         InteractionContent::text("Summarize this recording and its cover image."),
         InteractionContent::image_data("BASE64_IMAGE", "image/png"),
@@ -22,16 +25,17 @@ async fn describe_media(client: &LlmClient, options: &RequestOptions) {
         ),
     ]);
     let request = InteractionRequest::model("gemini-3.8-flash", input);
-    let interaction = client.interactions().create("gemini", &request, options).await;
+    let interaction = provider.interactions().create(&request, options).await;
     // Inspect the native steps and usage on the returned interaction.
     let _ = interaction;
+    Ok(())
 }
 ```
 
 可以用 `InteractionTool::function` 声明由客户端执行的函数。`parameters` 参数是发送给 Google 的 JSON Schema。`generation_config` 会按原样发送，因此工具选择要遵循 Google 的 `generation_config.tool_choice` 结构：
 
 ```rust,no_run
-use lingxi_llm_client::interactions::{InteractionRequest, InteractionTool};
+use lingxi_llm_client::providers::google::interactions::{InteractionRequest, InteractionTool};
 use serde_json::json;
 
 let request = InteractionRequest::model("gemini-3.8-flash", "Weather in Paris?")
@@ -54,7 +58,7 @@ let request = InteractionRequest::model("gemini-3.8-flash", "Weather in Paris?")
 工具仍由调用方执行。响应中的 `native["steps"]` 会保留 Google 返回的 `function_call` 和其他 step 对象。要返回函数结果，可续接已存储的 interaction，并传入原生 `function_result` step，使用模型返回的原始 call ID：
 
 ```rust,no_run
-use lingxi_llm_client::interactions::{InteractionInput, InteractionRequest, InteractionResult};
+use lingxi_llm_client::providers::google::interactions::{InteractionInput, InteractionRequest, InteractionResult};
 use serde_json::json;
 
 fn continue_with_result(prior: &InteractionResult, call_id: &str) -> InteractionRequest {

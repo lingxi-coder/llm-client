@@ -19,15 +19,6 @@ pub struct AccountSelector {
     pub api_key_id: Option<String>,
 }
 
-/// Optional Alibaba Cloud AccessKey credentials for Model Studio's signed
-/// billing-trend API. These values belong to one query and are never stored.
-#[derive(Debug, Clone)]
-pub struct AlibabaAccessKey {
-    pub id: String,
-    pub secret: Secret<String>,
-    pub security_token: Option<Secret<String>>,
-}
-
 /// Credentials belong to this query and are never persisted by the client.
 #[derive(Debug, Clone)]
 pub struct AccountQuery {
@@ -42,7 +33,7 @@ pub struct AccountQuery {
     /// Host-provided loopback URL for an official local service.
     pub service_url: Option<String>,
     /// Separate Alibaba Cloud RAM AccessKey used only to sign GetBillingTrend.
-    pub alibaba_access_key: Option<AlibabaAccessKey>,
+    pub alibaba_access_key: Option<crate::providers::qwen::account::AlibabaAccessKey>,
     pub selector: AccountSelector,
     /// Inclusive UTC Unix seconds. Defaults to 30 days before the query.
     pub since_unix: Option<u64>,
@@ -80,6 +71,8 @@ impl AccountQuery {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AccountUsageError {
+    #[error("provider account binding is no longer valid: {0}")]
+    ProviderBinding(String),
     #[error("account execution timeouts must be greater than zero")]
     InvalidExecutionOptions,
     #[error("unknown provider profile {0:?}")]

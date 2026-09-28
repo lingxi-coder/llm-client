@@ -7,20 +7,20 @@ use super::*;
 /// credential used for a model request. File IDs are therefore never silently
 /// reused across failover connections.
 pub struct FileService<'a> {
-    pub(in crate::files) http: &'a dyn Transport,
-    pub(in crate::files) profile: &'a ProviderProfile,
-    pub(in crate::files) authenticator: Option<&'a dyn Authenticator>,
-    pub(in crate::files) credential: Option<&'a Secret<String>>,
-    pub(in crate::files) account_scope: Option<&'a str>,
+    pub(crate) http: &'a dyn Transport,
+    pub(crate) profile: &'a ProviderProfile,
+    pub(crate) authenticator: Option<&'a dyn Authenticator>,
+    pub(crate) credential: Option<&'a Secret<String>>,
+    pub(crate) account_scope: Option<&'a str>,
     /// An explicit service route for APIs whose availability is a typed
     /// hosting choice rather than a fact inferable from provider ID and URL.
     adapter_override: Option<Adapter>,
     /// Canonical identity endpoint for an explicitly selected hosted route.
     endpoint_identity: Option<String>,
-    pub(in crate::files) qwen_rate_limiter: Option<Arc<QwenFileRateLimiter>>,
-    pub(in crate::files) gemini_upload_timeout: Option<Duration>,
-    pub(in crate::files) gemini_processing_timeout: Option<Duration>,
-    pub(in crate::files) gemini_request_deadline: Option<Instant>,
+    pub(crate) qwen_rate_limiter: Option<Arc<QwenFileRateLimiter>>,
+    pub(crate) gemini_upload_timeout: Option<Duration>,
+    pub(crate) gemini_processing_timeout: Option<Duration>,
+    pub(crate) request_deadline: Option<Instant>,
 }
 
 impl<'a> FileService<'a> {
@@ -43,7 +43,7 @@ impl<'a> FileService<'a> {
             qwen_rate_limiter: None,
             gemini_upload_timeout: None,
             gemini_processing_timeout: None,
-            gemini_request_deadline: None,
+            request_deadline: None,
         }
     }
 
@@ -77,7 +77,7 @@ impl<'a> FileService<'a> {
             });
         }
         let endpoint_identity =
-            crate::protocol::AnthropicContainerScope::normalize_foundry_endpoint(&profile.base_url)
+            crate::providers::anthropic::types::AnthropicContainerScope::normalize_foundry_endpoint(&profile.base_url)
                 .ok_or_else(|| LlmError::InvalidRequest {
                     message: "Foundry Files API requires the HTTPS Anthropic resource endpoint"
                         .into(),
@@ -123,18 +123,18 @@ impl<'a> FileService<'a> {
         )
     }
 
-    fn adapter(&self) -> Option<Adapter> {
+    pub(crate) fn adapter(&self) -> Option<Adapter> {
         self.adapter_override.or_else(|| adapter(self.profile))
     }
 
-    fn endpoint_identity(&self) -> String {
+    pub(crate) fn endpoint_identity(&self) -> String {
         self.endpoint_identity
             .clone()
             .or_else(|| provider_file_endpoint_identity(self.profile))
             .unwrap_or_else(|| self.profile.base_url.clone())
     }
 
-    fn decode_metadata(&self, value: &Value) -> Result<ProviderFileMetadata, LlmError> {
+    pub(crate) fn decode_metadata(&self, value: &Value) -> Result<ProviderFileMetadata, LlmError> {
         let adapter = self
             .adapter()
             .ok_or_else(|| unsupported("file metadata decoding"))?;
@@ -148,48 +148,9 @@ impl<'a> FileService<'a> {
         )
     }
 
-    /// Bound the Gemini upload transfer. Video files default to and are capped
-    /// at two hours; other files default to two minutes.
-    #[must_use]
-    pub fn with_gemini_upload_timeout(mut self, timeout: Duration) -> Self {
-        self.gemini_upload_timeout =
-            Some(timeout.clamp(GEMINI_FILE_POLL_INTERVAL, GEMINI_FILE_RETENTION));
+    pub(crate) fn with_request_deadline(mut self, deadline: Instant) -> Self {
+        self.request_deadline = Some(deadline);
         self
-    }
-
-    /// Bound the wait for Gemini Files to become ACTIVE after upload.
-    /// Files default to ten minutes of active polling before returning a
-    /// recoverable pending reference.
-    /// The upload transfer has its own deadline.
-    /// Values are clamped between one second and the Files API's 48-hour retention;
-    /// the initial video operation remains capped at two hours.
-    #[must_use]
-    pub fn with_gemini_processing_timeout(mut self, timeout: Duration) -> Self {
-        self.gemini_processing_timeout =
-            Some(timeout.clamp(GEMINI_FILE_POLL_INTERVAL, GEMINI_FILE_RETENTION));
-        self
-    }
-
-    pub(crate) fn with_gemini_request_deadline(mut self, deadline: Instant) -> Self {
-        self.gemini_request_deadline = Some(deadline);
-        self
-    }
-
-    pub(crate) fn with_qwen_rate_limiter(mut self, limiter: Arc<QwenFileRateLimiter>) -> Self {
-        self.qwen_rate_limiter = Some(limiter);
-        self
-    }
-
-    pub(in crate::files) async fn pace_qwen_upload(&self) {
-        if let Some(limiter) = &self.qwen_rate_limiter {
-            limiter.wait_upload().await;
-        }
-    }
-
-    pub(in crate::files) async fn pace_qwen_metadata(&self) {
-        if let Some(limiter) = &self.qwen_rate_limiter {
-            limiter.wait_metadata().await;
-        }
     }
 
     /// Return capabilities for this concrete profile, model and media type.
@@ -336,7 +297,7 @@ impl<'a> FileService<'a> {
             .ok_or_else(|| LlmError::RequestTooLarge {
                 message: "batch multipart size overflows".into(),
             })?;
-        let deadline = crate::runtime::Deadline::after(Some(timeout));
+        let deadline = crate::runtime::Deadline::at(self.request_deadline).cap(Some(timeout));
         let request = deadline
             .run(self.request(
                 "POST",
@@ -432,12 +393,13 @@ impl<'a> FileService<'a> {
         Ok(uploaded)
     }
 
-    pub(in crate::files) async fn upload_with_expiration(
+    pub(crate) async fn upload_with_expiration(
         &self,
         file: &UploadFile,
         purpose: FilePurpose,
         expires_in_seconds: Option<u64>,
     ) -> Result<ProviderFileRef, LlmError> {
+        let deadline = crate::runtime::Deadline::at(self.request_deadline);
         let (adapter, _) = self.preflight_upload(
             &file.filename,
             &file.media_type,
@@ -457,22 +419,55 @@ impl<'a> FileService<'a> {
         } else {
             files_url(self.profile, adapter)
         };
-        let req = self
-            .request(
+        let req = deadline
+            .run(self.request(
                 "POST",
                 url,
                 body,
                 Some(format!("multipart/form-data; boundary={boundary}")),
-            )
-            .await?;
+            ))
+            .await??;
         if adapter == Adapter::Qwen {
-            self.pace_qwen_upload().await;
+            deadline.run(self.pace_qwen_upload()).await?;
         }
+        deadline.remaining()?;
         let response = crate::transport::HttpExecutor::new(self.http)
+            .with_deadline(deadline)
             .execute(req)
-            .await?;
-        let value = adapter_json_success(adapter, &response, "file upload")?;
-        let mut metadata = self.decode_metadata(&value)?;
+            .await
+            .map_err(|error| buffered_upload_error("multipart upload", error))?;
+        if !(200..300).contains(&response.status) {
+            let error = status_error(
+                response.status,
+                &String::from_utf8_lossy(&response.body),
+                "file upload",
+            );
+            return Err(if response.status >= 500 {
+                unknown_buffered_upload_outcome("multipart upload response", error)
+            } else {
+                error
+            });
+        }
+        let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
+            unknown_buffered_upload_outcome(
+                "multipart upload response",
+                provider_shape(&format!("file upload response was not JSON: {error}")),
+            )
+        })?;
+        if adapter == Adapter::MiniMax {
+            if let Err(error) = check_minimax_base_response(&value, "file upload") {
+                return Err(
+                    if minimax_base_response_code(&value).is_some_and(|code| code != 0) {
+                        error
+                    } else {
+                        unknown_buffered_upload_outcome("multipart upload response", error)
+                    },
+                );
+            }
+        }
+        let mut metadata = self
+            .decode_metadata(&value)
+            .map_err(|error| unknown_buffered_upload_outcome("multipart upload response", error))?;
         // The API may omit MIME metadata on upload, but the input is known here.
         if metadata.file.media_type.is_none() {
             metadata.file.media_type = Some(file.media_type.clone());
@@ -486,7 +481,7 @@ impl<'a> FileService<'a> {
         Ok(metadata.file)
     }
 
-    fn preflight_upload(
+    pub(crate) fn preflight_upload(
         &self,
         filename: &str,
         media_type: &str,
@@ -568,7 +563,7 @@ impl<'a> FileService<'a> {
         } else {
             files_url(self.profile, adapter)
         };
-        let deadline = crate::runtime::Deadline::after(Some(timeout));
+        let deadline = crate::runtime::Deadline::at(self.request_deadline).cap(Some(timeout));
         let mut request = deadline
             .run(self.request(
                 "POST",
@@ -612,169 +607,7 @@ impl<'a> FileService<'a> {
         self.decode_stream_upload_response(adapter, &response, &filename, &media_type, purpose)
     }
 
-    async fn upload_gemini_stream(
-        &self,
-        filename: String,
-        media_type: String,
-        size_bytes: u64,
-        body: BoxStream<'static, Result<Bytes, LlmError>>,
-        timeout: Duration,
-    ) -> Result<ProviderFileRef, FileUploadError> {
-        let started = Instant::now();
-        let upload_deadline =
-            started
-                .checked_add(timeout)
-                .ok_or_else(|| LlmError::InvalidRequest {
-                    message: "Gemini upload timeout is too large".into(),
-                })?;
-        let upload_deadline = self
-            .gemini_request_deadline
-            .map_or(upload_deadline, |deadline| upload_deadline.min(deadline));
-        let start_url = gemini_upload_url(self.profile);
-        let start_body = serde_json::json!({"file": {"display_name": filename}});
-        let mut start_request = crate::runtime::Deadline::at(Some(upload_deadline))
-            .run(
-                self.request(
-                    "POST",
-                    start_url,
-                    Bytes::from(
-                        serde_json::to_vec(&start_body)
-                            .map_err(|error| provider_shape(&error.to_string()))?,
-                    ),
-                    Some("application/json".into()),
-                ),
-            )
-            .await??;
-        start_request.timeout = Some(gemini_timeout_remaining(
-            upload_deadline,
-            timeout,
-            "upload",
-        )?);
-        start_request.headers.extend([
-            ("x-goog-upload-protocol".into(), "resumable".into()),
-            ("x-goog-upload-command".into(), "start".into()),
-            (
-                "x-goog-upload-header-content-length".into(),
-                size_bytes.to_string(),
-            ),
-            (
-                "x-goog-upload-header-content-type".into(),
-                media_type.clone(),
-            ),
-        ]);
-        let start = crate::transport::HttpExecutor::new(self.http)
-            .execute(start_request)
-            .await
-            .map_err(|source| {
-                unknown_upload_outcome("Gemini resumable upload initiation", source, None)
-            })?;
-        status_result(&start, "Gemini file upload start").map_err(|source| {
-            if start.status >= 500 {
-                unknown_upload_outcome("Gemini resumable upload initiation", source, None)
-            } else {
-                FileUploadError::Llm(source)
-            }
-        })?;
-        let upload_url = start.header("x-goog-upload-url").ok_or_else(|| {
-            unknown_upload_outcome(
-                "Gemini resumable upload initiation",
-                provider_shape("Gemini upload start omitted x-goog-upload-url"),
-                None,
-            )
-        })?;
-        if !same_origin(upload_url, &self.profile.base_url) {
-            return Err(LlmError::PermissionDenied {
-                message: "Gemini returned an upload URL outside the configured API origin".into(),
-            }
-            .into());
-        }
-        let request = crate::transport::HttpStreamRequest {
-            method: "POST".into(),
-            url: upload_url.to_owned(),
-            headers: vec![
-                ("content-length".into(), size_bytes.to_string()),
-                ("x-goog-upload-offset".into(), "0".into()),
-                ("x-goog-upload-command".into(), "upload, finalize".into()),
-            ],
-            body: exact_upload_stream(body, size_bytes),
-            content_length: size_bytes,
-            timeout: Some(
-                gemini_timeout_remaining(upload_deadline, timeout, "upload").map_err(|source| {
-                    unknown_upload_outcome("Gemini resumable upload body", source, None)
-                })?,
-            ),
-        };
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .with_deadline(crate::runtime::Deadline::at(Some(upload_deadline)))
-            .send_stream(request)
-            .await
-            .map_err(|source| {
-                unknown_upload_outcome("Gemini resumable upload body", source, None)
-            })?;
-        let response =
-            crate::transport::HttpExecutor::collect_response(response, Some(1024 * 1024))
-                .await
-                .map_err(|source| {
-                    unknown_upload_outcome("Gemini resumable upload response", source, None)
-                })?;
-        if !(200..300).contains(&response.status) {
-            let source = status_error(
-                response.status,
-                &String::from_utf8_lossy(&response.body),
-                "Gemini file upload",
-            );
-            return Err(if response.status >= 500 {
-                unknown_upload_outcome("Gemini resumable upload", source, None)
-            } else {
-                FileUploadError::Llm(source)
-            });
-        }
-        let value: Value = serde_json::from_slice(&response.body).map_err(|error| {
-            unknown_upload_outcome(
-                "Gemini file upload response",
-                provider_shape(&format!(
-                    "Gemini file upload response was not JSON: {error}"
-                )),
-                None,
-            )
-        })?;
-        let file_value = value.get("file").unwrap_or(&value);
-        let mut metadata = self.decode_metadata(file_value).map_err(|source| {
-            unknown_upload_outcome("Gemini file upload response", source, None)
-        })?;
-        metadata.file.media_type = Some(media_type.clone());
-        metadata.file.filename = Some(filename);
-        metadata.file.size_bytes.get_or_insert(size_bytes);
-        match file_value.get("state").and_then(Value::as_str) {
-            Some("FAILED") => {
-                return Err(FileUploadError::Llm(provider_shape(
-                    "Gemini file processing failed",
-                )));
-            }
-            Some("PROCESSING") => {
-                return Err(FileUploadError::Llm(LlmError::ProviderFileProcessing {
-                    message: "Gemini file is still processing; resume it explicitly".into(),
-                    file: Box::new(metadata.file.model_reference()),
-                }));
-            }
-            Some("ACTIVE") | None => {}
-            Some(_) => {
-                return Err(FileUploadError::Llm(gemini_processing_unresolved(
-                    &metadata.file,
-                    provider_shape("Gemini file upload returned an unknown processing state"),
-                )));
-            }
-        }
-        if metadata.file.uri.as_deref().is_none_or(str::is_empty) {
-            return Err(FileUploadError::Llm(gemini_processing_unresolved(
-                &metadata.file,
-                provider_shape("Gemini file upload omitted the model-input URI"),
-            )));
-        }
-        Ok(metadata.file)
-    }
-
-    fn decode_stream_upload_response(
+    pub(crate) fn decode_stream_upload_response(
         &self,
         adapter: Adapter,
         response: &HttpResponse,
@@ -915,91 +748,6 @@ impl<'a> FileService<'a> {
         self.list_inner(adapter, None, cursor).await
     }
 
-    /// Retrieve metadata for up to 100 known Anthropic Files IDs in one
-    /// request. Pass references produced in this exact endpoint/account scope;
-    /// IDs that are missing or inaccessible are omitted by the provider and
-    /// remain absent from the returned page.
-    pub async fn list_by_ids(
-        &self,
-        files: &[ProviderFileRef],
-    ) -> Result<ProviderFilePage, LlmError> {
-        let adapter = self
-            .adapter()
-            .ok_or_else(|| unsupported("file metadata lookup by IDs"))?;
-        if adapter != Adapter::Anthropic {
-            return Err(unsupported("file metadata lookup by IDs"));
-        }
-        if self
-            .account_scope
-            .is_none_or(|scope| scope.trim().is_empty())
-        {
-            return Err(LlmError::InvalidRequest {
-                message: "file metadata lookup by IDs requires a nonempty account scope".into(),
-            });
-        }
-        if files.len() > 100 {
-            return Err(LlmError::InvalidRequest {
-                message: "Anthropic file metadata lookup accepts at most 100 IDs".into(),
-            });
-        }
-        let mut requested = std::collections::BTreeSet::new();
-        for file in files {
-            self.check_ref(file)?;
-            if !requested.insert(file.file_id.as_str()) {
-                return Err(LlmError::InvalidRequest {
-                    message: "file metadata lookup IDs must be distinct".into(),
-                });
-            }
-        }
-        if files.is_empty() {
-            return Ok(ProviderFilePage {
-                files: Vec::new(),
-                next_cursor: None,
-            });
-        }
-
-        let query = files
-            .iter()
-            .map(|file| format!("ids%5B%5D={}", query_value(&file.file_id)))
-            .collect::<Vec<_>>()
-            .join("&");
-        let url = format!("{}?{query}", files_url(self.profile, adapter));
-        let req = self.request("GET", url, Bytes::new(), None).await?;
-        let response = crate::transport::HttpExecutor::new(self.http)
-            .execute(req)
-            .await?;
-        let value = adapter_json_success(adapter, &response, "file metadata lookup")?;
-        let rows = value
-            .get("data")
-            .and_then(Value::as_array)
-            .ok_or_else(|| provider_shape("Anthropic file ID lookup has no data array"))?;
-        if value
-            .get("next_page")
-            .is_some_and(|next_page| !next_page.is_null())
-        {
-            return Err(provider_shape(
-                "Anthropic file ID lookup unexpectedly returned a pagination cursor",
-            ));
-        }
-        let mut returned = std::collections::BTreeSet::new();
-        let mut metadata = Vec::with_capacity(rows.len());
-        for row in rows {
-            let metadata_row = self.decode_metadata(row)?;
-            if !requested.contains(metadata_row.file.file_id.as_str())
-                || !returned.insert(metadata_row.file.file_id.clone())
-            {
-                return Err(provider_shape(
-                    "Anthropic file ID lookup returned an unrequested or duplicate ID",
-                ));
-            }
-            metadata.push(metadata_row);
-        }
-        Ok(ProviderFilePage {
-            files: metadata,
-            next_cursor: None,
-        })
-    }
-
     /// List files for an API that requires a purpose filter (MiniMax), or
     /// constrain OpenAI and Qwen listings to a documented provider purpose.
     /// Other adapters return `UnsupportedCapability` rather than an unfiltered page.
@@ -1024,7 +772,7 @@ impl<'a> FileService<'a> {
         self.list_inner(adapter, Some(purpose), cursor).await
     }
 
-    pub(in crate::files) async fn list_inner(
+    pub(crate) async fn list_inner(
         &self,
         adapter: Adapter,
         purpose: Option<FilePurpose>,
@@ -1263,7 +1011,7 @@ impl<'a> FileService<'a> {
             .map_err(|error| provider_shape(&format!("extracted file text is not UTF-8: {error}")))
     }
 
-    pub(in crate::files) async fn request(
+    pub(crate) async fn request(
         &self,
         method: &str,
         url: String,
@@ -1301,8 +1049,7 @@ impl<'a> FileService<'a> {
                             self.profile.profile_name
                         ),
                     })?;
-            let deadline =
-                crate::runtime::Deadline::at(self.gemini_request_deadline).cap(request.timeout);
+            let deadline = crate::runtime::Deadline::at(self.request_deadline).cap(request.timeout);
             deadline
                 .run(authenticator.apply(&mut request, self.profile, self.credential))
                 .await??;
@@ -1311,7 +1058,7 @@ impl<'a> FileService<'a> {
         Ok(request)
     }
 
-    pub(in crate::files) fn check_ref(&self, file: &ProviderFileRef) -> Result<(), LlmError> {
+    pub(crate) fn check_ref(&self, file: &ProviderFileRef) -> Result<(), LlmError> {
         if file.profile_name != self.profile.profile_name
             || file.provider_id != self.profile.provider_id
             || file.protocol != self.profile.protocol
@@ -1329,7 +1076,7 @@ impl<'a> FileService<'a> {
     }
 }
 
-fn unknown_upload_outcome(
+pub(crate) fn unknown_upload_outcome(
     operation: &'static str,
     source: LlmError,
     reference: Option<ProviderFileRef>,
@@ -1341,11 +1088,22 @@ fn unknown_upload_outcome(
     }
 }
 
-fn minimax_base_response_code(value: &Value) -> Option<i64> {
-    value
-        .get("base_resp")?
-        .get("status_code")
-        .and_then(|status| status.as_i64().or_else(|| status.as_str()?.parse().ok()))
+/// Buffered uploads have no file ID if the transport fails after dispatch.
+/// Keep deterministic local/provider validation failures in their original
+/// class, while marking transport uncertainty so callers do not retry blind.
+pub(crate) fn buffered_upload_error(operation: &str, error: LlmError) -> LlmError {
+    match error {
+        LlmError::Transport { .. }
+        | LlmError::TransportTimeout { .. }
+        | LlmError::StreamInterrupted { .. } => unknown_buffered_upload_outcome(operation, error),
+        other => other,
+    }
+}
+
+pub(crate) fn unknown_buffered_upload_outcome(operation: &str, error: LlmError) -> LlmError {
+    LlmError::FileUploadOutcomeUnknown {
+        message: format!("{operation}: {error}"),
+    }
 }
 
 struct BatchStreamParts {

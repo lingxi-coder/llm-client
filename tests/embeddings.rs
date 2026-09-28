@@ -24,7 +24,7 @@ impl Transport for Mock {
     }
 }
 fn setup(api: EmbeddingApi, body: Value, stalled: bool) -> (LlmClient, Arc<Mock>) {
-    let profile:ProviderProfile=serde_json::from_value(json!({"provider_id":"test","profile_name":"test","protocol":"open_ai_chat","base_url":"https://chat.invalid","auth":"none","embeddings":{"mode":"enabled","value":{"api":api,"endpoint":if api==EmbeddingApi::Gemini{"https://embedding.invalid/models/{model}:batchEmbedContents"}else{"https://embedding.invalid/embed"},"models_endpoint":if api==EmbeddingApi::OpenRouter{Some("https://embedding.invalid/embeddings/models")}else{None},"auth":{"type":"bearer"},"max_inputs":2}}})).unwrap();
+    let profile:ProviderProfile=serde_json::from_value(json!({"provider_id":if api==EmbeddingApi::OpenRouter{"openrouter"}else{"test"},"profile_name":"test","protocol":"open_ai_chat","base_url":"https://chat.invalid","auth":"none","embeddings":{"mode":"enabled","value":{"api":api,"endpoint":if api==EmbeddingApi::Gemini{"https://embedding.invalid/models/{model}:batchEmbedContents"}else{"https://embedding.invalid/embed"},"models_endpoint":if api==EmbeddingApi::OpenRouter{Some("https://embedding.invalid/embeddings/models")}else{None},"auth":{"type":"bearer"},"max_inputs":2}}})).unwrap();
     let mock = Arc::new(Mock {
         body,
         requests: Mutex::new(vec![]),
@@ -184,8 +184,10 @@ async fn openrouter_model_directory_pages_and_preserves_native_metadata() {
         false,
     );
     let page = client
+        .provider::<lingxi_llm_client::providers::OpenRouterClient>("test")
+        .unwrap()
         .embeddings()
-        .list_models("test", 0, 2, &options())
+        .list_models(0, 2, &options())
         .await
         .unwrap();
     assert_eq!(page.models.len(), 2);
@@ -208,8 +210,10 @@ async fn openrouter_model_directory_pages_and_preserves_native_metadata() {
     }
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenRouterClient>("test")
+            .unwrap()
             .embeddings()
-            .list_models("test", 0, 0, &options())
+            .list_models(0, 0, &options())
             .await,
         Err(EmbeddingError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -226,8 +230,10 @@ async fn model_directory_rejects_inconsistent_pagination() {
     );
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenRouterClient>("test")
+            .unwrap()
             .embeddings()
-            .list_models("test", 0, 1, &options())
+            .list_models(0, 1, &options())
             .await,
         Err(EmbeddingError::InvalidResponse(_))
     ));
@@ -646,4 +652,53 @@ async fn glm_embedding_3_limits_apply_only_to_its_official_embedding_route() {
         .unwrap();
     assert_eq!(response.vectors.len(), 65);
     assert_eq!(mock.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn typed_and_unified_embedding_entries_use_the_same_provider_wire() {
+    let (client, mock) = setup_unbounded(
+        "openai",
+        EmbeddingApi::OpenAi,
+        "https://api.openai.com/v1/embeddings",
+        openai_response_body(2, 2),
+    );
+    let unified = client
+        .embeddings()
+        .embed("unbounded", &request(), &options())
+        .await
+        .unwrap();
+    let typed = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("unbounded")
+        .unwrap();
+    let native = typed
+        .embeddings()
+        .embed(&request(), &options())
+        .await
+        .unwrap();
+    assert_eq!(unified, native);
+    let calls = mock.requests.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].url, calls[1].url);
+    assert_eq!(calls[0].headers, calls[1].headers);
+    assert_eq!(calls[0].body, calls[1].body);
+}
+
+#[tokio::test]
+async fn known_provider_does_not_fall_back_to_an_unrelated_embedding_wire() {
+    let (client, mock) = setup_unbounded(
+        "anthropic",
+        EmbeddingApi::OpenAi,
+        "https://embedding.invalid/embed",
+        openai_response_body(2, 2),
+    );
+    let error = client
+        .embeddings()
+        .embed("unbounded", &request(), &options())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        EmbeddingError::Llm(LlmError::UnsupportedCapability { .. })
+    ));
+    assert!(mock.requests.lock().unwrap().is_empty());
 }

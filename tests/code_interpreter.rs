@@ -3,11 +3,13 @@ mod wire_api;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use lingxi_llm_client::openai_containers::{OpenAiContainerRef, OpenAiContainerScope};
 use lingxi_llm_client::protocol::{
-    ChatRequest, CodeInterpreterConfig, CodeInterpreterMemoryLimit, ConnectionSpec, ContentBlock,
-    FailoverTriggers, HostedTool, LlmError, ProtocolFamily, ProviderFileSource, ProviderProfile,
-    Region,
+    ChatRequest, ConnectionSpec, ContentBlock, FailoverTriggers, LlmError, ProtocolFamily,
+    ProviderFileSource, ProviderProfile, Region,
+};
+use lingxi_llm_client::providers::openai::containers::{OpenAiContainerRef, OpenAiContainerScope};
+use lingxi_llm_client::providers::openai::types::{
+    CodeInterpreterConfig, CodeInterpreterMemoryLimit,
 };
 use lingxi_llm_client::{
     files::provider_file_endpoint_fingerprint, transport::HttpRequest, HttpResponse,
@@ -43,11 +45,15 @@ fn request(limit: Option<CodeInterpreterMemoryLimit>) -> ChatRequest {
         "model":"m", "messages":[{"role":"user","content":[{"type":"text","text":"Calculate"}]}]
     }))
     .unwrap();
-    req.hosted_tools
-        .push(HostedTool::CodeInterpreter(CodeInterpreterConfig {
-            memory_limit: limit,
-            ..CodeInterpreterConfig::default()
-        }));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig {
+                memory_limit: limit,
+                ..CodeInterpreterConfig::default()
+            },
+        )
+        .into(),
+    );
     req
 }
 
@@ -134,12 +140,15 @@ fn automatic_container_mounts_scoped_file_ids_and_rejects_duplicate_ids() {
     let profile = profile("openai", true);
     let files_scope = "openai-files-project";
     let mut req = request(None);
-    req.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_files([
-            provider_file(&profile, "file-abc", files_scope),
-            provider_file(&profile, "file-def", files_scope),
-        ]),
-    )];
+    req.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_files([
+                provider_file(&profile, "file-abc", files_scope),
+                provider_file(&profile, "file-def", files_scope),
+            ]),
+        )
+        .into(),
+    ];
     let options = RequestOptions {
         file_account_scope: Some(files_scope.into()),
         ..RequestOptions::default()
@@ -156,12 +165,15 @@ fn automatic_container_mounts_scoped_file_ids_and_rejects_duplicate_ids() {
     );
 
     let mut duplicate = request(None);
-    duplicate.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_files([
-            provider_file(&profile, "file-abc", files_scope),
-            provider_file(&profile, "file-abc", files_scope),
-        ]),
-    )];
+    duplicate.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_files([
+                provider_file(&profile, "file-abc", files_scope),
+                provider_file(&profile, "file-abc", files_scope),
+            ]),
+        )
+        .into(),
+    ];
     assert!(matches!(
         OpenAiResponsesCodec
             .encode_request(lingxi_llm_client::EncodeRequest::new(&duplicate), &context),
@@ -171,9 +183,12 @@ fn automatic_container_mounts_scoped_file_ids_and_rejects_duplicate_ids() {
     let mut expired = request(None);
     let mut expired_file = provider_file(&profile, "file-old", files_scope);
     expired_file.expires_at = Some("2000-01-01T00:00:00Z".into());
-    expired.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_files([expired_file]),
-    )];
+    expired.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_files([expired_file]),
+        )
+        .into(),
+    ];
     assert!(matches!(
         OpenAiResponsesCodec
             .encode_request(lingxi_llm_client::EncodeRequest::new(&expired), &context),
@@ -181,13 +196,16 @@ fn automatic_container_mounts_scoped_file_ids_and_rejects_duplicate_ids() {
     ));
 
     let mut mismatched_file = request(None);
-    mismatched_file.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_files([provider_file(
-            &profile,
-            "file-other-account",
-            "another-files-scope",
-        )]),
-    )];
+    mismatched_file.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_files([provider_file(
+                &profile,
+                "file-other-account",
+                "another-files-scope",
+            )]),
+        )
+        .into(),
+    ];
     assert!(matches!(
         OpenAiResponsesCodec.encode_request(
             lingxi_llm_client::EncodeRequest::new(&mismatched_file),
@@ -197,13 +215,16 @@ fn automatic_container_mounts_scoped_file_ids_and_rejects_duplicate_ids() {
     ));
 
     let mut unsafe_id = request(None);
-    unsafe_id.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_files([provider_file(
-            &profile,
-            "file/escape",
-            files_scope,
-        )]),
-    )];
+    unsafe_id.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_files([provider_file(
+                &profile,
+                "file/escape",
+                files_scope,
+            )]),
+        )
+        .into(),
+    ];
     assert!(matches!(
         OpenAiResponsesCodec
             .encode_request(lingxi_llm_client::EncodeRequest::new(&unsafe_id), &context),
@@ -217,9 +238,12 @@ fn explicit_container_reuse_is_scope_bound_and_auto_settings_are_rejected() {
     let scope = OpenAiContainerScope::new("openai", "container-account").unwrap();
     let container = OpenAiContainerRef::from_id(&scope, "cntr_abc123").unwrap();
     let mut req = request(None);
-    req.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_container(container.clone()),
-    )];
+    req.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_container(container.clone()),
+        )
+        .into(),
+    ];
     let context = wire_api::context(&profile, "m", &RequestOptions::default())
         .with_account_scope(Some("container-account"));
     let encoded = OpenAiResponsesCodec
@@ -237,11 +261,16 @@ fn explicit_container_reuse_is_scope_bound_and_auto_settings_are_rejected() {
         Err(LlmError::UnsupportedCapability { .. })
     ));
 
-    req.hosted_tools = vec![HostedTool::CodeInterpreter(CodeInterpreterConfig {
-        memory_limit: Some(CodeInterpreterMemoryLimit::FourG),
-        container: Some(container),
-        ..CodeInterpreterConfig::default()
-    })];
+    req.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig {
+                memory_limit: Some(CodeInterpreterMemoryLimit::FourG),
+                container: Some(container),
+                ..CodeInterpreterConfig::default()
+            },
+        )
+        .into(),
+    ];
     assert!(matches!(
         OpenAiResponsesCodec.encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context),
         Err(LlmError::InvalidRequest { .. })

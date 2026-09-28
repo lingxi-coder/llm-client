@@ -8,7 +8,7 @@ The service requires an explicit workspace scope and a Beijing Model Studio API 
 use lingxi_llm_client::{
     HttpTransport,
     protocol::Secret,
-    qwen_audio_generation::{
+    providers::qwen::audio_generation::{
         QwenAudioGenerationFormat, QwenAudioGenerationReference,
         QwenAudioGenerationRequest, QwenAudioGenerationScope,
         QwenAudioGenerationService, QwenAudioReferenceFormat,

@@ -1,13 +1,13 @@
 # Vertex AI Gemini speech synthesis
 
-`vertex_speech` calls Gemini-TTS through the Vertex AI publisher-model REST API. It is separate from Gemini Developer API Interactions TTS and Cloud Text-to-Speech API. The caller explicitly selects the Google Cloud project, location, model, and bearer access token.
+`hosting::vertex::speech` calls Gemini-TTS through the Vertex AI publisher-model REST API. It is separate from Gemini Developer API Interactions TTS and Cloud Text-to-Speech API. The caller explicitly selects the Google Cloud project, location, model, and bearer access token.
 
 ```rust,no_run
 use lingxi_llm_client::{
     client::RequestOptions,
     protocol::Secret,
     transport::HttpTransport,
-    vertex_speech::{
+    hosting::vertex::speech::{
         VertexSpeechModel, VertexSpeechRequest, VertexSpeechScope, VertexSpeechService,
     },
 };

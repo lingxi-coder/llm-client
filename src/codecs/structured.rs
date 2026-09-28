@@ -2,16 +2,16 @@
 use crate::codecs::CodecContext;
 use crate::protocol::{
     CapabilitySupport, ChatRequest, ContentBlock, LlmError, MessageRole, OutputFormat,
-    ProtocolFamily, ToolSpec,
+    ProtocolFamily,
 };
 use serde_json::{json, Map, Value};
 
-fn invalid(message: impl Into<String>) -> LlmError {
+pub(crate) fn invalid(message: impl Into<String>) -> LlmError {
     LlmError::InvalidRequest {
         message: message.into(),
     }
 }
-fn unsupported(message: impl Into<String>) -> LlmError {
+pub(crate) fn unsupported(message: impl Into<String>) -> LlmError {
     LlmError::UnsupportedCapability {
         message: message.into(),
     }
@@ -59,13 +59,14 @@ pub(crate) fn apply(
 
 fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), LlmError> {
     let profile = context.profile();
-    validate_qwen_output_contract(req, profile, context.request_model())?;
+    crate::providers::dispatch::validate_output_contract(req, profile, context.request_model())?;
     super::cache::validate(req, context)?;
-    let claude_messages = is_claude_messages_profile(profile);
+    let claude_messages =
+        crate::providers::anthropic::structured::is_claude_messages_profile(profile);
     if claude_messages {
-        validate_messages_inline_tool_schemas(req, &[])?;
+        crate::providers::anthropic::structured::validate_messages_inline_tool_schemas(req, &[])?;
         if matches!(req.output_format, OutputFormat::JsonSchema { .. }) {
-            validate_messages_output_combinations(req)?;
+            crate::providers::anthropic::structured::validate_messages_output_combinations(req)?;
         }
     }
     if matches!(req.output_format, OutputFormat::Text) {
@@ -87,16 +88,7 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
         return Ok(());
     }
     let p = context.profile();
-    // OpenAI's May 2024 GPT-4o snapshot supports JSON mode but predates
-    // json_schema response formatting (introduced with the August snapshot).
-    if p.provider_id.as_str() == "openai"
-        && context.request_model() == "gpt-4o-2024-05-13"
-        && matches!(req.output_format, OutputFormat::JsonSchema { .. })
-    {
-        return Err(unsupported(
-            "gpt-4o-2024-05-13 does not support JSON Schema output",
-        ));
-    }
+    crate::providers::openai::structured::validate_output_contract(req, context)?;
     if p.models.iter().any(|m| {
         m.request_model == context.request_model()
             && m.capability_support.unwrap_or_default().structured_output
@@ -145,8 +137,11 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
                 ));
             }
             if *strict {
-                let qwen_strict_output = is_qwen_openai_chat_profile(profile)
-                    && is_qwen_strict_schema_model(context.request_model());
+                let qwen_strict_output =
+                    crate::providers::qwen::structured::is_qwen_openai_chat_profile(profile)
+                        && crate::providers::qwen::structured::is_qwen_strict_schema_model(
+                            context.request_model(),
+                        );
                 validate_subset(
                     schema,
                     anthropic,
@@ -156,7 +151,9 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
                     qwen_strict_output,
                 )?;
                 if claude_messages {
-                    validate_messages_schema_references(schema)?;
+                    crate::providers::anthropic::structured::validate_messages_schema_references(
+                        schema,
+                    )?;
                 }
             }
             crate::protocol::structured::compile_request_schema(schema).map_err(invalid)?;
@@ -178,113 +175,7 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
     Ok(())
 }
 
-/// Provider-specific prompt requirements apply only to first-party
-/// OpenAI-compatible Chat endpoints. Keep these checks separate so the
-/// executor can run them before resolving attachments and again before
-/// acquiring credentials for each attempted route.
-pub(crate) fn validate_qwen_output_contract(
-    req: &ChatRequest,
-    profile: &crate::protocol::ProviderProfile,
-    request_model: &str,
-) -> Result<(), LlmError> {
-    if is_qwen_openai_chat_profile(profile) {
-        match &req.output_format {
-            OutputFormat::JsonObject if !has_json_prompt_keyword(req) => {
-                return Err(invalid(
-                    "Qwen JSON Object mode requires JSON in system or user text",
-                ));
-            }
-            OutputFormat::JsonSchema { strict: true, .. }
-                if !is_qwen_strict_schema_model(request_model) =>
-            {
-                return Err(unsupported(
-                    "this client currently verifies strict Qwen JSON Schema output only for qwen3.8-flash and qwen3.8-max",
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    if is_deepseek_chat_profile(profile)
-        && matches!(req.output_format, OutputFormat::JsonObject)
-        && !has_json_prompt_keyword(req)
-    {
-        return Err(invalid(
-            "DeepSeek JSON Output requires the word JSON in system or user text",
-        ));
-    }
-
-    Ok(())
-}
-
-fn is_deepseek_chat_profile(profile: &crate::protocol::ProviderProfile) -> bool {
-    if profile.provider_id.as_str() != "deepseek" || profile.protocol != ProtocolFamily::OpenAiChat
-    {
-        return false;
-    }
-    let Ok(url) = url::Url::parse(&profile.base_url) else {
-        return false;
-    };
-    url.scheme() == "https"
-        && url.host_str() == Some("api.deepseek.com")
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.port().is_none()
-        && matches!(url.path(), "/" | "/v1" | "/v1/")
-        && url.query().is_none()
-        && url.fragment().is_none()
-}
-
-fn is_qwen_strict_schema_model(request_model: &str) -> bool {
-    matches!(request_model, "qwen3.8-flash" | "qwen3.8-max")
-}
-
-fn is_qwen_openai_chat_profile(profile: &crate::protocol::ProviderProfile) -> bool {
-    if profile.provider_id.as_str() != "qwen" || profile.protocol != ProtocolFamily::OpenAiChat {
-        return false;
-    }
-    let Ok(url) = url::Url::parse(&profile.base_url) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let direct_host = matches!(
-        host,
-        "dashscope.aliyuncs.com"
-            | "dashscope-intl.aliyuncs.com"
-            | "dashscope-us.aliyuncs.com"
-            | "cn-hongkong.dashscope.aliyuncs.com"
-    );
-    let workspace_host = [
-        ".cn-beijing.maas.aliyuncs.com",
-        ".ap-southeast-1.maas.aliyuncs.com",
-    ]
-    .iter()
-    .any(|suffix| host.strip_suffix(suffix).is_some_and(valid_dns_label));
-    let path = url.path();
-    let path_matches = path == "/compatible-mode/v1" || path == "/compatible-mode/v1/";
-    url.scheme() == "https"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.port().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && path_matches
-        && (direct_host || workspace_host)
-}
-
-fn valid_dns_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= 63
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        && label.as_bytes()[0].is_ascii_alphanumeric()
-        && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
-}
-
-fn has_json_prompt_keyword(req: &ChatRequest) -> bool {
+pub(crate) fn has_json_prompt_keyword(req: &ChatRequest) -> bool {
     req.system
         .iter()
         .any(|block| contains_json_keyword(&block.text))
@@ -302,144 +193,6 @@ fn contains_json_keyword(text: &str) -> bool {
         .any(|window| window.eq_ignore_ascii_case(b"json"))
 }
 
-fn is_claude_messages_profile(profile: &crate::protocol::ProviderProfile) -> bool {
-    (profile.provider_id.as_str() == "anthropic"
-        && profile.protocol == ProtocolFamily::AnthropicMessages)
-        || matches!(
-            profile.protocol,
-            ProtocolFamily::BedrockClaude
-                | ProtocolFamily::VertexClaude
-                | ProtocolFamily::FoundryClaude
-        )
-}
-
-/// Claude JSON outputs cannot be combined with citation-enabled input blocks
-/// or an assistant-prefilled final message.
-fn validate_messages_output_combinations(req: &ChatRequest) -> Result<(), LlmError> {
-    if req
-        .hosted_anthropic_web_fetch()
-        .is_some_and(|fetch| fetch.citations == Some(true))
-    {
-        return Err(unsupported(
-            "Messages JSON output cannot be combined with citation-enabled Web Fetch",
-        ));
-    }
-    if req
-        .messages
-        .last()
-        .is_some_and(|message| message.role == MessageRole::Assistant)
-    {
-        return Err(unsupported(
-            "Messages JSON output cannot be combined with an assistant-prefilled final message",
-        ));
-    }
-    if req.messages.iter().any(|message| {
-        message.content.iter().any(|block| match block {
-            ContentBlock::ProviderContent {
-                protocol: ProtocolFamily::AnthropicMessages,
-                value,
-            } => native_content_enables_citations(value),
-            ContentBlock::ToolResult {
-                blocks: Some(blocks),
-                ..
-            } => blocks.iter().any(native_content_enables_citations),
-            _ => false,
-        })
-    }) {
-        return Err(unsupported(
-            "Messages JSON output cannot be combined with citation-enabled document or search-result blocks",
-        ));
-    }
-    Ok(())
-}
-
-/// Strict custom-tool schemas share Claude's JSON Schema limitations, whether
-/// they were declared in `tools` or by value in a mid-conversation system
-/// message. Exact repeated name/schema pairs count once; changed schemas for
-/// the same name count separately because all definitions are in this request.
-/// Non-strict tools are left to provider handling.
-pub(crate) fn validate_messages_inline_tool_schemas(
-    req: &ChatRequest,
-    inline_tools: &[ToolSpec],
-) -> Result<(), LlmError> {
-    let strict_fetch = req.hosted_anthropic_web_fetch().is_some_and(|fetch| {
-        fetch.strict
-            && !req
-                .tools
-                .iter()
-                .chain(inline_tools)
-                .any(|tool| tool.name == "web_fetch" && tool.strict)
-    });
-    let mut tools = Vec::<&ToolSpec>::new();
-    let mut seen = std::collections::HashSet::<(String, String)>::new();
-    for tool in req.tools.iter().chain(inline_tools) {
-        if tool.strict {
-            let key = (
-                tool.name.clone(),
-                serde_json::to_string(&tool.input_schema)
-                    .map_err(|_| invalid("strict Messages tool schema is not valid JSON"))?,
-            );
-            if !seen.insert(key) {
-                continue;
-            }
-            tools.push(tool);
-            if tools.len() + usize::from(strict_fetch) > 20 {
-                return Err(unsupported(
-                    "Messages allows at most 20 strict tools in one request",
-                ));
-            }
-        }
-    }
-    for tool in &tools {
-        validate_messages_strict_schema(&tool.input_schema)?;
-    }
-    validate_messages_schema_complexity(req, &tools)
-}
-
-/// Validate one strict Messages tool schema using the same supported subset
-/// and reference rules as strict top-level tool definitions.
-pub(crate) fn validate_messages_strict_schema(schema: &Value) -> Result<(), LlmError> {
-    validate_subset(schema, true, false, false, true, false)?;
-    validate_messages_schema_references(schema)
-}
-
-/// Check only native content blocks that can enable Anthropic citations. This
-/// avoids interpreting arbitrary user text or unrelated native metadata as a
-/// citations request.
-fn native_content_enables_citations(value: &Value) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    let block_type = object.get("type").and_then(Value::as_str);
-    if matches!(block_type, Some("document" | "search_result"))
-        && value.pointer("/citations/enabled") == Some(&Value::Bool(true))
-    {
-        return true;
-    }
-    match object.get("content") {
-        Some(Value::Array(children)) => children.iter().any(native_content_enables_citations),
-        Some(content @ Value::Object(_))
-            if matches!(
-                block_type,
-                Some("web_fetch_tool_result" | "web_fetch_result")
-            ) =>
-        {
-            native_content_enables_citations(content)
-        }
-        _ => false,
-    }
-}
-
-/// Local references are allowed, but Claude structured outputs do not accept
-/// recursive schemas. Resolve local references while tracking the active
-/// reference chain so direct and indirect recursion are caught before dispatch.
-fn validate_messages_schema_references(schema: &Value) -> Result<(), LlmError> {
-    validate_schema_references(
-        schema,
-        "Messages structured outputs do not support recursive schemas",
-    )
-}
-
 /// Reject recursive local references for Anthropic programmatic tool callers.
 /// The caller decides whether this contract applies; ordinary tool schemas do
 /// not use this helper.
@@ -450,7 +203,10 @@ pub(crate) fn validate_no_recursive_schema_references(schema: &Value) -> Result<
     )
 }
 
-fn validate_schema_references(schema: &Value, recursive_error: &str) -> Result<(), LlmError> {
+pub(crate) fn validate_schema_references(
+    schema: &Value,
+    recursive_error: &str,
+) -> Result<(), LlmError> {
     fn visit(
         schema: &Value,
         root: &Value,
@@ -538,78 +294,6 @@ fn hex_digit(byte: u8) -> Option<u8> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
-    }
-}
-
-/// Claude compiles all strict tool and JSON-output schemas in one request.
-/// These documented request-wide limits are checked before any attachments
-/// are uploaded or a hosted tool can run.
-fn validate_messages_schema_complexity(
-    req: &ChatRequest,
-    strict_tools: &[&ToolSpec],
-) -> Result<(), LlmError> {
-    let mut complexity = SchemaComplexity::default();
-    for tool in strict_tools {
-        complexity.visit(&tool.input_schema);
-    }
-    if let OutputFormat::JsonSchema { schema, .. } = &req.output_format {
-        complexity.visit(schema);
-    }
-    if complexity.optional_parameters > 24 {
-        return Err(unsupported(
-            "Messages allows at most 24 optional parameters across strict tools and JSON output",
-        ));
-    }
-    if complexity.union_parameters > 16 {
-        return Err(unsupported(
-            "Messages allows at most 16 union-typed parameters across strict tools and JSON output",
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Default)]
-struct SchemaComplexity {
-    optional_parameters: usize,
-    union_parameters: usize,
-}
-
-impl SchemaComplexity {
-    fn visit(&mut self, schema: &Value) {
-        let Some(object) = schema.as_object() else {
-            return;
-        };
-        if schema.get("anyOf").is_some() || schema.get("type").is_some_and(Value::is_array) {
-            self.union_parameters = self.union_parameters.saturating_add(1);
-        }
-        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
-            let required = object.get("required").and_then(Value::as_array);
-            for (name, child) in properties {
-                if !required
-                    .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name)))
-                {
-                    self.optional_parameters = self.optional_parameters.saturating_add(1);
-                }
-                self.visit(child);
-            }
-        }
-        for key in ["$defs", "definitions"] {
-            if let Some(definitions) = object.get(key).and_then(Value::as_object) {
-                for child in definitions.values() {
-                    self.visit(child);
-                }
-            }
-        }
-        if let Some(items) = object.get("items") {
-            self.visit(items);
-        }
-        for key in ["anyOf", "allOf", "oneOf", "prefixItems"] {
-            if let Some(branches) = object.get(key).and_then(Value::as_array) {
-                for child in branches {
-                    self.visit(child);
-                }
-            }
-        }
     }
 }
 
@@ -712,7 +396,7 @@ fn validate_extra_fields(
     Ok(())
 }
 
-fn validate_subset(
+pub(crate) fn validate_subset(
     schema: &Value,
     anthropic: bool,
     gemini: bool,
@@ -777,21 +461,7 @@ fn validate_subset(
         }
     }
     if native_claude {
-        if object
-            .get("format")
-            .is_some_and(|value| !value.as_str().is_some_and(messages_format_supported))
-        {
-            return Err(unsupported("Messages does not support this string format"));
-        }
-        if object
-            .get("allOf")
-            .and_then(Value::as_array)
-            .is_some_and(|branches| branches.iter().any(|branch| branch.get("$ref").is_some()))
-        {
-            return Err(unsupported(
-                "Messages does not support $ref directly inside allOf",
-            ));
-        }
+        crate::providers::anthropic::structured::validate_native_schema_node(object)?;
     }
     if anthropic {
         if schema["minItems"].as_u64().is_some_and(|n| n > 1) {
@@ -944,22 +614,6 @@ fn validate_subset(
     Ok(())
 }
 
-fn messages_format_supported(format: &str) -> bool {
-    matches!(
-        format,
-        "date-time"
-            | "time"
-            | "date"
-            | "duration"
-            | "email"
-            | "hostname"
-            | "uri"
-            | "ipv4"
-            | "ipv6"
-            | "uuid"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -985,7 +639,7 @@ mod tests {
             input_schema: schema,
             strict,
             defer_loading: false,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         };
         let simple = json!({"type":"object","properties":{},"additionalProperties":false});
         req.tools = (0..20)
@@ -1132,7 +786,7 @@ mod tests {
         ));
 
         req.messages = vec![crate::protocol::ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
@@ -1149,7 +803,7 @@ mod tests {
         ));
 
         req.messages = vec![crate::protocol::ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
@@ -1170,7 +824,7 @@ mod tests {
         // A regular user document has no citations flag in the typed API, and
         // text that happens to mention citation JSON is not native metadata.
         req.messages = vec![crate::protocol::ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: r#"{"type":"document","citations":{"enabled":true}}"#.into(),
@@ -1222,7 +876,7 @@ mod tests {
                 input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
                 strict: false,
                 defer_loading: false,
-                allowed_callers: vec![],
+                native_options: Vec::new(),
             })
             .collect();
         let context = CodecContext::new(&gateway, "claude-like", RequestMode::Complete);

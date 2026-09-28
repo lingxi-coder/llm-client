@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         monitoring::{QwenKnowledgeMonitoringRequest, QwenKnowledgeMonitoringResult},
         QwenKnowledgeError, QwenKnowledgeRegion, QwenKnowledgeScope, QwenKnowledgeService,
     },
@@ -68,12 +68,7 @@ fn scope(account: &str, workspace: &str) -> QwenKnowledgeScope {
 }
 
 fn service<'a>(mock: &'a Mock, account: &str, workspace: &str) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-key-test".to_owned()),
-        scope(account, workspace),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(account, workspace)).unwrap()
 }
 
 #[tokio::test]
@@ -109,7 +104,7 @@ async fn monitoring_uses_the_documented_post_contract_and_preserves_raw_data() {
     assert_eq!(request.start_timestamp_secs(), 1_780_900_000);
     assert_eq!(request.end_timestamp_secs(), 1_783_492_000);
     let result: QwenKnowledgeMonitoringResult = service
-        .get_knowledge_base_monitoring(&knowledge, &request)
+        .get_knowledge_base_monitoring(&knowledge, &request, &request_options())
         .await
         .unwrap();
 
@@ -161,6 +156,7 @@ async fn accepts_the_official_monitoring_success_sample_without_success_boolean(
         .get_knowledge_base_monitoring(
             &knowledge,
             &QwenKnowledgeMonitoringRequest::new(1_780_900_000, 1_780_900_060),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -183,7 +179,7 @@ async fn monitoring_rejects_cross_scope_references_before_sending() {
     let request = QwenKnowledgeMonitoringRequest::new(1_780_900_000, 1_780_900_060);
 
     let error = service
-        .get_knowledge_base_monitoring(&foreign_knowledge, &request)
+        .get_knowledge_base_monitoring(&foreign_knowledge, &request, &request_options())
         .await
         .expect_err("monitoring must remain bound to the service scope");
 
@@ -204,7 +200,7 @@ async fn monitoring_rejects_invalid_windows_before_sending() {
 
     for request in [&too_long, &reversed] {
         let error = service
-            .get_knowledge_base_monitoring(&knowledge, request)
+            .get_knowledge_base_monitoring(&knowledge, request, &request_options())
             .await
             .expect_err("invalid monitoring windows must not be sent");
         assert!(matches!(error, QwenKnowledgeError::InvalidInput(_)));
@@ -222,7 +218,7 @@ async fn monitoring_requires_the_documented_data_object_and_keeps_response_conte
     let request = QwenKnowledgeMonitoringRequest::new(1_780_900_000, 1_780_900_060);
 
     let error = service
-        .get_knowledge_base_monitoring(&knowledge, &request)
+        .get_knowledge_base_monitoring(&knowledge, &request, &request_options())
         .await
         .expect_err("the documented successful envelope requires data");
 
@@ -234,5 +230,12 @@ async fn monitoring_requires_the_documented_data_object_and_keeps_response_conte
             assert_eq!(*native, body);
         }
         other => panic!("expected invalid response, got {other}"),
+    }
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-key-test".to_owned())),
+        ..Default::default()
     }
 }

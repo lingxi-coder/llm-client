@@ -5,8 +5,8 @@
 ```rust,ignore
 use bytes::Bytes;
 use lingxi_llm_client::{
-    audio::AudioInput,
-    openrouter_audio::{
+    providers::openai::audio::AudioInput,
+    providers::openrouter::audio::{
         OpenRouterInputAudioFormat, OpenRouterTranscriptionEncoding,
         OpenRouterTranscriptionRequest,
     },
@@ -21,8 +21,9 @@ let mut request = OpenRouterTranscriptionRequest::new(
 request.encoding = OpenRouterTranscriptionEncoding::Base64Json;
 request.language = Some("en".into());
 
-let transcript = client
-    .openrouter_audio()
+let provider = client.provider::<lingxi_llm_client::providers::openrouter::OpenRouterClient>("openrouter")?;
+let transcript = provider
+    .audio()
     .transcribe(audio, &request, &options)
     .await?;
 println!("{}", transcript.text);
@@ -31,7 +32,7 @@ println!("{}", transcript.text);
 STT supports two explicit request formats. `Base64Json` encodes audio as `input_audio.data` and declares its format as `input_audio.format`: `wav`, `mp3`, `flac`, `m4a`, `ogg`, `webm`, or `aac`. `Multipart` sends `file` and `model` fields and is limited to 25 MB. Multipart uploads stream the one-shot `AudioInput.body` using its declared `size_bytes`; use a `Transport` that implements `send_stream`. A short, long, or interrupted source stream is not retried and can leave the provider outcome unknown. This crate caps its buffered JSON path at 50 MB. Both formats return JSON; `OpenRouterTranscription` preserves the transcript, optional usage, `X-Generation-Id`, and full native JSON. Request `verbose_json` to ask for provider-supported timestamps. The current multipart contract does not carry `provider` passthrough; use base64 JSON for those options.
 
 ```rust,ignore
-use lingxi_llm_client::openrouter_audio::{
+use lingxi_llm_client::providers::openrouter::audio::{
     OpenRouterInputAudioFormat, OpenRouterSpeechFormat, OpenRouterSpeechInputReferences,
     OpenRouterSpeechRequest,
 };
@@ -47,8 +48,9 @@ request.input_references = Some(
         .with_transcript("Transcript of the reference sample."),
 );
 
-let output = client
-    .openrouter_audio()
+let provider = client.provider::<lingxi_llm_client::providers::openrouter::OpenRouterClient>("openrouter")?;
+let output = provider
+    .audio()
     .speak(&request, &options)
     .await?;
 save_audio(output.content_type, output.bytes).await?;

@@ -77,7 +77,7 @@ impl ClientSnapshot {
             }
             accumulator.add_framing(8);
         }
-        if !request.anthropic_client_toolsets.is_empty() {
+        if !request.anthropic_client_toolsets().is_empty() {
             accumulator.omit(LocalTokenEstimateOmission::ProviderClientToolsetDefinitions);
         }
 
@@ -305,12 +305,13 @@ mod tests {
     use crate::protocol::ProviderId;
     #[cfg(feature = "tokenizer-deepseek")]
     use crate::protocol::{
-        ContinuationRef, FileSearchConfig, ResponseId, SystemBlock, ThinkingConfig, ToolSpec,
-        WebSearchConfig,
+        ContinuationRef, ResponseId, SystemBlock, ThinkingConfig, ToolSpec, WebSearchConfig,
     };
     use crate::protocol::{ConversationMessage, ToolChoice};
     #[cfg(feature = "tokenizer-openai")]
-    use crate::token_count::backends::openai_encoder;
+    use crate::providers::openai::token_count::openai_encoder;
+    #[cfg(feature = "tokenizer-deepseek")]
+    use crate::providers::qwen::types::FileSearchConfig;
     #[cfg(feature = "tokenizer-deepseek")]
     use serde_json::json;
 
@@ -374,18 +375,21 @@ mod tests {
             output_format: Default::default(),
             service_tier: None,
             model: "deepseek-flash".to_owned(),
-            anthropic_client_toolsets: Vec::new(),
+            native_options: Vec::new(),
             hosted_tools: vec![
                 crate::protocol::HostedTool::WebSearch(WebSearchConfig::default()),
-                crate::protocol::HostedTool::FileSearch(FileSearchConfig {
+                crate::providers::qwen::native::QwenHostedTool::FileSearch(FileSearchConfig {
                     knowledge_base_id: "kb-1".to_owned(),
                     workspace_id: "workspace-1".to_owned(),
-                }),
-                crate::protocol::HostedTool::AnthropicToolSearch(
-                    crate::protocol::AnthropicToolSearchConfig {
-                        strategy: crate::protocol::AnthropicToolSearchStrategy::Bm25,
+                })
+                .into(),
+                crate::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+                    crate::providers::anthropic::types::AnthropicToolSearchConfig {
+                        strategy:
+                            crate::providers::anthropic::types::AnthropicToolSearchStrategy::Bm25,
                     },
-                ),
+                )
+                .into(),
             ],
             continuation: Some(ContinuationRef {
                 response_id: ResponseId::new("resp_previous"),
@@ -411,7 +415,7 @@ mod tests {
                     thought_signature: None,
                 }]),
                 ConversationMessage {
-                    anthropic: None,
+                    native_options: Vec::new(),
                     role: MessageRole::User,
                     content: vec![
                         ContentBlock::ToolResult {
@@ -470,7 +474,7 @@ mod tests {
                 }),
                 strict: true,
                 defer_loading: false,
-                allowed_callers: vec![],
+                native_options: Vec::new(),
             }],
             tool_choice: ToolChoice::Tool {
                 name: "lookup".to_owned(),
@@ -512,9 +516,9 @@ mod tests {
 
         let mut output_cap_changed = request.clone();
         let mut with_toolset = request.clone();
-        with_toolset.anthropic_client_toolsets.push(
-            crate::protocol::AnthropicClientToolset::Browser(Default::default()),
-        );
+        with_toolset.set_anthropic_client_toolsets(vec![
+            crate::providers::anthropic::types::AnthropicClientToolset::Browser(Default::default()),
+        ]);
         let toolset_estimate = client.estimate_local_tokens(&with_toolset).unwrap();
         assert!(toolset_estimate.is_partial);
         assert!(toolset_estimate
@@ -539,7 +543,7 @@ mod tests {
             output_format: Default::default(),
             service_tier: None,
             model: "gpt-6-astra".to_owned(),
-            anthropic_client_toolsets: Vec::new(),
+            native_options: Vec::new(),
             hosted_tools: vec![],
             continuation: None,
             system: Vec::new(),

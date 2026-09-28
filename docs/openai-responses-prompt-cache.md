@@ -9,10 +9,8 @@ OpenAI Responses 的原生缓存字段位于 `ChatRequest.prompt_cache`，只会
 #     "system":[{"text":"Stable system policy"}],
 #     "messages":[{"role":"user","content":[{"type":"text","text":"Question"}]}]
 # })).unwrap();
-use lingxi_llm_client::protocol::{
-    CacheBreakpoint, CachePosition, CacheTtl, OpenAiPromptCacheMode,
-    OpenAiPromptCacheOptions, OpenAiPromptCacheTtl,
-};
+use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, OpenAiPromptCacheMode,
+    OpenAiPromptCacheOptions, OpenAiPromptCacheTtl};
 
 request.prompt_cache.prompt_cache_key = Some("support:customer-17".into());
 request.prompt_cache.prompt_cache_options = Some(OpenAiPromptCacheOptions {

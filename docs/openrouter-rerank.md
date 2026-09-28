@@ -10,7 +10,7 @@ OpenRouter 的 [RAG 指南](https://openrouter.ai/docs/cookbook/evaluate-and-opt
 
 ```rust,ignore
 use lingxi_llm_client::{
-    openrouter_rerank::{
+    providers::openrouter::rerank::{
         OpenRouterRerankRequest, OpenRouterRerankScope, OpenRouterRerankService,
         OPENROUTER_RERANK_ENDPOINT,
     },

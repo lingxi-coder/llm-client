@@ -8,7 +8,7 @@ This is not a Zhipu-hosted cloud ASR API. The caller runs the GLM-ASR SGLang ser
 
 ```rust,no_run
 use lingxi_llm_client::{
-    glm_audio::{GlmAsrRequest, GlmAsrRoute, GlmAsrScope},
+    providers::zhipu::audio::{GlmAsrRequest, GlmAsrRoute, GlmAsrScope},
     protocol::Secret,
     LlmClient,
 };
@@ -19,9 +19,14 @@ async fn transcribe(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let route = GlmAsrRoute::new("http://127.0.0.1:8000/v1")?;
     let scope = GlmAsrScope::new("glm-asr-local", "local-model-host-1", &route)?;
-    let service = client.glm_asr(Secret::new(api_key), route, scope)?;
+    let provider = client.provider::<lingxi_llm_client::providers::zhipu::ZhipuClient>(scope.profile_name())?;
+    let request_options = lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new(api_key)),
+        ..Default::default()
+    };
+    let service = provider.asr(route, scope)?;
     let result = service
-        .transcribe(&GlmAsrRequest::new("example_zh.wav")?)
+        .transcribe(&GlmAsrRequest::new("example_zh.wav")?, &request_options)
         .await?;
     Ok(result.text)
 }

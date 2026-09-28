@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    openrouter_rerank::{
+    protocol::{LlmError, Secret},
+    providers::openrouter::rerank::{
         OpenRouterRerankDispatch, OpenRouterRerankError, OpenRouterRerankRequest,
         OpenRouterRerankScope, OpenRouterRerankService, OPENROUTER_RERANK_ENDPOINT,
     },
-    protocol::{LlmError, Secret},
     HttpRequest, RequestOptions, StreamResponse, Transport,
 };
 use serde_json::{json, Value};

@@ -3,12 +3,12 @@ use bytes::{Bytes, BytesMut};
 use futures::{StreamExt, TryStreamExt};
 use lingxi_llm_client::{
     files::UploadFile,
-    openai_containers::{
+    protocol::{LlmError, Secret},
+    providers::openai::containers::{
         OpenAiContainerCreateRequest, OpenAiContainerFileListOptions, OpenAiContainerListOptions,
         OpenAiContainerMemoryLimit, OpenAiContainerOrder, OpenAiContainerScope,
         OpenAiContainersError, OpenAiContainersService,
     },
-    protocol::{LlmError, Secret},
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -295,7 +295,7 @@ async fn container_id_from_responses_can_be_bound_and_foreign_scope_is_rejected(
     assert!(foreign.requests().is_empty());
 
     let scope = OpenAiContainerScope::new("openai-production", "account-a").unwrap();
-    let rebound = lingxi_llm_client::openai_containers::OpenAiContainerRef::from_id(
+    let rebound = lingxi_llm_client::providers::openai::containers::OpenAiContainerRef::from_id(
         &scope,
         "cntr_from_response",
     )

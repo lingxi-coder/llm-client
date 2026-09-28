@@ -32,7 +32,7 @@ pub fn response(
             content.push(block);
         }
     }
-    Ok(ChatResponse {
+    let mut response = ChatResponse {
         inference: Default::default(),
         response_cache: None,
         web_search: crate::codecs::web_search_decode::with_usage(
@@ -40,24 +40,9 @@ pub fn response(
             body.get("usage"),
         ),
         file_search: None,
-        anthropic_usage: retain_anthropic_container
-            .then(|| body.get("usage"))
-            .flatten()
-            .cloned(),
-        anthropic_container: retain_anthropic_container
-            .then(|| body.get("container"))
-            .flatten()
-            .filter(|container| !container.is_null())
-            .cloned()
-            .map(|envelope| crate::protocol::AnthropicContainerMetadata { envelope }),
-        openrouter_container: retain_openrouter_container
-            .then(|| body.get("container"))
-            .flatten()
-            .filter(|container| !container.is_null())
-            .cloned()
-            .map(|envelope| crate::protocol::OpenRouterContainerMetadata { envelope }),
+        native_metadata: Vec::new(),
         message: ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content,
         },
@@ -79,7 +64,33 @@ pub fn response(
             .map(crate::protocol::ResponseId::new),
         continuation: None,
         executed_profile: None,
-    })
+    };
+    if retain_anthropic_container {
+        response.set_anthropic_metadata(
+            body.get("container")
+                .filter(|container| !container.is_null())
+                .cloned()
+                .map(
+                    |envelope| crate::providers::anthropic::types::AnthropicContainerMetadata {
+                        envelope,
+                    },
+                ),
+            body.get("usage").cloned(),
+        );
+    }
+    if retain_openrouter_container {
+        response.set_openrouter_container(
+            body.get("container")
+                .filter(|container| !container.is_null())
+                .cloned()
+                .map(
+                    |envelope| crate::providers::openrouter::types::OpenRouterContainerMetadata {
+                        envelope,
+                    },
+                ),
+        );
+    }
+    Ok(response)
 }
 
 /// An unknown complete content block is retained as native provider content.

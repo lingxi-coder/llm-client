@@ -2,11 +2,11 @@
 
 `gemini_batch` exposes Gemini Developer API `generateContent` Batch operations for inline requests and JSONL files: create, update, get, one-page list, cancel, delete, and inline or file-backed results. A separate typed lifecycle supports asynchronous `EmbedContent` batches, typed inline item results, and incremental typed JSONL result rows. File input uses the documented resumable Gemini Files API upload. The service stores only the transport and non-secret scope; the host passes `&Secret<String>` to every operation and owns credential refresh and rotation. The service does not automatically poll, paginate, or retry. Generation JSONL output remains raw bytes; embedding JSONL output is decoded one row at a time.
 
-Routes and JSON shapes follow Google's [Batch API guide](https://ai.google.dev/gemini-api/docs/batch-api), [Batch API REST reference](https://ai.google.dev/api/batch-api), and [Files API reference](https://ai.google.dev/api/files): create with `POST /v1beta/models/{model}:batchGenerateContent`; update with `PATCH /v1beta/batches/{batchId}:updateGenerateContentBatch`; get with `GET /v1beta/batches/{batchId}`; list with `GET /v1beta/batches?pageSize=...&pageToken=...`; cancel with `POST /v1beta/batches/{batchId}:cancel`; and delete with `DELETE /v1beta/batches/{batchId}`. The API key is sent in `x-goog-api-key`.
+Routes and JSON shapes follow Google's [Batch API guide](https://ai.google.dev/gemini-api/docs/batch-api), [Batch API REST reference](https://ai.google.dev/api/batch-api), and [Files API reference](https://ai.google.dev/api/files): create with `POST /v1beta/models/{model}:batchGenerateContent`; update with `PATCH /v1beta/batches/{batchId}:updateGenerateContentBatch`; get with `GET /v1beta/batches/{batchId}`; list with `GET /v1beta/batches?pageSize=...&pageToken=...`; cancel with `POST /v1beta/batches/{batchId}:cancel`; and delete with `DELETE /v1beta/batches/{batchId}`. A standalone service sends its API key in `x-goog-api-key`; a service bound through `GoogleClient::batch(scope)` uses the profile's registered authenticator.
 
 ```rust,no_run
 use lingxi_llm_client::{
-    gemini_batch::{
+    providers::google::batch::{
         GeminiBatchCreateRequest, GeminiBatchError, GeminiBatchGenerateContentRequest,
         GeminiBatchInput, GeminiBatchListOptions, GeminiBatchRequest, GeminiBatchScope,
         GeminiBatchService,
@@ -68,7 +68,7 @@ For file input, each JSONL line has a unique caller-supplied `key` and one nativ
 
 ```rust,no_run
 use futures::StreamExt;
-use lingxi_llm_client::gemini_batch::{
+use lingxi_llm_client::providers::google::batch::{
     GeminiBatchCreateRequest, GeminiBatchError, GeminiBatchFileRef,
     GeminiBatchGenerateContentRequest, GeminiBatchInput, GeminiBatchJsonlInput,
     GeminiBatchJsonlRequest, GeminiBatchScope, GeminiBatchService, GeminiBatchState,
@@ -134,7 +134,7 @@ Batch creation, update, deletion, and file upload are not automatically retried.
 `update_generate_content_batch` sends the documented `PATCH /v1beta/batches/{batchId}:updateGenerateContentBatch` request. `GeminiBatchUpdateRequest` encodes the required resource fields `model`, `displayName`, and `inputConfig`; optional `priority` is an int64 serialized as a decimal string, and negative priorities are documented as valid. `updateMask` is optional and accepts the resource field names `model`, `displayName`, `inputConfig`, and `priority`. For file input, the resource body uses `inputConfig.fileName`. Inline update resources use the same client-side 20,000,000-byte cap as inline create requests; use a file input for larger batches. Google returns a `GenerateContentBatch` resource directly, so the client checks its name against the scoped reference and decodes its required fields. Transport errors or malformed 2xx responses return `OutcomeUnknown` or `OutcomeUnknownResponse` with the reference; no retry occurs. The REST reference documents no additional priority range or batch-state precondition, so the client adds none.
 
 ```rust,no_run
-use lingxi_llm_client::gemini_batch::{
+use lingxi_llm_client::providers::google::batch::{
     GeminiBatchError, GeminiBatchGenerateContentRequest, GeminiBatchInput,
     GeminiBatchRequest, GeminiBatchSnapshot, GeminiBatchUpdateField,
     GeminiBatchUpdateRequest, GeminiBatchService,
@@ -177,7 +177,7 @@ The same service exposes the separate asynchronous `EmbedContent` Batch operatio
 
 ```rust,no_run
 use lingxi_llm_client::{
-    gemini_batch::{
+    providers::google::batch::{
         GeminiBatchEmbeddingConfig, GeminiBatchEmbedContentItem,
         GeminiBatchEmbedContentRequest, GeminiBatchListOptions,
         GeminiEmbeddingBatchCreateRequest, GeminiEmbeddingBatchInput,
@@ -237,7 +237,7 @@ async fn embed_corpus(
 For file input, build keyed native `EmbedContentRequest` rows with `GeminiEmbeddingBatchJsonlInput`, then call `upload_embedding_input_jsonl`. The encoder validates unique, non-empty keys and the documented 2 GB file limit before starting upload. The returned `GeminiEmbeddingBatchFileRef` carries the model, request keys in input order, and output dimensions; pass it through `GeminiEmbeddingBatchInput::from_file` to create the job. `upload_embedding_input_stream` remains available when the host already has a JSONL stream.
 
 ```rust,no_run
-use lingxi_llm_client::gemini_batch::{
+use lingxi_llm_client::providers::google::batch::{
     GeminiBatchEmbeddingConfig, GeminiBatchEmbedContentRequest,
     GeminiEmbeddingBatchCreateRequest, GeminiEmbeddingBatchInput,
     GeminiEmbeddingBatchJsonlInput, GeminiEmbeddingBatchJsonlRequest,

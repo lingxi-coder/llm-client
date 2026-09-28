@@ -2,14 +2,14 @@
 
 [English](qwen-knowledge.en.md)
 
-`client.qwen_knowledge(api_key, scope)` 提供阿里云 Model Studio（百炼）RAG REST 工作空间内的知识库、文档和导入任务操作，并保留原有低层 `retrieve`。知识库、文档和导入任务引用都绑定 account scope、profile、地域、workspace 和知识库 ID，不能跨连接或知识库复用。
+`client.provider::<QwenClient>(profile)?.knowledge(scope)` 提供阿里云 Model Studio（百炼）RAG REST 工作空间内的知识库、文档和导入任务操作，并保留原有低层 `retrieve`。知识库、文档和导入任务引用都绑定 account scope、profile、地域、workspace 和知识库 ID，不能跨连接或知识库复用。
 
 当前 REST API 总览只文档化北京的工作空间地址：`https://{workspace_id}.cn-beijing.maas.aliyuncs.com`。`QwenKnowledgeRegion::Singapore` 仍可用于描述引用来源，但此服务会在发送任何 RAG REST 请求前拒绝新加坡地域，不会猜测端点。这个限制覆盖检索、读操作和写操作。
 
 ```rust,ignore
 use lingxi_llm_client::{
     protocol::Secret,
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeCreateRequest, QwenKnowledgeDocumentPageRequest,
         QwenKnowledgeRegion, QwenKnowledgeScope,
     },
@@ -21,7 +21,12 @@ let scope = QwenKnowledgeScope::new(
     QwenKnowledgeRegion::Beijing,
     "llm-your-workspace-id",
 )?;
-let service = client.qwen_knowledge(Secret::new(api_key), scope)?;
+let provider = client.provider::<lingxi_llm_client::providers::qwen::QwenClient>(scope.profile_name())?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let service = provider.knowledge(scope)?;
 
 // create_v2 同时创建知识库并提交初始文件索引任务。
 let created = service
@@ -29,17 +34,18 @@ let created = service
         "Returns",
         "Return policy documents",
         ["registered-file-id"],
-    ))
+    ), &request_options)
     .await?;
 
 // 后续操作由调用方分别触发；该服务不会自动轮询导入任务。
 let documents = service
-    .list_documents(&created.knowledge, QwenKnowledgeDocumentPageRequest::default())
+    .list_documents(&created.knowledge, QwenKnowledgeDocumentPageRequest::default(), &request_options)
     .await?;
 let import = service
     .get_import_job_status(
         &created.job,
         QwenKnowledgeDocumentPageRequest::default(),
+        &request_options,
     )
     .await?;
 let _ = (documents, import);
@@ -72,7 +78,7 @@ let _ = (documents, import);
 use lingxi_llm_client::{
     files::UploadFileStream,
     protocol::LlmError,
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeFileUploadRequest, QwenKnowledgeParser,
         QwenKnowledgeRegisterFileRequest, QwenKnowledgeService,
         QwenKnowledgeError,
@@ -80,6 +86,7 @@ use lingxi_llm_client::{
 };
 
 async fn upload_file(
+    request_options: &lingxi_llm_client::RequestOptions,
     service: &QwenKnowledgeService<'_>,
     content_md5: &str,
 ) -> Result<(), QwenKnowledgeError> {
@@ -89,7 +96,7 @@ async fn upload_file(
             "guide.md",
             11,
             content_md5, // 调用方预先计算的摘要字符串
-        ))
+        ), request_options)
         .await?;
     service
         .upload_file_content(
@@ -100,15 +107,17 @@ async fn upload_file(
                 11,
                 futures::stream::iter([Ok::<_, LlmError>(b"hello world".to_vec().into())]),
             ),
+            request_options,
         )
         .await?;
     let registered = service
         .register_file(
             &lease,
             &QwenKnowledgeRegisterFileRequest::new(QwenKnowledgeParser::AutoSelect),
+            request_options,
         )
         .await?;
-    let details = service.describe_file(&registered.reference).await?;
+    let details = service.describe_file(&registered.reference, request_options).await?;
     let _ = details;
     Ok(())
 }
@@ -138,12 +147,13 @@ async fn upload_file(
 
 ```rust,no_run
 # async fn example(
-#     service: &lingxi_llm_client::qwen_knowledge::QwenKnowledgeService<'_>,
-#     knowledge: &lingxi_llm_client::qwen_knowledge::QwenKnowledgeRef,
+#     request_options: &lingxi_llm_client::RequestOptions,
+#     service: &lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeService<'_>,
+#     knowledge: &lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeRef,
 # ) -> Result<(), Box<dyn std::error::Error>> {
-use lingxi_llm_client::qwen_knowledge::QwenKnowledgeMonitoringRequest;
+use lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeMonitoringRequest;
 let window = QwenKnowledgeMonitoringRequest::new(1_750_000_000, 1_750_086_400);
-let result = service.get_knowledge_base_monitoring(knowledge, &window).await?;
+let result = service.get_knowledge_base_monitoring(knowledge, &window, request_options).await?;
 let _ = (result.data, result.request_id);
 # Ok(())
 # }

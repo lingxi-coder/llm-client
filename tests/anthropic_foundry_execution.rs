@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{
     files::{FilePurpose, FileService, UploadFile},
     protocol::*,
@@ -46,9 +47,12 @@ fn request() -> ChatRequest {
         "messages":[{"role":"user","content":[{"type":"text","text":"Compute 6 times 7."}]}]
     }))
     .unwrap();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(Default::default()));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
+            Default::default(),
+        )
+        .into(),
+    );
     request
 }
 
@@ -81,7 +85,12 @@ fn programmatic_tool() -> ToolSpec {
         input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![AnthropicToolCaller::CodeExecution20260120],
+        native_options: vec![lingxi_llm_client::protocol::NativeExtension::from_typed(
+            lingxi_llm_client::providers::anthropic::native::AnthropicToolOptions {
+                allowed_callers: vec![AnthropicToolCaller::CodeExecution20260120],
+            },
+        )
+        .unwrap()],
     }
 }
 
@@ -173,11 +182,11 @@ fn container_reuse_binds_foundry_resource_account_deployment_and_underlying_mode
 
     let reference = AnthropicContainerRef::new("container_foundry", scope).unwrap();
     let mut request = request();
-    if let HostedTool::AnthropicCodeExecution(config) = &mut request.hosted_tools[0] {
+    request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
         config.container = Some(reference);
-    } else {
-        unreachable!();
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     let (_, body) = encode(&request, &profile).unwrap();
     assert_eq!(body["container"], "container_foundry");
 
@@ -272,14 +281,16 @@ fn foundry_container_scope_is_explicit_and_rejects_other_routes() {
 fn foundry_file_references_are_resource_and_account_scoped_not_model_scoped() {
     let profile = profile(FoundryHosting::Anthropic, MODEL_ID);
     let mut request = request();
-    if let HostedTool::AnthropicCodeExecution(config) = &mut request.hosted_tools[0] {
+    request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
         config.files.push(foundry_file(
             ENDPOINT,
             ACCOUNT,
             ProtocolFamily::FoundryClaude,
             "foundry_file_123",
         ));
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     let (_, body) = encode(&request, &profile).unwrap();
     assert!(
         body["messages"][0]["content"]
@@ -349,9 +360,11 @@ async fn foundry_file_service_upload_reference_is_usable_by_code_execution() {
     assert_eq!(uploaded.expires_at.as_deref(), Some("2099-01-01T00:00:00Z"));
 
     let mut request = request();
-    if let HostedTool::AnthropicCodeExecution(config) = &mut request.hosted_tools[0] {
+    request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
         config.files.push(uploaded.model_reference());
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     let (_, body) = encode(&request, &foundry_profile).unwrap();
     assert!(body["messages"][0]["content"]
         .as_array()
@@ -394,9 +407,11 @@ fn foundry_file_references_reject_other_resource_route_protocol_and_account() {
     ];
     for file in mismatched {
         let mut request = request();
-        if let HostedTool::AnthropicCodeExecution(config) = &mut request.hosted_tools[0] {
+        request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
             config.files.push(file);
-        }
+        } else { unreachable!(); }
+    }).unwrap();
         assert!(matches!(
             encode(&request, &foundry_profile),
             Err(LlmError::UnsupportedCapability { .. })
@@ -404,7 +419,8 @@ fn foundry_file_references_reject_other_resource_route_protocol_and_account() {
     }
 
     let mut duplicate_request = request();
-    if let HostedTool::AnthropicCodeExecution(config) = &mut duplicate_request.hosted_tools[0] {
+    duplicate_request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
         let duplicate = foundry_file(
             ENDPOINT,
             ACCOUNT,
@@ -412,14 +428,16 @@ fn foundry_file_references_reject_other_resource_route_protocol_and_account() {
             "file_duplicate",
         );
         config.files.extend([duplicate.clone(), duplicate]);
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     assert!(matches!(
         encode(&duplicate_request, &foundry_profile),
         Err(LlmError::InvalidRequest { .. })
     ));
 
     let mut expired_request = request();
-    if let HostedTool::AnthropicCodeExecution(config) = &mut expired_request.hosted_tools[0] {
+    expired_request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
         let mut expired = foundry_file(
             ENDPOINT,
             ACCOUNT,
@@ -428,7 +446,8 @@ fn foundry_file_references_reject_other_resource_route_protocol_and_account() {
         );
         expired.expires_at = Some("0".into());
         config.files.push(expired);
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     assert!(matches!(
         encode(&expired_request, &foundry_profile),
         Err(LlmError::InvalidRequest { .. })
@@ -436,14 +455,16 @@ fn foundry_file_references_reject_other_resource_route_protocol_and_account() {
 
     let azure = profile(FoundryHosting::Azure, MODEL_ID);
     let mut azure_request = request();
-    if let HostedTool::AnthropicCodeExecution(config) = &mut azure_request.hosted_tools[0] {
+    azure_request.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool {
         config.files.push(foundry_file(
             ENDPOINT,
             ACCOUNT,
             ProtocolFamily::FoundryClaude,
             "file_azure",
         ));
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     assert!(matches!(
         encode(&azure_request, &azure),
         Err(LlmError::UnsupportedCapability { .. })
@@ -463,9 +484,9 @@ fn foundry_anthropic_host_response_and_stream_keep_container_and_usage_metadata(
     let decoded = FoundryClaudeCodec
         .decode_response(&http, &complete_context)
         .unwrap();
-    assert_eq!(decoded.anthropic_container.unwrap().envelope, container);
+    assert_eq!(decoded.anthropic_container().unwrap().envelope, container);
     assert_eq!(
-        decoded.anthropic_usage.unwrap()["server_tool_use"]["code_execution_requests"],
+        decoded.anthropic_usage().unwrap()["server_tool_use"]["code_execution_requests"],
         1
     );
 

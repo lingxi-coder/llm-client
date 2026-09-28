@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use lingxi_llm_client::protocol::{LlmError, ProviderProfile, Secret};
+use lingxi_llm_client::providers::qwen::account::AlibabaAccessKey;
 use lingxi_llm_client::{
-    builtin_providers, AccountIdentity, AccountMetric, AccountQuery, AlibabaAccessKey, HttpRequest,
-    HttpResponse, LlmClientBuilder, StreamResponse, Transport,
+    builtin_providers, AccountIdentity, AccountMetric, AccountQuery, HttpRequest, HttpResponse,
+    LlmClientBuilder, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
 use std::collections::VecDeque;

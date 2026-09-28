@@ -6,7 +6,7 @@
 use lingxi_llm_client::{
     HttpTransport, RequestOptions,
     protocol::Secret,
-    qwen_asr::{
+    providers::qwen::asr::{
         QwenAsrRegion, QwenAsrRequest, QwenAsrScope, QwenAsrService,
     },
 };
@@ -59,7 +59,7 @@ Qwen Audio 3.x Filetrans 使用另一套契约：通过 `submit_audio_filetrans`
 
 ```rust,no_run
 use lingxi_llm_client::{
-    qwen_asr::{
+    providers::qwen::asr::{
         QwenAsrService, QwenAudioAsrModel, QwenAudioAsrParameters,
         QwenAudioAsrRequest,
     },

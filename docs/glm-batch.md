@@ -2,13 +2,13 @@
 
 [English](glm-batch.en.md)
 
-`LlmClient::glm_batch()` 提供智谱 GLM 原生 Batch 的受限生命周期：上传 JSONL 输入、提交 24 小时任务、单次读取状态、列出一页任务、请求取消，以及流式读取成功或错误结果文件。当前只开放智谱官方 Java SDK 示例中的 `/v4/chat/completions` endpoint；JSONL 行使用 `custom_id`、`method`、`url`、`body` 字段。官方示例使用 `24h` completion window。参考[智谱官方 SDK 的 Batch 示例](https://github.com/MetaGLM/zhipuai-sdk-java-v4#batch-processing)、[智谱 API 介绍](https://docs.bigmodel.cn/cn/api/introduction)、[列出批处理任务 API](https://docs.bigmodel.cn/api-reference/批处理-api/列出批处理任务)和[官方 OpenAPI 规范](https://docs.bigmodel.cn/openapi/openapi.json)。
+`client.provider::<ZhipuClient>(profile)?.batch(scope)` 提供智谱 GLM 原生 Batch 的受限生命周期：上传 JSONL 输入、提交 24 小时任务、单次读取状态、列出一页任务、请求取消，以及流式读取成功或错误结果文件。当前只开放智谱官方 Java SDK 示例中的 `/v4/chat/completions` endpoint；JSONL 行使用 `custom_id`、`method`、`url`、`body` 字段。官方示例使用 `24h` completion window。参考[智谱官方 SDK 的 Batch 示例](https://github.com/MetaGLM/zhipuai-sdk-java-v4#batch-processing)、[智谱 API 介绍](https://docs.bigmodel.cn/cn/api/introduction)、[列出批处理任务 API](https://docs.bigmodel.cn/api-reference/批处理-api/列出批处理任务)和[官方 OpenAPI 规范](https://docs.bigmodel.cn/openapi/openapi.json)。
 
 服务固定使用中国大陆 BigModel API 根 `https://open.bigmodel.cn/api/paas/v4`。`GlmBatchRegion::International` 会在创建 scope 时被拒绝：当前[官方 Z.AI 文档索引](https://docs.z.ai/llms.txt)没有发布 Batch lifecycle，因此本模块不把中国区路由或凭据用于国际区。智谱官方 SDK 文档列出的同步和 Batch 示例支持此接口族，但该模块不把 Z.AI 国际端点视作已验证的 Batch 服务。
 
 ```rust,no_run
 use lingxi_llm_client::{
-    glm_batch::{
+    providers::zhipu::batch::{
         GlmBatchChatRequest, GlmBatchInput, GlmBatchLine, GlmBatchMessage,
         GlmBatchMetadata, GlmBatchRegion, GlmBatchScope,
     },
@@ -26,7 +26,12 @@ async fn submit_glm_batch(
         "zhipu-account-42",
         GlmBatchRegion::ChinaMainland,
     )?;
-    let service = client.glm_batch(Secret::new(api_key), scope)?;
+    let provider = client.provider::<lingxi_llm_client::providers::zhipu::ZhipuClient>(scope.profile_name())?;
+    let request_options = lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new(api_key)),
+        ..Default::default()
+    };
+    let service = provider.batch(scope)?;
     let body = GlmBatchChatRequest::new(
         "glm-5.3",
         vec![GlmBatchMessage {
@@ -35,9 +40,9 @@ async fn submit_glm_batch(
         }],
     )?;
     let input = GlmBatchInput::new(vec![GlmBatchLine::new("record-1", body)?])?;
-    let input_file = service.upload_input(&input).await?;
+    let input_file = service.upload_input(&input, &request_options).await?;
     let job = service
-        .submit(&input_file, &GlmBatchMetadata::default())
+        .submit(&input_file, &GlmBatchMetadata::default(), &request_options)
         .await?;
     Ok(job.reference.batch_id().to_owned())
 }

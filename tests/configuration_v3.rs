@@ -99,7 +99,7 @@ async fn inference_facts_and_prices_preserve_override_provenance_across_sync_and
     c_config.sync_provider("p", None).await.unwrap();
     let id = row(&c_config, "m").await;
     let c_view = c.snapshot();
-    let features = &c_view.provider("p").unwrap().models[0].info.features;
+    let features = &c_view.profile("p").unwrap().models[0].info.features;
     assert_eq!(features.budget.min_tokens, Some(1024));
     assert_eq!(features.fast, CapabilitySupport::Supported);
     assert_eq!(
@@ -123,7 +123,7 @@ async fn inference_facts_and_prices_preserve_override_provenance_across_sync_and
     let (reloaded, reloaded_config) = client(&[p], http);
     reloaded_config.set_config_dir(&d.0).await.unwrap();
     let reloaded_view = reloaded.snapshot();
-    let row = &reloaded_view.provider("p").unwrap().models[0];
+    let row = &reloaded_view.profile("p").unwrap().models[0];
     assert_eq!(row.info.features, override_features);
     assert_eq!(row.info.pricing, row.pricing);
     assert_eq!(
@@ -140,7 +140,7 @@ async fn inference_facts_and_prices_preserve_override_provenance_across_sync_and
         .await
         .unwrap();
     assert_eq!(
-        reloaded.snapshot().provider("p").unwrap().models[0]
+        reloaded.snapshot().profile("p").unwrap().models[0]
             .info
             .features,
         InferenceFeatures {
@@ -161,7 +161,7 @@ async fn inference_facts_and_prices_preserve_override_provenance_across_sync_and
         .await
         .unwrap();
     let reloaded_view = reloaded.snapshot();
-    let features = &reloaded_view.provider("p").unwrap().models[0].info.features;
+    let features = &reloaded_view.profile("p").unwrap().models[0].info.features;
     assert_eq!(features.fast, CapabilitySupport::Supported);
     assert_eq!(
         features.effort.levels,
@@ -171,7 +171,7 @@ async fn inference_facts_and_prices_preserve_override_provenance_across_sync_and
         .set_model_override("p", &id, ModelField::Pricing, FieldOverride::Clear)
         .await
         .unwrap();
-    assert!(reloaded.snapshot().provider("p").unwrap().models[0]
+    assert!(reloaded.snapshot().profile("p").unwrap().models[0]
         .info
         .pricing
         .is_none());
@@ -180,7 +180,7 @@ async fn inference_facts_and_prices_preserve_override_provenance_across_sync_and
         .await
         .unwrap();
     assert_eq!(
-        reloaded.snapshot().provider("p").unwrap().models[0]
+        reloaded.snapshot().profile("p").unwrap().models[0]
             .info
             .pricing
             .as_ref()
@@ -215,10 +215,10 @@ async fn inherited_fields_follow_catalog_and_reset_is_field_specific() {
     newer.metadata.context_window_tokens = Some(300);
     let (b, b_config) = client(&[profile(vec![newer.clone()])], http.clone());
     let b_view = b.snapshot();
-    let newer = b_view.provider("p").unwrap().models[0].clone();
+    let newer = b_view.profile("p").unwrap().models[0].clone();
     b_config.set_config_dir(&d.0).await.unwrap();
     let b_view = b.snapshot();
-    let current = &b_view.provider("p").unwrap().models[0];
+    let current = &b_view.profile("p").unwrap().models[0];
     assert_eq!(current.description.as_deref(), Some("mine"));
     assert_eq!(current.pricing, newer.pricing);
     assert_eq!(current.metadata.context_window_tokens, Some(300));
@@ -226,7 +226,7 @@ async fn inherited_fields_follow_catalog_and_reset_is_field_specific() {
         .clear_model_override("p", &id, ModelField::Description)
         .await
         .unwrap();
-    assert_eq!(b.snapshot().provider("p").unwrap().models[0], newer);
+    assert_eq!(b.snapshot().profile("p").unwrap().models[0], newer);
     let before = d.bytes();
     assert!(b_config
         .set_model_override(
@@ -238,11 +238,11 @@ async fn inherited_fields_follow_catalog_and_reset_is_field_specific() {
         .await
         .is_err());
     assert_eq!(d.bytes(), before);
-    assert_eq!(b.snapshot().provider("p").unwrap().models[0], newer);
+    assert_eq!(b.snapshot().profile("p").unwrap().models[0], newer);
     let (empty, empty_config) = client(&[], http);
     empty_config.set_config_dir(&d.0).await.unwrap();
     assert_eq!(
-        empty.snapshot().provider("p").unwrap().models[0],
+        empty.snapshot().profile("p").unwrap().models[0],
         newer,
         "successful write refreshes fallback"
     );
@@ -263,7 +263,7 @@ async fn fallback_is_used_only_if_the_whole_definition_is_missing() {
         .unwrap();
     let (absent, absent_config) = client(&[], http.clone());
     absent_config.set_config_dir(&d.0).await.unwrap();
-    assert_eq!(absent.snapshot().provider("p").unwrap().models.len(), 1);
+    assert_eq!(absent.snapshot().profile("p").unwrap().models.len(), 1);
     assert!(absent.resolve("a").is_ok());
     let (changed, changed_config) = client(&[profile(vec![model("b", 3.)])], http);
     changed_config.set_config_dir(&d.0).await.unwrap();
@@ -308,8 +308,8 @@ async fn duplicate_wire_rows_keep_order_identity_and_independent_settings() {
         .unwrap();
     let (restored, restored_config) = client(&[], http);
     restored_config.set_config_dir(&d.0).await.unwrap();
-    assert!(restored.snapshot().provider("p").unwrap().models[0].hidden);
-    assert_eq!(restored.snapshot().provider("p").unwrap().models[1], second);
+    assert!(restored.snapshot().profile("p").unwrap().models[0].hidden);
+    assert_eq!(restored.snapshot().profile("p").unwrap().models[1], second);
 }
 #[tokio::test]
 async fn replacing_an_inherited_row_does_not_restore_the_original_or_misapply_allowlist() {
@@ -328,7 +328,7 @@ async fn replacing_an_inherited_row_does_not_restore_the_original_or_misapply_al
             .replace_model("p", &id, model("new", 2.))
             .await
             .unwrap();
-        assert_eq!(c.snapshot().provider("p").unwrap().models.len(), 1);
+        assert_eq!(c.snapshot().profile("p").unwrap().models.len(), 1);
         assert!(c.resolve("old").is_err());
         assert!(c.resolve("new").is_ok());
         let (restored, restored_config) = client(&[base], http);
@@ -378,10 +378,10 @@ async fn observed_rows_join_later_static_definitions_without_duplicates() {
     let id = row(&a_config, "m").await;
     let (b, b_config) = client(&[profile(vec![model("m", 7.)])], http.clone());
     b_config.set_config_dir(&d.0).await.unwrap();
-    assert_eq!(b.snapshot().provider("p").unwrap().models.len(), 1);
+    assert_eq!(b.snapshot().profile("p").unwrap().models.len(), 1);
     assert_eq!(row(&b_config, "m").await, id);
     assert_eq!(
-        b.snapshot().provider("p").unwrap().models[0].pricing,
+        b.snapshot().profile("p").unwrap().models[0].pricing,
         model("m", 7.).pricing
     );
     b_config
@@ -431,7 +431,7 @@ async fn explicit_overrides_outrank_observations_and_reset_keeps_observations() 
         .unwrap();
     c_config.sync_provider("p", None).await.unwrap();
     assert_eq!(
-        c.snapshot().provider("p").unwrap().models[0]
+        c.snapshot().profile("p").unwrap().models[0]
             .description
             .as_deref(),
         Some("user")
@@ -441,7 +441,7 @@ async fn explicit_overrides_outrank_observations_and_reset_keeps_observations() 
         .await
         .unwrap();
     assert_eq!(
-        c.snapshot().provider("p").unwrap().models[0]
+        c.snapshot().profile("p").unwrap().models[0]
             .description
             .as_deref(),
         Some("observed")
@@ -466,7 +466,7 @@ async fn clearing_a_full_replacement_field_inherits_the_catalog() {
         .await
         .unwrap();
     assert_eq!(
-        c.snapshot().provider("p").unwrap().models[0].pricing,
+        c.snapshot().profile("p").unwrap().models[0].pricing,
         model("m", 1.).pricing
     );
 }
@@ -549,7 +549,7 @@ async fn builtin_references_are_explicit_and_recover_with_an_empty_builder() {
         .build_managed()
         .unwrap();
     let c_view = c.snapshot();
-    let wire = c_view.provider("openai").unwrap().models[0]
+    let wire = c_view.profile("openai").unwrap().models[0]
         .request_model
         .clone();
     c_config.set_config_dir(&d.0).await.unwrap();
@@ -637,7 +637,7 @@ async fn reasoning_observations_can_switch_between_mandatory_and_optional() {
         }}]});
         c_config.sync_provider("p", None).await.unwrap();
         let c_view = c.snapshot();
-        let p = c_view.provider("p").unwrap();
+        let p = c_view.profile("p").unwrap();
         let features = &p.models[0].info.features;
         assert_eq!(
             features
@@ -685,7 +685,7 @@ async fn sparse_mandatory_updates_remove_conflicting_older_defaults() {
         .unwrap();
     c_config.sync_provider("p", None).await.unwrap();
     assert_eq!(
-        c.snapshot().provider("p").unwrap().models[0]
+        c.snapshot().profile("p").unwrap().models[0]
             .info
             .features
             .default_mode,
@@ -694,7 +694,7 @@ async fn sparse_mandatory_updates_remove_conflicting_older_defaults() {
     *http.0.lock().unwrap() = json!({"data":[{"id":"m","reasoning":{"mandatory":true}}]});
     c_config.sync_provider("p", None).await.unwrap();
     let c_view = c.snapshot();
-    let features = &c_view.provider("p").unwrap().models[0].info.features;
+    let features = &c_view.profile("p").unwrap().models[0].info.features;
     assert_eq!(features.modes, Some(vec![ThinkingMode::Enabled]));
     assert_eq!(features.default_mode, None);
     assert_eq!(features.effort.default, None);
@@ -738,7 +738,7 @@ async fn explicit_unrestricted_efforts_replace_prior_limits_and_survive_reload()
         serde_json::from_value(json!({"model":"m","messages":[],"thinking":{"effort":"low"}}))
             .unwrap();
     let restored_view = restored.snapshot();
-    let p = restored_view.provider("p").unwrap();
+    let p = restored_view.profile("p").unwrap();
     OpenAiChatCodec
         .validate_request(&req, &CodecContext::new(p, "m", RequestMode::Complete))
         .unwrap();
@@ -839,7 +839,7 @@ async fn anthropic_partial_capabilities_merge_without_erasing_missing_facts() {
     )
     .unwrap();
     let restored_view = restored.snapshot();
-    let profile = restored_view.provider("p").unwrap();
+    let profile = restored_view.profile("p").unwrap();
     assert!(matches!(
         AnthropicMessagesCodec.validate_request(
             &req,
@@ -923,11 +923,11 @@ async fn anthropic_partial_capabilities_merge_without_erasing_missing_facts() {
 
 #[tokio::test]
 async fn service_routes_inherit_replace_and_disable_across_reload() {
-    use lingxi_llm_client::batches::{BatchApi, BatchRoute};
     use lingxi_llm_client::embeddings::{
         EmbeddingApi, EmbeddingRoute, ServiceAuth, ServiceSetting,
     };
-    use lingxi_llm_client::retrieval::{RetrievalApi, RetrievalRoute};
+    use lingxi_llm_client::providers::openai::batches::{BatchApi, BatchRoute};
+    use lingxi_llm_client::providers::openai::retrieval::{RetrievalApi, RetrievalRoute};
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.embeddings = ServiceSetting::Enabled(EmbeddingRoute {
@@ -1010,8 +1010,8 @@ async fn service_routes_inherit_replace_and_disable_across_reload() {
 
 #[tokio::test]
 async fn deferred_route_inherits_and_explicit_disable_survives_reload() {
-    use lingxi_llm_client::deferred::{DeferredApi, DeferredRoute};
     use lingxi_llm_client::embeddings::{ServiceAuth, ServiceSetting};
+    use lingxi_llm_client::providers::xai::deferred::{DeferredApi, DeferredRoute};
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.provider_id = "xai".into();
@@ -1052,8 +1052,8 @@ async fn deferred_route_inherits_and_explicit_disable_survives_reload() {
 
 #[tokio::test]
 async fn background_route_inherits_and_explicit_disable_survives_reload() {
-    use lingxi_llm_client::background::BackgroundRoute;
     use lingxi_llm_client::embeddings::{ServiceAuth, ServiceSetting};
+    use lingxi_llm_client::providers::openai::background::BackgroundRoute;
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.provider_id = "openai".into();
@@ -1084,8 +1084,8 @@ async fn background_route_inherits_and_explicit_disable_survives_reload() {
 
 #[tokio::test]
 async fn audio_route_inherits_and_explicit_disable_survives_reload() {
-    use lingxi_llm_client::audio::AudioRoute;
     use lingxi_llm_client::embeddings::{ServiceAuth, ServiceSetting};
+    use lingxi_llm_client::providers::openai::audio::AudioRoute;
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.provider_id = "openai".into();
@@ -1114,7 +1114,7 @@ async fn audio_route_inherits_and_explicit_disable_survives_reload() {
 #[tokio::test]
 async fn interactions_route_inherits_and_explicit_disable_survives_reload() {
     use lingxi_llm_client::embeddings::{ServiceAuth, ServiceSetting};
-    use lingxi_llm_client::interactions::InteractionRoute;
+    use lingxi_llm_client::providers::google::interactions::InteractionRoute;
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.provider_id = "google".into();
@@ -1146,7 +1146,7 @@ async fn interactions_route_inherits_and_explicit_disable_survives_reload() {
 #[tokio::test]
 async fn gemini_file_search_route_inherits_and_disable_survives_reload() {
     use lingxi_llm_client::embeddings::{ServiceAuth, ServiceSetting};
-    use lingxi_llm_client::gemini_file_search::GeminiFileSearchRoute;
+    use lingxi_llm_client::providers::google::file_search::GeminiFileSearchRoute;
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.provider_id = "google".into();
@@ -1179,7 +1179,7 @@ async fn gemini_file_search_route_inherits_and_disable_survives_reload() {
 #[tokio::test]
 async fn glm_knowledge_route_inherits_and_disable_survives_reload() {
     use lingxi_llm_client::embeddings::{ServiceAuth, ServiceSetting};
-    use lingxi_llm_client::glm_knowledge::GlmKnowledgeRoute;
+    use lingxi_llm_client::providers::zhipu::knowledge::GlmKnowledgeRoute;
     let d = Dir::new();
     let mut definition = profile(vec![model("m", 1.)]);
     definition.provider_id = "zhipu".into();
@@ -1260,7 +1260,7 @@ async fn foundry_deployment_identity_preserves_overrides_clear_and_inheritance_o
         "reloaded configuration"
     );
     let snapshot = reloaded.snapshot();
-    let selected = &snapshot.provider("p").unwrap().models[0];
+    let selected = &snapshot.profile("p").unwrap().models[0];
     assert_eq!(selected.foundry, Some(changed));
     assert_eq!(selected.request_model, "custom-deployment");
     assert_eq!(selected.billing_model, "custom-deployment");
@@ -1268,7 +1268,7 @@ async fn foundry_deployment_identity_preserves_overrides_clear_and_inheritance_o
         .set_model_override("p", &id, ModelField::Foundry, FieldOverride::Clear)
         .await
         .unwrap();
-    assert!(reloaded.snapshot().provider("p").unwrap().models[0]
+    assert!(reloaded.snapshot().profile("p").unwrap().models[0]
         .foundry
         .is_none());
     manager
@@ -1276,7 +1276,7 @@ async fn foundry_deployment_identity_preserves_overrides_clear_and_inheritance_o
         .await
         .unwrap();
     assert_eq!(
-        reloaded.snapshot().provider("p").unwrap().models[0].foundry,
+        reloaded.snapshot().profile("p").unwrap().models[0].foundry,
         Some(original)
     );
 }

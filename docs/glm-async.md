@@ -4,12 +4,12 @@
 
 ```rust,ignore
 use lingxi_llm_client::{
-    glm_async::{GlmAsyncConfig, GlmAsyncCredentials, GlmAsyncRegion},
+    providers::zhipu::async_tasks::{GlmAsyncConfig, GlmAsyncCredentials, GlmAsyncRegion},
     protocol::Secret,
 };
 
 let snapshot = client.snapshot();
-let profile = snapshot.provider("glm-mainland").expect("configured GLM profile").clone();
+let profile = snapshot.profile("glm-mainland").expect("configured GLM profile").clone();
 let config = GlmAsyncConfig::new(
     profile,
     GlmAsyncRegion::ChinaMainland,

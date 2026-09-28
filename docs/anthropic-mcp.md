@@ -1,12 +1,11 @@
 # Anthropic Messages MCP 连接器
 
-HostedTool::AnthropicMcp 用于配置一个远程 MCP 服务器及其 Anthropic mcp_toolset。第一方 Messages API 使用 mcp-client-2026-09-15 beta，并支持下文说明的新版本列表固定和内联工具集控制；Microsoft Foundry 的 Azure 与 Anthropic 两种托管方式使用 mcp-client-2025-11-20 beta 基础连接器。Foundry 的 MCP 基础配置不要求 Foundry 模型身份或模型白名单。
+AnthropicHostedTool::Mcp 用于配置一个远程 MCP 服务器及其 Anthropic mcp_toolset。第一方 Messages API 使用 mcp-client-2026-09-15 beta，并支持下文说明的新版本列表固定和内联工具集控制；Microsoft Foundry 的 Azure 与 Anthropic 两种托管方式使用 mcp-client-2025-11-20 beta 基础连接器。Foundry 的 MCP 基础配置不要求 Foundry 模型身份或模型白名单。
 
 ```rust
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig, AnthropicMcpToolConfig};
 use lingxi_llm_client::{
-    protocol::{
-        AnthropicMcpConfig, AnthropicMcpToolConfig, ChatRequest, HostedTool, Secret,
-    },
+    protocol::{ChatRequest, Secret},
     RequestOptions,
 };
 
@@ -20,7 +19,7 @@ let connector = AnthropicMcpConfig::new(
     defer_loading: Some(false),
 });
 
-request.hosted_tools.push(HostedTool::AnthropicMcp(connector));
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(connector).into());
 
 let mut options = RequestOptions::default();
 options.mcp_authorizations.insert(
@@ -38,7 +37,7 @@ options.mcp_authorizations.insert(
 `mcp-client-2026-09-15` beta 支持固定服务器工具列表。可将响应 `mcp_tool_listing` 中的工具列表传给 `with_tools`：
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicMcpConfig, AnthropicMcpTool};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig, AnthropicMcpTool};
 use serde_json::json;
 
 # fn pinned() -> Result<AnthropicMcpConfig, Box<dyn std::error::Error>> {

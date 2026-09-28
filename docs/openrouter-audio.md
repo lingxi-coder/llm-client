@@ -5,8 +5,8 @@
 ```rust,ignore
 use bytes::Bytes;
 use lingxi_llm_client::{
-    audio::AudioInput,
-    openrouter_audio::{
+    providers::openai::audio::AudioInput,
+    providers::openrouter::audio::{
         OpenRouterInputAudioFormat, OpenRouterTranscriptionEncoding,
         OpenRouterTranscriptionRequest,
     },
@@ -21,8 +21,9 @@ let mut request = OpenRouterTranscriptionRequest::new(
 request.encoding = OpenRouterTranscriptionEncoding::Base64Json;
 request.language = Some("en".into());
 
-let transcript = client
-    .openrouter_audio()
+let provider = client.provider::<lingxi_llm_client::providers::openrouter::OpenRouterClient>("openrouter")?;
+let transcript = provider
+    .audio()
     .transcribe(audio, &request, &options)
     .await?;
 println!("{}", transcript.text);
@@ -31,7 +32,7 @@ println!("{}", transcript.text);
 STT 支持两种明确的请求线格式。`Base64Json` 会把音频编码到 `input_audio.data`，并用 `input_audio.format` 声明 `wav`、`mp3`、`flac`、`m4a`、`ogg`、`webm` 或 `aac`。`Multipart` 会发送 `file` 和 `model` 字段，文件上限为 25 MB。Multipart 会按 `AudioInput.size_bytes` 一次性流式读取 `AudioInput.body`；传输层必须实现 `send_stream`。音频流长度不足、超出声明值或中断时不会重试，提供方可能已收到部分请求，结果会标记为未知。JSON 路径在本 crate 内限制为 50 MB，以限制缓冲和编码开销。两种路径均返回 JSON；`OpenRouterTranscription` 保留 `text`、可选 usage、`X-Generation-Id` 和完整原生 JSON。时间戳仅可与 `verbose_json` 一起请求。当前 multipart 线格式不接受 `provider` passthrough，需改用 base64 JSON。
 
 ```rust,ignore
-use lingxi_llm_client::openrouter_audio::{
+use lingxi_llm_client::providers::openrouter::audio::{
     OpenRouterInputAudioFormat, OpenRouterSpeechFormat, OpenRouterSpeechInputReferences,
     OpenRouterSpeechRequest,
 };
@@ -47,8 +48,9 @@ request.input_references = Some(
         .with_transcript("参考音频对应的文本。"),
 );
 
-let output = client
-    .openrouter_audio()
+let provider = client.provider::<lingxi_llm_client::providers::openrouter::OpenRouterClient>("openrouter")?;
+let output = provider
+    .audio()
     .speak(&request, &options)
     .await?;
 save_audio(output.content_type, output.bytes).await?;

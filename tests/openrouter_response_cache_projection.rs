@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
+use lingxi_llm_client::providers::openrouter::response_cache::OpenRouterResponseCache;
 use lingxi_llm_client::{
     protocol::{ChatRequest, LlmError, ProviderProfile, Region, ResponseCacheStatus},
     *,

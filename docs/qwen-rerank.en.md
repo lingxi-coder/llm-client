@@ -16,7 +16,7 @@ Callers provide an explicit profile, stable non-secret account identifier, regio
 
 ```rust,ignore
 use lingxi_llm_client::{
-    qwen_rerank::{QwenRerankRegion, QwenRerankRequest, QwenRerankScope, QwenRerankService},
+    providers::qwen::rerank::{QwenRerankRegion, QwenRerankRequest, QwenRerankScope, QwenRerankService},
     RequestOptions,
 };
 

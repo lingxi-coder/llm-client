@@ -1,46 +1,201 @@
-//! Explicit endpoint adapters: compatible JSON alone does not imply search.
-use crate::protocol::{ChatRequest, LlmError, ProtocolFamily, ProviderProfile, ToolChoice};
+//! Shared web-search validation and wire helpers for explicit endpoint adapters.
+use crate::protocol::{
+    ChatRequest, LlmError, ProtocolFamily, ProviderProfile, ToolChoice, WebSearchConfig,
+};
 use serde_json::{json, Map, Value};
 
-/// Add the configured hosted tool after ordinary tools, before profile extras.
-/// Adapter selection is data-driven; provider names never select behavior.
 pub(crate) fn apply(
     req: &ChatRequest,
     profile: &ProviderProfile,
     body: &mut Map<String, Value>,
 ) -> Result<(), LlmError> {
-    let Some(search) = req.hosted_web_search() else {
+    if req.hosted_web_search().is_none() {
         return Ok(());
-    };
-    let unsupported = |message: &str| LlmError::UnsupportedCapability {
-        message: format!(
-            "web search on profile {:?}: {message}",
-            profile.profile_name
-        ),
-    };
-    let invalid = |message: &str| LlmError::InvalidRequest {
-        message: message.to_owned(),
-    };
+    }
     let adapter = profile
         .extra
         .get("web_search")
         .and_then(Value::as_str)
-        .ok_or_else(|| unsupported("no extra.web_search adapter declared"))?;
-    use ProtocolFamily::*;
-    let compatible = match adapter {
-        "openai_responses" | "xai" | "kimi" | "qwen" => profile.protocol == OpenAiResponses,
-        "deepseek" => profile.protocol == AnthropicMessages,
-        "openai_chat" | "openrouter" | "glm" => profile.protocol == OpenAiChat,
-        "anthropic" | "minimax" => matches!(
-            profile.protocol,
-            AnthropicMessages | FoundryClaude | VertexClaude
-        ),
-        "gemini" => matches!(profile.protocol, GeminiGenerateContent | VertexGemini),
-        _ => false,
-    };
-    if !compatible {
-        return Err(unsupported("unknown adapter or incompatible protocol"));
+        .ok_or_else(|| unsupported(profile, "no extra.web_search adapter declared"))?;
+    // Explicit adapter configuration is authoritative, including on compatible
+    // custom provider identities. Stable provider IDs never override it.
+    match adapter {
+        "openai_responses" => crate::providers::openai::search::responses(req, profile, body),
+        "openai_chat" => crate::providers::openai::search::chat(req, profile, body),
+        "anthropic" => crate::providers::anthropic::search::apply(req, profile, body),
+        "gemini" => crate::providers::google::search::apply(req, profile, body),
+        "qwen" => crate::providers::qwen::search::apply(req, profile, body),
+        "minimax" => crate::providers::minimax::search::apply(req, profile, body),
+        "glm" => crate::providers::zhipu::search::apply(req, profile, body),
+        "kimi" => crate::providers::kimi::search::apply(req, profile, body),
+        "xai" => crate::providers::xai::search::apply(req, profile, body),
+        "openrouter" => crate::providers::openrouter::search::apply(req, profile, body),
+        "deepseek" => crate::providers::deepseek::search::apply(req, profile, body),
+        _ => Err(unsupported(
+            profile,
+            "unknown adapter or incompatible protocol",
+        )),
     }
+}
+
+pub(crate) fn unsupported(profile: &ProviderProfile, message: &str) -> LlmError {
+    LlmError::UnsupportedCapability {
+        message: format!(
+            "web search on profile {:?}: {message}",
+            profile.profile_name
+        ),
+    }
+}
+pub(crate) fn invalid(message: &str) -> LlmError {
+    LlmError::InvalidRequest {
+        message: message.to_owned(),
+    }
+}
+
+pub(crate) enum DomainPolicy {
+    Any,
+    None(&'static str),
+    AllowedOnly,
+    OneAllowed,
+    Five,
+}
+pub(crate) enum ChoicePolicy {
+    Any,
+    Auto,
+    AutoOrNone,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum ChoiceWire {
+    Chat,
+    Messages,
+    None,
+}
+pub(crate) struct SearchPolicy {
+    pub(crate) protocols: &'static [ProtocolFamily],
+    pub(crate) domains: DomainPolicy,
+    pub(crate) max_uses: bool,
+    pub(crate) choice: ChoicePolicy,
+    pub(crate) reserved_tool_name: bool,
+    pub(crate) choice_wire: ChoiceWire,
+}
+
+pub(crate) fn apply_policy(
+    req: &ChatRequest,
+    profile: &ProviderProfile,
+    body: &mut Map<String, Value>,
+    policy: &SearchPolicy,
+    encode: impl FnOnce(&WebSearchConfig, &mut Map<String, Value>) -> Result<Option<Value>, LlmError>,
+) -> Result<(), LlmError> {
+    let Some(search) = req.hosted_web_search() else {
+        return Ok(());
+    };
+    if !policy.protocols.contains(&profile.protocol) {
+        return Err(unsupported(
+            profile,
+            "unknown adapter or incompatible protocol",
+        ));
+    }
+    validate_domains(search)?;
+    if search.max_uses.is_some() && !policy.max_uses {
+        return Err(unsupported(
+            profile,
+            "max_uses is supported only by the anthropic adapter",
+        ));
+    }
+    match policy.domains {
+        DomainPolicy::None(message)
+            if !search.allowed_domains.is_empty() || !search.blocked_domains.is_empty() =>
+        {
+            return Err(unsupported(profile, message))
+        }
+        DomainPolicy::AllowedOnly if !search.blocked_domains.is_empty() => {
+            return Err(unsupported(
+                profile,
+                "this adapter supports allowed_domains only",
+            ))
+        }
+        DomainPolicy::AllowedOnly if search.allowed_domains.len() > 100 => {
+            return Err(invalid(
+                "this web search adapter accepts at most 100 allowed domains",
+            ))
+        }
+        DomainPolicy::OneAllowed
+            if !search.blocked_domains.is_empty() || search.allowed_domains.len() > 1 =>
+        {
+            return Err(unsupported(
+                profile,
+                "GLM search supports one allowed domain and no blocked domains",
+            ))
+        }
+        DomainPolicy::Five
+            if search
+                .allowed_domains
+                .len()
+                .max(search.blocked_domains.len())
+                > 5 =>
+        {
+            return Err(invalid(
+                "xAI web search accepts at most five domain filters",
+            ))
+        }
+        _ => {}
+    }
+    match policy.choice {
+        ChoicePolicy::Auto if !matches!(req.tool_choice, ToolChoice::Auto) => {
+            return Err(unsupported(
+                profile,
+                "search requires automatic tool choice on this adapter",
+            ))
+        }
+        ChoicePolicy::AutoOrNone
+            if !matches!(req.tool_choice, ToolChoice::Auto | ToolChoice::None) =>
+        {
+            return Err(unsupported(
+                profile,
+                "MiniMax server search supports only automatic or disabled tool choice",
+            ))
+        }
+        _ => {}
+    }
+    if policy.reserved_tool_name && req.tools.iter().any(|tool| tool.name == "web_search") {
+        return Err(invalid(
+            "a client tool named web_search conflicts with hosted search",
+        ));
+    }
+    let Some(tool) = encode(search, body)? else {
+        return Ok(());
+    };
+    body.entry("tools")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .expect("codec tools are always an array")
+        .push(tool);
+    if body.contains_key("tool_choice") {
+        return Ok(());
+    }
+    let choice = match policy.choice_wire {
+        ChoiceWire::None => return Ok(()),
+        ChoiceWire::Messages => match &req.tool_choice {
+            ToolChoice::Auto => json!({"type":"auto"}),
+            ToolChoice::None => json!({"type":"none"}),
+            ToolChoice::Any => json!({"type":"any"}),
+            ToolChoice::Tool { name } => json!({"type":"tool", "name":name}),
+        },
+        ChoiceWire::Chat => match &req.tool_choice {
+            ToolChoice::Auto => json!("auto"),
+            ToolChoice::None => json!("none"),
+            ToolChoice::Any => json!("required"),
+            ToolChoice::Tool { name } => {
+                return Err(invalid(&format!(
+                    "named client tool {name:?} is not advertised"
+                )))
+            }
+        },
+    };
+    body.insert("tool_choice".into(), choice);
+    Ok(())
+}
+fn validate_domains(search: &WebSearchConfig) -> Result<(), LlmError> {
     if !search.allowed_domains.is_empty() && !search.blocked_domains.is_empty() {
         return Err(invalid(
             "web search accepts allowed_domains or blocked_domains, not both",
@@ -60,173 +215,28 @@ pub(crate) fn apply(
             ));
         }
     }
-    if search.max_uses.is_some() && adapter != "anthropic" {
-        return Err(unsupported(
-            "max_uses is supported only by the anthropic adapter",
-        ));
-    }
-    if adapter == "minimax"
-        && (!search.allowed_domains.is_empty() || !search.blocked_domains.is_empty())
-    {
-        return Err(unsupported(
-            "MiniMax web search does not support domain filters",
-        ));
-    }
-    if matches!(adapter, "gemini" | "openai_chat" | "deepseek")
-        && (!search.allowed_domains.is_empty() || !search.blocked_domains.is_empty())
-    {
-        return Err(unsupported("this adapter does not support domain filters"));
-    }
-    if matches!(adapter, "openai_responses" | "kimi" | "qwen") && !search.blocked_domains.is_empty()
-    {
-        return Err(unsupported("this adapter supports allowed_domains only"));
-    }
-    if adapter == "glm" && (!search.blocked_domains.is_empty() || search.allowed_domains.len() > 1)
-    {
-        return Err(unsupported(
-            "GLM search supports one allowed domain and no blocked domains",
-        ));
-    }
-    if adapter == "xai"
-        && search
-            .allowed_domains
-            .len()
-            .max(search.blocked_domains.len())
-            > 5
-    {
-        return Err(invalid(
-            "xAI web search accepts at most five domain filters",
-        ));
-    }
-    if matches!(adapter, "openai_responses" | "kimi" | "qwen") && search.allowed_domains.len() > 100
-    {
-        return Err(invalid(
-            "this web search adapter accepts at most 100 allowed domains",
-        ));
-    }
-    // Gemini's functionCallingConfig does not control its hosted search tool;
-    // Chat search models always search. Do not claim to honor 'none' there.
-    if matches!(
-        adapter,
-        "gemini" | "openai_chat" | "glm" | "kimi" | "qwen" | "deepseek"
-    ) && !matches!(req.tool_choice, ToolChoice::Auto)
-    {
-        return Err(unsupported(
-            "search requires automatic tool choice on this adapter",
-        ));
-    }
-    if matches!(
-        adapter,
-        "anthropic" | "minimax" | "openrouter" | "glm" | "deepseek"
-    ) && req.tools.iter().any(|tool| tool.name == "web_search")
-    {
-        return Err(invalid(
-            "a client tool named web_search conflicts with hosted search",
-        ));
-    }
-    let tool = match adapter {
-        "openai_responses" | "xai" | "kimi" | "qwen" => {
-            if adapter == "kimi" {
-                if req.temperature.is_some()
-                    || req
-                        .thinking
-                        .as_ref()
-                        .is_some_and(|t| *t != crate::protocol::ThinkingConfig::default())
-                {
-                    return Err(unsupported(
-                        "Kimi Responses search does not support temperature or reasoning controls",
-                    ));
-                }
-                body.insert("include".into(), json!(["web_search_call.action.sources"]));
-            }
-            let mut tool = json!({"type": "web_search"});
-            if !search.allowed_domains.is_empty() {
-                tool["filters"] = json!({"allowed_domains": search.allowed_domains});
-            }
-            if !search.blocked_domains.is_empty() {
-                tool["filters"] = json!({"excluded_domains": search.blocked_domains});
-            }
-            tool
-        }
-        "anthropic" | "deepseek" | "minimax" => {
-            if adapter == "minimax"
-                && !matches!(req.tool_choice, ToolChoice::Auto | ToolChoice::None)
-            {
-                return Err(unsupported(
-                    "MiniMax server search supports only automatic or disabled tool choice",
-                ));
-            }
-            let mut tool = json!({"type": "web_search_20250305", "name": "web_search"});
-            if let Some(max) = search.max_uses {
-                tool["max_uses"] = json!(max);
-            }
-            if !search.allowed_domains.is_empty() {
-                tool["allowed_domains"] = json!(search.allowed_domains);
-            }
-            if !search.blocked_domains.is_empty() {
-                tool["blocked_domains"] = json!(search.blocked_domains);
-            }
-            tool
-        }
-        "gemini" => json!({"googleSearch": {}}),
-        "glm" => {
-            let engine = match profile.extra.get("web_search_engine") {
-                None => "search_pro",
-                Some(Value::String(engine)) if !engine.trim().is_empty() => engine,
-                _ => return Err(invalid("extra.web_search_engine must be a nonempty string")),
-            };
-            let mut tool = json!({"type": "web_search", "web_search": {
-                "enable": true, "search_result": true, "search_engine": engine
-            }});
-            if let Some(domain) = search.allowed_domains.first() {
-                tool["web_search"]["search_domain_filter"] = json!(domain);
-            }
-            tool
-        }
-        "openrouter" => {
-            let mut tool = json!({"type": "openrouter:web_search"});
-            if !search.allowed_domains.is_empty() {
-                tool["parameters"] = json!({"allowed_domains": search.allowed_domains});
-            }
-            if !search.blocked_domains.is_empty() {
-                tool["parameters"] = json!({"excluded_domains": search.blocked_domains});
-            }
-            tool
-        }
-        "openai_chat" => {
-            body.insert("web_search_options".into(), json!({}));
-            return Ok(());
-        }
-        _ => unreachable!("adapter validated above"),
-    };
-    body.entry("tools")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .expect("codec tools are always an array")
-        .push(tool);
-    // The encoders normally emit tool_choice only when client tools exist.
-    // Hosted tools also need it, including explicit None to disable execution.
-    if adapter != "gemini" && !body.contains_key("tool_choice") {
-        let choice = if matches!(adapter, "anthropic" | "deepseek" | "minimax") {
-            match &req.tool_choice {
-                ToolChoice::Auto => json!({"type": "auto"}),
-                ToolChoice::None => json!({"type": "none"}),
-                ToolChoice::Any => json!({"type": "any"}),
-                ToolChoice::Tool { name } => json!({"type": "tool", "name": name}),
-            }
-        } else {
-            match &req.tool_choice {
-                ToolChoice::Auto => json!("auto"),
-                ToolChoice::None => json!("none"),
-                ToolChoice::Any => json!("required"),
-                ToolChoice::Tool { name } => {
-                    return Err(invalid(&format!(
-                        "named client tool {name:?} is not advertised"
-                    )))
-                }
-            }
-        };
-        body.insert("tool_choice".into(), choice);
-    }
     Ok(())
+}
+pub(crate) fn responses_tool(search: &WebSearchConfig) -> Value {
+    let mut tool = json!({"type":"web_search"});
+    if !search.allowed_domains.is_empty() {
+        tool["filters"] = json!({"allowed_domains": search.allowed_domains});
+    }
+    if !search.blocked_domains.is_empty() {
+        tool["filters"] = json!({"excluded_domains": search.blocked_domains});
+    }
+    tool
+}
+pub(crate) fn messages_tool(search: &WebSearchConfig) -> Value {
+    let mut tool = json!({"type":"web_search_20250305", "name":"web_search"});
+    if let Some(max) = search.max_uses {
+        tool["max_uses"] = json!(max);
+    }
+    if !search.allowed_domains.is_empty() {
+        tool["allowed_domains"] = json!(search.allowed_domains);
+    }
+    if !search.blocked_domains.is_empty() {
+        tool["blocked_domains"] = json!(search.blocked_domains);
+    }
+    tool
 }

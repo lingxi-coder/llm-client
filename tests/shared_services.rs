@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lingxi_llm_client::{
-    batches::BatchError, embeddings::EmbeddingRequest, files::provider_file_endpoint_fingerprint,
-    protocol::*, retrieval::RetrievalError, *,
+    embeddings::EmbeddingRequest, files::provider_file_endpoint_fingerprint, protocol::*,
+    providers::openai::batches::BatchError, providers::openai::retrieval::RetrievalError, *,
 };
 use serde_json::json;
 use std::{
@@ -234,14 +234,17 @@ async fn retrieval_and_batch_references_stay_scoped_to_their_snapshot_after_endp
     let dir = ConfigDir::new();
     config.set_config_dir(&dir.0).await.unwrap();
     let snapshot = client.snapshot();
-    let retrieval = client.retrieval();
-    let batches = client.batches();
-    let options = options();
-    let store = retrieval
-        .create_store("test", "store", &options)
-        .await
+    let retrieval_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("test")
         .unwrap();
-    let jobs = batches.list("test", 1, None, &options).await.unwrap();
+    let retrieval = retrieval_provider.retrieval();
+    let batches_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("test")
+        .unwrap();
+    let batches = batches_provider.batches();
+    let options = options();
+    let store = retrieval.create_store("store", &options).await.unwrap();
+    let jobs = batches.list(1, None, &options).await.unwrap();
     let job = &jobs.jobs[0].reference;
 
     config.add_provider(profile("new")).await.unwrap();
@@ -260,16 +263,21 @@ async fn retrieval_and_batch_references_stay_scoped_to_their_snapshot_after_endp
         "scope mismatches must fail before dispatch"
     );
     snapshot
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("test")
+        .unwrap()
         .retrieval()
         .get_store(&store.reference, &options)
         .await
         .unwrap();
-    snapshot.batches().get(job, &options).await.unwrap();
-    let current_store = retrieval
-        .create_store("test", "store", &options)
+    snapshot
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("test")
+        .unwrap()
+        .batches()
+        .get(job, &options)
         .await
         .unwrap();
-    let current_jobs = batches.list("test", 1, None, &options).await.unwrap();
+    let current_store = retrieval.create_store("store", &options).await.unwrap();
+    let current_jobs = batches.list(1, None, &options).await.unwrap();
     assert_eq!(
         current_store.reference.endpoint_fingerprint,
         provider_file_endpoint_fingerprint("https://new.test/v1/vector_stores")

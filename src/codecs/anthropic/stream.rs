@@ -140,8 +140,10 @@ impl EventDecoder for AnthropicStreamDecoder {
             }
             Some("message_delta") => {
                 if self.retain_anthropic_container
-                    && (crate::codecs::anthropic_code_execution::stream_container(&root).is_some()
-                        || crate::codecs::anthropic_code_execution::stream_usage(&root).is_some())
+                    && (crate::providers::anthropic::code_execution::stream_container(&root)
+                        .is_some()
+                        || crate::providers::anthropic::code_execution::stream_usage(&root)
+                            .is_some())
                 {
                     self.push_provider_event(&root, &mut out);
                 }
@@ -766,11 +768,10 @@ impl AnthropicStreamDecoder {
         Self {
             inference: crate::codecs::inference::StreamInference::new(context),
             retain_openrouter_container:
-                crate::codecs::openrouter_server_tools::is_official_profile(context.profile()),
-            retain_anthropic_container: crate::codecs::anthropic_code_execution::is_official_profile(
-                context.profile(),
-            )
-                || crate::codecs::anthropic_code_execution::supports_execution(context),
+                crate::providers::openrouter::server_tools::is_official_profile(context.profile()),
+            retain_anthropic_container:
+                crate::providers::anthropic::code_execution::is_official_profile(context.profile())
+                    || crate::providers::anthropic::code_execution::supports_execution(context),
             ..Self::default()
         }
     }

@@ -4,8 +4,8 @@ use futures::StreamExt;
 use lingxi_llm_client::{
     files::{FilePurpose, FileService, UploadFile},
     protocol::{LlmError, ProviderProfile, Secret},
+    providers::xai::batch::*,
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
-    xai_batch::*,
     ApiKeyAuthenticator,
 };
 use serde_json::{json, Value};
@@ -92,12 +92,7 @@ fn scope(account: &str, endpoint: &str) -> XaiBatchScope {
 }
 
 fn service<'a>(mock: &'a MockTransport, account: &str) -> XaiBatchService<'a> {
-    XaiBatchService::new(
-        mock,
-        Secret::new("xai-test-key".into()),
-        scope(account, "https://api.x.ai/v1"),
-    )
-    .unwrap()
+    XaiBatchService::new(mock, scope(account, "https://api.x.ai/v1")).unwrap()
 }
 
 fn xai_chat_profile() -> ProviderProfile {
@@ -268,7 +263,10 @@ async fn create_submit_get_list_and_cancel_use_documented_rest_routes() {
     ]);
     let service = service(&mock, "account-a");
     let created = service
-        .create(&XaiBatchCreateRequest::new("evaluation-set").unwrap())
+        .create(
+            &XaiBatchCreateRequest::new("evaluation-set").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(created.reference.batch_id(), "batch_123");
@@ -276,20 +274,26 @@ async fn create_submit_get_list_and_cancel_use_documented_rest_routes() {
     assert!(created.state.is_terminal());
     assert_eq!(
         service
-            .submit(&created.reference, &batch_input())
+            .submit(&created.reference, &batch_input(), &request_options())
             .await
             .unwrap(),
         1
     );
-    let fetched = service.get(&created.reference).await.unwrap();
+    let fetched = service
+        .get(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert!(!fetched.state.is_terminal());
     let page = service
-        .list(&XaiBatchPageOptions::new().limit(20))
+        .list(&XaiBatchPageOptions::new().limit(20), &request_options())
         .await
         .unwrap();
     assert_eq!(page.batches.len(), 1);
     assert_eq!(page.pagination_token.as_deref(), Some("next/page"));
-    let canceled = service.cancel(&created.reference).await.unwrap();
+    let canceled = service
+        .cancel(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(canceled.reference.batch_id(), "batch_123");
 
     let requests = mock.requests();
@@ -379,20 +383,20 @@ async fn uploaded_jsonl_from_normal_xai_chat_profile_creates_a_sealed_file_batch
     let input_file = XaiBatchInputFileRef::from_uploaded_file(&scope, &uploaded).unwrap();
     assert_eq!(input_file.expires_at(), Some("2099-01-01T00:00:00Z"));
     assert_eq!(input_file.processing_status(), Some("provider_extension"));
-    let batch_service =
-        XaiBatchService::new(&mock, Secret::new("xai-test-key".into()), scope).unwrap();
+    let batch_service = XaiBatchService::new(&mock, scope).unwrap();
     let created = batch_service
         .create(
             &XaiBatchCreateRequest::new("jsonl-evaluation")
                 .unwrap()
                 .with_input_file(input_file),
+            &request_options(),
         )
         .await
         .unwrap();
     assert!(created.reference.is_file_based());
     assert_eq!(created.reference.input_file_id(), Some("file_xai_batch"));
     assert!(matches!(
-        batch_service.submit(&created.reference, &batch_input()).await,
+        batch_service.submit(&created.reference, &batch_input(), &request_options()).await,
         Err(XaiBatchError::InvalidInput(message)) if message.contains("sealed")
     ));
 
@@ -457,11 +461,10 @@ async fn uploaded_batch_file_scope_and_expiry_are_preflighted() {
     let mut expired = uploaded;
     expired.expires_at = Some("1".into());
     let input_file = XaiBatchInputFileRef::from_uploaded_file(&scope, &expired).unwrap();
-    let batch_service =
-        XaiBatchService::new(&mock, Secret::new("xai-test-key".into()), scope).unwrap();
+    let batch_service = XaiBatchService::new(&mock, scope).unwrap();
     assert!(matches!(
         batch_service
-            .create(&XaiBatchCreateRequest::new("expired").unwrap().with_input_file(input_file))
+            .create(&XaiBatchCreateRequest::new("expired").unwrap().with_input_file(input_file), &request_options())
             .await,
         Err(XaiBatchError::Llm(LlmError::InvalidRequest { message }))
             if message.contains("expired")
@@ -515,12 +518,19 @@ async fn request_metadata_and_results_are_single_pages_with_typed_item_outcomes(
     ]);
     let service = service(&mock, "account-a");
     let reference = service
-        .create(&XaiBatchCreateRequest::new("evaluation-set").unwrap())
+        .create(
+            &XaiBatchCreateRequest::new("evaluation-set").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap()
         .reference;
     let metadata = service
-        .list_requests(&reference, &XaiBatchPageOptions::new().limit(50))
+        .list_requests(
+            &reference,
+            &XaiBatchPageOptions::new().limit(50),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(metadata.requests[0].state.as_deref(), Some("succeeded"));
@@ -530,6 +540,7 @@ async fn request_metadata_and_results_are_single_pages_with_typed_item_outcomes(
             &XaiBatchPageOptions::new()
                 .limit(100)
                 .pagination_token("page/one"),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -565,7 +576,10 @@ async fn mutation_failures_are_explicit_unknown_and_never_retried() {
         message: "connection closed after dispatch".into(),
     })]);
     let error = service(&mock, "account-a")
-        .create(&XaiBatchCreateRequest::new("evaluation-set").unwrap())
+        .create(
+            &XaiBatchCreateRequest::new("evaluation-set").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -586,12 +600,15 @@ async fn mutation_failures_are_explicit_unknown_and_never_retried() {
     ]);
     let service = service(&mock, "account-a");
     let reference = service
-        .create(&XaiBatchCreateRequest::new("evaluation-set").unwrap())
+        .create(
+            &XaiBatchCreateRequest::new("evaluation-set").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap()
         .reference;
     let error = service
-        .submit(&reference, &batch_input())
+        .submit(&reference, &batch_input(), &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -609,13 +626,16 @@ async fn mutation_failures_are_explicit_unknown_and_never_retried() {
 async fn references_are_checked_before_requests_and_http_errors_are_known() {
     let create_mock = MockTransport::new([reply(200, batch("batch_123", 1))]);
     let reference = service(&create_mock, "account-a")
-        .create(&XaiBatchCreateRequest::new("evaluation-set").unwrap())
+        .create(
+            &XaiBatchCreateRequest::new("evaluation-set").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap()
         .reference;
     let mock = MockTransport::new(std::iter::empty::<Result<Reply, LlmError>>());
     let error = service(&mock, "account-b")
-        .get(&reference)
+        .get(&reference, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -634,11 +654,17 @@ async fn references_are_checked_before_requests_and_http_errors_are_known() {
     ]);
     let service = service(&mock, "account-a");
     let reference = service
-        .create(&XaiBatchCreateRequest::new("evaluation-set").unwrap())
+        .create(
+            &XaiBatchCreateRequest::new("evaluation-set").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap()
         .reference;
-    let error = service.get(&reference).await.unwrap_err();
+    let error = service
+        .get(&reference, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         error,
         XaiBatchError::Provider {
@@ -647,4 +673,45 @@ async fn references_are_checked_before_requests_and_http_errors_are_known() {
             ..
         } if id == "req-1"
     ));
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("xai-test-key".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        reply(401, json!({"error": "rejected"})),
+        reply(401, json!({"error": "rejected"})),
+    ]);
+    let service = service(&mock, "account-a");
+    let query = XaiBatchPageOptions::default();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("Authorization")
+                && value == &format!("Bearer {key}")));
+    }
 }

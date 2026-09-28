@@ -4,10 +4,10 @@ use lingxi_llm_client::files::{
     provider_file_endpoint_fingerprint, FilePurpose, FileService, UploadFile,
 };
 use lingxi_llm_client::protocol::{
-    AttachmentRef, ChatRequest, CodeInterpreterConfig, ContentBlock, ConversationMessage,
-    DocumentSource, HostedTool, LlmError, MessageRole, ProviderFileSource, ProviderProfile, Region,
-    Secret,
+    AttachmentRef, ChatRequest, ContentBlock, ConversationMessage, DocumentSource, LlmError,
+    MessageRole, ProviderFileSource, ProviderProfile, Region, Secret,
 };
+use lingxi_llm_client::providers::openai::types::CodeInterpreterConfig;
 use lingxi_llm_client::{
     ApiKeyAuthenticator, AttachmentResolver, HttpRequest, HttpResponse, LlmClientBuilder,
     RequestOptions, StreamResponse, Transport,
@@ -76,7 +76,7 @@ fn req(file: ProviderFileSource) -> ChatRequest {
     let mut r: ChatRequest =
         serde_json::from_value(json!({"model":"test-model","messages":[]})).unwrap();
     r.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::ProviderFile { file },
@@ -225,9 +225,12 @@ async fn code_interpreter_disables_missing_provider_file_repair_replay() {
         let client = builder.with_region(Region::International).build().unwrap();
         let mut request = request_with_attachment();
         if with_code_interpreter {
-            request
-                .hosted_tools
-                .push(HostedTool::CodeInterpreter(CodeInterpreterConfig::default()));
+            request.hosted_tools.push(
+                lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+                    CodeInterpreterConfig::default(),
+                )
+                .into(),
+            );
         }
         let result = client
             .chat()

@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_tts::{
+    providers::qwen::tts::{
         QwenTtsDispatchOutcome, QwenTtsError, QwenTtsLanguage, QwenTtsRegion, QwenTtsRequest,
         QwenTtsScope, QwenTtsService, QwenTtsStreamEventKind, QWEN_TTS_BEIJING_HTTP_ENDPOINT,
         QWEN_TTS_SINGAPORE_HTTP_ENDPOINT,

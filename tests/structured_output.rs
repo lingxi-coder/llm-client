@@ -94,7 +94,7 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
         input_schema: json!({"type":"object"}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     assert!(matches!(
         encode_model(&OpenAiChatCodec, &req, &p, "qwen3.8-flash"),
@@ -121,7 +121,7 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
     ));
 
     req.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::Text {
@@ -144,7 +144,7 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
 
     req.system.clear();
     req.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::System,
         content: vec![ContentBlock::Text {
             text: "Respond with JSON please.".into(),
@@ -272,7 +272,7 @@ fn qwen_strict_schema_subset_exception_is_output_only_and_model_scoped() {
         }),
         strict: true,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     let tool_body = encode_model(&OpenAiChatCodec, &req, &qwen, "qwen3.8-flash").unwrap();
     assert_eq!(
@@ -495,13 +495,13 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             strict: false,
             defer_loading: false,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         })
         .collect();
     assert!(encode(&AnthropicMessagesCodec, &req, &p, false).is_ok());
 
     req.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
@@ -518,7 +518,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
     ));
 
     req.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
@@ -537,7 +537,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
     ));
 
     req.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::Text {
@@ -550,7 +550,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
     assert!(encode(&AnthropicMessagesCodec, &req, &p, false).is_ok());
 
     req.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: r#"{"type":"document","citations":{"enabled":true}}"#.into(),
@@ -588,7 +588,7 @@ fn claude_strict_tool_schemas_are_checked_for_text_output_and_non_strict_tools_a
         }),
         strict: true,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     }];
     assert!(matches!(
         encode(&AnthropicMessagesCodec, &req, &p, false),

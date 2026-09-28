@@ -579,7 +579,7 @@ async fn explicit_builtin_image_configuration_survives_replacement_and_reload() 
     };
     let (client, client_config) = build().await;
     let client_view = client.snapshot();
-    let mut profile = client_view.provider("openai").unwrap().clone();
+    let mut profile = client_view.profile("openai").unwrap().clone();
     let route = profile.images.routes.get_mut("primary").unwrap();
     route.base_url = "https://proxy.example/v1".into();
     route.api_key_header = Some("x-image-key".into());
@@ -588,18 +588,18 @@ async fn explicit_builtin_image_configuration_survives_replacement_and_reload() 
     let expected = profile.images.clone();
     client_config.add_provider(profile).await.unwrap();
     assert_eq!(
-        client.snapshot().provider("openai").unwrap().images,
+        client.snapshot().profile("openai").unwrap().images,
         expected
     );
     let (restored, restored_config) = build().await;
     assert_eq!(
-        restored.snapshot().provider("openai").unwrap().images,
+        restored.snapshot().profile("openai").unwrap().images,
         expected
     );
 
     // An explicitly empty replacement disables images instead of inheriting defaults.
     let restored_view = restored.snapshot();
-    let mut profile = restored_view.provider("openai").unwrap().clone();
+    let mut profile = restored_view.profile("openai").unwrap().clone();
     profile.images = Default::default();
     restored_config.add_provider(profile).await.unwrap();
     assert!(restored.images().models().is_empty());
@@ -713,4 +713,161 @@ async fn image_group_scope_still_resolves_when_no_profile_has_that_name() {
     assert!(sent
         .iter()
         .all(|req| req.url == "https://backup.example/v1/images/generations"));
+}
+
+#[tokio::test]
+async fn typed_and_unified_image_entries_use_the_same_provider_adapter() {
+    let fixture = Fixture::new(vec![
+        json!({"data":[{"b64_json":"AQID"}]}),
+        json!({"data":[{"b64_json":"AQID"}]}),
+    ]);
+    let client = client("openai", Region::International, fixture.clone());
+    let unified = client
+        .images()
+        .generate_in("openai", &request("gpt-image-1.5"), &options())
+        .await
+        .unwrap();
+    let provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap();
+    let typed = provider
+        .images()
+        .generate(&request("gpt-image-1.5"), &options())
+        .await
+        .unwrap();
+    assert_eq!(unified, typed);
+    let calls = fixture.requests();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].url, calls[1].url);
+    assert_eq!(calls[0].headers, calls[1].headers);
+    assert_eq!(calls[0].body, calls[1].body);
+}
+
+#[tokio::test]
+async fn known_provider_does_not_use_an_unrelated_image_adapter() {
+    let fixture = Fixture::new(vec![]);
+    let profile = image_only_profile("anthropic");
+    let client = LlmClientBuilder::with_transport(fixture.clone(), &[profile])
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let error = client
+        .images()
+        .generate(&request("gpt-image-1.5"), &options())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        lingxi_llm_client::images::ImageError::Llm(LlmError::UnsupportedCapability { .. })
+    ));
+    assert!(fixture.requests().is_empty());
+}
+
+struct CustomImageAdapter;
+impl lingxi_llm_client::images::ImageAdapter for CustomImageAdapter {
+    fn api(&self) -> ImageApi {
+        ImageApi::OpenAi
+    }
+    fn validate(
+        &self,
+        _: &ImageRequest,
+        _: &ImageModelProfile,
+        _: &ImageRouteConfig,
+        _: bool,
+    ) -> Result<(), lingxi_llm_client::images::ImageError> {
+        Ok(())
+    }
+    fn encode(
+        &self,
+        _: &ImageRequest,
+        _: &ImageModelProfile,
+        route: &ImageRouteConfig,
+        _: bool,
+    ) -> Result<HttpRequest, lingxi_llm_client::images::ImageError> {
+        Ok(HttpRequest {
+            method: "POST".into(),
+            url: format!("{}/custom-generation", route.base_url),
+            headers: vec![],
+            body: Bytes::from_static(b"custom-request"),
+            timeout: None,
+        })
+    }
+    fn decode(
+        &self,
+        body: &Value,
+        model: &ImageModelProfile,
+        profile: &ProviderProfile,
+    ) -> Result<ImageResponse, lingxi_llm_client::images::ImageError> {
+        Ok(ImageResponse {
+            outcome: ImageOutcome::NoImage,
+            images: vec![],
+            text: body["custom"].as_str().map(str::to_owned),
+            requested_model: model.request_model.clone(),
+            reported_model: None,
+            executed_profile: profile.profile_name.clone(),
+            provider_id: profile.provider_id.to_string(),
+            request_id: None,
+            usage: None,
+        })
+    }
+}
+struct CustomImageAuthenticator;
+#[async_trait]
+impl lingxi_llm_client::images::ImageAuthenticator for CustomImageAuthenticator {
+    async fn apply(
+        &self,
+        request: &mut HttpRequest,
+        _: &ImageRouteConfig,
+        credential: Option<&Secret<String>>,
+    ) -> Result<(), LlmError> {
+        request.headers.push((
+            "x-custom-key".into(),
+            credential.unwrap().expose_secret().clone(),
+        ));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn registered_image_adapter_and_authenticator_override_builtins_for_known_and_compatible_providers(
+) {
+    for provider_id in ["openai", "private-provider"] {
+        let fixture = Fixture::new(vec![json!({"custom":"custom-response"})]);
+        let mut profile = image_only_profile(provider_id);
+        profile
+            .images
+            .routes
+            .get_mut("primary")
+            .unwrap()
+            .authenticator = Some("custom".into());
+        let mut builder = LlmClientBuilder::with_transport(fixture.clone(), &[profile]);
+        builder
+            .register_image_adapter(Arc::new(CustomImageAdapter))
+            .register_image_authenticator("custom", Arc::new(CustomImageAuthenticator));
+        let client = builder.with_region(Region::International).build().unwrap();
+        let response = client
+            .images()
+            .generate(&request("gpt-image-1.5"), &options())
+            .await
+            .unwrap();
+        assert_eq!(response.text.as_deref(), Some("custom-response"));
+        let calls = fixture.requests();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].url.ends_with("/custom-generation"));
+        assert_eq!(calls[0].body, Bytes::from_static(b"custom-request"));
+        assert!(calls[0]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-custom-key" && value == "test-secret"));
+    }
+}
+
+fn image_only_profile(provider_id: &str) -> ProviderProfile {
+    let images = builtin_providers()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "openai")
+        .unwrap()
+        .images;
+    serde_json::from_value(json!({"provider_id":provider_id,"profile_name":"image-only","protocol":"open_ai_chat","base_url":"https://chat.invalid","auth":"none","images":images})).unwrap()
 }

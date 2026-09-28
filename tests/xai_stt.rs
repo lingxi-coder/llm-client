@@ -9,13 +9,13 @@ use futures::{
 };
 use lingxi_llm_client::{
     protocol::Secret,
+    providers::xai::stt::{
+        XaiSttConfig, XaiSttEncoding, XaiSttEvent, XaiSttModel, XaiSttSession,
+        XAI_STT_WEBSOCKET_ENDPOINT,
+    },
     realtime::{
         RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError, RealtimeFrame,
         RealtimeLimits, RealtimeSink, RealtimeTransport,
-    },
-    xai_stt::{
-        XaiSttConfig, XaiSttEncoding, XaiSttEvent, XaiSttModel, XaiSttSession,
-        XAI_STT_WEBSOCKET_ENDPOINT,
     },
 };
 use serde_json::{json, Value};
@@ -169,7 +169,9 @@ async fn progress_until_sent<F>(
     .await;
 }
 
-async fn drain_events(mut events: lingxi_llm_client::xai_stt::XaiSttEvents) -> Vec<XaiSttEvent> {
+async fn drain_events(
+    mut events: lingxi_llm_client::providers::xai::stt::XaiSttEvents,
+) -> Vec<XaiSttEvent> {
     let mut received = Vec::new();
     while let Some(event) = events.next().await {
         received.push(event);
@@ -283,9 +285,11 @@ fn opus_omits_sample_rate_and_rejects_opus_multichannel_before_transport() {
         let result = XaiSttSession::connect(fake, credential(), invalid, limits()).await;
         assert!(matches!(
             result,
-            Err(lingxi_llm_client::xai_stt::XaiSttError::Realtime(
-                RealtimeError::InvalidConfig { .. }
-            ))
+            Err(
+                lingxi_llm_client::providers::xai::stt::XaiSttError::Realtime(
+                    RealtimeError::InvalidConfig { .. }
+                )
+            )
         ));
         assert_eq!(*peer.connect_count.lock().unwrap(), 0);
     });
@@ -478,7 +482,7 @@ fn provider_error_before_ready_is_a_connect_error_with_native_payload() {
             XaiSttSession::connect(fake, credential(), XaiSttConfig::default(), limits()).await;
         assert!(matches!(
             result,
-            Err(lingxi_llm_client::xai_stt::XaiSttError::Provider { message, native })
+            Err(lingxi_llm_client::providers::xai::stt::XaiSttError::Provider { message, native })
                 if message == "bad model" && native == error
         ));
         assert_eq!(*peer.connect_count.lock().unwrap(), 1);
@@ -588,9 +592,11 @@ fn ready_wait_timeout_and_invalid_config_happen_before_transport_use() {
         let result = XaiSttSession::connect(fake, credential(), config, limits()).await;
         assert!(matches!(
             result,
-            Err(lingxi_llm_client::xai_stt::XaiSttError::Realtime(
-                RealtimeError::Transport { .. }
-            ))
+            Err(
+                lingxi_llm_client::providers::xai::stt::XaiSttError::Realtime(
+                    RealtimeError::Transport { .. }
+                )
+            )
         ));
         assert_eq!(*peer.connect_count.lock().unwrap(), 1);
 
@@ -603,9 +609,11 @@ fn ready_wait_timeout_and_invalid_config_happen_before_transport_use() {
         let result = XaiSttSession::connect(fake, credential(), invalid, limits()).await;
         assert!(matches!(
             result,
-            Err(lingxi_llm_client::xai_stt::XaiSttError::Realtime(
-                RealtimeError::InvalidConfig { .. }
-            ))
+            Err(
+                lingxi_llm_client::providers::xai::stt::XaiSttError::Realtime(
+                    RealtimeError::InvalidConfig { .. }
+                )
+            )
         ));
         assert_eq!(*peer.connect_count.lock().unwrap(), 0);
     });

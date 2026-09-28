@@ -2,24 +2,23 @@
 
 [中文](qwen-hosted.md)
 
-Qwen's OpenAI-compatible Responses API can invoke Model Studio's hosted Python interpreter with `HostedTool::CodeInterpreter`. The client sends the documented `{"type":"code_interpreter"}` tool and `enable_thinking: true`; Alibaba runs the code, and this crate never executes it locally.
+Qwen's OpenAI-compatible Responses API can invoke Model Studio's hosted Python interpreter with `OpenAiHostedTool::CodeInterpreter`. The client sends the documented `{"type":"code_interpreter"}` tool and `enable_thinking: true`; Alibaba runs the code, and this crate never executes it locally.
 
 ```rust,ignore
-use lingxi_llm_client::protocol::{
-    ChatRequest, CodeInterpreterConfig, HostedTool,
-};
+use lingxi_llm_client::providers::openai::types::{CodeInterpreterConfig};
+use lingxi_llm_client::protocol::{ChatRequest, };
 
 let mut request: ChatRequest = /* your request */;
-request.hosted_tools.push(HostedTool::CodeInterpreter(
+request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
     CodeInterpreterConfig::default(),
-));
+).into());
 
 let response = client.chat().complete(&request, &options).await?;
 // Qwen's code_interpreter_call is retained as OpenAiResponses ProviderContent;
 // its code, execution output, container_id, and native status remain available.
 ```
 
-The adapter is currently enabled only for `qwen3.8-max` and `qwen3.8-flash` on Qwen Responses profiles that declare the Qwen web-search adapter. Before sending, it rejects OpenAI container memory settings, combinations with caller-defined function tools, non-automatic tool choice, and requests that explicitly disable thinking. The Responses request supplies the required `enable_thinking: true` flag. Qwen's Web Extractor is exposed separately as `HostedTool::WebExtractor` and requires `HostedTool::WebSearch`; see [Qwen Web Extractor](qwen-web-extractor.en.md).
+The adapter is currently enabled only for `qwen3.8-max` and `qwen3.8-flash` on Qwen Responses profiles that declare the Qwen web-search adapter. Before sending, it rejects OpenAI container memory settings, combinations with caller-defined function tools, non-automatic tool choice, and requests that explicitly disable thinking. The Responses request supplies the required `enable_thinking: true` flag. Qwen's Web Extractor is exposed separately as `QwenHostedTool::WebExtractor` and requires `HostedTool::WebSearch`; see [Qwen Web Extractor](qwen-web-extractor.en.md).
 
 For non-streaming responses, the `code_interpreter_call` remains in the assistant message as `ProviderContent`. Streaming responses retain the complete call item and emit each `response.code_interpreter_call.in_progress`, `interpreting`, and `completed` event as native `ProviderContent`. Callers can inspect the status, generated `code`, `outputs` logs, and `container_id`. The client does not interpret logs, execute code, or turn this provider-hosted call into a host-executed `ToolUse`.
 

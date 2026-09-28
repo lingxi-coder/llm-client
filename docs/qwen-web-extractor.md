@@ -9,7 +9,7 @@ use lingxi_llm_client::protocol::{ChatRequest, HostedTool, WebSearchConfig};
 
 let mut request: ChatRequest = /* 你的请求 */;
 request.hosted_tools.push(HostedTool::WebSearch(WebSearchConfig::default()));
-request.hosted_tools.push(HostedTool::WebExtractor);
+request.hosted_tools.push(lingxi_llm_client::providers::qwen::native::QwenHostedTool::WebExtractor.into());
 
 let response = client.chat().complete(&request, &options).await?;
 // Qwen 的 web_extractor_call 作为 OpenAiResponses ProviderContent 保留。

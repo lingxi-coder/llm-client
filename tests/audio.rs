@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
-use lingxi_llm_client::{audio::*, protocol::*, *};
+use lingxi_llm_client::{protocol::*, providers::openai::audio::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -104,9 +104,10 @@ async fn streamed_transcription_preserves_native_events_and_requires_done() {
     let sse = b"data: {\"type\":\"transcript.text.delta\",\"delta\":\"bon\"}\n\ndata: {\"type\":\"transcript.text.done\",\"text\":\"bonjour\",\"languages\":[{\"code\":\"fr\"}]}\n\n";
     let (client, mock) = setup(vec![(200, sse.to_vec())]);
     let mut events = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .transcribe_stream(
-            "openai",
             input(),
             &TranscriptionRequest::new(TranscriptionModel::GptTranscribe),
             &options(),
@@ -133,9 +134,10 @@ async fn streamed_transcription_rejects_whisper_and_reports_missing_terminal() {
         b"data: {\"type\":\"transcript.text.delta\",\"delta\":\"hi\"}\n\n".to_vec(),
     )]);
     let rejected = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .transcribe_stream(
-            "openai",
             input(),
             &TranscriptionRequest::new(TranscriptionModel::Whisper1),
             &options(),
@@ -147,9 +149,10 @@ async fn streamed_transcription_rejects_whisper_and_reports_missing_terminal() {
     ));
     assert!(mock.sent.lock().unwrap().is_empty());
     let mut events = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .transcribe_stream(
-            "openai",
             input(),
             &TranscriptionRequest::new(TranscriptionModel::Gpt4oTranscribe),
             &options(),
@@ -178,8 +181,10 @@ async fn streamed_diarization_preserves_segments_and_provider_errors() {
     request.chunking_auto = true;
     request.known_speakers.push(known_speaker());
     let mut events = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .transcribe_stream("openai", input(), &request, &options())
+        .transcribe_stream(input(), &request, &options())
         .await
         .unwrap();
     let segment = events.next_event().await.unwrap().unwrap();
@@ -191,8 +196,10 @@ async fn streamed_diarization_preserves_segments_and_provider_errors() {
     assert!(String::from_utf8_lossy(&mock.sent.lock().unwrap()[0].body)
         .contains("name=\"known_speaker_references[]\""));
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .transcribe_stream("openai", input(), &request, &options())
+        .transcribe_stream(input(), &request, &options())
         .await;
     assert!(matches!(
         result,
@@ -204,9 +211,10 @@ async fn streamed_diarization_preserves_segments_and_provider_errors() {
 async fn streamed_transcription_rejects_invalid_json_event() {
     let (client, _) = setup(vec![(200, b"data: [DONE]\n\n".to_vec())]);
     let mut events = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .transcribe_stream(
-            "openai",
             input(),
             &TranscriptionRequest::new(TranscriptionModel::GptTranscribe),
             &options(),
@@ -232,8 +240,10 @@ async fn whisper_transcription_streams_exact_multipart_and_decodes_timestamps() 
     request.format = AudioTextFormat::VerboseJson;
     request.timestamp_granularities = vec![TimestampGranularity::Word];
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .transcribe("openai", input(), &request, &options())
+        .transcribe(input(), &request, &options())
         .await
         .unwrap();
     assert_eq!(result.text, "hello");
@@ -267,8 +277,10 @@ async fn translation_uses_whisper_and_preserves_plain_text() {
         ..Default::default()
     };
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .translate("openai", input(), &request, &options())
+        .translate(input(), &request, &options())
         .await
         .unwrap();
     assert_eq!(result.text, "Hello, world!");
@@ -285,9 +297,10 @@ async fn gpt_transcribe_preserves_detected_languages() {
         json_bytes(json!({"text":"bonjour", "languages":[{"code":"fr"}]})),
     )]);
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .transcribe(
-            "openai",
             input(),
             &TranscriptionRequest::new(TranscriptionModel::GptTranscribe),
             &options(),
@@ -307,15 +320,19 @@ async fn diarized_json_keeps_speakers_and_optional_chunking() {
     let mut request = TranscriptionRequest::new(TranscriptionModel::Gpt4oTranscribeDiarize);
     request.format = AudioTextFormat::DiarizedJson;
     let short = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .transcribe("openai", input(), &request, &options())
+        .transcribe(input(), &request, &options())
         .await
         .unwrap();
     assert_eq!(short.segments[0].speaker.as_deref(), Some("agent"));
     request.chunking_auto = true;
     let long = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .transcribe("openai", input(), &request, &options())
+        .transcribe(input(), &request, &options())
         .await
         .unwrap();
     assert_eq!(long.segments[0].text, "hello");
@@ -339,8 +356,10 @@ async fn known_speaker_references_use_documented_multipart_data_urls() {
     request.known_speakers.push(known_speaker());
 
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .transcribe("openai", input(), &request, &options())
+        .transcribe(input(), &request, &options())
         .await
         .unwrap();
     assert_eq!(result.segments[0].speaker.as_deref(), Some("agent"));
@@ -361,8 +380,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
     request.format = AudioTextFormat::VerboseJson;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .transcribe("openai", input(), &request, &options())
+            .transcribe(input(), &request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -370,8 +391,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
         .with_known_speaker(known_speaker());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .transcribe("openai", input(), &request, &options())
+            .transcribe(input(), &request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -379,8 +402,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
         .with_known_speaker(known_speaker());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .transcribe("openai", input(), &request, &options())
+            .transcribe(input(), &request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -388,8 +413,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
     request.known_speakers[0].duration_seconds = 1.99;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .transcribe("openai", input(), &request, &options())
+            .transcribe(input(), &request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -402,8 +429,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
     }
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .transcribe("openai", input(), &request, &options())
+            .transcribe(input(), &request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -415,8 +444,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
     request.prompt = Some("speaker hints".into());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .transcribe("openai", input(), &request, &options())
+            .transcribe(input(), &request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -428,9 +459,10 @@ async fn unsupported_model_options_and_oversize_fail_before_http() {
     };
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
             .transcribe(
-                "openai",
                 large,
                 &TranscriptionRequest::new(TranscriptionModel::GptTranscribe),
                 &options()
@@ -451,9 +483,10 @@ async fn declared_length_mismatch_fails_without_replaying_upload() {
         body: stream::once(async { Ok(Bytes::from_static(b"four")) }).boxed(),
     };
     let error = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .transcribe(
-            "openai",
             short,
             &TranscriptionRequest::new(TranscriptionModel::GptTranscribe),
             &options(),
@@ -474,13 +507,10 @@ async fn provider_error_keeps_status_and_body() {
         json_bytes(json!({"error":{"message":"slow down"}})),
     )]);
     let error = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .translate(
-            "openai",
-            input(),
-            &TranslationRequest::default(),
-            &options(),
-        )
+        .translate(input(), &TranslationRequest::default(), &options())
         .await
         .unwrap_err();
     assert!(

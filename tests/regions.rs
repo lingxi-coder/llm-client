@@ -104,7 +104,7 @@ fn every_builtin_has_the_declared_policy_and_listed_models_resolve() {
                 listed.iter().any(|r| r.profile_name == p.profile_name),
                 p.supports_region(region)
             );
-            assert!(c.snapshot().provider(&p.profile_name).is_some());
+            assert!(c.snapshot().profile(&p.profile_name).is_some());
         }
         for row in c.models() {
             assert!(row.regions.contains(&region));
@@ -163,13 +163,13 @@ fn glm_and_zai_shared_group_cannot_cross_regions() {
     ] {
         let c = client(&profiles, region);
         let c_view = c.snapshot();
-        let p = c_view.provider(name).unwrap();
+        let p = c_view.profile(name).unwrap();
         let route = c
             .resolve_in(&p.models[0].request_model, Some(name))
             .unwrap();
         assert!(route.connection_chain.iter().all(|hop| c
             .snapshot()
-            .provider(&hop.profile_name)
+            .profile(&hop.profile_name)
             .unwrap()
             .supports_region(region)));
     }

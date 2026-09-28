@@ -2,12 +2,12 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use lingxi_llm_client::{
-    glm_batch::{
+    protocol::{LlmError, Secret},
+    providers::zhipu::batch::{
         GlmBatchChatRequest, GlmBatchError, GlmBatchInput, GlmBatchLine, GlmBatchListOptions,
         GlmBatchMessage, GlmBatchMetadata, GlmBatchRegion, GlmBatchScope, GlmBatchService,
         GlmBatchStatus,
     },
-    protocol::{LlmError, Secret},
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -101,12 +101,7 @@ fn scope(account: &str) -> GlmBatchScope {
 }
 
 fn service<'a>(transport: &'a MockTransport, account: &str) -> GlmBatchService<'a> {
-    GlmBatchService::new(
-        transport,
-        Secret::new("glm-test-key".into()),
-        scope(account),
-    )
-    .unwrap()
+    GlmBatchService::new(transport, scope(account)).unwrap()
 }
 
 fn input() -> GlmBatchInput {
@@ -184,23 +179,38 @@ async fn upload_submit_get_cancel_and_stream_output_use_scoped_routes() {
         raw_response(200, ["{\"custom_id\":\"row-1\",", "\"response\":{}}\n"]),
     ]);
     let glm = service(&mock, "account-a");
-    let uploaded = glm.upload_input(&input()).await.unwrap();
+    let uploaded = glm
+        .upload_input(&input(), &request_options())
+        .await
+        .unwrap();
     assert_eq!(uploaded.file_id(), "file-input-1");
     let metadata = GlmBatchMetadata {
         values: [("model".into(), "glm-5.3".into())].into(),
     };
-    let created = glm.submit(&uploaded, &metadata).await.unwrap();
+    let created = glm
+        .submit(&uploaded, &metadata, &request_options())
+        .await
+        .unwrap();
     assert_eq!(created.reference.batch_id(), "batch_1");
     assert_eq!(created.request_counts.unwrap().total, 1);
     assert_eq!(created.native["future_field"], "retained");
 
-    let fetched = glm.get(&created.reference).await.unwrap();
+    let fetched = glm
+        .get(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(fetched.status, GlmBatchStatus::Completed);
     assert!(fetched.status.is_terminal());
     let output = fetched.output_ref().unwrap();
-    let cancelled = glm.cancel(&created.reference).await.unwrap();
+    let cancelled = glm
+        .cancel(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(cancelled.status, GlmBatchStatus::Cancelling);
-    let stream = glm.stream_result(&output).await.unwrap();
+    let stream = glm
+        .stream_result(&output, &request_options())
+        .await
+        .unwrap();
     let bytes = stream
         .collect::<Vec<_>>()
         .await
@@ -258,7 +268,10 @@ async fn list_fetches_one_scoped_page_and_validates_options_before_io() {
     )]);
     let glm = service(&mock, "account-a");
     let page = glm
-        .list(&GlmBatchListOptions::new().after("batch_1").limit(7))
+        .list(
+            &GlmBatchListOptions::new().after("batch_1").limit(7),
+            &request_options(),
+        )
         .await
         .unwrap();
 
@@ -287,13 +300,16 @@ async fn list_fetches_one_scoped_page_and_validates_options_before_io() {
 
     let no_io = MockTransport::new([]);
     let invalid = service(&no_io, "account-a")
-        .list(&GlmBatchListOptions::new().limit(0))
+        .list(&GlmBatchListOptions::new().limit(0), &request_options())
         .await
         .unwrap_err();
     assert!(matches!(invalid, GlmBatchError::InvalidInput(_)));
     assert!(no_io.requests().is_empty());
     let invalid = service(&no_io, "account-a")
-        .list(&GlmBatchListOptions::new().after("bad/id"))
+        .list(
+            &GlmBatchListOptions::new().after("bad/id"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(invalid, GlmBatchError::InvalidInput(_)));
@@ -314,7 +330,7 @@ async fn list_rejects_duplicate_or_non_advancing_pages() {
     )]);
     assert!(matches!(
         service(&empty_page, "account-a")
-            .list(&GlmBatchListOptions::new())
+            .list(&GlmBatchListOptions::new(), &request_options())
             .await,
         Err(GlmBatchError::InvalidResponse { .. })
     ));
@@ -334,7 +350,7 @@ async fn list_rejects_duplicate_or_non_advancing_pages() {
     )]);
     assert!(matches!(
         service(&duplicate_page, "account-a")
-            .list(&GlmBatchListOptions::new())
+            .list(&GlmBatchListOptions::new(), &request_options())
             .await,
         Err(GlmBatchError::InvalidResponse { .. })
     ));
@@ -351,7 +367,10 @@ async fn list_rejects_duplicate_or_non_advancing_pages() {
     )]);
     assert!(matches!(
         service(&stuck_cursor, "account-a")
-            .list(&GlmBatchListOptions::new().after("batch_2"))
+            .list(
+                &GlmBatchListOptions::new().after("batch_2"),
+                &request_options()
+            )
             .await,
         Err(GlmBatchError::InvalidResponse { .. })
     ));
@@ -366,9 +385,13 @@ async fn mutation_unknown_is_not_retried_and_references_cannot_cross_accounts() 
         }),
     ]);
     let glm = service(&mock, "account-a");
-    let file = glm.upload_input(&input()).await.unwrap();
+    let file = glm
+        .upload_input(&input(), &request_options())
+        .await
+        .unwrap();
     assert!(matches!(
-        glm.submit(&file, &GlmBatchMetadata::default()).await,
+        glm.submit(&file, &GlmBatchMetadata::default(), &request_options())
+            .await,
         Err(GlmBatchError::OutcomeUnknown {
             operation: "submit",
             ..
@@ -380,7 +403,7 @@ async fn mutation_unknown_is_not_retried_and_references_cannot_cross_accounts() 
     let other = service(&other_mock, "account-b");
     let reference = GlmBatchJobRefForTest::reference();
     assert!(matches!(
-        other.get(&reference).await,
+        other.get(&reference, &request_options()).await,
         Err(GlmBatchError::ScopeMismatch)
     ));
     assert!(other_mock.requests().is_empty());
@@ -389,7 +412,7 @@ async fn mutation_unknown_is_not_retried_and_references_cannot_cross_accounts() 
 struct GlmBatchJobRefForTest;
 
 impl GlmBatchJobRefForTest {
-    fn reference() -> lingxi_llm_client::glm_batch::GlmBatchJobRef {
+    fn reference() -> lingxi_llm_client::providers::zhipu::batch::GlmBatchJobRef {
         serde_json::from_value(json!({
             "scope": {
                 "provider_id":"zhipu",
@@ -402,5 +425,46 @@ impl GlmBatchJobRefForTest {
             "batch_id":"batch_1"
         }))
         .unwrap()
+    }
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("glm-test-key".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        response(401, json!({"error": "rejected"})),
+        response(401, json!({"error": "rejected"})),
+    ]);
+    let service = service(&mock, "account-a");
+    let query = GlmBatchListOptions::default();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("Authorization")
+                && value == &format!("Bearer {key}")));
     }
 }

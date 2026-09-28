@@ -6,6 +6,12 @@
 
 图像生成与编辑使用独立的 `client.images()` 服务；请求、任务和内置 provider 能力见[图像生成指南](images.md)。`client.chat()` 提供与原有 `complete()` / `stream()` 相同的对话接口。
 
+## Provider 原生选项
+
+供应商专属类型从 `providers::<provider>::types` 导入，托管工具从对应的 `native` 模块导入。通过 `.into()` 将 `AnthropicHostedTool`、`OpenAiHostedTool` 等转换为通用 `HostedTool`；`HostedTool::WebSearch` 保留跨供应商配置。
+
+`ChatRequest`、`ConversationMessage` 和 `ToolSpec` 的 `native_options`，以及 `ChatResponse.native_metadata`，使用 `NativeExtension` 保存格式标识与原始 JSON。供应商提供类型化构造、读取和校验方法，例如 `with_anthropic_allowed_callers()`、`with_anthropic_options()`、`anthropic_container()`。类型化读取不会改写未知字段；资源 ID 仍须显式绑定账号和端点 scope 后才能复用。
+
 ## Region 区域过滤
 
 构建 client 必须显式调用 `.with_region(Region::ChinaMainland)` 或 `.with_region(Region::International)`，否则 `build()` 返回 `BuildError::MissingRegion`。`Region` 从 `lingxi_llm_client::protocol` 导入；`client.region()` 返回当前选择。区域在 client 生命周期内固定，切换时重新构建 client，并可复用同一配置目录。
@@ -16,7 +22,7 @@
 
 `providers()` 和 `models()` 先按区域过滤，再应用各自现有的隐藏状态和模型白名单规则。模型解析、限定 profile/group 的调用、普通与流式请求、搜索及备用链都受区域限制；其他区域的同名模型不参与歧义判断。区域内的隐藏备用账号仍可用于故障切换。区域声明不保证网络可达性，不根据 IP、语言或 URL 自动推断，也不会改写 API 地址。
 
-`snapshot.provider()`、`snapshot.profiles()` 是完整配置视图；CRUD、同步、账号 usage 和独立文件管理仍可操作其他区域账号。过滤不删除配置或模型，当前 client 的区域不写入共享 `providers.json`。当前格式未声明 `regions` 时两区可用；恢复内置配置会恢复其显式地区声明。
+`snapshot.profile()`、`snapshot.profiles()` 是完整配置视图；CRUD、同步、账号 usage 和独立文件管理仍可操作其他区域账号。过滤不删除配置或模型，当前 client 的区域不写入共享 `providers.json`。当前格式未声明 `regions` 时两区可用；恢复内置配置会恢复其显式地区声明。
 
 内置国内 profile：`qwen`、`qwen-search`、`minimax`、`kimi`、`kimi-search`、`glm`、`glm-coding`。`deepseek`、`deepseek-search`、`kimi-code` 两区共享；其他内置 profile 属于国际区域，包括 Qwen 香港、新加坡、美国及对应搜索连接。
 
@@ -50,9 +56,7 @@
 依赖配置见 [README](../README.md#1-创建应用并添加依赖)。下面示例使用 `serde_json` 构造配置，调用项目还需要声明 `serde_json = "1"` 和 Tokio 运行时依赖。无需直接依赖 `reqwest`，也无需自行实现传输和时钟。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice,
-};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice};
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 
 async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
@@ -82,7 +86,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         controls: Default::default(),
         service_tier: None,
         model: "my-model".into(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
@@ -270,10 +274,8 @@ Base64 源携带 `media_type` 和 `data`；URL 源携带 `url`。库不执行工
 此示例使用完整历史重放（`continuation: None`）。状态续接则使用返回的 `ContinuationRef`、相同 `account_scope` 和新增输入，并固定到相同连接。下面的上下文恢复函数演示宿主“最多重试一次”的策略：调用方提供 `reduce`，它必须保留有效的工具调用／结果配对及重放签名；这不是客户端自动执行的行为。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
-    LlmError, MessageRole,
-};
+use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
+    LlmError, MessageRole};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 fn append_tool_results(
@@ -295,7 +297,7 @@ fn append_tool_results(
     let has_results = !results.is_empty();
     if has_results {
         request.messages.push(ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User, content: results,
         });
     }
@@ -407,7 +409,8 @@ async fn search_stream(client: &LlmClient, request: &ChatRequest, options: &Requ
 Qwen Responses profile 可在请求上设置单个知识库 ID 和其 Model Studio workspace ID。该功能目前适用于 Qwen Max / Flash 支持的 Responses 连接；内置的北京、新加坡、美国和香港 Qwen Search profile 已声明 `extra.file_search = "qwen"`。客户端会使用 workspace 专属的区域域名发送该 Responses 请求；普通模型请求仍使用 profile 配置的 base URL。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{ChatRequest, FileSearchConfig, Secret};
+use lingxi_llm_client::providers::qwen::types::{FileSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, Secret};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 // client 必须使用 Region::ChinaMainland；国际连接请改用对应区域的 profile 和凭证。
@@ -601,7 +604,7 @@ async fn refresh(
 | 操作 | API | 保存行为 |
 | --- | --- | --- |
 | 新增 / 修改 | `config.add_provider(profile).await?` | 按 `profile_name` 新增或整条替换并写盘；也可用于多账号中的单个账号 |
-| 查询 | `snapshot.provider(profile_name)`、`snapshot.profiles()`、`client.providers()`、`config.deleted_builtin_profiles().await?` | 读取配置、列表摘要及已软删除内置项名称的 owned 副本 |
+| 查询 | `snapshot.profile(profile_name)`、`snapshot.profiles()`、`client.providers()`、`config.deleted_builtin_profiles().await?` | 读取配置、列表摘要及已软删除内置项名称的 owned 副本 |
 | 删除 | `config.remove_provider(profile_name).await?` | 自定义 profile 从文件删除；内置 profile 记录软删除，重启后仍停用 |
 | 恢复内置项 | `config.restore_builtin(profile_name).await?` | 清除软删除标记并保存库内预设；即使 builder 有同名自定义覆盖也以预设为准 |
 
@@ -625,7 +628,7 @@ config.add_provider(primary).await?;
 config.add_provider(spare).await?;
 config.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
 config.set_model_visibility("primary", "model-id", false).await?;
-assert!(client.snapshot().provider("primary").is_some());
+assert!(client.snapshot().profile("primary").is_some());
 config.untrack_model("acme", "model-id").await?;
 config.remove_provider("primary").await?;
 # Ok(())
@@ -818,7 +821,8 @@ async fn show_balance(client: &LlmClient, key: String) -> Result<(), Box<dyn std
 Qwen 的 `quota_windows` 需要该区域的 Qwen API Key 和 `selector.workspace_id`；`model_limit` / `workspace_limit` 是速率或使用量上限，不包含已消耗数量，因此 `used`、`remaining` 和百分比保持缺省。Qwen 历史成本使用单独的 `AlibabaAccessKey { id, secret, security_token }` 调用已签名的 GetBillingTrend；还需 `selector.api_key_id`，结果按日、模型和该区域返回。AccessKey 仅存在于该次 `AccountQuery`，客户端不保存或记录它。
 
 ```rust
-use lingxi_llm_client::{AccountIdentity, AccountQuery, AlibabaAccessKey};
+use lingxi_llm_client::{AccountIdentity, AccountQuery};
+use lingxi_llm_client::providers::qwen::account::AlibabaAccessKey;
 use lingxi_llm_client::protocol::Secret;
 
 let mut query = AccountQuery::new(AccountIdentity::ApiKey);

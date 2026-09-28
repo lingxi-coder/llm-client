@@ -6,6 +6,12 @@ This document covers the Rust API in this repository. `lingxi-llm-client` is a l
 
 Image generation and editing use the independent `client.images()` service; see the [image guide](images.en.md) for requests, tasks, and built-in provider support. `client.chat()` exposes the same conversation operations as the existing `complete()` and `stream()` methods.
 
+## Provider native options
+
+Import provider-specific types from `providers::<provider>::types` and hosted tool declarations from its `native` module. Convert `AnthropicHostedTool`, `OpenAiHostedTool`, and other provider declarations into the shared `HostedTool` with `.into()`; `HostedTool::WebSearch` keeps the shared search configuration.
+
+The `native_options` fields on `ChatRequest`, `ConversationMessage`, and `ToolSpec`, and `ChatResponse.native_metadata`, use `NativeExtension` to retain a format identifier and original JSON. Providers supply typed constructors, accessors, and validation, including `with_anthropic_allowed_callers()`, `with_anthropic_options()`, and `anthropic_container()`. Reading a typed view preserves unknown fields. Reusing a resource ID still requires an explicit account and endpoint scope.
+
 ## Region filtering
 
 Every client must explicitly select `.with_region(Region::ChinaMainland)` or `.with_region(Region::International)` before `build()`, otherwise it returns `BuildError::MissingRegion`. Import `Region` from `lingxi_llm_client::protocol`; `client.region()` returns the selection. It is fixed for the client lifetime. To switch regions, build another client and reuse the same configuration directory if desired.
@@ -16,7 +22,7 @@ A profile that only exposes independent services such as Embeddings may set `cha
 
 `providers()` and `models()` filter by region before applying their existing visibility and model-allowlist rules. Resolution, explicit profile/group references, completions, streams, search and failover chains all honor the region. Excluded models do not cause name ambiguity. Hidden spare accounts remain eligible for failover within the region. This is a product policy, not a network reachability guarantee, IP/language detection or URL rewriting.
 
-`snapshot.provider()` and `snapshot.profiles()` retain the complete configuration view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Current-format profiles without `regions` are available in both regions; restoring a built-in restores its explicit region declaration.
+`snapshot.profile()` and `snapshot.profiles()` retain the complete configuration view. CRUD, model sync, account usage and standalone file management can still address accounts in other regions. Filtering never deletes their profiles or models, and the client's selected region is not persisted to shared `providers.json`. Current-format profiles without `regions` are available in both regions; restoring a built-in restores its explicit region declaration.
 
 Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, `glm`, `glm-coding`. `deepseek`, `deepseek-search` and `kimi-code` are shared. All remaining built-in profiles are international, including Qwen Hong Kong, Singapore, US and their search counterparts.
 
@@ -50,9 +56,7 @@ Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, 
 See the [README](../README.en.md#1-create-an-application-and-add-dependencies) for dependency setup. The example below uses `serde_json` to construct a configuration, so the calling project also needs to declare `serde_json = "1"` and a Tokio runtime dependency. There is no need to depend directly on `reqwest` or implement transport and a clock yourself.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice,
-};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice};
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 
 async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
@@ -82,7 +86,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         controls: Default::default(),
         service_tier: None,
         model: "my-model".into(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
@@ -270,10 +274,8 @@ This executor example returns text only. Tools requiring structured results, suc
 This example uses full-history replay (`continuation: None`). Stateful continuation instead uses the returned `ContinuationRef`, the same `account_scope` and only new input, scoped to the same connection. The context-recovery helper below illustrates a host policy of one retry: the caller supplies `reduce`, which must preserve valid tool-call/result pairs and replay signatures. It is not an automatic client behavior.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
-    LlmError, MessageRole,
-};
+use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
+    LlmError, MessageRole};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 fn append_tool_results(
@@ -295,7 +297,7 @@ fn append_tool_results(
     let has_results = !results.is_empty();
     if has_results {
         request.messages.push(ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User, content: results,
         });
     }
@@ -407,7 +409,8 @@ Search events may arrive in multiple frames; the same URL may appear both among 
 Qwen Responses profiles accept one knowledge-base ID and the Model Studio workspace ID. This currently applies to the supported Qwen Max / Flash Responses models; the built-in Beijing, Singapore, US, and Hong Kong Qwen Search profiles declare `extra.file_search = "qwen"`. The client sends File Search requests to the workspace-specific regional domain. Ordinary model requests continue to use the profile's configured base URL.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{ChatRequest, FileSearchConfig, Secret};
+use lingxi_llm_client::providers::qwen::types::{FileSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, Secret};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 // Build client with Region::ChinaMainland; international calls need the corresponding profile and credentials.
@@ -601,7 +604,7 @@ Directory observations have no version numbers. Concurrent fetch results for the
 | Operation | API | Persistence behavior |
 | --- | --- | --- |
 | Add / modify | `config.add_provider(profile).await?` | Adds or replaces the whole profile by `profile_name` and writes to disk; also usable for one account among multiple accounts |
-| Query | `snapshot.provider(profile_name)`, `snapshot.profiles()`, `client.providers()`, `config.deleted_builtin_profiles().await?` | Reads configuration, listing summaries, and owned names of soft-deleted built-in entries |
+| Query | `snapshot.profile(profile_name)`, `snapshot.profiles()`, `client.providers()`, `config.deleted_builtin_profiles().await?` | Reads configuration, listing summaries, and owned names of soft-deleted built-in entries |
 | Delete | `config.remove_provider(profile_name).await?` | Removes a custom profile from the file; records a soft deletion for a built-in profile so it remains disabled after restart |
 | Restore built-in entry | `config.restore_builtin(profile_name).await?` | Clears the soft-deletion marker and saves the library's preset, even if the builder had a custom override with the same name |
 
@@ -625,7 +628,7 @@ config.add_provider(primary).await?;
 config.add_provider(spare).await?;
 config.sync_provider("primary", Some(&Secret::new("key".to_owned()))).await?;
 config.set_model_visibility("primary", "model-id", false).await?;
-assert!(client.snapshot().provider("primary").is_some());
+assert!(client.snapshot().profile("primary").is_some());
 config.untrack_model("acme", "model-id").await?;
 config.remove_provider("primary").await?;
 # Ok(())
@@ -822,7 +825,8 @@ Ordinary keys can query DeepSeek and Moonshot balances and OpenRouter key spendi
 Qwen quota windows require a regional Qwen API key and `selector.workspace_id`. `model_limit` / `workspace_limit` are rate or usage caps, not consumed counts, so `used`, `remaining`, and percentages stay absent. Qwen cost history uses a separate signed GetBillingTrend request with `AlibabaAccessKey { id, secret, security_token }`; `selector.api_key_id` is also required. Results are daily model costs for the selected region. AccessKey credentials live only in that `AccountQuery`; the client never persists or logs them.
 
 ```rust
-use lingxi_llm_client::{AccountIdentity, AccountQuery, AlibabaAccessKey};
+use lingxi_llm_client::{AccountIdentity, AccountQuery};
+use lingxi_llm_client::providers::qwen::account::AlibabaAccessKey;
 use lingxi_llm_client::protocol::Secret;
 
 let mut query = AccountQuery::new(AccountIdentity::ApiKey);

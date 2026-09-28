@@ -2,9 +2,11 @@
 
 `AnthropicBatchService` 将 Anthropic Messages Batch API 封装为独立服务。它以内联 `requests` 数组提交请求、读取和列举批次状态、请求取消、删除已完成的批次，并在结果响应到达时逐条解析记录。服务不会写入 JSONL 文件，也不会把完整结果集缓存在内存中。
 
+通过 `AnthropicClient::batch(scope)` 创建的绑定服务，在每次操作中使用 profile 注册的鉴权器和调用时提供的凭证；直接构造的独立服务继续使用 Anthropic API key。
+
 ```rust,no_run
 use lingxi_llm_client::{
-    anthropic_batch::{
+    providers::anthropic::batch::{
         AnthropicBatchInput, AnthropicBatchMessage, AnthropicBatchParams,
         AnthropicBatchRequest, AnthropicBatchRole, AnthropicBatchScope,
         AnthropicBatchService,
@@ -36,12 +38,16 @@ let params = AnthropicBatchParams::new(
 let input = AnthropicBatchInput::new(vec![AnthropicBatchRequest::new("document-1", params)?])?;
 
 // `transport` implements the crate's Transport trait. API key 保存在宿主的
-// 凭证存储中，并以 Secret 传给服务。
-let batches = AnthropicBatchService::new(transport, Secret::new(api_key), scope)?;
-let created = batches.create(&input).await?;
-let current = batches.get(&created.reference).await?;
-let page = batches.list(&Default::default()).await?;
-let results = batches.stream_results(&current.reference).await?;
+// 凭证存储中，并在每次操作时通过 RequestOptions 传入。
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let batches = AnthropicBatchService::new(transport, scope)?;
+let created = batches.create(&input, &request_options).await?;
+let current = batches.get(&created.reference, &request_options).await?;
+let page = batches.list(&Default::default(), &request_options).await?;
+let results = batches.stream_results(&current.reference, &request_options).await?;
 let _ = (page, results);
 Ok(())
 }

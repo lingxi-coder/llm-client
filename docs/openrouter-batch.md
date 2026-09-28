@@ -8,7 +8,7 @@
 
 ```rust,no_run
 use lingxi_llm_client::{
-    openrouter_batch::{
+    providers::openrouter::batch::{
         OpenRouterBatchChatBody, OpenRouterBatchChatMessage,
         OpenRouterBatchChatRole, OpenRouterBatchEndpoint,
         OpenRouterBatchInput, OpenRouterBatchLine,
@@ -20,7 +20,8 @@ use lingxi_llm_client::{
 
 fn prepare(client: &LlmClient) -> Result<(), Box<dyn std::error::Error>> {
     let scope = OpenRouterBatchScope::new("openrouter-prod", "account-123")?;
-    let batch = client.openrouter_batch(Secret::new("sk-or-...".into()), scope)?;
+    let provider = client.provider::<lingxi_llm_client::providers::openrouter::OpenRouterClient>(scope.profile_name())?;
+    let batch = provider.batch(scope)?;
     let input = OpenRouterBatchInput::new(
         OpenRouterBatchEndpoint::ChatCompletions,
         "openai/gpt-6-sol",

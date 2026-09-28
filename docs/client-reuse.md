@@ -4,6 +4,8 @@
 
 应用启动时构建一个长期使用的 `LlmClient`，并把它的 `clone()` 交给并行任务。Clone 只共享运行资源和配置发布槽，不重新解析目录、创建 HTTP 连接池或复制模型配置。`model`、`thinking.effort`、`service_tier`（Fast）和凭证都是请求参数，不是 client 的复用 key。只有区域、transport／代理／TLS、扩展服务或配置来源需要独立时，才构建另一套 client。
 
+0.3.0 的 provider 句柄遵循同一生命周期：`let provider = client.provider::<OpenAiClient>(profile)?` 可跨操作保存，`snapshot.provider::<OpenAiClient>(profile)?` 则固定到该快照。原生资源从 provider 句柄取得，凭证仍通过每次操作的 `RequestOptions` 传入；仅查询配置时使用 `snapshot.profile(name)`。旧资源入口和模块路径已删除，详见 [0.3.0 架构](architecture-migration.md)。
+
 ## 初始化和动态配置
 
 `builtin_catalog()` 返回进程内只解析一次的只读内置目录。需要编辑目录时，`builtin_providers()` 返回它的独立副本。`build()` 返回只读请求句柄；需要动态配置时，使用同步的 `build_managed()` 取得请求句柄和配置管理器：
@@ -60,7 +62,7 @@ async fn run(client: &LlmClient, request: &ChatRequest, options: &RequestOptions
 }
 ```
 
-`ClientSnapshot` 提供全部服务和路由、token、价格、账户查询。`profiles()` 与 `provider()` 的借用查询移到 snapshot；需要保留返回的引用时，先把 snapshot 绑定到局部变量。Live client 的列表和价格便利方法返回 owned 结果，但每次调用独立捕获配置，不能用它恢复历史价格。旧 snapshot 保留旧账户源绑定，直到该 snapshot 及其操作结束；长时间保存快照会延长旧配置的生命周期。
+`ClientSnapshot` 提供全部服务和路由、token、价格、账户查询。`profiles()` 与 `profile()` 的借用查询移到 snapshot；需要保留返回的引用时，先把 snapshot 绑定到局部变量。Live client 的列表和价格便利方法返回 owned 结果，但每次调用独立捕获配置，不能用它恢复历史价格。旧 snapshot 保留旧账户源绑定，直到该 snapshot 及其操作结束；长时间保存快照会延长旧配置的生命周期。
 
 ## 缓存边界
 
@@ -78,7 +80,7 @@ HTTP、codec、认证实现和附件上传缓存由 client clone 共享。凭证
 
 - 把逐任务 `build()` 改为启动时构建，任务中 `client.clone()`。
 - 把 `let mut client = ...build()?` 和 client 上的配置 API 改为 `let (client, config) = ...build_managed()?`，管理操作使用 `config.method(...).await`。
-- 把 `client.profiles()` / `client.provider(name)` 改为局部 snapshot 上的借用查询。`deleted_builtin_profiles()`、`tracked_models()`、`configured_models()` 改由 config 异步返回 owned 数据。
+- 把 `client.profiles()` / `client.profile(name)` 改为局部 snapshot 上的借用查询。`deleted_builtin_profiles()`、`tracked_models()`、`configured_models()` 改由 config 异步返回 owned 数据。
 - 需要稳定版本的多步调用统一使用一个 snapshot；直接使用 live client 的操作会在开始时读取最新配置。
 
 运行不访问真实 provider 的 release 基准：

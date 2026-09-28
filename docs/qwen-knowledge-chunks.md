@@ -4,18 +4,19 @@
 
 `QwenKnowledgeService` 增加了百炼知识库的手动 chunk 操作，使用 Model Studio 原生 RAG API，与 OpenAI Vector Stores 分开。服务支持新增、分页列出、更新和批量删除 chunk。路由及字段依据阿里云官方的 [RAG API 总览](https://help.aliyun.com/en/model-studio/rag-api-overview)、[Add Chunk](https://help.aliyun.com/en/model-studio/rag-api-add-chunk)、[List Chunks](https://help.aliyun.com/en/model-studio/rag-api-list-chunks)、[Update Chunk](https://help.aliyun.com/en/model-studio/rag-api-update-chunk) 和 [Delete Chunks](https://help.aliyun.com/en/model-studio/rag-api-delete-chunk) 文档。
 
-该服务沿用 `QwenKnowledgeService` 的 Bearer key、Beijing workspace endpoint 和知识库引用作用域。chunk 引用同时绑定知识库与可选源文档；更新要求源文档 ID，若 list response 不含 `metadata.doc_id`，该引用可以删除但不能更新。调用者必须为 document 和 multimedia 知识库的 list 请求提供文档引用；provider 文档指出这两类必须传 `docId`。
+该服务使用每次 `RequestOptions` 传入的 Bearer key、Beijing workspace endpoint 和知识库引用作用域。chunk 引用同时绑定知识库与可选源文档；更新要求源文档 ID，若 list response 不含 `metadata.doc_id`，该引用可以删除但不能更新。调用者必须为 document 和 multimedia 知识库的 list 请求提供文档引用；provider 文档指出这两类必须传 `docId`。
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeAddChunkRequest, QwenKnowledgeChunkFields,
     QwenKnowledgeListChunksRequest, QwenKnowledgeUpdateChunkRequest,
 };
 
-# use lingxi_llm_client::qwen_knowledge::{
+# use lingxi_llm_client::providers::qwen::knowledge::{
 #     QwenKnowledgeDocumentRef, QwenKnowledgeError, QwenKnowledgeRef, QwenKnowledgeService,
 # };
 # async fn manage_chunks(
+#     request_options: &lingxi_llm_client::RequestOptions,
 #     service: &QwenKnowledgeService<'_>,
 #     knowledge: &QwenKnowledgeRef,
 #     document: &QwenKnowledgeDocumentRef,
@@ -24,6 +25,7 @@ let page = service
     .list_chunks(
         knowledge,
         &QwenKnowledgeListChunksRequest::default().for_document(document),
+        request_options,
     )
     .await?;
 let Some(chunk) = page.chunks.first() else {
@@ -38,14 +40,15 @@ service
             true,
         )
         .with_title("Updated title"),
+        request_options,
     )
     .await?;
 
 let fields = QwenKnowledgeChunkFields::document("A new indexed paragraph.")
     .with_title("New paragraph")?;
 let add = QwenKnowledgeAddChunkRequest::for_document(document, fields);
-service.add_chunk(knowledge, &add).await?;
-service.delete_chunks(knowledge, &[chunk.reference.clone()]).await?;
+service.add_chunk(knowledge, &add, request_options).await?;
+service.delete_chunks(knowledge, &[chunk.reference.clone()], request_options).await?;
 # Ok(())
 # }
 ```

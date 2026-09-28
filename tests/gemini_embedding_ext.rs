@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use lingxi_llm_client::{embeddings::*, protocol::*, *};
+use lingxi_llm_client::{embeddings::*, protocol::*, providers::google::embeddings::*, *};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +24,7 @@ impl Transport for Mock {
 
 fn setup(body: Value) -> (LlmClient, Arc<Mock>) {
     let profile: ProviderProfile = serde_json::from_value(json!({
-        "provider_id":"gemini",
+        "provider_id":"google",
         "profile_name":"gemini-test",
         "protocol":"gemini_generate_content",
         "base_url":"https://chat.invalid",
@@ -103,8 +103,10 @@ async fn multimodal_parts_use_the_documented_batch_request_and_aggregate_one_vec
         dimensions: Some(768),
     };
     let response = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini-test")
+        .unwrap()
         .embeddings()
-        .embed_gemini_multimodal("gemini-test", &request, &options())
+        .embed_multimodal(&request, &options())
         .await
         .unwrap();
 
@@ -174,8 +176,10 @@ async fn model_specific_tasks_and_dimensions_fail_before_transport() {
         };
         assert!(matches!(
             client
+                .provider::<lingxi_llm_client::providers::GoogleClient>("gemini-test")
+                .unwrap()
                 .embeddings()
-                .embed_gemini_multimodal("gemini-test", &request, &options())
+                .embed_multimodal(&request, &options())
                 .await,
             Err(EmbeddingError::Llm(LlmError::InvalidRequest { .. }))
         ));
@@ -238,8 +242,10 @@ async fn multimodal_media_limits_and_metadata_are_preflighted() {
     for request in invalid_requests {
         assert!(matches!(
             client
+                .provider::<lingxi_llm_client::providers::GoogleClient>("gemini-test")
+                .unwrap()
                 .embeddings()
-                .embed_gemini_multimodal("gemini-test", &request, &options())
+                .embed_multimodal(&request, &options())
                 .await,
             Err(EmbeddingError::Llm(LlmError::InvalidRequest { .. }))
         ));

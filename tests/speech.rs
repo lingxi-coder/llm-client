@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
-use lingxi_llm_client::{audio::*, protocol::*, *};
+use lingxi_llm_client::{protocol::*, providers::openai::audio::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -87,8 +87,10 @@ async fn pcm_audio_streams_binary_chunks_and_metadata() {
         ],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize("openai", &request(), &options())
+        .synthesize(&request(), &options())
         .await
         .unwrap();
     assert_eq!(speech.format, SpeechFormat::Pcm);
@@ -128,9 +130,11 @@ async fn approved_custom_voice_uses_native_object_and_legacy_rejects_it() {
     }]);
     let mut custom = request();
     let reference = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .voices()
-        .import_approved_voice("openai", "voice_123abc", &options())
+        .import_approved_voice("voice_123abc", &options())
         .unwrap();
     custom.voice = SpeechVoice::Custom(reference.clone());
     let persisted = serde_json::to_value(&custom.voice).unwrap();
@@ -141,8 +145,10 @@ async fn approved_custom_voice_uses_native_object_and_legacy_rejects_it() {
         custom.voice
     );
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize("openai", &custom, &options())
+        .synthesize(&custom, &options())
         .await
         .unwrap();
     assert_eq!(
@@ -163,8 +169,10 @@ async fn approved_custom_voice_uses_native_object_and_legacy_rejects_it() {
     custom.instructions = None;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &custom, &options())
+            .synthesize(&custom, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -180,8 +188,10 @@ async fn approved_custom_voice_uses_native_object_and_legacy_rejects_it() {
     custom.voice = SpeechVoice::Custom(invalid_id);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &custom, &options())
+            .synthesize(&custom, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -192,9 +202,11 @@ async fn approved_custom_voice_uses_native_object_and_legacy_rejects_it() {
 async fn custom_voice_scope_mismatches_fail_before_credentials_or_http() {
     let (client, mock) = setup(vec![]);
     let reference = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .voices()
-        .import_approved_voice("openai", "voice_123abc", &options())
+        .import_approved_voice("voice_123abc", &options())
         .unwrap();
     let mut request = request();
     request.voice = SpeechVoice::Custom(reference.clone());
@@ -204,8 +216,10 @@ async fn custom_voice_scope_mismatches_fail_before_credentials_or_http() {
     wrong_account_without_credentials.account_scope = Some("different-project".into());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &request, &wrong_account_without_credentials)
+            .synthesize(&request, &wrong_account_without_credentials)
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -223,8 +237,10 @@ async fn custom_voice_scope_mismatches_fail_before_credentials_or_http() {
         request.voice = SpeechVoice::Custom(tampered);
         assert!(matches!(
             client
+                .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+                .unwrap()
                 .audio()
-                .synthesize("openai", &request, &options())
+                .synthesize(&request, &options())
                 .await,
             Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
         ));
@@ -237,9 +253,11 @@ async fn custom_voice_scope_mismatches_fail_before_credentials_or_http() {
 async fn custom_voice_rejects_non_official_speech_route_before_http() {
     let (official_client, _) = setup(vec![]);
     let reference = official_client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .voices()
-        .import_approved_voice("openai", "voice_123abc", &options())
+        .import_approved_voice("voice_123abc", &options())
         .unwrap();
     let mut alternate = profile();
     if let ServiceSetting::Enabled(route) = &mut alternate.audio {
@@ -259,8 +277,10 @@ async fn custom_voice_rejects_non_official_speech_route_before_http() {
     custom.voice = SpeechVoice::Custom(reference);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &custom, &options())
+            .synthesize(&custom, &options())
             .await,
         Err(AudioError::Llm(LlmError::UnsupportedCapability { .. }))
     ));
@@ -279,8 +299,10 @@ async fn interrupted_binary_stream_reports_delivered_bytes() {
         ],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize("openai", &request(), &options())
+        .synthesize(&request(), &options())
         .await
         .unwrap();
     let _ = speech.next_chunk().await.unwrap();
@@ -296,8 +318,10 @@ async fn legacy_voice_instructions_and_bad_speed_fail_before_http() {
     request.model = SpeechModel::Tts1;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &request, &options())
+            .synthesize(&request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -305,8 +329,10 @@ async fn legacy_voice_instructions_and_bad_speed_fail_before_http() {
     request.voice = SpeechVoice::Cedar;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &request, &options())
+            .synthesize(&request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -314,8 +340,10 @@ async fn legacy_voice_instructions_and_bad_speed_fail_before_http() {
     request.speed = Some(5.0);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &request, &options())
+            .synthesize(&request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -323,8 +351,10 @@ async fn legacy_voice_instructions_and_bad_speed_fail_before_http() {
     request.input = "x".repeat(4097);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize("openai", &request, &options())
+            .synthesize(&request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -339,8 +369,10 @@ async fn provider_error_remains_an_error_not_audio() {
         chunks: vec![Ok(body.into())],
     }]);
     let error = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize("openai", &request(), &options())
+        .synthesize(&request(), &options())
         .await
         .err()
         .unwrap();
@@ -356,8 +388,10 @@ async fn successful_empty_speech_body_is_invalid() {
         chunks: vec![],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize("openai", &request(), &options())
+        .synthesize(&request(), &options())
         .await
         .unwrap();
     let error = speech.next_chunk().await.unwrap_err();
@@ -382,8 +416,10 @@ async fn sse_speech_decodes_audio_preserves_unknown_events_and_fuses_on_done() {
         ],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize_stream("openai", &request(), &options())
+        .synthesize_stream(&request(), &options())
         .await
         .unwrap();
     assert_eq!(speech.request_id.as_deref(), Some("req-speech"));
@@ -444,8 +480,10 @@ async fn undocumented_error_event_is_raw_and_eof_without_done_is_interrupted() {
         chunks: vec![Ok(wire.into())],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize_stream("openai", &request(), &options())
+        .synthesize_stream(&request(), &options())
         .await
         .unwrap();
     assert!(matches!(
@@ -476,8 +514,10 @@ async fn sse_malformed_known_delta_is_a_fused_invalid_event() {
         chunks: vec![Ok(Bytes::from_static(wire.as_bytes()))],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize_stream("openai", &request(), &options())
+        .synthesize_stream(&request(), &options())
         .await
         .unwrap();
     assert!(matches!(
@@ -497,8 +537,10 @@ async fn sse_done_requires_the_documented_usage_shape() {
         chunks: vec![Ok(Bytes::from_static(wire.as_bytes()))],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize_stream("openai", &request(), &options())
+        .synthesize_stream(&request(), &options())
         .await
         .unwrap();
     assert!(matches!(
@@ -523,8 +565,10 @@ async fn sse_transport_interruption_and_http_errors_keep_their_classification() 
         ],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize_stream("openai", &request(), &options())
+        .synthesize_stream(&request(), &options())
         .await
         .unwrap();
     assert!(matches!(
@@ -545,8 +589,8 @@ async fn sse_transport_interruption_and_http_errors_keep_their_classification() 
     }]);
     assert!(matches!(
         client
-            .audio()
-            .synthesize_stream("openai", &request(), &options())
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai").unwrap().audio()
+            .synthesize_stream(&request(), &options())
             .await,
         Err(AudioError::Provider { status: 429, body, .. }) if body["error"]["message"] == "quota"
     ));
@@ -561,8 +605,10 @@ async fn legacy_models_are_rejected_before_sse_http_dispatch() {
     request.voice = SpeechVoice::Alloy;
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize_stream("openai", &request, &options())
+            .synthesize_stream(&request, &options())
             .await,
         Err(AudioError::Llm(LlmError::InvalidRequest { .. }))
     ));
@@ -587,8 +633,10 @@ async fn sse_rejects_non_official_gateways_before_http_dispatch() {
         .unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .audio()
-            .synthesize_stream("openai", &request(), &options())
+            .synthesize_stream(&request(), &options())
             .await,
         Err(AudioError::Llm(LlmError::UnsupportedCapability { .. }))
     ));
@@ -604,8 +652,10 @@ async fn oversized_sse_frame_is_bounded_and_fuses_the_stream() {
         chunks: vec![Ok(wire.into())],
     }]);
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize_stream("openai", &request(), &options())
+        .synthesize_stream(&request(), &options())
         .await
         .unwrap();
     assert!(matches!(

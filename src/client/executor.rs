@@ -6,13 +6,13 @@ use super::resolve::{RequestRoute, ResolvedConnection as Attempt};
 use super::route::ResolvedRoute;
 use super::stream::ModelStream;
 use super::{
-    files, AttachmentKind, ClientSnapshot, FirstPartyEndpoint, PreparedProviderFileUse,
-    ProviderFilePreparation, RequestOptions, ResolvedRequest, INLINE_IMAGE_PREFERENCE_LIMIT,
+    files, ClientSnapshot, PreparedProviderFileUse, ProviderFilePreparation, RequestOptions,
+    ResolvedRequest,
 };
 use crate::codecs::{CodecContext, EncodeRequest, RequestMode, WireCodec};
 use crate::protocol::{
     AuthStrategy, ChatRequest, ChatResponse, ContentBlock, ContinuationRef, LlmError,
-    ProtocolFamily, ProviderFileSource, ProviderProfile, ResponseId,
+    ProtocolFamily, ProviderProfile, ResponseId,
 };
 use crate::transport::{collect_error_body, HttpExecutor, HttpRequest, HttpResponse, Transport};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{future::Future, time::Duration};
 
-const ANTHROPIC_MAX_REQUEST_BODY_BYTES: usize = 32_000_000;
+use crate::providers::dispatch::{self, ChatBackend};
 
 /// Check caller-supplied file lifetimes independently of route preparation so
 /// an already-expired reference cannot trigger attachment reads or uploads.
@@ -42,12 +42,8 @@ pub(super) fn request_file_expirations(req: &ChatRequest) -> Vec<String> {
             } => Some(file),
             _ => None,
         })
-        .chain(
-            req.hosted_anthropic_code_execution()
-                .into_iter()
-                .flat_map(|config| &config.files),
-        )
         .filter_map(|file| file.expires_at.clone())
+        .chain(dispatch::extra_file_expirations(req).map(str::to_owned))
         .collect()
 }
 
@@ -70,49 +66,6 @@ fn validate_prepared_file_expirations(
     Ok(())
 }
 
-fn projected_anthropic_file_request<'a>(
-    req: &ResolvedRequest<'a>,
-    profile: &ProviderProfile,
-    model: &str,
-    opts: &RequestOptions,
-    promote_small_images: bool,
-) -> Result<Vec<crate::codecs::ContentBinding<'a>>, LlmError> {
-    let mut projected = Vec::new();
-    for payload in &req.attachments {
-        let capabilities = files::capabilities(profile, model, &payload.attachment.media_type);
-        if !capabilities.upload
-            || capabilities.model_input == files::ModelFileReference::Unsupported
-        {
-            continue;
-        }
-        if payload.kind == AttachmentKind::Image
-            && !promote_small_images
-            && payload.bytes.len() <= INLINE_IMAGE_PREFERENCE_LIMIT
-        {
-            continue;
-        }
-        if payload.kind == AttachmentKind::Video {
-            continue;
-        }
-        let file = ProviderFileSource {
-            protocol: profile.protocol,
-            provider_id: profile.provider_id.clone(),
-            profile_name: profile.profile_name.clone(),
-            endpoint_fingerprint: files::provider_file_endpoint_fingerprint(&profile.base_url),
-            account_scope: opts.file_account_scope.clone(),
-            // The two JSON quote bytes are included in the preflight bound.
-            expires_at: None,
-            processing_status: None,
-            file_id: "x".repeat(files::MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES - 2),
-            uri: None,
-            media_type: Some(payload.attachment.media_type.clone()),
-            purpose: None,
-        };
-        projected.push(super::provider_file_binding(req.request, payload, file)?);
-    }
-    Ok(projected)
-}
-
 /// One connection to try: the head of the route, then each sibling in order.
 /// The chain holds only the siblings, so the head is prepended here rather than
 /// special-cased inside the walk.
@@ -121,6 +74,7 @@ pub(super) struct PreparedAttempt {
     pub(super) http: HttpRequest,
     pub(super) context: CodecContext,
     pub(super) codec: Arc<dyn WireCodec>,
+    pub(super) backend: &'static dyn ChatBackend,
     pub(super) files: Vec<PreparedProviderFileUse>,
     pub(super) cleanup: Option<Arc<files::AutomaticFileCleanup>>,
 }
@@ -322,36 +276,14 @@ impl<'client> RequestExecutor<'client> {
     ) -> Result<PreparedAttempt, LlmError> {
         let (mode, authenticate) = preparation;
         let profile = attempt.profile;
-        if mode == RequestMode::CountTokens && profile.protocol != ProtocolFamily::AnthropicMessages
-        {
-            return Err(LlmError::UnsupportedCapability {
-                message: "exact token counting is unavailable for this protocol".into(),
-            });
-        }
         validate_request_file_expirations(req.request, self.clock.now())?;
-        super::options::validate_openrouter_response_cache(
-            opts.openrouter_response_cache,
-            profile,
-        )?;
-        super::options::validate_mcp_authorizations(
-            &opts.mcp_authorizations,
-            req.request,
-            profile,
-        )?;
-        if req.request.continuation.is_some() && profile.protocol != ProtocolFamily::OpenAiResponses
-        {
-            return Err(LlmError::UnsupportedCapability {
-                message: format!(
-                    "profile {:?} uses {:?}, which cannot continue a Responses id",
-                    profile.profile_name, profile.protocol
-                ),
-            });
-        }
-        let codec = self.codecs.get(&profile.protocol).cloned().ok_or_else(|| {
-            LlmError::UnsupportedCapability {
-                message: format!("no codec for {:?}", profile.protocol),
-            }
-        })?;
+        let backend = dispatch::chat(profile);
+        let codec = backend.codec(profile, self.codecs)?;
+        let validation_context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_account_scope(opts.account_scope.as_deref())
+            .with_file_scope(opts.file_account_scope.as_deref())
+            .with_file_validation_time(self.clock.now());
+        backend.validate_preparation(req.request, &validation_context, opts)?;
 
         // Failing over re-points the endpoint and the credential, never the
         // model — so the codec encodes against this connection's profile and
@@ -372,34 +304,6 @@ impl<'client> RequestExecutor<'client> {
             // The request-local scope binds uploaded IDs during this attempt;
             // it is deliberately not retained in the cross-request cache.
             attempt_opts.file_account_scope = Some(ephemeral_file_scope());
-        }
-
-        if crate::codecs::gemini::encode::has_gemini_hosted_tools(req.request) {
-            crate::codecs::gemini::encode::validate_hosted_tool_request(
-                req.request,
-                profile,
-                &attempt.model.request_model,
-            )?;
-        }
-        crate::codecs::structured::validate_qwen_output_contract(
-            req.request,
-            profile,
-            &attempt.model.request_model,
-        )?;
-        crate::codecs::anthropic_code_execution::validate(
-            req.request,
-            &CodecContext::for_model(profile, attempt.model, mode)
-                .with_account_scope(opts.account_scope.as_deref())
-                .with_file_scope(opts.file_account_scope.as_deref())
-                .with_file_validation_time(self.clock.now()),
-        )?;
-        if crate::codecs::openrouter_server_tools::has_tools(req.request) {
-            crate::codecs::openrouter_server_tools::validate(
-                req.request,
-                profile,
-                opts.account_scope.as_deref(),
-                true,
-            )?;
         }
 
         let credential = if attempt.profile.profile_name == route.profile_name {
@@ -445,71 +349,13 @@ impl<'client> RequestExecutor<'client> {
                 bytes: &payload.bytes,
             })
             .collect::<Vec<_>>();
-        if matches!(
-            profile.protocol,
-            ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
-        ) && req
-            .request
-            .messages
-            .iter()
-            .flat_map(|message| &message.content)
-            .any(|block| matches!(block, ContentBlock::Audio { .. }))
-        {
-            // Bound the complete inline representation before automatic file
-            // uploads. Callers with larger mixed-media requests can explicitly
-            // upload files first and supply scoped references instead.
-            codec.encoded_body_len(EncodeRequest::new(req.request).with_media(&media), &context)?;
-        }
+        backend.preflight_media(req.request, &media, &context, codec.as_ref())?;
         let endpoint = self
             .state
             .config
             .first_party_endpoint(&profile.profile_name);
-        let anthropic_request_limit = endpoint == FirstPartyEndpoint::Anthropic;
-        let anthropic_mcp_auth_overhead = if anthropic_request_limit {
-            super::options::anthropic_mcp_authorization_body_overhead(
-                req.request,
-                &opts.mcp_authorizations,
-            )?
-        } else {
-            0
-        };
-        let inline_image_data_budget_bytes = if anthropic_request_limit
-            && !req.attachments.is_empty()
-        {
-            // Simulate the exact attachment choices before uploading. If the
-            // inline body fits, only large images and supported documents use
-            // files. Otherwise, every eligible app image is promoted.
-            let inline = codec
-                .encoded_body_len(EncodeRequest::new(req.request).with_media(&media), &context)?;
-            let inline_with_auth = inline.saturating_add(anthropic_mcp_auth_overhead);
-            let promote_small_images = inline_with_auth > ANTHROPIC_MAX_REQUEST_BODY_BYTES;
-            let projected = projected_anthropic_file_request(
-                req,
-                context.profile(),
-                &attempt.model.request_model,
-                &attempt_opts,
-                promote_small_images,
-            )?;
-            let projected = codec.encoded_body_len(
-                EncodeRequest::new(req.request)
-                    .with_media(&media)
-                    .with_bindings(&projected),
-                &context,
-            )?;
-            let projected = projected.saturating_add(anthropic_mcp_auth_overhead);
-            if projected > ANTHROPIC_MAX_REQUEST_BODY_BYTES {
-                return Err(LlmError::RequestTooLarge {
-                    message: format!(
-                        "Anthropic request body projects to {} bytes with bounded file IDs; the limit is {} bytes",
-                        projected,
-                        ANTHROPIC_MAX_REQUEST_BODY_BYTES
-                    ),
-                });
-            }
-            Some(if promote_small_images { 0 } else { usize::MAX })
-        } else {
-            None
-        };
+        let inline_image_data_budget_bytes =
+            backend.attachment_budget(req, &context, &attempt_opts, codec.as_ref(), endpoint)?;
         let prepared = self
             .attachments
             .prepare_provider_file_inputs(
@@ -566,24 +412,11 @@ impl<'client> RequestExecutor<'client> {
             &context,
         )?;
         http.timeout = opts.total_timeout;
-        super::options::apply_openrouter_response_cache(
-            opts.openrouter_response_cache,
-            profile,
-            &mut http,
-        )?;
-        super::options::apply_mcp_authorizations(&opts.mcp_authorizations, profile, &mut http)?;
+        backend.apply_request_options(opts, profile, &mut http)?;
         if let Some(finalizer) = &opts.finalizer {
             finalizer.finalize(&mut http, profile)?;
         }
-        if anthropic_request_limit && http.body.len() > ANTHROPIC_MAX_REQUEST_BODY_BYTES {
-            return Err(LlmError::RequestTooLarge {
-                message: format!(
-                    "Anthropic request body is {} bytes; the limit is {} bytes",
-                    http.body.len(),
-                    ANTHROPIC_MAX_REQUEST_BODY_BYTES
-                ),
-            });
-        }
+        backend.validate_prepared_body(http.body.len(), endpoint)?;
 
         validate_prepared_file_expirations(req.request, &prepared.uses, self.clock.now())?;
         http.timeout = opts.total_timeout;
@@ -598,6 +431,7 @@ impl<'client> RequestExecutor<'client> {
             http,
             context,
             codec,
+            backend,
             files: prepared.uses,
             cleanup: prepared.cleanup,
         })
@@ -620,6 +454,7 @@ impl<'client> RequestExecutor<'client> {
             http,
             context,
             codec,
+            backend,
             files,
             cleanup,
         } = prepared;
@@ -658,11 +493,8 @@ impl<'client> RequestExecutor<'client> {
         }
         if mode == RequestMode::Stream {
             let continuation = continuation_template(req.request, attempt, opts);
-            let response_cache = super::response_cache::openrouter_observation(
-                attempt.profile,
-                &request_url,
-                &response.headers,
-            );
+            let response_cache =
+                backend.response_cache(attempt.profile, &request_url, &response.headers);
             return Ok(RequestOutput::Stream(Box::new(
                 ModelStream::new(
                     response,
@@ -677,10 +509,7 @@ impl<'client> RequestExecutor<'client> {
                     profile: attempt.profile.clone(),
                     model: attempt.model.clone(),
                 })
-                .with_anthropic_container_observation(
-                    crate::codecs::anthropic_code_execution::is_official_profile(attempt.profile)
-                        || crate::codecs::anthropic_code_execution::supports_execution(&context),
-                ),
+                .with_provider_observation(backend.stream_observation(&context)),
             )));
         }
         let response = HttpExecutor::collect_response(response, None)
@@ -691,11 +520,8 @@ impl<'client> RequestExecutor<'client> {
             Err(error) => return Err((error, Some(response), files)),
         };
         decoded.executed_profile = Some(attempt.profile.profile_name.clone());
-        decoded.response_cache = super::response_cache::openrouter_observation(
-            attempt.profile,
-            &request_url,
-            &response.headers,
-        );
+        decoded.response_cache =
+            backend.response_cache(attempt.profile, &request_url, &response.headers);
         if let (Some(mut reference), Some(id)) = (
             continuation_template(req.request, attempt, opts),
             decoded.response_id.clone(),
@@ -718,77 +544,18 @@ impl<'client> RequestExecutor<'client> {
         req: &ChatRequest,
         opts: &RequestOptions,
         mode: RequestMode,
-    ) -> Result<bool, LlmError> {
+    ) -> Result<(), LlmError> {
         req.validate_hosted_tools()?;
         validate_request_file_expirations(req, self.clock.now())?;
-        if crate::codecs::gemini::encode::has_gemini_hosted_tools(req) {
-            let head = connections
-                .first()
-                .ok_or_else(|| LlmError::ModelUnavailable {
-                    message: format!("no connection served {:?}", req.model),
-                })?;
-            crate::codecs::gemini::encode::validate_hosted_tool_request(
-                req,
-                head.profile,
-                &head.model.request_model,
-            )?;
-        }
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
                 .with_account_scope(opts.account_scope.as_deref())
                 .with_file_scope(opts.file_account_scope.as_deref())
                 .with_file_validation_time(self.clock.now());
-            if req
-                .messages
-                .iter()
-                .any(|message| message.anthropic.is_some())
-                || crate::codecs::anthropic_conversation::has_tool_changes(req)
-                || !req.anthropic_client_toolsets.is_empty()
-                || (crate::codecs::anthropic_conversation::supports_profile(head.profile)
-                    && req
-                        .messages
-                        .iter()
-                        .any(|message| message.role == crate::protocol::MessageRole::System))
-            {
-                crate::codecs::anthropic_conversation::validate(req, &context)?;
-                crate::codecs::cache::validate(req, &context)?;
-            }
-            crate::codecs::inference::validate(req, &context.profile, &context.request_model)?;
-            crate::codecs::anthropic_web_fetch::validate(req, &context)?;
-            crate::codecs::anthropic_tool_search::validate(req, &context)?;
-            crate::codecs::anthropic_client_toolsets::validate(req, &context)?;
-            if crate::codecs::anthropic_web_fetch::has_fetch(req) {
-                crate::codecs::structured::validate(req, &context)?;
-            }
-            crate::codecs::anthropic_mcp::validate(req, &context)?;
-            if crate::codecs::anthropic_web_fetch::has_fetch(req)
-                || crate::codecs::anthropic_mcp::has_mcp(req)
-            {
-                crate::codecs::cache::validate(req, &context)?;
-            }
-            crate::codecs::anthropic_code_execution::validate(req, &context)?;
-            crate::codecs::structured::validate_qwen_output_contract(
-                req,
-                head.profile,
-                &head.model.request_model,
-            )?;
+            let backend = dispatch::chat(head.profile);
+            let codec = backend.codec(head.profile, self.codecs)?;
+            backend.validate_host(req, &context, opts, codec.as_ref())?;
         }
-        let has_openrouter_server_tools = if crate::codecs::openrouter_server_tools::has_tools(req)
-        {
-            let head = connections
-                .first()
-                .ok_or_else(|| LlmError::ModelUnavailable {
-                    message: format!("no connection served {:?}", req.model),
-                })?;
-            crate::codecs::openrouter_server_tools::validate(
-                req,
-                head.profile,
-                opts.account_scope.as_deref(),
-                true,
-            )?
-        } else {
-            false
-        };
         if opts
             .account_scope
             .as_deref()
@@ -829,57 +596,7 @@ impl<'client> RequestExecutor<'client> {
                     .map(|search| search.workspace_id.as_str()),
             )?;
         }
-        if let Some(head) = connections.first() {
-            super::options::validate_openrouter_response_cache(
-                opts.openrouter_response_cache,
-                head.profile,
-            )?;
-            super::options::validate_mcp_authorizations(
-                &opts.mcp_authorizations,
-                req,
-                head.profile,
-            )?;
-            if head.profile.provider_id.as_str() == "qwen"
-                && head.profile.protocol == ProtocolFamily::OpenAiChat
-            {
-                let context = CodecContext::for_model(head.profile, head.model, mode)
-                    .with_file_scope(opts.file_account_scope.as_deref());
-                crate::codecs::qwen_cache::validate(req, &context)?;
-            }
-        }
-        let has_chat_audio = req
-            .messages
-            .iter()
-            .flat_map(|message| &message.content)
-            .any(|block| matches!(block, ContentBlock::Audio { .. }))
-            || req.metadata.get("openrouter_chat_audio").is_some();
-        if has_chat_audio {
-            let head = connections
-                .first()
-                .ok_or_else(|| LlmError::ModelUnavailable {
-                    message: format!("no connection served {:?}", req.model),
-                })?;
-            let openrouter = head.profile.provider_id.as_str() == "openrouter"
-                && head.profile.protocol == ProtocolFamily::OpenAiChat;
-            let gemini = matches!(
-                head.profile.protocol,
-                ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini
-            );
-            if !openrouter && (!gemini || req.metadata.get("openrouter_chat_audio").is_some()) {
-                return Err(LlmError::UnsupportedCapability {
-                    message: "Chat audio requires OpenRouter Chat or Gemini GenerateContent; OpenRouter output settings require OpenRouter".into(),
-                });
-            }
-            let codec = self.codecs.get(&head.profile.protocol).ok_or_else(|| {
-                LlmError::UnsupportedCapability {
-                    message: "Chat audio profile has no registered codec".into(),
-                }
-            })?;
-            let context = CodecContext::for_model(head.profile, head.model, mode)
-                .with_file_scope(opts.file_account_scope.as_deref());
-            codec.validate_request(req, &context)?;
-        }
-        Ok(has_openrouter_server_tools)
+        Ok(())
     }
 
     pub(super) async fn run(
@@ -892,40 +609,18 @@ impl<'client> RequestExecutor<'client> {
         let RequestRoute { route, connections } = resolved;
         let opts = execution_options(req, opts, mode);
         let started = Instant::now();
-        let has_openrouter_server_tools =
-            self.validate_host_request(&connections, req, &opts, mode)?;
-        let has_remote_mcp = req.hosted_tools.iter().any(|tool| {
-            matches!(
-                tool,
-                crate::protocol::HostedTool::RemoteMcp(_)
-                    | crate::protocol::HostedTool::XaiRemoteMcp(_)
-            )
-        });
-        let has_anthropic_mcp = crate::codecs::anthropic_mcp::has_mcp(req);
-        let has_anthropic_fetch = crate::codecs::anthropic_web_fetch::has_fetch(req);
-        let has_openai_tool_search = req.hosted_openai_tool_search().is_some();
-        // Hosted execution can mutate its container before a transport error.
-        // Neither route fallback nor attachment repair may replay the request.
-        let has_code_interpreter = req.hosted_code_interpreter().is_some();
-        let has_gemini_hosted_tool = crate::codecs::gemini::encode::has_gemini_hosted_tools(req);
-        let has_anthropic_execution = crate::codecs::anthropic_code_execution::has_execution(req);
+        self.validate_host_request(&connections, req, &opts, mode)?;
+        let head = connections
+            .first()
+            .ok_or_else(|| LlmError::ModelUnavailable {
+                message: format!("no connection served {:?}", req.model),
+            })?;
+        let replay = dispatch::chat(head.profile).replay_policy(req, &opts);
         let prepared_request = self.resolve_before_deadline(req, &opts, started).await?;
         let mut last = None;
-        for (attempt_index, attempt) in attempts(
-            &connections,
-            req.continuation.is_some()
-                || opts.openrouter_response_cache.is_some()
-                || has_remote_mcp
-                || has_anthropic_mcp
-                || has_anthropic_fetch
-                || has_gemini_hosted_tool
-                || has_openrouter_server_tools
-                || has_openai_tool_search
-                || has_code_interpreter
-                || has_anthropic_execution,
-        )
-        .into_iter()
-        .enumerate()
+        for (attempt_index, attempt) in attempts(&connections, replay.pin_to_connection)
+            .into_iter()
+            .enumerate()
         {
             let outcome = self
                 .execute_attempt(&route, &attempt, &prepared_request, &opts, started, mode)
@@ -939,17 +634,7 @@ impl<'client> RequestExecutor<'client> {
                         .map(|response| missing_provider_file_uses(response, uses))
                 })
                 .unwrap_or_default();
-            let outcome = if req.continuation.is_none()
-                && !has_remote_mcp
-                && !has_anthropic_mcp
-                && !has_anthropic_fetch
-                && !has_gemini_hosted_tool
-                && !has_openrouter_server_tools
-                && !has_openai_tool_search
-                && !has_code_interpreter
-                && !has_anthropic_execution
-                && !missing.is_empty()
-            {
+            let outcome = if replay.repair_missing_files && !missing.is_empty() {
                 self.attachments
                     .invalidate_provider_file_cache(&missing)
                     .await;
@@ -962,12 +647,7 @@ impl<'client> RequestExecutor<'client> {
             match outcome {
                 Ok(output) => return Ok(output),
                 Err(error)
-                    if !has_openrouter_server_tools
-                        && !has_openai_tool_search
-                        && !has_code_interpreter
-                        && !has_anthropic_execution
-                        && !has_anthropic_mcp
-                        && !has_anthropic_fetch
+                    if replay.allow_failover
                         && (is_attachment_capability_fallback(
                             attempt_index,
                             !prepared_request.attachments.is_empty(),

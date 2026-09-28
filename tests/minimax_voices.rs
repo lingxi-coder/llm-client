@@ -3,14 +3,14 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     files::ProviderFileRef,
-    minimax_tts::MiniMaxTtsModel,
-    minimax_voices::{
+    protocol::{LlmError, ProtocolFamily, Secret},
+    providers::minimax::tts::MiniMaxTtsModel,
+    providers::minimax::voices::{
         MiniMaxVoiceClonePrompt, MiniMaxVoiceCloneRequest, MiniMaxVoiceDesignRequest,
         MiniMaxVoiceKind, MiniMaxVoiceLanguageBoost, MiniMaxVoiceListRequest, MiniMaxVoiceListType,
         MiniMaxVoiceRef, MiniMaxVoicesConfig, MiniMaxVoicesCredentials, MiniMaxVoicesDispatch,
         MiniMaxVoicesError, MiniMaxVoicesRegion, MiniMaxVoicesService,
     },
-    protocol::{LlmError, ProtocolFamily, Secret},
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};

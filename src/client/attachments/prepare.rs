@@ -63,7 +63,7 @@ impl AttachmentManager {
         );
         let service = if profile.protocol == ProtocolFamily::GeminiGenerateContent {
             if let Some(deadline) = request_deadline {
-                service.with_gemini_request_deadline(deadline)
+                service.with_request_deadline(deadline)
             } else {
                 service
             }

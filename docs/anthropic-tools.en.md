@@ -5,13 +5,12 @@
 Anthropic Messages offers hosted tool-catalog search with regex or BM25. Select it in `ChatRequest.hosted_tools` with `AnthropicToolSearch`, then set `ToolSpec.defer_loading: true` on function tools that should be discovered on demand:
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, HostedTool, ToolSpec,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
+use lingxi_llm_client::protocol::{ToolSpec};
 # let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model":"claude-opus-5-5","messages":[]})).unwrap();
-request.hosted_tools.push(HostedTool::AnthropicToolSearch(
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
     AnthropicToolSearchConfig { strategy: AnthropicToolSearchStrategy::Bm25 },
-));
+).into());
 request.tools.push(ToolSpec {
     tool_type: None,
     extra: serde_json::Value::Null,
@@ -20,7 +19,7 @@ request.tools.push(ToolSpec {
     input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
     strict: false,
     defer_loading: true,
-    allowed_callers: vec![],
+    native_options: Vec::new(),
 });
 ```
 

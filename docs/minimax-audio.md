@@ -2,17 +2,19 @@
 
 [English](minimax-audio.en.md)
 
-`client.minimax_audio(endpoint).transcribe(...)` 是 MiniMax ASR 1.0 的独立同步文件转写服务。它不依赖 Chat 的 `base_url`，也不复用 OpenAI 的转写字段。调用方必须显式选择完整区域 endpoint，并在每次请求的 `RequestOptions::credential` 中传入对应账户的 API Key：
+`client.provider::<MiniMaxClient>(profile)?.audio(endpoint).transcribe(...)` 是 MiniMax ASR 1.0 的独立同步文件转写服务。它不依赖 Chat 的 `base_url`，也不复用 OpenAI 的转写字段。调用方必须显式选择完整区域 endpoint，并在每次请求的 `RequestOptions::credential` 中传入对应账户的 API Key：
 
 - 国际 endpoint：`https://api.minimax.io/v1/speech_to_text`
 - 中国大陆 endpoint：`https://api.minimax.cn/v1/speech_to_text`
 
 服务只接受这两个 HTTPS 主机上的 `/v1/speech_to_text` 路径，不接受 URL 用户信息、查询、片段或非 443 端口。端点选择由调用方负责；服务不会从聊天路由推断 endpoint、切换区域或 failover。ASR 是无状态调用，不保留账户作用域、凭据或缓存数据。
 
+通过 `MiniMaxClient` 绑定时，请求使用该 profile 注册的鉴权器；该 profile 必须配置非 `none` 的鉴权策略。直接构造 `MiniMaxAudioService::new` 的独立用法仍以传入的 API Key 生成 Bearer 头。
+
 ```rust,no_run
 use lingxi_llm_client::{
-    audio::AudioInput,
-    minimax_audio::{
+    providers::openai::audio::AudioInput,
+    providers::minimax::audio::{
         MiniMaxAudioService, MiniMaxSpeechLanguage, MiniMaxTranscriptionRequest,
         MINIMAX_ASR_INTERNATIONAL_ENDPOINT,
     },
@@ -38,7 +40,7 @@ async fn transcribe() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-已有的 `LlmClient` 或 `ClientSnapshot` 也可通过 `client.minimax_audio(endpoint)` 创建此服务；两者都要求显式提供 endpoint。不要从 MiniMax Chat 的 `base_url` 推导语音 endpoint。
+已有的 `LlmClient` 或 `ClientSnapshot` 也可通过 `client.provider::<MiniMaxClient>(profile)?.audio(endpoint)` 创建此服务；两者都要求显式提供 endpoint。不要从 MiniMax Chat 的 `base_url` 推导语音 endpoint。
 
 `AudioInput` 是带声明长度的一次性字节流。MiniMax 接受 WAV、AIFF、FLAC、M4A/ALAC、MP3、AAC、Opus 和 Ogg 容器，文件不超过 50 MB、时长不超过 500 秒；不支持裸 PCM。客户端会在发送 multipart 请求时检查大小、MIME 类型、文件扩展名和实际字节数。通用字节流无法提供录音时长，因此超过 500 秒的录音可能由 MiniMax 拒绝。
 
@@ -50,14 +52,14 @@ async fn transcribe() -> Result<(), Box<dyn std::error::Error>> {
 use futures::StreamExt;
 
 async fn transcribe_incrementally(
-    service: &lingxi_llm_client::minimax_audio::MiniMaxAudioService<'_>,
-    input: lingxi_llm_client::audio::AudioInput,
+    service: &lingxi_llm_client::providers::minimax::audio::MiniMaxAudioService<'_>,
+    input: lingxi_llm_client::providers::openai::audio::AudioInput,
     options: &lingxi_llm_client::RequestOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut events = service
         .transcribe_stream(
             input,
-            &lingxi_llm_client::minimax_audio::MiniMaxTranscriptionRequest::default(),
+            &lingxi_llm_client::providers::minimax::audio::MiniMaxTranscriptionRequest::default(),
             options,
         )
         .await?;

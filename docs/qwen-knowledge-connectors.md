@@ -4,16 +4,17 @@
 
 `QwenKnowledgeService` 可创建和查询 Model Studio `FILE` 数据连接器，也可按明确指定的对象 key，从已授权 OSS bucket 批量导入文件。路由、字段和长度限制依据阿里云官方的 [RAG API 总览](https://help.aliyun.com/en/model-studio/rag-api-overview)、[Create Connector](https://help.aliyun.com/en/model-studio/rag-api-add-connector)、[Get Connector](https://help.aliyun.com/en/model-studio/rag-api-get-connector) 和 [Import from OSS](https://help.aliyun.com/en/model-studio/rag-api-oss-import) 文档。
 
-所有请求都使用 `QwenKnowledgeService` 当前的 API key、北京 workspace 地址和 profile/account scope。创建或查询得到的 `QwenKnowledgeConnectorRef` 绑定 provider、profile、account scope、region、workspace 和 endpoint；跨连接的引用会在发送 HTTP 请求前被拒绝。
+所有请求都使用 每次 `RequestOptions` 传入的 API key、北京 workspace 地址和 profile/account scope。创建或查询得到的 `QwenKnowledgeConnectorRef` 绑定 provider、profile、account scope、region、workspace 和 endpoint；跨连接的引用会在发送 HTTP 请求前被拒绝。
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeConnectorCreateRequest, QwenKnowledgeConnectorLookup,
     QwenKnowledgeCategoryRef, QwenKnowledgeError, QwenKnowledgeOssImportFile,
     QwenKnowledgeOssImportRequest, QwenKnowledgeService,
 };
 
 async fn use_connectors(
+    request_options: &lingxi_llm_client::RequestOptions,
     service: &QwenKnowledgeService<'_>,
     category: &QwenKnowledgeCategoryRef,
 ) -> Result<(), QwenKnowledgeError> {
@@ -21,12 +22,12 @@ async fn use_connectors(
         .create_connector(&QwenKnowledgeConnectorCreateRequest::new(
             "product docs",
             "Connector for product documentation",
-        ))
+        ), request_options)
         .await?;
     let details = service
         .get_connector(&QwenKnowledgeConnectorLookup::by_id(
             created.reference.clone(),
-        ))
+        ), request_options)
         .await?;
 
     let request = QwenKnowledgeOssImportRequest::for_category(
@@ -41,7 +42,7 @@ async fn use_connectors(
             QwenKnowledgeOssImportFile::new("faq.docx", "docs/faq.docx"),
         ],
     );
-    let imported = service.import_files_from_oss(&request).await?;
+    let imported = service.import_files_from_oss(&request, request_options).await?;
     let _ = (details, imported);
     Ok(())
 }

@@ -2,7 +2,9 @@
 
 [English](batches.en.md)
 
-`client.batches()` 是独立于 Chat 的 OpenAI Batch 生命周期入口。内置 `openai` profile 配置了独立 Batch 与结果文件路由；配置 v3 可继承、替换或禁用。接口依据 [OpenAI Batch 指南](https://developers.openai.com/api/docs/guides/batch) 和 [Batch API](https://developers.openai.com/api/reference/resources/batches/methods/create)。其他提供方及 Background/deferred 任务尚未接入。
+先用 `client.provider::<OpenAiClient>(profile)?` 绑定具体 profile，再通过 `provider.batches()` 调用资源。每次操作传入 `RequestOptions`，client 不保存凭证。
+
+`provider.batches()` 是独立于 Chat 的 OpenAI Batch 生命周期入口。内置 `openai` profile 配置了独立 Batch 与结果文件路由；配置 v3 可继承、替换或禁用。接口依据 [OpenAI Batch 指南](https://developers.openai.com/api/docs/guides/batch) 和 [Batch API](https://developers.openai.com/api/reference/resources/batches/methods/create)。其他提供方使用各自的 Batch 服务；Background 和 deferred 任务使用独立资源 API。
 
 用 `encode_jsonl()` 将最多 50,000 条请求编码成 JSONL，或用 `write_jsonl()` 写入调用方持有的文件并取得准确字节数。每条必须有唯一 `custom_id`；同一输入不能混用模型，也不能启用 `stream`。`write_jsonl()` 会在首次写入前校验全部请求；I/O 写入失败可能留下部分文件，调用方应丢弃。将 JSONL 以 `.jsonl` 文件名和 `application/x-ndjson` 类型通过同一 profile 的 `FileService::upload(..., FilePurpose::Batch)` 上传。这个便捷入口仍会在内存中构造 multipart。
 
@@ -15,7 +17,7 @@ Batch 请求 JSONL 可以引用预先上传的文件：Responses `input_file.fil
 使用 `encode_jsonl_with_attachments()` 或 `write_jsonl_with_attachments()`，将 JSONL 中每个文件 ID 与显式的账户作用域引用绑定。普通编码入口会拒绝缺少清单的文件 ID；清单必须与 JSONL 中的文件 ID 完全一致。调用 `submit_with_attachments()` 时传入相同引用：服务会检查 provider、profile、端点和账户作用域，然后先逐个获取文件元数据，再创建 Batch。它会核对远端 ID 和 purpose，并拒绝在 Batch 24 小时完成窗口、文档说明的取消协调时间和 5 分钟时钟/请求缓冲之前到期的文件。这只是提交前检查，并不锁定文件：在 Batch 进入终态且所需结果已读取前，请勿删除这些文件。[Files API 文档](https://developers.openai.com/api/reference/typescript/resources/files/methods/create)说明未设置到期时间的文件会保留至人工删除。客户端不会自动上传、延长有效期、重试或删除这些附件文件。若创建 Batch 的传输中断，结果可能未知；应通过 `list()`/`get()` 核对，不能盲目重试。
 
 ```rust,no_run
-use lingxi_llm_client::batches::{
+use lingxi_llm_client::providers::openai::batches::{
     BatchAttachmentRef, BatchEndpoint, BatchError, BatchJob, BatchLine,
     encode_jsonl_with_attachments,
 };
@@ -43,11 +45,12 @@ async fn submit_with_pdf(
     jsonl_file: &ProviderFileRef,
     pdf: &ProviderFileRef,
     options: &RequestOptions,
-) -> Result<BatchJob, BatchError> {
+) -> Result<BatchJob, Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
     let attachments = [BatchAttachmentRef::chat_completions_pdf(pdf.clone())];
-    client.batches().submit_with_attachments(
-        "openai", jsonl_file, BatchEndpoint::ChatCompletions, None, &attachments, options,
-    ).await
+    provider.batches().submit_with_attachments(
+        jsonl_file, BatchEndpoint::ChatCompletions, None, &attachments, options,
+    ).await.map_err(Into::into)
 }
 ```
 
@@ -56,7 +59,7 @@ Responses 文件和图像也可分别使用 `BatchAttachmentRef::responses_file(
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::files::ProviderFileRef;
-use lingxi_llm_client::batches::{BatchEndpoint, BatchError, BatchJob, BatchLine, encode_jsonl, write_jsonl};
+use lingxi_llm_client::providers::openai::batches::{BatchEndpoint, BatchError, BatchJob, BatchLine, encode_jsonl, write_jsonl};
 use serde_json::json;
 
 fn input_jsonl() -> Result<Vec<u8>, BatchError> {
@@ -72,14 +75,16 @@ fn write_input_jsonl(output: &mut impl std::io::Write) -> Result<u64, BatchError
     ], output)
 }
 
-async fn submit_uploaded(client: &LlmClient, input: &ProviderFileRef, options: &RequestOptions) -> Result<BatchJob, BatchError> {
-    client.batches().submit("openai", input, BatchEndpoint::Responses, None, options).await
+async fn submit_uploaded(client: &LlmClient, input: &ProviderFileRef, options: &RequestOptions) -> Result<BatchJob, Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    provider.batches().submit(input, BatchEndpoint::Responses, None, options).await.map_err(Into::into)
 }
 
-async fn consume_result(client: &LlmClient, job: &BatchJob, options: &RequestOptions) -> Result<(), BatchError> {
+async fn consume_result(client: &LlmClient, job: &BatchJob, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&job.reference.profile_name)?;
     use futures::StreamExt;
     if let Some(reference) = job.output_ref() {
-        let mut rows = client.batches().stream_result(&reference, options).await?;
+        let mut rows = provider.batches().stream_result(&reference, options).await?;
         while let Some(row) = rows.next().await {
             let row = row?;
             // 通过 row.custom_id 与原始请求关联，并自行持久化需要的结果。

@@ -5,15 +5,15 @@ use futures::{
     StreamExt,
 };
 use lingxi_llm_client::{
-    audio::AudioInput,
-    openrouter_audio::{
+    protocol::{LlmError, Secret},
+    providers::openai::audio::AudioInput,
+    providers::openrouter::audio::{
         OpenRouterAudioDispatch, OpenRouterAudioService, OpenRouterInputAudioFormat,
         OpenRouterSpeechFormat, OpenRouterSpeechInputReferences, OpenRouterSpeechRequest,
         OpenRouterTimestampGranularity, OpenRouterTranscriptionEncoding,
         OpenRouterTranscriptionRequest, OpenRouterTranscriptionResponseFormat,
         OPENROUTER_AUDIO_SPEECH_ENDPOINT, OPENROUTER_AUDIO_TRANSCRIPTIONS_ENDPOINT,
     },
-    protocol::{LlmError, Secret},
     HttpRequest, HttpStreamRequest, RequestOptions, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
@@ -461,7 +461,7 @@ async fn tts_reference_validation_is_local_but_model_entitlement_is_provider_own
     assert!(matches!(
         service.speak(&invalid, &options("a")).await,
         Err(
-            lingxi_llm_client::openrouter_audio::OpenRouterAudioError::Llm(
+            lingxi_llm_client::providers::openrouter::audio::OpenRouterAudioError::Llm(
                 LlmError::InvalidRequest { .. }
             )
         )
@@ -477,7 +477,7 @@ async fn tts_reference_validation_is_local_but_model_entitlement_is_provider_own
     assert!(matches!(
         service.speak(&too_large, &options("a")).await,
         Err(
-            lingxi_llm_client::openrouter_audio::OpenRouterAudioError::Llm(
+            lingxi_llm_client::providers::openrouter::audio::OpenRouterAudioError::Llm(
                 LlmError::RequestTooLarge { .. }
             )
         )
@@ -507,7 +507,7 @@ async fn provider_rejection_keeps_dispatch_and_error_body() {
 
     assert_eq!(error.dispatch(), OpenRouterAudioDispatch::Rejected);
     match error {
-        lingxi_llm_client::openrouter_audio::OpenRouterAudioError::Provider {
+        lingxi_llm_client::providers::openrouter::audio::OpenRouterAudioError::Provider {
             status,
             message,
             body,
@@ -541,7 +541,7 @@ async fn tts_rejects_json_success_body_instead_of_returning_it_as_audio() {
     assert_eq!(error.dispatch(), OpenRouterAudioDispatch::Accepted);
     assert!(matches!(
         error,
-        lingxi_llm_client::openrouter_audio::OpenRouterAudioError::InvalidResponse { .. }
+        lingxi_llm_client::providers::openrouter::audio::OpenRouterAudioError::InvalidResponse { .. }
     ));
 }
 
@@ -610,7 +610,7 @@ async fn multipart_preflight_and_missing_auth_do_not_poll_audio() {
     assert_eq!(error.dispatch(), OpenRouterAudioDispatch::NotSent);
     assert!(matches!(
         error,
-        lingxi_llm_client::openrouter_audio::OpenRouterAudioError::Llm(
+        lingxi_llm_client::providers::openrouter::audio::OpenRouterAudioError::Llm(
             LlmError::UnsupportedCapability { .. }
         )
     ));

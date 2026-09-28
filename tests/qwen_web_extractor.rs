@@ -1,11 +1,12 @@
+use lingxi_llm_client::providers::openai::types::CodeInterpreterConfig;
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
 use lingxi_llm_client::{
     codecs::{openai::responses::OpenAiResponsesCodec, EncodeRequest, WireCodec},
     protocol::{
-        ChatRequest, CodeInterpreterConfig, ContentBlock, HostedTool, LlmError, ProtocolFamily,
-        ProviderProfile, Region, StreamEvent, WebSearchConfig,
+        ChatRequest, ContentBlock, HostedTool, LlmError, ProtocolFamily, ProviderProfile, Region,
+        StreamEvent, WebSearchConfig,
     },
     HttpResponse, LlmClientBuilder, RequestOptions,
 };
@@ -36,7 +37,9 @@ fn request() -> ChatRequest {
     request
         .hosted_tools
         .push(HostedTool::WebSearch(WebSearchConfig::default()));
-    request.hosted_tools.push(HostedTool::WebExtractor);
+    request
+        .hosted_tools
+        .push(lingxi_llm_client::providers::qwen::native::QwenHostedTool::WebExtractor.into());
     request
 }
 
@@ -45,9 +48,12 @@ fn qwen_responses_encodes_web_search_and_extractor_with_thinking() {
     let profile = profile("qwen3.8-max");
     let mut request = request();
     // Alibaba documents Code Interpreter as an optional companion tool.
-    request
-        .hosted_tools
-        .push(HostedTool::CodeInterpreter(CodeInterpreterConfig::default()));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default(),
+        )
+        .into(),
+    );
     let context = wire_api::context(&profile, "qwen3.8-max", &RequestOptions::default());
     let outgoing = OpenAiResponsesCodec
         .encode_request(EncodeRequest::new(&request), &context)

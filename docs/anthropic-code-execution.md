@@ -2,20 +2,19 @@
 
 [English](anthropic-code-execution.en.md)
 
-`HostedTool::AnthropicCodeExecution` 通过第一方 Messages API，或显式声明为 Anthropic 托管的 Microsoft Foundry deployment，调用 Anthropic 托管容器。适配器发送固定工具定义 `{"type":"code_execution_20260521","name":"code_execution"}`。Code Execution 本身不需要 beta header。参见 Anthropic [Code Execution 指南](https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool)和[Claude on Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)。
+`AnthropicHostedTool::CodeExecution` 通过第一方 Messages API，或显式声明为 Anthropic 托管的 Microsoft Foundry deployment，调用 Anthropic 托管容器。适配器发送固定工具定义 `{"type":"code_execution_20260521","name":"code_execution"}`。Code Execution 本身不需要 beta header。参见 Anthropic [Code Execution 指南](https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool)和[Claude on Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry)。
 
 ## 创建与续用容器
 
-`AnthropicCodeExecutionConfig::default()` 不设置 `container`，由供应商按需创建容器。响应的 `ChatResponse.anthropic_container` 在公开字段 `envelope` 中保留完整原生容器对象。续用前，通过 `reference_for(scope)` 将 ID 明确绑定到原连接与账号；应用导入自行保存的 ID 时，也可以使用 `AnthropicContainerRef::new(id, scope)`。
+`AnthropicCodeExecutionConfig::default()` 不设置 `container`，由供应商按需创建容器。响应的 `ChatResponse::anthropic_container()` 在公开字段 `envelope` 中保留完整原生容器对象。续用前，通过 `reference_for(scope)` 将 ID 明确绑定到原连接与账号；应用导入自行保存的 ID 时，也可以使用 `AnthropicContainerRef::new(id, scope)`。
 
 以下示例专门假设客户端把 `claude-opus-5-5` 路由到已配置的第一方 Anthropic profile，并由调用方提供该账号的有效凭证。Foundry 路由与独立的容器 scope 见下文。若响应暂停、截断或要求执行客户端工具，应用应先处理该状态，再开始新的用户轮次。
 
 ```rust,no_run
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig, AnthropicContainerScope};
 use lingxi_llm_client::{
-    protocol::{
-        AnthropicCodeExecutionConfig, AnthropicContainerScope, ChatRequest, ChatResponse,
-        ConversationMessage, HostedTool, Secret, StopReason,
-    },
+    protocol::{ChatRequest, ChatResponse,
+        ConversationMessage, Secret, StopReason},
     LlmClient, RequestOptions,
 };
 
@@ -38,9 +37,9 @@ let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
 request.messages.push(ConversationMessage::user_text(
     "Use code execution to write the number 37 to /tmp/number.txt.",
 ));
-request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig::default(),
-));
+).into());
 
 let response = client.chat().complete(&request, &options).await?;
 if response.stop_reason != StopReason::EndTurn {
@@ -52,7 +51,7 @@ let profile = response.executed_profile.as_deref()
 let scope = AnthropicContainerScope::new(
     profile, "https://api.anthropic.com", ACCOUNT, MODEL,
 )?;
-let reference = response.anthropic_container.as_ref()
+let reference = response.anthropic_container()
     .ok_or("provider returned no execution container")?
     .reference_for(scope)?;
 
@@ -61,12 +60,12 @@ request.messages.push(response.message);
 request.messages.push(ConversationMessage::user_text(
     "Read /tmp/number.txt and use code execution to calculate its square.",
 ));
-request.hosted_tools = vec![HostedTool::AnthropicCodeExecution(
+request.hosted_tools = vec![lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig {
         container: Some(reference),
         ..Default::default()
     },
-)];
+).into()];
 let follow_up = client.chat().complete(&request, &options).await?;
 println!("{}", follow_up.message.text());
 # Ok(follow_up)
@@ -84,10 +83,9 @@ Anthropic 当前文档允许在 Microsoft Foundry 使用 Code Execution 和程�
 容器引用绑定到 Foundry resource、所选 deployment、底层 model 和调用方提供的同一账号标识。只有容器 ID 会通过顶层 `container` 字段发送：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    AnthropicContainerRef, AnthropicContainerScope, ChatResponse, FoundryDeployment,
-    FoundryHosting,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicContainerRef, AnthropicContainerScope};
+use lingxi_llm_client::protocol::{ChatResponse, FoundryDeployment,
+    FoundryHosting};
 
 # fn bind(response: &ChatResponse) -> Result<AnthropicContainerRef, Box<dyn std::error::Error>> {
 let scope = AnthropicContainerScope::new_foundry(
@@ -101,8 +99,7 @@ let scope = AnthropicContainerScope::new_foundry(
     },
 )?;
 let reference = response
-    .anthropic_container
-    .as_ref()
+    .anthropic_container()
     .ok_or("provider returned no execution container")?
     .reference_for(scope)?;
 # Ok(reference)
@@ -116,9 +113,8 @@ let reference = response
 Agent Skills 与 Code Execution 共用顶层 `container` 参数。Anthropic API 每个请求最多接受 20 个 Skill；每条引用包含来源（`anthropic` 或 `custom`）、`skill_id` 和可选版本。Skills API 已正式发布，客户端不会附加旧版 `skills-2025-10-02` beta header。Skills 仍要求启用 Code Execution，并使用其文档列出的兼容模型。预置 Skills 和自定义 Skills 均支持符合条件的 Anthropic-hosted Foundry deployment；自定义 Skill 通过独立 Skills 服务上传和管理，并绑定 Foundry resource 与 account。Foundry 不支持下载 Skill version content。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    AnthropicCodeExecutionConfig, AnthropicSkillRef, AnthropicSkillScope, ChatRequest, HostedTool,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig, AnthropicSkillRef, AnthropicSkillScope};
+use lingxi_llm_client::protocol::{ChatRequest, };
 
 # fn add_skills(request: &mut ChatRequest) -> Result<(), Box<dyn std::error::Error>> {
 let workspace = AnthropicSkillScope::new(
@@ -134,7 +130,7 @@ execution.skills = vec![
 ];
 request
     .hosted_tools
-    .push(HostedTool::AnthropicCodeExecution(execution));
+    .push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(execution).into());
 # Ok(())
 # }
 ```
@@ -148,17 +144,18 @@ Anthropic 托管 Skill ID 包括 `pptx`、`xlsx`、`docx` 和 `pdf`；可指定 
 通过已有 `FileService` 上传输入文件，再把各个 `ProviderFileRef::model_reference()` 放入 `AnthropicCodeExecutionConfig.files`。构造首次执行请求时，可用以下配置替换前面示例中的默认配置：
 
 ```rust,no_run
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig};
 use lingxi_llm_client::{
     files::ProviderFileRef,
-    protocol::{AnthropicCodeExecutionConfig, HostedTool},
+    protocol::{HostedTool},
     RequestOptions,
 };
 
 # fn file_input(uploaded: &ProviderFileRef) -> (HostedTool, RequestOptions) {
-let execution = HostedTool::AnthropicCodeExecution(AnthropicCodeExecutionConfig {
+let execution: lingxi_llm_client::protocol::HostedTool = lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(AnthropicCodeExecutionConfig {
     files: vec![uploaded.model_reference()],
     ..Default::default()
-});
+}).into();
 let options = RequestOptions {
     // 与本次上传传给 FileService 的非秘密账号标识一致。
     file_account_scope: Some("anthropic-workspace-main".into()),
@@ -206,7 +203,7 @@ while let Some(event) = stream.next().await {
 
 流中断前观测到容器 metadata，不代表执行已经完成。是否继续或检查已有状态由应用决定；客户端不会自动重复请求。
 
-`ChatResponse.anthropic_usage: Option<serde_json::Value>` 保留原始 usage 对象。`ModelStream::anthropic_usage()` 暴露按字段合并已接收 frame 更新后的原生 usage，原始 frame 仍保留在 `ProviderEvent` 中。供应商报告的 `usage.server_tool_use.code_execution_requests` 映射到跨供应商的 `ServerToolUsage.code_interpreter_requests` 调用次数。该次数不能用于确定容器运行费用或组织免费额度，客户端也不会据此推断执行免费。
+`ChatResponse::anthropic_usage() -> Option<&serde_json::Value>` 保留原始 usage 对象。`ModelStream::anthropic_usage()` 暴露按字段合并已接收 frame 更新后的原生 usage，原始 frame 仍保留在 `ProviderEvent` 中。供应商报告的 `usage.server_tool_use.code_execution_requests` 映射到跨供应商的 `ServerToolUsage.code_interpreter_requests` 调用次数。该次数不能用于确定容器运行费用或组织免费额度，客户端也不会据此推断执行免费。
 
 服务端执行调用及结果保留为 `ContentBlock::ProviderContent`，保留 ID、输入、输出及生成文件 metadata，以便原生回放。这些内容不会进入 `ConversationMessage::tool_uses()`，宿主不应执行它们。普通客户端工具仍通过 `ToolUse` 交给应用执行。原始流事件、输入分片与回放规则参见[保留 Anthropic 原生内容](anthropic-native-content.md)。
 

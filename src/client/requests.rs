@@ -67,6 +67,20 @@ impl ClientSnapshot {
             .resolve_request(&req.model, Some(profile))?;
         self.complete_route(route, req, opts).await
     }
+    pub(crate) async fn complete_bound_in(
+        &self,
+        profile: &str,
+        provider_id: &str,
+        req: &ChatRequest,
+        opts: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        let mut route = self
+            .state
+            .config
+            .resolve_request(&req.model, Some(profile))?;
+        route.retain_provider(provider_id)?;
+        self.complete_route(route, req, opts).await
+    }
     pub(crate) async fn stream(
         &self,
         req: &ChatRequest,
@@ -85,6 +99,20 @@ impl ClientSnapshot {
             .state
             .config
             .resolve_request(&req.model, Some(profile))?;
+        self.stream_route(route, req, opts).await
+    }
+    pub(crate) async fn stream_bound_in(
+        &self,
+        profile: &str,
+        provider_id: &str,
+        req: &ChatRequest,
+        opts: &RequestOptions,
+    ) -> Result<ModelStream, LlmError> {
+        let mut route = self
+            .state
+            .config
+            .resolve_request(&req.model, Some(profile))?;
+        route.retain_provider(provider_id)?;
         self.stream_route(route, req, opts).await
     }
     async fn complete_route(

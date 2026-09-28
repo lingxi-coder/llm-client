@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    embeddings::{GeminiEmbeddingMedia, GeminiEmbeddingSource},
-    gemini_batch::*,
     protocol::{LlmError, Secret},
+    providers::google::batch::*,
+    providers::google::embeddings::{GeminiEmbeddingMedia, GeminiEmbeddingSource},
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};

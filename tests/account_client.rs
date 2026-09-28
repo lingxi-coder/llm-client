@@ -448,7 +448,7 @@ async fn implicit_session_binding_expires_on_account_changes_but_token_queries_s
         client.account_usage("openai", &query).await.unwrap();
         assert_eq!(rebound.load(Ordering::SeqCst), 1);
         let client_view = client.snapshot();
-        let current = client_view.provider("openai").unwrap().clone();
+        let current = client_view.profile("openai").unwrap().clone();
         client_config.add_provider(current).await.unwrap();
         assert!(matches!(
             client.account_usage("openai", &query).await,

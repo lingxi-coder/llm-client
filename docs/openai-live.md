@@ -1,6 +1,6 @@
 # OpenAI GPT-Live primary WebSocket
 
-`realtime::OpenAiLiveSession` implements OpenAI's GPT-Live primary WebSocket protocol. GPT-Live is a separate API from OpenAI Realtime: it connects to `wss://api.openai.com/v1/live/sessions` without query parameters, sends `session.start` first, and waits for `session.started`. It does not use `/v1/realtime?model=...` or OpenAI Realtime event names.
+`providers::openai::live::OpenAiLiveSession` implements OpenAI's GPT-Live primary WebSocket protocol. GPT-Live is a separate API from OpenAI Realtime: it connects to `wss://api.openai.com/v1/live/sessions` without query parameters, sends `session.start` first, and waits for `session.started`. It does not use `/v1/realtime?model=...` or OpenAI Realtime event names.
 
 依据：[GPT-Live WebSocket 指南](https://developers.openai.com/api/docs/guides/voice-websockets)、[Primary WebSocket API 参考](https://developers.openai.com/api/reference/resources/live/primary-websocket)、[会话管理](https://developers.openai.com/api/docs/guides/live-conversations)、[委派与工具](https://developers.openai.com/api/docs/guides/live-delegation)。
 
@@ -11,14 +11,11 @@
 下面的函数构造 session 控制句柄、事件流和 driver。Host 必须在自己的 async executor 上同时运行 `driver.run()` 和事件/命令处理任务。
 
 ```rust,no_run
+use lingxi_llm_client::providers::openai::live::{OpenAiLiveConfig, OpenAiLiveControl, OpenAiLiveEvents, OpenAiLiveRoute, OpenAiLiveScope, OpenAiLiveSession, OpenAiLiveDriver};
 use std::sync::Arc;
 use lingxi_llm_client::{
     protocol::Secret,
-    realtime::{
-        OpenAiLiveConfig, OpenAiLiveControl, OpenAiLiveEvents,
-        OpenAiLiveRoute, OpenAiLiveScope, OpenAiLiveSession,
-        OpenAiLiveDriver, RealtimeError, RealtimeLimits, RealtimeTransport,
-    },
+    realtime::{RealtimeError, RealtimeLimits, RealtimeTransport},
 };
 
 async fn connect_gpt_live(
@@ -49,9 +46,7 @@ async fn connect_gpt_live(
 `OpenAiLiveConfig.input` 可在 `session.start` 中种入先前的文本对话。每条 `OpenAiLiveHistoryMessage` 只包含一个文本片段，角色为 `Developer`、`User` 或 `Assistant`；前两者编码为 `input_text`，助手内容编码为 `output_text`。空历史会省略 `input` 字段。客户端在连接前限制为最多 128 条消息；文档规定的 8,192 个合并 token 上限由服务端执行，客户端不猜测 tokenizer。
 
 ```rust,no_run
-use lingxi_llm_client::realtime::{
-    OpenAiLiveConfig, OpenAiLiveHistoryMessage, OpenAiLiveHistoryRole,
-};
+use lingxi_llm_client::providers::openai::live::{OpenAiLiveConfig, OpenAiLiveHistoryMessage, OpenAiLiveHistoryRole};
 
 fn resume_from_text_history() -> OpenAiLiveConfig {
     OpenAiLiveConfig {
@@ -87,10 +82,8 @@ The adapter exposes input and output transcript deltas with their session-relati
 The adapter never executes application functions. In Responses mode, `append_responses_text` and `function_output` each send one `response.item.create`. `continue_responses` is a separate `response.create` command; call it only after the host has collected and returned every required function result. In client mode, the host owns context and backend processing; use `append_instructions`, `append_thinking`, or `append_commentary` to add context to the Live conversation. For these commands, `delegation_id` is required by the wire schema but represented as `Option`: use `None` for general context or Responses delegation, and an existing client delegation ID in client mode. If a command entered the local queue just before the terminal event, the driver drops it after `session.closed` and emits `CommandDroppedAfterSessionClosed` with its event ID when present.
 
 ```rust,no_run
-use lingxi_llm_client::realtime::{
-    OpenAiLiveControl, OpenAiLiveDelegation, OpenAiLiveResponsesConfig,
-    OpenAiLiveResponsesTool, OpenAiLiveToolChoice, RealtimeError,
-};
+use lingxi_llm_client::providers::openai::live::{OpenAiLiveControl, OpenAiLiveDelegation, OpenAiLiveResponsesConfig, OpenAiLiveResponsesTool, OpenAiLiveToolChoice};
+use lingxi_llm_client::realtime::{RealtimeError};
 use serde_json::json;
 
 fn configure_backend() -> Result<OpenAiLiveDelegation, RealtimeError> {

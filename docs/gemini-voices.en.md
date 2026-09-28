@@ -1,13 +1,13 @@
 # Gemini Voices API
 
-`gemini_speech::GeminiVoicesService` wraps the Gemini Developer API Voices resource at `POST/GET https://generativelanguage.googleapis.com/v1beta/voices` and `GET/DELETE /v1beta/voices/{voice_id}`. It supports prompted custom voices, replicated voices from reference and consent recordings, catalog listing and filtering, pagination, stored-voice lookup, and stored-voice deletion. This resource is separate from TTS Interactions and the Live API.
+`providers::google::speech::GeminiVoicesService` wraps the Gemini Developer API Voices resource at `POST/GET https://generativelanguage.googleapis.com/v1beta/voices` and `GET/DELETE /v1beta/voices/{voice_id}`. It supports prompted custom voices, replicated voices from reference and consent recordings, catalog listing and filtering, pagination, stored-voice lookup, and stored-voice deletion. This resource is separate from TTS Interactions and the Live API.
 
 Each service is scoped to a Google profile, caller-supplied account/project identity, and the exact Voices endpoint. Pass `&Secret<String>` to each call; the service does not retain API keys. Stored-voice references are bound to that scope. `GeminiVoice::speech_request` transfers a voice ID or stateless key into an Interactions TTS request only when the Google provider, profile, and account match the supplied `GeminiSpeechScope`.
 
 ```rust,ignore
 use bytes::Bytes;
 use lingxi_llm_client::{
-    gemini_speech::{
+    providers::google::speech::{
         GeminiSpeechModel, GeminiSpeechScope, GeminiVoicesScope, GeminiVoicesService,
         GeminiVoiceAudioData, GeminiVoiceCreateRequest, GeminiVoiceListOptions,
         GEMINI_SPEECH_ENDPOINT, GEMINI_VOICES_ENDPOINT,
@@ -34,7 +34,7 @@ let created = voices
 let page = voices
     .list(&key, &GeminiVoiceListOptions::new()
         .with_page_size(100)
-        .with_types([lingxi_llm_client::gemini_speech::GeminiVoiceType::Prompted]))
+        .with_types([lingxi_llm_client::providers::google::speech::GeminiVoiceType::Prompted]))
     .await?;
 let _next_page_token = page.next_page_token;
 

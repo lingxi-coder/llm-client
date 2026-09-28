@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    openrouter_batch::*,
     protocol::{LlmError, Secret},
+    providers::openrouter::batch::*,
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -65,7 +65,7 @@ fn scope(account: &str) -> OpenRouterBatchScope {
 }
 
 fn service<'a>(mock: &'a MockTransport, account: &str) -> OpenRouterBatchService<'a> {
-    OpenRouterBatchService::new(mock, Secret::new("sk-or-test".into()), scope(account)).unwrap()
+    OpenRouterBatchService::new(mock, scope(account)).unwrap()
 }
 
 fn chat_line(custom_id: &str, content: &str) -> OpenRouterBatchLine {
@@ -540,7 +540,7 @@ async fn submit_get_list_and_delete_use_inline_openrouter_contract() {
     .with_provider_only(vec!["deepinfra/turbo".into()])
     .unwrap();
 
-    let submitted = client.submit(&input).await.unwrap();
+    let submitted = client.submit(&input, &request_options()).await.unwrap();
     assert_eq!(submitted.status, OpenRouterBatchStatus::Validating);
     assert_eq!(submitted.reference.model(), "openai/gpt-6-sol");
     assert_eq!(
@@ -553,7 +553,10 @@ async fn submit_get_list_and_delete_use_inline_openrouter_contract() {
         OpenRouterBatchEndpoint::ChatCompletions
     );
 
-    let current = client.get(&submitted.reference).await.unwrap();
+    let current = client
+        .get(&submitted.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(current.status, OpenRouterBatchStatus::Completed);
     let completed_reference = current.reference.clone();
     let results = current.results.unwrap();
@@ -569,20 +572,26 @@ async fn submit_get_list_and_delete_use_inline_openrouter_contract() {
     assert_eq!(current.usage.unwrap()["total_tokens"], 25);
 
     let page = client
-        .list(&OpenRouterBatchListOptions {
-            limit: Some(5),
-            after: Some("batch_000".into()),
-            statuses: vec![OpenRouterBatchStatus::Completed],
-            created_after: Some("2026-08-20T00:00:00Z".into()),
-            created_before: Some("2026-08-21".into()),
-        })
+        .list(
+            &OpenRouterBatchListOptions {
+                limit: Some(5),
+                after: Some("batch_000".into()),
+                statuses: vec![OpenRouterBatchStatus::Completed],
+                created_after: Some("2026-08-20T00:00:00Z".into()),
+                created_before: Some("2026-08-21".into()),
+            },
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(page.jobs.len(), 1);
     assert!(!page.has_more);
     assert_eq!(page.last_id.as_deref(), Some("batch_123"));
 
-    let deleted = client.delete(&completed_reference).await.unwrap();
+    let deleted = client
+        .delete(&completed_reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(deleted.reference.batch_id(), "batch_123");
     assert_eq!(deleted.native["deletion"]["openrouter"], "deleted");
 
@@ -639,10 +648,13 @@ async fn refs_are_account_bound_and_unknown_submission_is_not_retried() {
         vec![chat_line("row-1", "hello")],
     )
     .unwrap();
-    let submitted = client.submit(&input).await.unwrap();
+    let submitted = client.submit(&input, &request_options()).await.unwrap();
 
     let other_account = service(&mock, "account-b");
-    let error = other_account.get(&submitted.reference).await.unwrap_err();
+    let error = other_account
+        .get(&submitted.reference, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         error,
         OpenRouterBatchError::Llm(LlmError::PermissionDenied { .. })
@@ -650,7 +662,7 @@ async fn refs_are_account_bound_and_unknown_submission_is_not_retried() {
     assert_eq!(mock.requests().len(), 1);
 
     assert!(matches!(
-        client.submit(&input).await,
+        client.submit(&input, &request_options()).await,
         Err(OpenRouterBatchError::OutcomeUnknown {
             operation: "submit",
             ..
@@ -671,7 +683,7 @@ async fn accepted_submit_with_an_unusable_response_has_an_unknown_outcome() {
     .unwrap();
 
     assert!(matches!(
-        client.submit(&input).await,
+        client.submit(&input, &request_options()).await,
         Err(OpenRouterBatchError::OutcomeUnknownResponse {
             operation: "submit",
             ..
@@ -698,7 +710,7 @@ async fn list_validates_and_encodes_creation_time_filters_before_network_access(
             .created_before("1787184000"),
     ] {
         assert!(matches!(
-            client.list(&options).await,
+            client.list(&options, &request_options()).await,
             Err(OpenRouterBatchError::InvalidInput(_))
         ));
     }
@@ -719,6 +731,7 @@ async fn list_validates_and_encodes_creation_time_filters_before_network_access(
             &OpenRouterBatchListOptions::default()
                 .created_after("1787184000.25")
                 .created_before("2026-08-21"),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -750,9 +763,50 @@ async fn malformed_per_item_results_are_rejected_without_losing_native_error_dat
         vec![chat_line("row-1", "hello")],
     )
     .unwrap();
-    let submitted = client.submit(&input).await.unwrap();
+    let submitted = client.submit(&input, &request_options()).await.unwrap();
     assert!(matches!(
-        client.get(&submitted.reference).await,
+        client.get(&submitted.reference, &request_options()).await,
         Err(OpenRouterBatchError::InvalidResponse(_))
     ));
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("sk-or-test".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        reply(401, json!({"error": "rejected"})),
+        reply(401, json!({"error": "rejected"})),
+    ]);
+    let service = service(&mock, "account-a");
+    let query = OpenRouterBatchListOptions::default();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("Authorization")
+                && value == &format!("Bearer {key}")));
+    }
 }

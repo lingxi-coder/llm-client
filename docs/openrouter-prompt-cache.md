@@ -13,9 +13,7 @@ OpenRouter 的提供方提示缓存复用模型端的 prompt 前缀；它与 `Re
 断点目前仅接受非空文本块，不能标记工具定义、图片、音频或文件块。OpenAI GPT-5.5 及更早模型、Grok、DeepSeek 自动缓存、Gemini 自动缓存，以及未列出的其他模型不需要这些请求控制；为它们设置显式缓存策略会被拒绝。OpenRouter 文档没有为这些自动缓存提供可由本策略设置的 TTL 或断点。
 
 ```rust
-use lingxi_llm_client::protocol::{
-    CacheBreakpoint, CachePosition, CacheTtl, PromptCachePolicy,
-};
+use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, PromptCachePolicy};
 
 let policy = PromptCachePolicy {
     automatic: None,

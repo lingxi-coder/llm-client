@@ -1,18 +1,19 @@
 # Anthropic Messages Web Fetch
 
-`HostedTool::AnthropicWebFetch` declares a provider-executed fetch tool on the first-party Anthropic Messages or an explicitly identified Foundry Messages profile. Foundry requires hosting and the underlying Claude `model_id` on the matching `ModelProfile` row; the request still carries the deployment name. The client never downloads URLs locally, emits host tool calls, or automatically retries an uncertain execution. Preserve returned native blocks for continuation.
+`AnthropicHostedTool::WebFetch` declares a provider-executed fetch tool on the first-party Anthropic Messages or an explicitly identified Foundry Messages profile. Foundry requires hosting and the underlying Claude `model_id` on the matching `ModelProfile` row; the request still carries the deployment name. The client never downloads URLs locally, emits host tool calls, or automatically retries an uncertain execution. Preserve returned native blocks for continuation.
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicWebFetchConfig, AnthropicWebFetchVersion, ChatRequest, HostedTool};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicWebFetchConfig, AnthropicWebFetchVersion};
+use lingxi_llm_client::protocol::{ChatRequest, };
 # fn configure(request: &mut ChatRequest) {
-request.hosted_tools.push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(AnthropicWebFetchConfig {
     version: AnthropicWebFetchVersion::V20260318,
     max_uses: Some(3),
     allowed_domains: vec!["example.com".into()],
     citations: Some(true),
     max_content_tokens: Some(4096),
     ..Default::default()
-}));
+}).into());
 # }
 ```
 
@@ -36,7 +37,7 @@ To add Web Fetch by value in a mid-conversation system message, set `inline_defi
 URL filters preserve omitted defaults and explicit empty `Only`/`Except` lists:
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicFetchToolReference, AnthropicFetchToolResultsSources, AnthropicFetchUrlSources, AnthropicFetchUserInputSources};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicFetchToolReference, AnthropicFetchToolResultsSources, AnthropicFetchUrlSources, AnthropicFetchUserInputSources};
 let sources = AnthropicFetchUrlSources {
     user_input: Some(AnthropicFetchUserInputSources::All),
     client_tool_results: Some(AnthropicFetchToolResultsSources::Only {

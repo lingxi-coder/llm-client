@@ -8,14 +8,15 @@ The service follows xAI's split API boundary. Collection management, direct uplo
 use lingxi_llm_client::{
     files::UploadFileStream,
     protocol::Secret,
-    xai_collections::{
+    providers::xai::collections::{
         XaiCollectionListRequest, XaiCollectionsConfig, XaiCollectionsCredentials,
         XaiCreateCollectionRequest, XaiRetrievalMode, XaiSearchRequest,
         XaiUpdateCollectionRequest,
     },
 };
 
-let service = client.xai_collections(XaiCollectionsConfig::new(
+let provider = client.provider::<lingxi_llm_client::providers::xai::XaiClient>("xai-primary")?;
+let service = provider.collections(XaiCollectionsConfig::new(
     "xai-primary",
     "xai-team/account-42", // caller-chosen stable, non-secret scope
 ))?;
@@ -115,7 +116,7 @@ References: [xAI Collections overview](https://docs.x.ai/developers/files/collec
 An upload through `upload_file` can be queried, downloaded, or deleted through the ordinary `FileService` after converting its result. The conversion checks provider, profile, API root, protocol, and account scope, and preserves known file metadata, including expiry. It does not make a network call or confirm that the file is still available.
 
 ```rust,no_run
-use lingxi_llm_client::{files::ProviderFileRef, protocol::{LlmError, ProviderProfile}, xai_collections::XaiUploadedFile};
+use lingxi_llm_client::{files::ProviderFileRef, protocol::{LlmError, ProviderProfile}, providers::xai::collections::XaiUploadedFile};
 fn file_reference(uploaded: &XaiUploadedFile, profile: &ProviderProfile, account: &str) -> Result<ProviderFileRef, LlmError> {
     uploaded.to_provider_file_ref(profile, account)
 }

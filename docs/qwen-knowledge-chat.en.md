@@ -5,17 +5,17 @@
 The documented route is Beijing-only: `POST https://{workspaceId}.cn-beijing.maas.aliyuncs.com/api/v2/apps/knowledge/chat`. Publish a Knowledge Q&A service in the console first, then bind its ID to a `QwenKnowledgeChatRef` for the current profile, account, region, and workspace. The client checks the reference scope before sending and sends each request once.
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeChatMessage, QwenKnowledgeChatRequest, QwenKnowledgeService,
 };
 
-async fn ask(service: &QwenKnowledgeService<'_>) -> Result<(), Box<dyn std::error::Error>> {
+async fn ask(request_options: &lingxi_llm_client::RequestOptions, service: &QwenKnowledgeService<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let published = service.scope().knowledge_chat_ref("aid-your-published-service")?;
     let request = QwenKnowledgeChatRequest::new(
         published,
         [QwenKnowledgeChatMessage::user_text("How do I configure an API key?")],
     );
-    let mut stream = service.knowledge_chat(&request).await?;
+    let mut stream = service.knowledge_chat(&request, request_options).await?;
     while let Some(event) = stream.next_event().await? {
         if event.is_complete() {
             // The native final frame is available from event.native().

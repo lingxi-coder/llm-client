@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    embeddings::{EmbeddingError, GeminiEmbeddingModelListQuery, GeminiEmbeddingPageToken},
+    embeddings::EmbeddingError,
     presets,
     protocol::{LlmError, ProviderProfile, Region, Secret, ServiceSetting},
+    providers::google::embeddings::{GeminiEmbeddingModelListQuery, GeminiEmbeddingPageToken},
     HttpRequest, LlmClient, LlmClientBuilder, RequestOptions, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
@@ -129,9 +130,10 @@ async fn gemini_model_directory_filters_by_explicit_method_and_preserves_native_
     let client = client(mock.clone());
 
     let page = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery {
                 page_size: Some(1500),
                 page_token: None,
@@ -180,21 +182,20 @@ async fn empty_filtered_pages_keep_native_next_token_and_default_page_shape() {
     let client = client(mock.clone());
 
     let first = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &options(None),
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
         .await
         .unwrap();
     assert!(first.models.is_empty());
     let cursor = first.next_page_token.unwrap();
     assert_eq!(cursor.page_size(), None);
     let second = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery {
                 page_size: None,
                 page_token: Some(cursor),
@@ -225,9 +226,10 @@ async fn page_token_binds_identity_and_exact_page_size_shape_before_auth() {
     }))]));
     let client = client(mock.clone());
     let first = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery::default(),
             &options(Some("project-a")),
         )
@@ -238,9 +240,10 @@ async fn page_token_binds_identity_and_exact_page_size_shape_before_auth() {
     let mut no_credential = options(Some("project-a"));
     no_credential.credential = None;
     let mismatch = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery {
                 page_size: Some(50),
                 page_token: Some(cursor.clone()),
@@ -256,9 +259,10 @@ async fn page_token_binds_identity_and_exact_page_size_shape_before_auth() {
     assert_eq!(catalog_calls(&mock).len(), 1);
 
     let scope_mismatch = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery {
                 page_size: None,
                 page_token: Some(cursor),
@@ -274,9 +278,10 @@ async fn page_token_binds_identity_and_exact_page_size_shape_before_auth() {
     assert_eq!(catalog_calls(&mock).len(), 1);
 
     let blank_scope = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery::default(),
             &RequestOptions {
                 credential: None,
@@ -301,18 +306,17 @@ async fn a_repeated_next_page_token_is_rejected() {
     ]));
     let client = client(mock.clone());
     let first = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &options(None),
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
         .await
         .unwrap();
     let repeated = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery {
                 page_token: first.next_page_token,
                 ..Default::default()
@@ -333,12 +337,10 @@ async fn empty_or_missing_next_page_token_is_terminal_but_wrong_type_is_invalid(
     ] {
         let mock = Arc::new(Mock::new([reply(body)]));
         let page = client(mock)
+            .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+            .unwrap()
             .embeddings()
-            .list_gemini_models(
-                "gemini",
-                &GeminiEmbeddingModelListQuery::default(),
-                &options(None),
-            )
+            .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
             .await
             .unwrap();
         assert!(page.next_page_token.is_none());
@@ -349,12 +351,10 @@ async fn empty_or_missing_next_page_token_is_terminal_but_wrong_type_is_invalid(
             "models": [], "nextPageToken": malformed
         }))]));
         let result = client(mock)
+            .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+            .unwrap()
             .embeddings()
-            .list_gemini_models(
-                "gemini",
-                &GeminiEmbeddingModelListQuery::default(),
-                &options(None),
-            )
+            .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
             .await;
         assert!(matches!(result, Err(EmbeddingError::InvalidResponse(_))));
     }
@@ -370,12 +370,10 @@ async fn malformed_native_model_fields_are_not_silently_dropped() {
     malformed["inputTokenLimit"] = json!("2048");
     let mock = Arc::new(Mock::new([reply(json!({"models": [malformed]}))]));
     let result = client(mock)
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &options(None),
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
         .await;
     assert!(matches!(result, Err(EmbeddingError::InvalidResponse(_))));
 
@@ -386,12 +384,10 @@ async fn malformed_native_model_fields_are_not_silently_dropped() {
     );
     let mock = Arc::new(Mock::new([reply(json!({"models": [malformed_methods]}))]));
     let result = client(mock)
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &options(None),
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
         .await;
     assert!(matches!(result, Err(EmbeddingError::InvalidResponse(_))));
 
@@ -405,12 +401,10 @@ async fn malformed_native_model_fields_are_not_silently_dropped() {
         "models": [malformed_display_name]
     }))]));
     let result = client(mock)
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &options(None),
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
         .await;
     assert!(matches!(result, Err(EmbeddingError::InvalidResponse(_))));
 }
@@ -423,12 +417,10 @@ async fn gemini_models_get_preserves_resource_name_and_returns_bare_embed_id() {
         json!(["embedContent"]),
     ))]));
     let result = client(mock.clone())
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .get_gemini_model(
-            "gemini",
-            "models/gemini-embedding-2",
-            &options(Some("project-a")),
-        )
+        .get_model("models/gemini-embedding-2", &options(Some("project-a")))
         .await
         .unwrap();
     assert_eq!(result.resource_name, "models/gemini-embedding-2");
@@ -444,8 +436,10 @@ async fn gemini_models_get_preserves_resource_name_and_returns_bare_embed_id() {
         json!(["generateContent"]),
     ))]));
     let unsupported = client(mock)
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .get_gemini_model("gemini", "models/gemini-3.8-flash", &options(None))
+        .get_model("models/gemini-3.8-flash", &options(None))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -455,8 +449,10 @@ async fn gemini_models_get_preserves_resource_name_and_returns_bare_embed_id() {
 
     let mock = Arc::new(Mock::new([]));
     let invalid_resource = client(mock.clone())
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .get_gemini_model("gemini", "models/invalid+id", &RequestOptions::default())
+        .get_model("models/invalid+id", &RequestOptions::default())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -474,8 +470,10 @@ async fn gemini_model_directory_rejects_response_name_mismatch_and_oversized_pag
         json!(["embedContent"]),
     ))]));
     let mismatch = client(mock)
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .get_gemini_model("gemini", "models/gemini-embedding-2", &options(None))
+        .get_model("models/gemini-embedding-2", &options(None))
         .await
         .unwrap_err();
     assert!(matches!(mismatch, EmbeddingError::InvalidResponse(_)));
@@ -491,9 +489,10 @@ async fn gemini_model_directory_rejects_response_name_mismatch_and_oversized_pag
         .collect::<Vec<_>>();
     let mock = Arc::new(Mock::new([reply(json!({"models": too_many}))]));
     let result = client(mock)
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
+        .list_models(
             &GeminiEmbeddingModelListQuery {
                 page_size: Some(2000),
                 page_token: None,
@@ -514,12 +513,10 @@ async fn disabled_catalog_and_total_timeout_keep_preflight_contract() {
         .build()
         .unwrap();
     let error = disabled_client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &options(None),
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &options(None))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -533,12 +530,10 @@ async fn disabled_catalog_and_total_timeout_keep_preflight_contract() {
     let mut timed_options = options(None);
     timed_options.total_timeout = Some(Duration::from_millis(10));
     let error = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .embeddings()
-        .list_gemini_models(
-            "gemini",
-            &GeminiEmbeddingModelListQuery::default(),
-            &timed_options,
-        )
+        .list_models(&GeminiEmbeddingModelListQuery::default(), &timed_options)
         .await
         .unwrap_err();
     assert!(matches!(

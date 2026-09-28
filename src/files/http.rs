@@ -273,15 +273,6 @@ pub(crate) fn multipart_boundary() -> String {
     )
 }
 
-pub(crate) fn gemini_upload_url(profile: &ProviderProfile) -> String {
-    let base = profile.base_url.trim_end_matches('/');
-    if base.ends_with("/v1beta") {
-        format!("{}/upload/v1beta/files", base.trim_end_matches("/v1beta"))
-    } else {
-        format!("{base}/upload/v1beta/files")
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum CursorField {
     OpenAi,
@@ -365,62 +356,6 @@ pub(crate) fn json_u64(value: &Value) -> Option<u64> {
 }
 
 pub(crate) use crate::runtime::delay as async_delay;
-
-pub(crate) fn gemini_timeout_remaining(
-    deadline: Instant,
-    timeout: Duration,
-    phase: &str,
-) -> Result<Duration, LlmError> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        Err(LlmError::TransportTimeout {
-            message: format!("Gemini file {phase} timed out after {timeout:?}"),
-        })
-    } else {
-        Ok(remaining)
-    }
-}
-
-pub(crate) fn gemini_processing_remaining(
-    deadline: Instant,
-    timeout: Duration,
-    pending: &ProviderFileRef,
-) -> Result<Duration, LlmError> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        Err(LlmError::ProviderFileProcessing {
-            message: format!("Gemini file remains PROCESSING after {timeout:?}"),
-            file: Box::new(pending.model_reference()),
-        })
-    } else {
-        Ok(remaining)
-    }
-}
-
-pub(crate) async fn gemini_processing_call<T>(
-    operation: impl Future<Output = Result<T, LlmError>>,
-    deadline: Instant,
-    timeout: Duration,
-    pending: &ProviderFileRef,
-) -> Result<T, LlmError> {
-    let remaining = gemini_processing_remaining(deadline, timeout, pending)?;
-    match futures::future::select(Box::pin(operation), Box::pin(async_delay(remaining))).await {
-        futures::future::Either::Left((result, _)) => {
-            result.map_err(|error| gemini_processing_unresolved(pending, error))
-        }
-        futures::future::Either::Right((_, _)) => Err(LlmError::ProviderFileProcessing {
-            message: format!("Gemini file processing timed out after {timeout:?}"),
-            file: Box::new(pending.model_reference()),
-        }),
-    }
-}
-
-pub(crate) fn gemini_processing_unresolved(pending: &ProviderFileRef, error: LlmError) -> LlmError {
-    LlmError::ProviderFileProcessing {
-        message: error.to_string(),
-        file: Box::new(pending.model_reference()),
-    }
-}
 
 pub(crate) fn nonempty_string(value: &Value) -> Option<String> {
     value

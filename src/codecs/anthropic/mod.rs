@@ -46,16 +46,16 @@ impl WireCodec for AnthropicMessagesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::anthropic_client_toolsets::validate(req, context)?;
-        crate::codecs::anthropic_tool_search::validate(req, context)?;
+        crate::providers::anthropic::client_toolsets::validate(req, context)?;
+        crate::providers::anthropic::tool_search::validate(req, context)?;
         crate::codecs::cache::validate(req, context)?;
-        crate::codecs::anthropic_conversation::validate(req, context)?;
-        crate::codecs::anthropic_mcp::validate(req, context)?;
-        crate::codecs::anthropic_web_fetch::validate(req, context)?;
-        crate::codecs::anthropic_code_execution::validate(req, context)?;
+        crate::providers::anthropic::conversation::validate(req, context)?;
+        crate::providers::anthropic::mcp::validate(req, context)?;
+        crate::providers::anthropic::web_fetch::validate(req, context)?;
+        crate::providers::anthropic::code_execution::validate(req, context)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())
             .and_then(|()| {
-                crate::codecs::openrouter_server_tools::validate(
+                crate::providers::openrouter::server_tools::validate(
                     req,
                     context.profile(),
                     None,
@@ -87,12 +87,12 @@ impl WireCodec for AnthropicMessagesCodec {
         context: &CodecContext,
     ) -> Result<ChatResponse, LlmError> {
         let retain_openrouter_container =
-            crate::codecs::openrouter_server_tools::is_official_profile(context.profile());
+            crate::providers::openrouter::server_tools::is_official_profile(context.profile());
         decode::response(
             resp,
             retain_openrouter_container,
-            crate::codecs::anthropic_code_execution::is_official_profile(context.profile())
-                || crate::codecs::anthropic_code_execution::supports_execution(context),
+            crate::providers::anthropic::code_execution::is_official_profile(context.profile())
+                || crate::providers::anthropic::code_execution::supports_execution(context),
         )
         .map(|mut response| {
             response.inference = crate::codecs::inference::response(resp, context.profile());

@@ -6,21 +6,20 @@
 
 ## 请求
 
-在 `ChatRequest.tools` 的每个函数声明中设置 `allowed_callers`，并在同一请求中添加 `HostedTool::AnthropicCodeExecution`：
+在 `ChatRequest.tools` 的每个函数声明中设置 `allowed_callers`，并在同一请求中添加 `AnthropicHostedTool::CodeExecution`：
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicCodeExecutionConfig, AnthropicToolCaller, ChatRequest, HostedTool, ToolSpec,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig, AnthropicToolCaller};
+use lingxi_llm_client::protocol::{ChatRequest, ToolSpec};
 use serde_json::json;
 
 let mut request: ChatRequest = serde_json::from_value(json!({
     "model": "claude-opus-5-5",
     "messages": [{"role":"user","content":[{"type":"text","text":"查找近期记录。"}]}]
 })).unwrap();
-request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig::default(),
-));
+).into());
 request.tools.push(ToolSpec {
     tool_type: None,
     extra: serde_json::Value::Null,
@@ -33,8 +32,8 @@ request.tools.push(ToolSpec {
     }),
     strict: false,
     defer_loading: false,
-    allowed_callers: vec![AnthropicToolCaller::CodeExecution20260120],
-});
+    native_options: Vec::new(),
+}.with_anthropic_allowed_callers(vec![AnthropicToolCaller::CodeExecution20260120]));
 ```
 
 `allowed_callers` 接受 `Direct`、`CodeExecution20260120` 和 `CodeExecution20260521`。Anthropic 的请求契约将两个 Code Execution 版本视为等价。省略该字段或提供空列表时，工具仍按通常方式由模型直接调用；同时列出 `Direct` 和 Code Execution caller 时，两种调用方式都可用。该字段支持第一方 Anthropic Messages 路由，也支持显式标记为 Anthropic hosting 且底层模型支持 PTC 的 Microsoft Foundry deployment。Azure-hosted Foundry 会被拒绝。Foundry body 的 `model` 仍使用自定义 deployment 名称，兼容性检查使用 `FoundryDeployment.model_id`。

@@ -31,14 +31,17 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
-    crate::codecs::anthropic_code_execution::validate(req, opts)?;
-    crate::codecs::qwen_cache::validate(req, opts)?;
-    super::openrouter_cache::validate(req, opts)?;
-    validate_audio_request(req, profile, opts)?;
-    let audio_output =
-        openrouter_audio_output(req.metadata.get("openrouter_chat_audio"), profile, opts)?;
+    crate::providers::anthropic::code_execution::validate(req, opts)?;
+    crate::providers::qwen::cache::validate(req, opts)?;
+    crate::providers::openrouter::prompt_cache::validate(req, opts)?;
+    crate::providers::openrouter::chat_audio::validate_audio_request(req, profile, opts)?;
+    let audio_output = crate::providers::openrouter::chat_audio::openrouter_audio_output(
+        req.metadata.get("openrouter_chat_audio"),
+        profile,
+        opts,
+    )?;
     req.validate_hosted_tools()?;
-    crate::codecs::openrouter_server_tools::validate(req, profile, None, false)?;
+    crate::providers::openrouter::server_tools::validate(req, profile, None, false)?;
     if req.hosted_anthropic_tool_search().is_some()
         || req.hosted_anthropic_web_fetch().is_some()
         || req.hosted_openai_tool_search().is_some()
@@ -64,27 +67,19 @@ pub fn request<'a>(
     }
     let max_tokens_field = max_tokens_field(profile)?;
     let mut messages: Vec<WireValue<'a>> = Vec::new();
-    let qwen_long = profile.provider_id.as_str() == "qwen"
-        && crate::files::is_qwen_long_model(&opts.request_model);
-    if qwen_long {
-        if !crate::files::qwen_long_region_supported(profile) {
-            return Err(LlmError::UnsupportedCapability {
-                message: "Qwen-Long is supported only on a Beijing Qwen endpoint".into(),
-            });
-        }
-        crate::files::validate_qwen_long_blocks(wire.blocks())?;
-    }
+    let qwen_long = crate::providers::qwen::chat_policy::validate_long_input(
+        profile,
+        &opts.request_model,
+        wire.blocks(),
+    )?;
     let keep_reasoning = flag(profile, "preserve_reasoning_content");
-    let pdf_only_files = flag(profile, "chat_pdf_only")
-        || url::Url::parse(&profile.base_url)
-            .ok()
-            .is_some_and(|url| url.host_str() == Some("api.openai.com"));
+    let pdf_only_files = crate::providers::openai::responses_policy::chat_pdf_only_files(profile);
     let mut consumed_leading_system = false;
 
     // Qwen markers address original system blocks; preserve those boundaries.
-    if let Some(system) = crate::codecs::qwen_cache::system(req, opts) {
+    if let Some(system) = crate::providers::qwen::cache::system(req, opts) {
         messages.push(system);
-    } else if let Some(system) = super::openrouter_cache::system(req, opts) {
+    } else if let Some(system) = crate::providers::openrouter::prompt_cache::system(req, opts) {
         messages.push(system);
     } else if !req.system.is_empty() {
         let text = req
@@ -244,9 +239,9 @@ pub fn request<'a>(
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
     crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::codecs::structured::apply(req, opts, &mut body)?;
-    super::openrouter_cache::apply(req, opts, &mut body)?;
+    crate::providers::openrouter::prompt_cache::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
-    if opts.stream && crate::codecs::qwen_cache::applies(opts) {
+    if opts.stream && crate::providers::qwen::cache::applies(opts) {
         let options = body.entry("stream_options").or_insert_with(|| json!({}));
         let options = options
             .as_object_mut()
@@ -340,16 +335,25 @@ fn encode_message<'a>(
                 index: message_index,
                 block: 0,
             };
-            let qwen_marked = crate::codecs::qwen_cache::marked(wire.request(), opts, position);
+            let qwen_marked = crate::providers::qwen::cache::marked(wire.request(), opts, position);
             let openrouter_marker = (!qwen_marked)
-                .then(|| super::openrouter_cache::marker(wire.request(), opts, position))
+                .then(|| {
+                    crate::providers::openrouter::prompt_cache::marker(
+                        wire.request(),
+                        opts,
+                        position,
+                    )
+                })
                 .flatten();
             return Ok(vec![WireValue::from(json!({"role": role})).with(
                 "content",
                 if qwen_marked {
-                    crate::codecs::qwen_cache::text_content(text, true)
+                    crate::providers::qwen::cache::text_content(text, true)
                 } else {
-                    super::openrouter_cache::text_content(text, openrouter_marker)
+                    crate::providers::openrouter::prompt_cache::text_content(
+                        text,
+                        openrouter_marker,
+                    )
                 },
             )]);
         }
@@ -383,17 +387,17 @@ fn encode_message<'a>(
             index: message_index,
             block: block_index,
         };
-        let qwen_marked = crate::codecs::qwen_cache::marked(wire.request(), opts, position);
+        let qwen_marked = crate::providers::qwen::cache::marked(wire.request(), opts, position);
         let openrouter_marker = if qwen_marked {
             None
         } else {
-            super::openrouter_cache::marker(wire.request(), opts, position)
+            crate::providers::openrouter::prompt_cache::marker(wire.request(), opts, position)
         };
         if let Some(media) = inline(wire, block, opts)? {
             parts.push(if qwen_marked {
-                crate::codecs::qwen_cache::mark(media, true)
+                crate::providers::qwen::cache::mark(media, true)
             } else {
-                super::openrouter_cache::mark(media, openrouter_marker.clone())
+                crate::providers::openrouter::prompt_cache::mark(media, openrouter_marker.clone())
             });
             continue;
         }
@@ -444,8 +448,7 @@ fn encode_message<'a>(
                         return Err(crate::codecs::provider_file_protocol_error());
                     }
                     if qwen_long
-                        && profile.provider_id.as_str() == "qwen"
-                        && file.purpose.as_deref() == Some("file-extract")
+                        && crate::providers::qwen::chat_policy::is_extracted_file(profile, file)
                     {
                         continue;
                     }
@@ -515,9 +518,9 @@ fn encode_message<'a>(
                     .with(
                         "content",
                         if qwen_marked {
-                            crate::codecs::qwen_cache::text_content(content, true)
+                            crate::providers::qwen::cache::text_content(content, true)
                         } else {
-                            super::openrouter_cache::text_content(
+                            crate::providers::openrouter::prompt_cache::text_content(
                                 content,
                                 openrouter_marker.clone(),
                             )
@@ -548,167 +551,6 @@ fn encode_message<'a>(
         &mut native_reasoning,
     );
     Ok(out)
-}
-
-#[derive(Debug)]
-struct AudioOutputConfig<'a> {
-    voice: &'a str,
-    format: &'a str,
-}
-
-fn openrouter_audio_output<'a>(
-    value: Option<&'a Value>,
-    profile: &ProviderProfile,
-    opts: &CodecContext,
-) -> Result<Option<AudioOutputConfig<'a>>, LlmError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if profile.provider_id.as_str() != "openrouter" {
-        return Err(LlmError::UnsupportedCapability {
-            message: "OpenRouter Chat audio output configuration requires an OpenRouter profile"
-                .into(),
-        });
-    }
-    if !opts.stream {
-        return Err(LlmError::UnsupportedCapability {
-            message: "OpenRouter Chat audio output requires streaming".into(),
-        });
-    }
-    let config = value.as_object().ok_or_else(|| LlmError::InvalidRequest {
-        message: "metadata.openrouter_chat_audio must be an object".into(),
-    })?;
-    if config.keys().any(|key| key != "voice" && key != "format") {
-        return Err(LlmError::InvalidRequest {
-            message: "metadata.openrouter_chat_audio accepts only voice and format".into(),
-        });
-    }
-    let voice = config
-        .get("voice")
-        .and_then(Value::as_str)
-        .filter(|voice| !voice.trim().is_empty())
-        .ok_or_else(|| LlmError::InvalidRequest {
-            message: "metadata.openrouter_chat_audio.voice must be a non-empty string".into(),
-        })?;
-    let format = config
-        .get("format")
-        .and_then(Value::as_str)
-        .ok_or_else(|| LlmError::InvalidRequest {
-            message: "metadata.openrouter_chat_audio.format must be a string".into(),
-        })?;
-    if !["wav", "mp3", "flac", "opus", "pcm16"].contains(&format) {
-        return Err(LlmError::InvalidRequest {
-            message: "OpenRouter Chat audio output format must be wav, mp3, flac, opus, or pcm16"
-                .into(),
-        });
-    }
-    validate_model_audio_modality(profile, &opts.request_model, false)?;
-    Ok(Some(AudioOutputConfig { voice, format }))
-}
-
-pub(super) fn validate_audio_request(
-    req: &crate::protocol::ChatRequest,
-    profile: &ProviderProfile,
-    opts: &CodecContext,
-) -> Result<(), LlmError> {
-    let mut has_audio = false;
-    for message in &req.messages {
-        for block in &message.content {
-            let ContentBlock::Audio { format, data } = block else {
-                continue;
-            };
-            has_audio = true;
-            if profile.provider_id.as_str() != "openrouter" {
-                return Err(LlmError::UnsupportedCapability {
-                    message: "Chat audio input is currently supported only by OpenRouter profiles"
-                        .into(),
-                });
-            }
-            if message.role != MessageRole::User {
-                return Err(LlmError::InvalidRequest {
-                    message: "OpenRouter Chat audio input must be in a user message".into(),
-                });
-            }
-            validate_audio_format(format)?;
-            validate_base64_audio(data)?;
-        }
-    }
-    if has_audio {
-        validate_model_audio_modality(profile, &opts.request_model, true)?;
-    }
-    if let Some(audio) = req.metadata.get("openrouter_chat_audio") {
-        openrouter_audio_output(Some(audio), profile, opts)?;
-    }
-    Ok(())
-}
-
-fn validate_model_audio_modality(
-    profile: &ProviderProfile,
-    request_model: &str,
-    input: bool,
-) -> Result<(), LlmError> {
-    if let Some(model) = profile
-        .models
-        .iter()
-        .find(|model| model.request_model == request_model)
-    {
-        let modalities = if input {
-            &model.metadata.input_modalities
-        } else {
-            &model.metadata.output_modalities
-        };
-        if !modalities.is_empty() && !modalities.iter().any(|value| value == "audio") {
-            return Err(LlmError::UnsupportedCapability {
-                message: format!(
-                    "selected OpenRouter model {request_model} does not advertise {} audio modality",
-                    if input { "input" } else { "output" }
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_audio_format(format: &str) -> Result<(), LlmError> {
-    if [
-        "wav", "mp3", "aiff", "aac", "ogg", "flac", "m4a", "pcm16", "pcm24",
-    ]
-    .contains(&format)
-    {
-        Ok(())
-    } else {
-        Err(LlmError::InvalidRequest {
-            message: format!("unsupported OpenRouter Chat audio input format {format:?}"),
-        })
-    }
-}
-
-fn validate_base64_audio(data: &str) -> Result<(), LlmError> {
-    let bytes = data.as_bytes();
-    let padding = bytes.iter().rev().take_while(|&&byte| byte == b'=').count();
-    let valid_alphabet = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/';
-    let valid = !bytes.is_empty()
-        && bytes.len().is_multiple_of(4)
-        && padding <= 2
-        && bytes[..bytes.len() - padding]
-            .iter()
-            .all(|&byte| valid_alphabet(byte))
-        && bytes[bytes.len() - padding..]
-            .iter()
-            .all(|&byte| byte == b'=')
-        && match padding {
-            0 => true,
-            1 => (bytes.len() - padding) % 4 == 3,
-            2 => (bytes.len() - padding) % 4 == 2,
-            _ => false,
-        };
-    if valid {
-        Ok(())
-    } else {
-        Err(LlmError::InvalidRequest {
-            message: "OpenRouter Chat audio data must be standard base64 without a data URI".into(),
-        })
-    }
 }
 
 /// Select the request field used for the output token limit. A profile can opt
@@ -898,15 +740,8 @@ fn inline<'a>(
         "image" => WireValue::from(json!({"type":"image_url"}))
             .with("image_url", WireValue::from(json!({})).with("url", uri())),
         "document" => {
-            let pdf_only = context
-                .profile
-                .extra
-                .get("chat_pdf_only")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-                || url::Url::parse(&context.profile.base_url)
-                    .ok()
-                    .is_some_and(|url| url.host_str() == Some("api.openai.com"));
+            let pdf_only =
+                crate::providers::openai::responses_policy::chat_pdf_only_files(context.profile());
             if pdf_only && attachment.media_type != "application/pdf" {
                 return Err(LlmError::UnsupportedCapability {
                     message: "OpenAI Chat Completions accepts only PDF file input".into(),

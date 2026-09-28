@@ -4,8 +4,9 @@ use crate::codecs::json::{WireRequest, WireValue};
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::protocol::{
     ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
-    OpenAiToolSearchExecution, ProviderProfile, ToolChoice, ToolSpec,
+    ProviderProfile, ToolChoice, ToolSpec,
 };
+use crate::providers::openai::types::OpenAiToolSearchExecution;
 
 use base64::Engine;
 use serde_json::{json, Map, Value};
@@ -21,10 +22,10 @@ pub fn request<'a>(
             message: "OpenAI Responses cannot encode the Anthropic MCP connector".into(),
         });
     }
-    super::cache::validate(req, opts)?;
-    crate::codecs::anthropic_code_execution::validate(req, opts)?;
+    crate::providers::openai::prompt_cache::validate(req, opts)?;
+    crate::providers::anthropic::code_execution::validate(req, opts)?;
     req.validate_hosted_tools()?;
-    crate::codecs::openrouter_server_tools::validate(req, profile, None, false)?;
+    crate::providers::openrouter::server_tools::validate(req, profile, None, false)?;
     let has_openrouter_tool_search = req.hosted_openrouter_tool_search().is_some();
     let openai_tool_search = req.hosted_openai_tool_search();
     let has_openai_tool_search = openai_tool_search.is_some();
@@ -38,45 +39,11 @@ pub fn request<'a>(
             message: "Anthropic tool search and Web Fetch require Messages, and defer_loading requires a supported hosted tool-search server tool".into(),
         });
     }
-    let deferred_mcp = req
-        .remote_mcp_servers()
-        .any(|server| server.defer_loading());
-    if deferred_mcp && !has_openai_tool_search {
-        return Err(LlmError::UnsupportedCapability {
-            message: "deferred OpenAI MCP servers require OpenAI Responses tool search".into(),
-        });
-    }
-    if let Some(config) = openai_tool_search {
-        if !is_official_openai_responses_profile(profile) {
-            return Err(LlmError::UnsupportedCapability {
-                message: "OpenAI tool search requires the official OpenAI Responses profile".into(),
-            });
-        }
-        if !supports_openai_tool_search_model(&opts.request_model) {
-            return Err(LlmError::UnsupportedCapability {
-                message: format!(
-                    "OpenAI Responses tool search requires GPT-5.4 or later; model {:?} is not supported",
-                    opts.request_model
-                ),
-            });
-        }
-        config.validate()?;
-        if deferred_mcp && config.execution != OpenAiToolSearchExecution::Server {
-            return Err(LlmError::UnsupportedCapability {
-                message: "deferred OpenAI MCP servers require server-executed tool search".into(),
-            });
-        }
-        if config.execution == OpenAiToolSearchExecution::Server
-            && !req.tools.iter().any(|tool| tool.defer_loading)
-            && !deferred_mcp
-        {
-            return Err(LlmError::InvalidRequest {
-                message:
-                    "server-executed OpenAI tool search requires a deferred function or MCP server"
-                        .into(),
-            });
-        }
-    }
+    crate::providers::openai::responses_policy::validate_tool_search(
+        req,
+        profile,
+        &opts.request_model,
+    )?;
     crate::files::validate_direct_provider_file_inputs_at(
         wire.blocks(),
         profile,
@@ -98,28 +65,11 @@ pub fn request<'a>(
             ),
         });
     }
-    if req.hosted_file_search().is_some()
-        && profile.extra.get("file_search").and_then(Value::as_str) != Some("qwen")
-    {
-        return Err(LlmError::UnsupportedCapability {
-            message: format!(
-                "profile {:?} does not declare Qwen file search",
-                profile.profile_name
-            ),
-        });
+    crate::providers::qwen::responses_policy::validate_file_search_route(req, profile)?;
+    if req.remote_mcp_servers().next().is_some() {
+        crate::providers::openai::responses_policy::validate_mcp_enabled(profile)?;
     }
-    if req.remote_mcp_servers().next().is_some()
-        && (!is_official_openai_responses_profile(profile)
-            || profile.extra.get("remote_mcp").and_then(Value::as_str) != Some("openai_responses"))
-    {
-        return Err(LlmError::UnsupportedCapability {
-            message: format!(
-                "remote MCP is not enabled for OpenAI Responses profile {:?}",
-                profile.profile_name
-            ),
-        });
-    }
-    validate_xai_remote_mcp(req, profile)?;
+    crate::providers::xai::responses_policy::validate_xai_remote_mcp(req, profile)?;
     if req.hosted_file_search().is_some()
         && (req.remote_mcp_servers().next().is_some()
             || req.xai_remote_mcp_servers().next().is_some())
@@ -137,7 +87,7 @@ pub fn request<'a>(
     }
 
     let mut input = Vec::new();
-    if let Some(system) = super::cache::system_input(req) {
+    if let Some(system) = crate::providers::openai::prompt_cache::system_input(req) {
         input.push(system);
     }
     for (message_index, m) in req.messages.iter().enumerate() {
@@ -149,7 +99,8 @@ pub fn request<'a>(
         "model".to_owned(),
         Value::String(opts.request_model.clone()),
     );
-    if !req.system.is_empty() && !super::cache::has_system_breakpoint(req) {
+    if !req.system.is_empty() && !crate::providers::openai::prompt_cache::has_system_breakpoint(req)
+    {
         body.insert(
             "instructions".to_owned(),
             Value::String(
@@ -197,56 +148,20 @@ pub fn request<'a>(
     // OpenAI's current web_search wire has its own filter names and supports
     // both allow/block lists together. Other Responses adapters keep using the
     // shared provider-specific adapter.
-    apply_web_search(req, profile, &mut body)?;
-    super::qwen_web_extractor::apply(req, profile, &opts.request_model, &mut body)?;
-    if !super::qwen_hosted::apply(req, profile, &opts.request_model, &mut body)? {
-        crate::codecs::code_interpreter::apply(req, opts, &mut body)?;
+    crate::providers::openai::responses_policy::apply_web_search(req, profile, &mut body)?;
+    crate::providers::qwen::web_extractor::apply(req, profile, &opts.request_model, &mut body)?;
+    if !crate::providers::qwen::hosted::apply(req, profile, &opts.request_model, &mut body)? {
+        crate::providers::openai::code_interpreter::apply(req, opts, &mut body)?;
     }
-    if let Some(search) = req.hosted_file_search() {
-        if search.knowledge_base_id.trim().is_empty() {
-            return Err(LlmError::InvalidRequest {
-                message: "Qwen file search requires a nonempty knowledge_base_id".into(),
-            });
-        }
-        if !search
-            .workspace_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            || search.workspace_id.is_empty()
-        {
-            return Err(LlmError::InvalidRequest {
-                message:
-                    "Qwen file search workspace_id must contain only letters, digits, or hyphens"
-                        .into(),
-            });
-        }
-        if profile.provider_id.as_str() != "qwen"
-            || !matches!(opts.request_model.as_str(), "qwen3.8-max" | "qwen3.8-flash")
-        {
-            return Err(LlmError::UnsupportedCapability {
-                message: "Qwen file search is available only for the supported Max and Flash Responses models".into(),
-            });
-        }
-        body.entry("tools")
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .ok_or_else(|| LlmError::InvalidRequest {
-                message: "Qwen file search requires tools to be an array".into(),
-            })?
-            .push(json!({"type":"file_search","vector_store_ids":[search.knowledge_base_id]}));
-    }
+    crate::providers::qwen::responses_policy::apply_file_search(
+        req,
+        profile,
+        &opts.request_model,
+        &mut body,
+    )?;
     let mcp_servers: Vec<_> = req.remote_mcp_servers().collect();
     if !mcp_servers.is_empty() {
-        if !is_official_openai_responses_profile(profile)
-            || profile.extra.get("remote_mcp").and_then(Value::as_str) != Some("openai_responses")
-        {
-            return Err(LlmError::UnsupportedCapability {
-                message: format!(
-                    "remote MCP is not enabled for OpenAI Responses profile {:?}",
-                    profile.profile_name
-                ),
-            });
-        }
+        crate::providers::openai::responses_policy::validate_mcp_enabled(profile)?;
         let tools = body.entry("tools").or_insert_with(|| json!([]));
         let Some(tools) = tools.as_array_mut() else {
             return Err(LlmError::InvalidRequest {
@@ -272,8 +187,8 @@ pub fn request<'a>(
             if let Some(policy) = mcp.require_approval() {
                 tool["require_approval"] = Value::String(
                     match policy {
-                        crate::protocol::llm::McpApprovalPolicy::Always => "always",
-                        crate::protocol::llm::McpApprovalPolicy::Never => "never",
+                        crate::providers::openai::types::McpApprovalPolicy::Always => "always",
+                        crate::providers::openai::types::McpApprovalPolicy::Never => "never",
                     }
                     .into(),
                 );
@@ -307,7 +222,7 @@ pub fn request<'a>(
             tools.push(tool);
         }
     }
-    for tool in crate::codecs::openrouter_server_tools::response_tool_values(req) {
+    for tool in crate::providers::openrouter::server_tools::response_tool_values(req) {
         body.entry("tools")
             .or_insert_with(|| json!([]))
             .as_array_mut()
@@ -343,7 +258,7 @@ pub fn request<'a>(
         body.insert("stream".to_owned(), Value::Bool(true));
     }
 
-    super::cache::apply(req, opts, &mut body)?;
+    crate::providers::openai::prompt_cache::apply(req, opts, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
     crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
@@ -352,7 +267,7 @@ pub fn request<'a>(
     crate::wire_options::merge_headers(profile, &mut headers);
 
     let url = if let Some(search) = req.hosted_file_search() {
-        qwen_file_search_url(profile, &search.workspace_id)?
+        crate::providers::qwen::responses_policy::file_search_url(profile, &search.workspace_id)?
     } else {
         format!("{}/responses", profile.base_url.trim_end_matches('/'))
     };
@@ -370,202 +285,6 @@ pub fn request<'a>(
         });
     }
     Ok(WireRequest::new(url, headers, body))
-}
-
-fn apply_web_search(
-    req: &crate::protocol::ChatRequest,
-    profile: &ProviderProfile,
-    body: &mut Map<String, Value>,
-) -> Result<(), LlmError> {
-    let Some(search) = req.hosted_web_search() else {
-        return Ok(());
-    };
-    let adapter = profile
-        .extra
-        .get("web_search")
-        .and_then(Value::as_str)
-        .ok_or_else(|| LlmError::UnsupportedCapability {
-            message: format!(
-                "web search on profile {:?}: no extra.web_search adapter declared",
-                profile.profile_name
-            ),
-        })?;
-    if adapter != "openai_responses" || !is_official_openai_responses_profile(profile) {
-        return crate::codecs::web_search::apply(req, profile, body);
-    }
-    if profile.protocol != crate::protocol::ProtocolFamily::OpenAiResponses {
-        return Err(LlmError::UnsupportedCapability {
-            message: "OpenAI hosted web search requires the Responses protocol".into(),
-        });
-    }
-    if search.max_uses.is_some() {
-        return Err(LlmError::UnsupportedCapability {
-            message: "OpenAI Responses web_search does not expose max_uses".into(),
-        });
-    }
-    if search.allowed_domains.len() > 100 || search.blocked_domains.len() > 100 {
-        return Err(LlmError::InvalidRequest {
-            message: "OpenAI Responses web_search accepts at most 100 domains per filter".into(),
-        });
-    }
-    for domain in search.allowed_domains.iter().chain(&search.blocked_domains) {
-        if domain.trim().is_empty()
-            || domain.contains("://")
-            || domain.contains('/')
-            || domain.chars().any(char::is_whitespace)
-        {
-            return Err(LlmError::InvalidRequest {
-                message: "web search domain filters must be host names without schemes or paths"
-                    .into(),
-            });
-        }
-    }
-    let mut tool = json!({"type": "web_search"});
-    if !search.allowed_domains.is_empty() || !search.blocked_domains.is_empty() {
-        let mut filters = Map::new();
-        if !search.allowed_domains.is_empty() {
-            filters.insert("allowed_domains".into(), json!(search.allowed_domains));
-        }
-        if !search.blocked_domains.is_empty() {
-            filters.insert("blocked_domains".into(), json!(search.blocked_domains));
-        }
-        tool["filters"] = Value::Object(filters);
-    }
-    body.entry("tools")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .ok_or_else(|| LlmError::InvalidRequest {
-            message: "Responses hosted tools must encode as an array".into(),
-        })?
-        .push(tool);
-    // Include the provider's source records as well as message citations so
-    // open_page/fetch actions remain available in native output metadata.
-    body.insert("include".into(), json!(["web_search_call.action.sources"]));
-    Ok(())
-}
-
-pub(crate) fn is_official_openai_responses_profile(profile: &ProviderProfile) -> bool {
-    let Ok(url) = url::Url::parse(&profile.base_url) else {
-        return false;
-    };
-    profile.provider_id.as_str() == "openai"
-        && profile.protocol == crate::protocol::ProtocolFamily::OpenAiResponses
-        && url.scheme() == "https"
-        && url.host_str() == Some("api.openai.com")
-        && url.path().trim_end_matches('/') == "/v1"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-}
-
-fn supports_openai_tool_search_model(model: &str) -> bool {
-    let Some(version) = model
-        .to_ascii_lowercase()
-        .strip_prefix("gpt-")
-        .map(str::to_owned)
-    else {
-        return false;
-    };
-    let major_end = version
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(version.len());
-    if major_end == 0
-        || version.get(major_end..).is_some_and(|tail| {
-            !tail.is_empty() && !tail.starts_with('.') && !tail.starts_with('-')
-        })
-    {
-        return false;
-    }
-    let Ok(major) = version[..major_end].parse::<u32>() else {
-        return false;
-    };
-    if major > 5 {
-        return true;
-    }
-    if major < 5 || version.as_bytes().get(major_end) != Some(&b'.') {
-        return false;
-    }
-    let minor = &version[major_end + 1..];
-    let minor_end = minor
-        .find(|character: char| !character.is_ascii_digit())
-        .unwrap_or(minor.len());
-    if minor_end == 0
-        || minor
-            .get(minor_end..)
-            .is_some_and(|tail| !tail.is_empty() && !tail.starts_with('-'))
-    {
-        return false;
-    }
-    minor[..minor_end]
-        .parse::<u32>()
-        .is_ok_and(|minor| minor >= 4)
-}
-
-pub(crate) fn is_official_xai_responses_profile(profile: &ProviderProfile) -> bool {
-    let Ok(url) = url::Url::parse(&profile.base_url) else {
-        return false;
-    };
-    profile.provider_id.as_str() == "xai"
-        && profile.protocol == crate::protocol::ProtocolFamily::OpenAiResponses
-        && profile.extra.get("xai_remote_mcp").and_then(Value::as_str) == Some("xai_responses")
-        && url.scheme() == "https"
-        && url.host_str() == Some("api.x.ai")
-        && url.path().trim_end_matches('/') == "/v1"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-}
-
-/// Request-level capability gate shared by the codec and preflight path.
-pub(crate) fn validate_xai_remote_mcp(
-    request: &crate::protocol::ChatRequest,
-    profile: &ProviderProfile,
-) -> Result<(), LlmError> {
-    request.validate_hosted_tools()?;
-    let configs: Vec<_> = request.xai_remote_mcp_servers().collect();
-    if configs.is_empty() {
-        return Ok(());
-    }
-    if request.remote_mcp_servers().next().is_some() {
-        return Err(LlmError::UnsupportedCapability {
-            message: "OpenAI and xAI remote MCP configurations cannot be mixed".into(),
-        });
-    }
-    if !is_official_xai_responses_profile(profile) {
-        return Err(LlmError::UnsupportedCapability {
-            message: format!(
-                "xAI remote MCP requires an enabled official xAI Responses profile; {:?} is not enabled",
-                profile.profile_name
-            ),
-        });
-    }
-    for config in configs {
-        config.validate()?;
-    }
-    Ok(())
-}
-
-fn qwen_file_search_url(profile: &ProviderProfile, workspace_id: &str) -> Result<String, LlmError> {
-    let host = url::Url::parse(&profile.base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_owned));
-    let region_domain = match (profile.provider_id.as_str(), host.as_deref()) {
-        ("qwen", Some("dashscope.aliyuncs.com")) => "cn-beijing.maas.aliyuncs.com",
-        ("qwen", Some("dashscope-intl.aliyuncs.com")) => "ap-southeast-1.maas.aliyuncs.com",
-        ("qwen", Some("dashscope-us.aliyuncs.com")) => "us-east-1.maas.aliyuncs.com",
-        ("qwen", Some("cn-hongkong.dashscope.aliyuncs.com")) => "cn-hongkong.maas.aliyuncs.com",
-        _ => {
-            return Err(LlmError::UnsupportedCapability {
-                message: "Qwen file search requires a supported regional Model Studio profile"
-                    .into(),
-            });
-        }
-    };
-    Ok(format!(
-        "https://{workspace_id}.{region_domain}/compatible-mode/v1/responses"
-    ))
 }
 
 /// A message becomes one item; a tool call or result becomes its own sibling
@@ -607,12 +326,12 @@ fn encode_message<'a>(
                 }
                 validate_provider_item_replay(value, wire.request())?;
                 flush(role, &mut parts, input);
-                let item = if super::cache::has_message_breakpoint(
+                let item = if crate::providers::openai::prompt_cache::has_message_breakpoint(
                     wire.request(),
                     message_index,
                     block_index,
                 ) {
-                    super::cache::mark_provider_message(value)
+                    crate::providers::openai::prompt_cache::mark_provider_message(value)
                 } else {
                     WireValue::borrowed(value)
                 };
@@ -621,7 +340,7 @@ fn encode_message<'a>(
             ContentBlock::Text { text, .. } => {
                 let part =
                     WireValue::from(json!({"type": text_part})).with("text", WireValue::text(text));
-                parts.push(super::cache::mark_message_block(
+                parts.push(crate::providers::openai::prompt_cache::mark_message_block(
                     wire.request(),
                     message_index,
                     block_index,
@@ -713,7 +432,7 @@ fn encode_message<'a>(
                 ..
             } => {
                 flush(role, &mut parts, input);
-                let output = super::cache::tool_result_output(
+                let output = crate::providers::openai::prompt_cache::tool_result_output(
                     wire.request(),
                     message_index,
                     block_index,
@@ -782,7 +501,9 @@ fn encode_tool(t: &ToolSpec, include_defer_loading: bool) -> Value {
     crate::codecs::request_controls::tool_extensions(t, tool)
 }
 
-fn encode_openai_tool_search(config: &crate::protocol::OpenAiToolSearchConfig) -> Value {
+fn encode_openai_tool_search(
+    config: &crate::providers::openai::types::OpenAiToolSearchConfig,
+) -> Value {
     let mut tool = json!({"type":"tool_search"});
     if config.execution == OpenAiToolSearchExecution::Client {
         tool["execution"] = Value::String("client".into());

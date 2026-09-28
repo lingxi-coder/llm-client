@@ -1,6 +1,6 @@
 # OpenAI GPT-Live primary WebSocket
 
-`realtime::OpenAiLiveSession` implements OpenAI's GPT-Live primary WebSocket protocol. GPT-Live is a separate API from OpenAI Realtime: it connects to `wss://api.openai.com/v1/live/sessions` without query parameters, sends `session.start` first, and waits for `session.started`. It does not use `/v1/realtime?model=...` or OpenAI Realtime event names.
+`providers::openai::live::OpenAiLiveSession` implements OpenAI's GPT-Live primary WebSocket protocol. GPT-Live is a separate API from OpenAI Realtime: it connects to `wss://api.openai.com/v1/live/sessions` without query parameters, sends `session.start` first, and waits for `session.started`. It does not use `/v1/realtime?model=...` or OpenAI Realtime event names.
 
 Sources: OpenAI's [GPT-Live WebSockets guide](https://developers.openai.com/api/docs/guides/voice-websockets), [Primary WebSocket reference](https://developers.openai.com/api/reference/resources/live/primary-websocket), [Managing GPT-Live sessions](https://developers.openai.com/api/docs/guides/live-conversations), and [Delegation and tools](https://developers.openai.com/api/docs/guides/live-delegation).
 
@@ -11,14 +11,11 @@ Sources: OpenAI's [GPT-Live WebSockets guide](https://developers.openai.com/api/
 The function below constructs the session controls, event stream, and driver. The host must run `driver.run()` concurrently with its event and command handling on its own async executor.
 
 ```rust,no_run
+use lingxi_llm_client::providers::openai::live::{OpenAiLiveConfig, OpenAiLiveControl, OpenAiLiveEvents, OpenAiLiveRoute, OpenAiLiveScope, OpenAiLiveSession, OpenAiLiveDriver};
 use std::sync::Arc;
 use lingxi_llm_client::{
     protocol::Secret,
-    realtime::{
-        OpenAiLiveConfig, OpenAiLiveControl, OpenAiLiveEvents,
-        OpenAiLiveRoute, OpenAiLiveScope, OpenAiLiveSession,
-        OpenAiLiveDriver, RealtimeError, RealtimeLimits, RealtimeTransport,
-    },
+    realtime::{RealtimeError, RealtimeLimits, RealtimeTransport},
 };
 
 async fn connect_gpt_live(
@@ -49,9 +46,7 @@ async fn connect_gpt_live(
 `OpenAiLiveConfig.input` seeds prior text conversation in `session.start`. Each `OpenAiLiveHistoryMessage` contains one text part and a `Developer`, `User`, or `Assistant` role. Developer and user text is encoded as `input_text`; assistant text is encoded as `output_text`. Empty history omits the `input` field. The client rejects more than 128 messages before connecting. OpenAI documents an 8,192-token combined limit; the provider enforces that token bound because this client does not guess at tokenization.
 
 ```rust,no_run
-use lingxi_llm_client::realtime::{
-    OpenAiLiveConfig, OpenAiLiveHistoryMessage, OpenAiLiveHistoryRole,
-};
+use lingxi_llm_client::providers::openai::live::{OpenAiLiveConfig, OpenAiLiveHistoryMessage, OpenAiLiveHistoryRole};
 
 fn resume_from_text_history() -> OpenAiLiveConfig {
     OpenAiLiveConfig {
@@ -87,10 +82,8 @@ The adapter exposes input/output transcript deltas with session-relative timesta
 The adapter never executes application functions. In Responses mode, `append_responses_text` and `function_output` each send a single `response.item.create`. `continue_responses` is a separate `response.create` command; call it only after the host has collected and returned every required function result. In client mode, the host owns context and backend processing; use `append_instructions`, `append_thinking`, or `append_commentary` to add context to the Live conversation. The wire requires `delegation_id` on these commands, represented as `Option`: use `None` for general context or Responses delegation, and an existing client delegation ID in client mode. If a command entered the local queue just before the terminal event, the driver drops it after `session.closed` and emits `CommandDroppedAfterSessionClosed` with its event ID when present.
 
 ```rust,no_run
-use lingxi_llm_client::realtime::{
-    OpenAiLiveControl, OpenAiLiveDelegation, OpenAiLiveResponsesConfig,
-    OpenAiLiveResponsesTool, OpenAiLiveToolChoice, RealtimeError,
-};
+use lingxi_llm_client::providers::openai::live::{OpenAiLiveControl, OpenAiLiveDelegation, OpenAiLiveResponsesConfig, OpenAiLiveResponsesTool, OpenAiLiveToolChoice};
+use lingxi_llm_client::realtime::{RealtimeError};
 use serde_json::json;
 
 fn configure_backend() -> Result<OpenAiLiveDelegation, RealtimeError> {

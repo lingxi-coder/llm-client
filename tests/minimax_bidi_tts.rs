@@ -7,14 +7,16 @@ use futures::{
 };
 use lingxi_llm_client::{
     files::provider_file_endpoint_fingerprint,
-    minimax_bidi_tts::{
+    protocol::{ProviderId, Secret},
+    providers::minimax::bidi_tts::{
         MiniMaxBidiTtsConfig, MiniMaxBidiTtsCredentials, MiniMaxBidiTtsError,
         MiniMaxBidiTtsEventKind, MiniMaxBidiTtsLimits, MiniMaxBidiTtsRegion, MiniMaxBidiTtsRequest,
         MiniMaxBidiTtsService, MINIMAX_BIDI_TTS_CHINA_ENDPOINT,
         MINIMAX_BIDI_TTS_INTERNATIONAL_ENDPOINT,
     },
-    minimax_voices::{MiniMaxVoiceKind, MiniMaxVoiceRef, MiniMaxVoicesRegion, MiniMaxVoicesScope},
-    protocol::{ProviderId, Secret},
+    providers::minimax::voices::{
+        MiniMaxVoiceKind, MiniMaxVoiceRef, MiniMaxVoicesRegion, MiniMaxVoicesScope,
+    },
     realtime::{
         RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError, RealtimeFrame,
         RealtimeSink, RealtimeTransport,

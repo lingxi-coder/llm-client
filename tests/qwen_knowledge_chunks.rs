@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeAddChunkRequest, QwenKnowledgeChunkFields, QwenKnowledgeDispatch,
         QwenKnowledgeError, QwenKnowledgeListChunksRequest, QwenKnowledgeRegion,
         QwenKnowledgeScope, QwenKnowledgeService, QwenKnowledgeUpdateChunkRequest,
@@ -66,7 +66,7 @@ fn make_service<'a>(mock: &'a Mock, account: &str) -> QwenKnowledgeService<'a> {
         "llm-workspace-1",
     )
     .unwrap();
-    QwenKnowledgeService::new(mock, Secret::new("qwen-key-test".into()), scope).unwrap()
+    QwenKnowledgeService::new(mock, scope).unwrap()
 }
 
 fn success(data: Value) -> Value {
@@ -111,6 +111,7 @@ async fn lists_typed_chunks_with_provider_page_fields_and_document_scope() {
         .list_chunks(
             &knowledge,
             &QwenKnowledgeListChunksRequest::new(2, 10).for_document(&document),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -163,6 +164,7 @@ async fn filtered_list_rejects_a_chunk_from_another_document_and_keeps_request_i
         .list_chunks(
             &knowledge,
             &QwenKnowledgeListChunksRequest::default().for_document(&document),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -210,10 +212,13 @@ async fn adds_updates_and_deletes_with_document_and_chunk_scope() {
         .with_image_urls(["https://images.example/a.png"])
         .unwrap();
     let add = QwenKnowledgeAddChunkRequest::for_document(&document, fields);
-    let add_result = service.add_chunk(&knowledge, &add).await.unwrap();
+    let add_result = service
+        .add_chunk(&knowledge, &add, &request_options())
+        .await
+        .unwrap();
     assert_eq!(add_result.request_id.as_deref(), Some("req-qwen-chunk-1"));
 
-    let chunk = lingxi_llm_client::qwen_knowledge::QwenKnowledgeChunkRef::new(
+    let chunk = lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeChunkRef::new(
         &knowledge,
         &document,
         "llm-kb-file-0-0",
@@ -227,6 +232,7 @@ async fn adds_updates_and_deletes_with_document_and_chunk_scope() {
                 false,
             )
             .with_title(""),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -239,7 +245,7 @@ async fn adds_updates_and_deletes_with_document_and_chunk_scope() {
         })
     );
     let delete_result = service
-        .delete_chunks(&knowledge, std::slice::from_ref(&chunk))
+        .delete_chunks(&knowledge, std::slice::from_ref(&chunk), &request_options())
         .await
         .unwrap();
     assert_eq!(
@@ -294,7 +300,11 @@ async fn rejects_invalid_limits_and_cross_scope_refs_before_http() {
     let document = knowledge.document_ref("file-7").unwrap();
 
     let invalid_page = service
-        .list_chunks(&knowledge, &QwenKnowledgeListChunksRequest::new(0, 101))
+        .list_chunks(
+            &knowledge,
+            &QwenKnowledgeListChunksRequest::new(0, 101),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(invalid_page, QwenKnowledgeError::InvalidInput(_)));
@@ -302,25 +312,27 @@ async fn rejects_invalid_limits_and_cross_scope_refs_before_http() {
     let invalid_add =
         QwenKnowledgeAddChunkRequest::new(QwenKnowledgeChunkFields::document("x".repeat(6001)));
     assert!(matches!(
-        service.add_chunk(&knowledge, &invalid_add).await,
+        service
+            .add_chunk(&knowledge, &invalid_add, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
 
-    let chunk = lingxi_llm_client::qwen_knowledge::QwenKnowledgeChunkRef::new(
+    let chunk = lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeChunkRef::new(
         &knowledge, &document, "chunk-1",
     )
     .unwrap();
     let other_service = make_service(&mock, "account-b");
     assert!(matches!(
         other_service
-            .delete_chunks(&knowledge, std::slice::from_ref(&chunk))
+            .delete_chunks(&knowledge, std::slice::from_ref(&chunk), &request_options())
             .await,
         Err(QwenKnowledgeError::Llm(LlmError::PermissionDenied { .. }))
     ));
 
     let too_many = (0..11)
         .map(|index| {
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeChunkRef::without_document(
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeChunkRef::without_document(
                 &knowledge,
                 format!("chunk-{index}"),
             )
@@ -328,7 +340,9 @@ async fn rejects_invalid_limits_and_cross_scope_refs_before_http() {
         })
         .collect::<Vec<_>>();
     assert!(matches!(
-        service.delete_chunks(&knowledge, &too_many).await,
+        service
+            .delete_chunks(&knowledge, &too_many, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
     assert!(mock.requests.lock().unwrap().is_empty());
@@ -339,14 +353,16 @@ async fn update_requires_a_chunk_reference_bound_to_its_document() {
     let mock = Mock::new([]);
     let service = make_service(&mock, "account-a");
     let knowledge = service.knowledge_ref("index-1").unwrap();
-    let chunk = lingxi_llm_client::qwen_knowledge::QwenKnowledgeChunkRef::without_document(
-        &knowledge, "chunk-1",
-    )
-    .unwrap();
+    let chunk =
+        lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeChunkRef::without_document(
+            &knowledge, "chunk-1",
+        )
+        .unwrap();
     let error = service
         .update_chunk(
             &chunk,
             &QwenKnowledgeUpdateChunkRequest::new("This content exceeds ten characters.", true),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -363,6 +379,7 @@ async fn interrupted_mutation_is_unknown_and_is_not_retried() {
         .add_chunk(
             &knowledge,
             &QwenKnowledgeAddChunkRequest::new(QwenKnowledgeChunkFields::document("text")),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -401,7 +418,7 @@ async fn chunk_mutations_reject_explicit_failure_and_contradictory_business_stat
     let service = make_service(&mock, "account-a");
     let knowledge = service.knowledge_ref("index-1").unwrap();
     let document = knowledge.document_ref("file-7").unwrap();
-    let chunk = lingxi_llm_client::qwen_knowledge::QwenKnowledgeChunkRef::new(
+    let chunk = lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeChunkRef::new(
         &knowledge, &document, "chunk-1",
     )
     .unwrap();
@@ -413,6 +430,7 @@ async fn chunk_mutations_reject_explicit_failure_and_contradictory_business_stat
                 "Updated content that is longer than ten characters.",
                 true,
             ),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -426,7 +444,7 @@ async fn chunk_mutations_reject_explicit_failure_and_contradictory_business_stat
     ));
 
     let contradictory_status = service
-        .delete_chunks(&knowledge, std::slice::from_ref(&chunk))
+        .delete_chunks(&knowledge, std::slice::from_ref(&chunk), &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -456,6 +474,7 @@ async fn status_only_success_is_not_accepted_for_add_chunk() {
         .add_chunk(
             &knowledge,
             &QwenKnowledgeAddChunkRequest::new(QwenKnowledgeChunkFields::document("text")),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -466,4 +485,11 @@ async fn status_only_success_is_not_accepted_for_add_chunk() {
             ..
         }
     ));
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-key-test".into())),
+        ..Default::default()
+    }
 }

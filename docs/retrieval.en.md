@@ -2,7 +2,9 @@
 
 [简体中文](retrieval.md)
 
-`client.retrieval()` uses a service route independent of Chat and Embeddings. The current OpenAI Vector Stores adapter creates, lists, retrieves and deletes stores; attaches uploaded files, checks indexing status and removes files; and performs semantic search. The built-in `openai` profile supplies the full operation URL. Other providers' managed knowledge-base APIs remain unimplemented. This adapter follows the [OpenAI Retrieval guide](https://developers.openai.com/api/docs/guides/retrieval) and [Vector Stores API](https://developers.openai.com/api/reference/resources/vector_stores).
+Bind `client.provider::<OpenAiClient>(profile)?` to an exact profile, then use `provider.retrieval()`. Each operation takes `RequestOptions`; the client retains no credential.
+
+`provider.retrieval()` uses a service route independent of Chat and Embeddings. The current OpenAI Vector Stores adapter creates, lists, retrieves and deletes stores; attaches uploaded files, checks indexing status and removes files; and performs semantic search. The built-in `openai` profile supplies the full operation URL. Other providers expose their managed knowledge resources through their own typed clients. This adapter follows the [OpenAI Retrieval guide](https://developers.openai.com/api/docs/guides/retrieval) and [Vector Stores API](https://developers.openai.com/api/reference/resources/vector_stores).
 
 File upload and indexing are separate operations. Upload through the same provider/profile's `FileService` to obtain a `ProviderFileRef`, then pass it to `attach_file()`. This returns an `IndexTask`, possibly `InProgress`; call `get_file()` later and treat the file as indexed only when `status.is_ready()` is true. The client does not poll or reupload automatically, and HTTP success does not imply indexing readiness. Removal from a store is eventually consistent, so search may briefly return deleted content.
 
@@ -10,19 +12,20 @@ To filter by file attributes, attach a file with `attach_file_with_attributes()`
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions, ProviderFileRef};
-use lingxi_llm_client::retrieval::RetrievalError;
+use lingxi_llm_client::providers::openai::retrieval::RetrievalError;
 
 async fn index_file(
     client: &LlmClient,
     uploaded_file: &ProviderFileRef,
     options: &RequestOptions,
-) -> Result<(), RetrievalError> {
+) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
     // options.account_scope must identify the same provider account as uploaded_file.account_scope.
-    let store = client.retrieval().create_store("openai", "FAQ", options).await?;
-    let task = client.retrieval().attach_file(&store.reference, uploaded_file, options).await?;
-    let current = client.retrieval().get_file(&task.reference, options).await?;
+    let store = provider.retrieval().create_store("FAQ", options).await?;
+    let task = provider.retrieval().attach_file(&store.reference, uploaded_file, options).await?;
+    let current = provider.retrieval().get_file(&task.reference, options).await?;
     if current.status.is_ready() {
-        let results = client.retrieval().search(&store.reference, "return policy", 10, options).await?;
+        let results = provider.retrieval().search(&store.reference, "return policy", 10, options).await?;
         for hit in results.hits {
             println!("{}: {:?}", hit.file.file_id, hit.content);
         }
@@ -37,16 +40,17 @@ async fn index_file(
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, ProviderFileRef, RequestOptions};
-use lingxi_llm_client::retrieval::{BatchFileInput, FileChunking, RetrievalStoreRef, RetrievalError};
+use lingxi_llm_client::providers::openai::retrieval::{BatchFileInput, FileChunking, RetrievalStoreRef, RetrievalError};
 
-async fn index_many(client: &LlmClient, store: &RetrievalStoreRef, uploaded: Vec<ProviderFileRef>, options: &RequestOptions) -> Result<(), RetrievalError> {
+async fn index_many(client: &LlmClient, store: &RetrievalStoreRef, uploaded: Vec<ProviderFileRef>, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&store.profile_name)?;
     let files: Vec<_> = uploaded.into_iter().map(|file| BatchFileInput {
         file,
         attributes: None,
         chunking: Some(FileChunking::Auto),
     }).collect();
-    let batch = client.retrieval().create_file_batch(store, &files, options).await?;
-    let current = client.retrieval().get_file_batch(&batch.reference, options).await?;
+    let batch = provider.retrieval().create_file_batch(store, &files, options).await?;
+    let current = provider.retrieval().get_file_batch(&batch.reference, options).await?;
     println!("{:?}: {:?}", current.status, current.file_counts);
     Ok(())
 }
@@ -58,15 +62,16 @@ For advanced search, use `SearchRequest` with `search_with()` to combine file-at
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
-use lingxi_llm_client::retrieval::{RetrievalStoreRef, RetrievalFilter, SearchRequest, SearchRanking, SearchRanker, RetrievalError};
+use lingxi_llm_client::providers::openai::retrieval::{RetrievalStoreRef, RetrievalFilter, SearchRequest, SearchRanking, SearchRanker, RetrievalError};
 use serde_json::json;
 
-async fn filtered_search(client: &LlmClient, store: &RetrievalStoreRef, options: &RequestOptions) -> Result<(), RetrievalError> {
+async fn filtered_search(client: &LlmClient, store: &RetrievalStoreRef, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&store.profile_name)?;
     let mut request = SearchRequest::new("return policy", 20);
     request.filters = Some(RetrievalFilter::Eq { key: "region".into(), value: json!("us") });
     request.ranking = Some(SearchRanking { ranker: Some(SearchRanker::Auto), score_threshold: Some(0.7) });
     request.rewrite_query = Some(true);
-    let result = client.retrieval().search_with(store, &request, options).await?;
+    let result = provider.retrieval().search_with(store, &request, options).await?;
     println!("rewritten query: {}", result.search_query);
     Ok(())
 }

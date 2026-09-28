@@ -1,7 +1,9 @@
 use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, ChatRequest, ContentBlock,
-    ConversationMessage, HostedTool, LlmError, ProtocolFamily, ProviderProfile, StreamEvent,
-    ToolChoice, ToolSpec,
+    ChatRequest, ContentBlock, ConversationMessage, HostedTool, LlmError, ProtocolFamily,
+    ProviderProfile, StreamEvent, ToolChoice, ToolSpec,
+};
+use lingxi_llm_client::providers::anthropic::types::{
+    AnthropicToolSearchConfig, AnthropicToolSearchStrategy,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, CodecContext, EncodeRequest, FoundryClaudeCodec,
@@ -41,7 +43,10 @@ fn encode_anthropic(req: &ChatRequest) -> Result<Value, LlmError> {
 }
 
 fn tool_search(strategy: AnthropicToolSearchStrategy) -> HostedTool {
-    HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig { strategy })
+    lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+        AnthropicToolSearchConfig { strategy },
+    )
+    .into()
 }
 
 fn tool(name: &str, defer_loading: bool) -> ToolSpec {
@@ -53,7 +58,7 @@ fn tool(name: &str, defer_loading: bool) -> ToolSpec {
         input_schema: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
         strict: false,
         defer_loading,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     }
 }
 
@@ -111,7 +116,7 @@ fn deferred_catalog_and_midconversation_reference_compose_with_hosted_search() {
     req.tools.push(tool("find_calendar_events", true));
     req.tools.push(tool("get_current_profile", false));
     req.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: lingxi_llm_client::protocol::MessageRole::System,
         content: vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
@@ -370,7 +375,7 @@ fn hosted_tool_search_config_round_trips_as_request_json() {
     let value = serde_json::to_value(&req).unwrap();
     assert_eq!(
         value["hosted_tools"][0],
-        json!({"type":"anthropic_tool_search","config":{"strategy":"regex"}})
+        json!({"type":"native","config":{"format":"anthropic.hosted_tool.v1","data":{"type":"tool_search","config":{"strategy":"regex"}}}})
     );
     let decoded: ChatRequest = serde_json::from_value(value).unwrap();
     assert_eq!(

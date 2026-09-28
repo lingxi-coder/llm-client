@@ -1,4 +1,5 @@
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{CodecContext, EncodeRequest, FoundryClaudeCodec, RequestMode, WireCodec};
 use serde_json::{json, Value};
 
@@ -33,9 +34,10 @@ fn make_request(config: AnthropicWebFetchConfig) -> ChatRequest {
         "messages": [{"role":"user","content":[{"type":"text","text":"Fetch https://example.com"}]}]
     }))
     .unwrap();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicWebFetch(config));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(config)
+            .into(),
+    );
     request
 }
 

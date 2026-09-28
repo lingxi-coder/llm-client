@@ -1,7 +1,8 @@
 use lingxi_llm_client::protocol::{
-    ChatRequest, CodeInterpreterConfig, FileSearchConfig, HostedTool, LlmError, ProviderProfile,
-    Region, WebSearchConfig,
+    ChatRequest, HostedTool, LlmError, ProviderProfile, Region, WebSearchConfig,
 };
+use lingxi_llm_client::providers::openai::types::CodeInterpreterConfig;
+use lingxi_llm_client::providers::qwen::types::FileSearchConfig;
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 use serde_json::json;
 use std::sync::Arc;
@@ -39,18 +40,30 @@ async fn duplicate_hosted_tools_fail_before_transport() {
             HostedTool::WebSearch(WebSearchConfig::default()),
         ],
         vec![
-            HostedTool::FileSearch(FileSearchConfig {
-                knowledge_base_id: "kb-a".into(),
-                workspace_id: "ws-a".into(),
-            }),
-            HostedTool::FileSearch(FileSearchConfig {
-                knowledge_base_id: "kb-b".into(),
-                workspace_id: "ws-b".into(),
-            }),
+            lingxi_llm_client::providers::qwen::native::QwenHostedTool::FileSearch(
+                FileSearchConfig {
+                    knowledge_base_id: "kb-a".into(),
+                    workspace_id: "ws-a".into(),
+                },
+            )
+            .into(),
+            lingxi_llm_client::providers::qwen::native::QwenHostedTool::FileSearch(
+                FileSearchConfig {
+                    knowledge_base_id: "kb-b".into(),
+                    workspace_id: "ws-b".into(),
+                },
+            )
+            .into(),
         ],
         vec![
-            HostedTool::CodeInterpreter(CodeInterpreterConfig::default()),
-            HostedTool::CodeInterpreter(CodeInterpreterConfig::default()),
+            lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+                CodeInterpreterConfig::default(),
+            )
+            .into(),
+            lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+                CodeInterpreterConfig::default(),
+            )
+            .into(),
         ],
     ] {
         let mut req = request();
@@ -68,11 +81,13 @@ async fn duplicate_hosted_tools_fail_before_transport() {
 #[test]
 fn hosted_tools_are_typed_and_replacement_preserves_other_kinds() {
     let mut req = request();
-    req.hosted_tools
-        .push(HostedTool::FileSearch(FileSearchConfig {
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::qwen::native::QwenHostedTool::FileSearch(FileSearchConfig {
             knowledge_base_id: "kb".into(),
             workspace_id: "ws".into(),
-        }));
+        })
+        .into(),
+    );
     req.set_hosted_web_search(Some(WebSearchConfig::default()));
     req.set_hosted_web_search(Some(WebSearchConfig {
         allowed_domains: vec!["example.com".into()],

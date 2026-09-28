@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_rerank::{
+    providers::qwen::rerank::{
         QwenRerankDispatchOutcome, QwenRerankError, QwenRerankRegion, QwenRerankRequest,
         QwenRerankScope, QwenRerankService,
     },

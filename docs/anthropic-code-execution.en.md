@@ -2,20 +2,19 @@
 
 [简体中文](anthropic-code-execution.md)
 
-`HostedTool::AnthropicCodeExecution` enables execution in Anthropic's hosted container through the first-party Messages API or a typed Microsoft Foundry deployment hosted on Anthropic. The adapter sends the fixed tool definition `{"type":"code_execution_20260521","name":"code_execution"}`. Code Execution itself does not require a beta header. See Anthropic's [Code Execution guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool) and [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry).
+`AnthropicHostedTool::CodeExecution` enables execution in Anthropic's hosted container through the first-party Messages API or a typed Microsoft Foundry deployment hosted on Anthropic. The adapter sends the fixed tool definition `{"type":"code_execution_20260521","name":"code_execution"}`. Code Execution itself does not require a beta header. See Anthropic's [Code Execution guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool) and [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry).
 
 ## Create and reuse a container
 
-`AnthropicCodeExecutionConfig::default()` leaves `container` unset, allowing the provider to create one. A returned `ChatResponse.anthropic_container` contains the complete native container object in its public `envelope` field. Use `reference_for(scope)` to explicitly bind its ID to the original connection and account before reuse; `AnthropicContainerRef::new(id, scope)` is also available when importing an ID saved by the application.
+`AnthropicCodeExecutionConfig::default()` leaves `container` unset, allowing the provider to create one. A returned `ChatResponse::anthropic_container()` contains the complete native container object in its public `envelope` field. Use `reference_for(scope)` to explicitly bind its ID to the original connection and account before reuse; `AnthropicContainerRef::new(id, scope)` is also available when importing an ID saved by the application.
 
 This example assumes the client routes `claude-opus-5-5` to its configured first-party Anthropic profile. Supply the already-valid credential for that account. The application must handle a paused, truncated, or client-tool response before starting a new user turn. The Foundry route and its separately scoped container reference are described below.
 
 ```rust,no_run
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig, AnthropicContainerScope};
 use lingxi_llm_client::{
-    protocol::{
-        AnthropicCodeExecutionConfig, AnthropicContainerScope, ChatRequest, ChatResponse,
-        ConversationMessage, HostedTool, Secret, StopReason,
-    },
+    protocol::{ChatRequest, ChatResponse,
+        ConversationMessage, Secret, StopReason},
     LlmClient, RequestOptions,
 };
 
@@ -38,9 +37,9 @@ let mut request: ChatRequest = serde_json::from_value(serde_json::json!({
 request.messages.push(ConversationMessage::user_text(
     "Use code execution to write the number 37 to /tmp/number.txt.",
 ));
-request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig::default(),
-));
+).into());
 
 let response = client.chat().complete(&request, &options).await?;
 if response.stop_reason != StopReason::EndTurn {
@@ -52,7 +51,7 @@ let profile = response.executed_profile.as_deref()
 let scope = AnthropicContainerScope::new(
     profile, "https://api.anthropic.com", ACCOUNT, MODEL,
 )?;
-let reference = response.anthropic_container.as_ref()
+let reference = response.anthropic_container()
     .ok_or("provider returned no execution container")?
     .reference_for(scope)?;
 
@@ -61,12 +60,12 @@ request.messages.push(response.message);
 request.messages.push(ConversationMessage::user_text(
     "Read /tmp/number.txt and use code execution to calculate its square.",
 ));
-request.hosted_tools = vec![HostedTool::AnthropicCodeExecution(
+request.hosted_tools = vec![lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig {
         container: Some(reference),
         ..Default::default()
     },
-)];
+).into()];
 let follow_up = client.chat().complete(&request, &options).await?;
 println!("{}", follow_up.message.text());
 # Ok(follow_up)
@@ -84,10 +83,9 @@ Anthropic documents Code Execution and Programmatic Tool Calling on Microsoft Fo
 For container reuse, bind the response ID to the Foundry resource, selected deployment, underlying model, and the same caller-supplied account identity. The container ID is the only local scope value sent to Messages:
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    AnthropicContainerRef, AnthropicContainerScope, ChatResponse, FoundryDeployment,
-    FoundryHosting,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicContainerRef, AnthropicContainerScope};
+use lingxi_llm_client::protocol::{ChatResponse, FoundryDeployment,
+    FoundryHosting};
 
 # fn bind(response: &ChatResponse) -> Result<AnthropicContainerRef, Box<dyn std::error::Error>> {
 let foundry_scope = AnthropicContainerScope::new_foundry(
@@ -101,8 +99,7 @@ let foundry_scope = AnthropicContainerScope::new_foundry(
     },
 )?;
 let foundry_container = response
-    .anthropic_container
-    .as_ref()
+    .anthropic_container()
     .ok_or("provider returned no execution container")?
     .reference_for(foundry_scope)?;
 # Ok(foundry_container)
@@ -116,9 +113,8 @@ The constructor rejects an Azure-hosted identity and stores the Foundry resource
 Agent Skills are configured in the same top-level `container` field as Code Execution. Anthropic's API accepts up to 20 Skills per request; each reference has a source (`anthropic` or `custom`), a `skill_id`, and an optional version. The Skills API is GA, so the client does not add the old `skills-2025-10-02` beta header. Skills still require Code Execution and a model in its documented compatibility list. Built-in Skills and custom Skills work with supported Anthropic-hosted Foundry deployments; custom Skills are uploaded and managed through the separate Skills service and scoped to the Foundry resource and account. Foundry does not support downloading Skill version content.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    AnthropicCodeExecutionConfig, AnthropicSkillRef, AnthropicSkillScope, ChatRequest, HostedTool,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig, AnthropicSkillRef, AnthropicSkillScope};
+use lingxi_llm_client::protocol::{ChatRequest, };
 
 # fn add_skills(request: &mut ChatRequest) -> Result<(), Box<dyn std::error::Error>> {
 let workspace = AnthropicSkillScope::new(
@@ -134,7 +130,7 @@ execution.skills = vec![
 ];
 request
     .hosted_tools
-    .push(HostedTool::AnthropicCodeExecution(execution));
+    .push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(execution).into());
 # Ok(())
 # }
 ```
@@ -148,17 +144,18 @@ When continuing with a reused container and Skills, include the desired Skills a
 Upload inputs through the existing `FileService`, then put each `ProviderFileRef::model_reference()` in `AnthropicCodeExecutionConfig.files`. When building an initial execution request, use this configuration in place of the default configuration above:
 
 ```rust,no_run
+use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig};
 use lingxi_llm_client::{
     files::ProviderFileRef,
-    protocol::{AnthropicCodeExecutionConfig, HostedTool},
+    protocol::{HostedTool},
     RequestOptions,
 };
 
 # fn file_input(uploaded: &ProviderFileRef) -> (HostedTool, RequestOptions) {
-let execution = HostedTool::AnthropicCodeExecution(AnthropicCodeExecutionConfig {
+let execution: lingxi_llm_client::protocol::HostedTool = lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(AnthropicCodeExecutionConfig {
     files: vec![uploaded.model_reference()],
     ..Default::default()
-});
+}).into();
 let options = RequestOptions {
     // Use the same non-secret identity supplied to FileService for this upload.
     file_account_scope: Some("anthropic-workspace-main".into()),
@@ -206,7 +203,7 @@ while let Some(event) = stream.next().await {
 
 Metadata observed before an interrupted stream is not evidence that execution completed. The application decides whether to resume or inspect existing state; the client does not automatically repeat the request.
 
-`ChatResponse.anthropic_usage: Option<serde_json::Value>` preserves the original raw usage object. `ModelStream::anthropic_usage()` exposes raw usage with field updates folded across received frames; the original frames remain in `ProviderEvent`. The reported `usage.server_tool_use.code_execution_requests` maps to the cross-provider `ServerToolUsage.code_interpreter_requests` count. This count does not determine container runtime charges or organization free-tier eligibility, and the client does not infer that execution is free from it.
+`ChatResponse::anthropic_usage() -> Option<&serde_json::Value>` preserves the original raw usage object. `ModelStream::anthropic_usage()` exposes raw usage with field updates folded across received frames; the original frames remain in `ProviderEvent`. The reported `usage.server_tool_use.code_execution_requests` maps to the cross-provider `ServerToolUsage.code_interpreter_requests` count. This count does not determine container runtime charges or organization free-tier eligibility, and the client does not infer that execution is free from it.
 
 Server execution calls and results remain `ContentBlock::ProviderContent`, preserving IDs, inputs, outputs, and generated-file metadata for native replay. They do not appear in `ConversationMessage::tool_uses()` and must not be executed by the host. Ordinary client tools continue to use `ToolUse` and the application's execution flow. See [Preserving Anthropic-native content](anthropic-native-content.en.md) for raw stream events, fragmented inputs, and replay behavior.
 

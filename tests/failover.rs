@@ -342,11 +342,9 @@ impl WireCodec for FakeCodec {
             response_cache: None,
             web_search: None,
             file_search: None,
-            openrouter_container: None,
-            anthropic_container: None,
-            anthropic_usage: None,
+            native_metadata: Vec::new(),
             message: ConversationMessage {
-                anthropic: None,
+                native_options: Vec::new(),
                 role: MessageRole::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "hi".to_owned(),
@@ -575,12 +573,12 @@ fn request(model: &str) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: model.to_owned(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hi".to_owned(),

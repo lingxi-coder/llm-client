@@ -3,11 +3,11 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
-    xai_audio::{
+    providers::xai::audio::{
         XaiAudioConfig, XaiAudioCredentials, XaiAudioError, XaiAudioService,
         XaiTranscriptionRequest, XaiTranscriptionUrl,
     },
+    transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
 use std::{collections::VecDeque, sync::Mutex, time::Duration};

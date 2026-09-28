@@ -66,7 +66,7 @@ fn client_tool() -> ToolSpec {
         input_schema: json!({"type":"object","properties":{}}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     }
 }
 
@@ -88,6 +88,17 @@ fn each_adapter_emits_its_documented_hosted_search_shape() {
             body.get("web_search").is_none(),
             "adapter config must not leak to wire"
         );
+    }
+}
+
+#[test]
+fn explicit_search_adapter_is_preserved_for_known_provider_identities() {
+    for &(adapter, protocol) in ADAPTERS {
+        let configured = profile(adapter, protocol);
+        let expected = encode(&request(), &configured).unwrap();
+        let mut known = configured;
+        known.provider_id = "deepseek".into();
+        assert_eq!(encode(&request(), &known).unwrap(), expected, "{adapter}");
     }
 }
 

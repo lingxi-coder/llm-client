@@ -65,7 +65,7 @@ pub(crate) fn response_report(
                         .get("reasoning_tokens_separate")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
-                    crate::codecs::qwen_cache::applies(context),
+                    crate::providers::qwen::cache::applies(context),
                 )
             });
             report(

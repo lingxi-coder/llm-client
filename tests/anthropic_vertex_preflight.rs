@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -70,10 +71,14 @@ async fn vertex_effort_and_tool_search_reach_the_wire_and_report_active_effort()
         .build()
         .unwrap();
     let mut r = request(MODEL);
-    r.hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
     r.messages.push(effort());
     r.messages.push(ConversationMessage::user_text("Continue"));
     let response = client
@@ -118,10 +123,14 @@ async fn unsupported_vertex_models_and_invalid_effort_fail_before_attachments() 
                 ..Default::default()
             });
         } else {
-            r.hosted_tools
-                .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-                    strategy: AnthropicToolSearchStrategy::Regex,
-                }));
+            r.hosted_tools.push(
+                lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+                    AnthropicToolSearchConfig {
+                        strategy: AnthropicToolSearchStrategy::Regex,
+                    },
+                )
+                .into(),
+            );
         }
         assert!(client
             .chat()
@@ -175,10 +184,10 @@ async fn vertex_system_and_tool_change_placement_are_checked_before_attachments(
 #[test]
 fn vertex_client_toolsets_encode_and_replay_without_opening_other_cloud_routes() {
     let mut r = request(MODEL);
-    r.anthropic_client_toolsets = vec![
+    r.set_anthropic_client_toolsets(vec![
         AnthropicClientToolset::Browser(Default::default()),
         AnthropicClientToolset::Computer(Default::default()),
-    ];
+    ]);
     r.messages.push(serde_json::from_value(json!({"role":"assistant","content":[{"type":"tool_use","id":"call1","name":"list_tabs","input":{},"toolset_name":"browser"}]})).unwrap());
     r.messages.push(serde_json::from_value(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"call1","toolset_name":"browser","content":"tabs","is_error":false,"blocks":[{"type":"browser_state","tabs":[]}]}]})).unwrap());
     for mode in [RequestMode::Complete, RequestMode::Stream] {
@@ -210,9 +219,12 @@ fn vertex_client_toolsets_encode_and_replay_without_opening_other_cloud_routes()
         )
         .is_err());
     let mut unsupported = r.clone();
-    unsupported
-        .hosted_tools
-        .push(HostedTool::AnthropicWebFetch(Default::default()));
+    unsupported.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            Default::default(),
+        )
+        .into(),
+    );
     assert!(VertexClaudeCodec
         .validate_request(
             &unsupported,

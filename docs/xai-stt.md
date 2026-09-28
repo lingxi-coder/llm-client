@@ -1,13 +1,13 @@
 # xAI 实时语音转文字
 
-`xai_stt::XaiSttSession` 实现 xAI 固定路由 `wss://api.x.ai/v1/stt` 上的语音转写 WebSocket 协议。它复用有界实时传输层，但与 xAI 语音对话 API 的二进制音频和转写事件契约分开。宿主传入 `Arc<dyn RealtimeTransport>` 和本次连接使用的 API key。当前线路细节以 xAI 的[语音转文字文档](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text)为准。
+`providers::xai::stt::XaiSttSession` 实现 xAI 固定路由 `wss://api.x.ai/v1/stt` 上的语音转写 WebSocket 协议。它复用有界实时传输层，但与 xAI 语音对话 API 的二进制音频和转写事件契约分开。宿主传入 `Arc<dyn RealtimeTransport>` 和本次连接使用的 API key。当前线路细节以 xAI 的[语音转文字文档](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text)为准。
 
 ```rust,no_run
 use futures::future::join;
 use lingxi_llm_client::{
     protocol::Secret,
     realtime::{RealtimeError, RealtimeLimits, RealtimeTransport},
-    xai_stt::{XaiSttConfig, XaiSttEvent, XaiSttSession},
+    providers::xai::stt::{XaiSttConfig, XaiSttEvent, XaiSttSession},
 };
 use std::{error::Error, sync::Arc};
 

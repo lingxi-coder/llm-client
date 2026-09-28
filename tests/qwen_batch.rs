@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_batch::*,
+    providers::qwen::batch::*,
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -96,7 +96,6 @@ fn scope(account: &str, region: QwenBatchRegion, workspace: Option<&str>) -> Qwe
 fn service<'a>(mock: &'a MockTransport, account: &str) -> QwenBatchService<'a> {
     QwenBatchService::new(
         mock,
-        Secret::new("sk-test-key".into()),
         scope(account, QwenBatchRegion::Beijing, Some("workspace-1")),
     )
     .unwrap()
@@ -217,7 +216,10 @@ async fn upload_submit_query_cancel_and_stream_output_use_documented_routes() {
     ]));
     let service = service(&mock, "account-a");
     let input = QwenBatchInput::new(vec![chat_line("row-1", "qwen-plus", None)]).unwrap();
-    let file = service.upload_input(&input).await.unwrap();
+    let file = service
+        .upload_input(&input, &request_options())
+        .await
+        .unwrap();
     assert_eq!(file.endpoint(), QwenBatchEndpoint::ChatCompletions);
     assert_eq!(file.scope().workspace_id(), Some("workspace-1"));
 
@@ -228,20 +230,35 @@ async fn upload_submit_query_cancel_and_stream_output_use_documented_routes() {
             description: Some("nightly qwen run".into()),
         },
     };
-    let created = service.submit(&file, &options).await.unwrap();
+    let created = service
+        .submit(&file, &options, &request_options())
+        .await
+        .unwrap();
     assert_eq!(created.status, QwenBatchStatus::Validating);
-    let queried = service.query(&created.reference).await.unwrap();
+    let queried = service
+        .query(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(queried.status, QwenBatchStatus::Completed);
-    let cancelled = service.cancel(&queried.reference).await.unwrap();
+    let cancelled = service
+        .cancel(&queried.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(cancelled.status, QwenBatchStatus::Cancelling);
     let output = queried.output_ref().unwrap();
-    let mut content = service.stream_result(&output).await.unwrap();
+    let mut content = service
+        .stream_result(&output, &request_options())
+        .await
+        .unwrap();
     let first = content.next().await.unwrap().unwrap();
     assert!(String::from_utf8(first.to_vec()).unwrap().contains("row-1"));
     assert!(content.next().await.is_none());
     let error_file = queried.error_ref().unwrap();
     assert_eq!(error_file.file_id(), "file-batch_error-errors_1");
-    let mut errors = service.stream_result(&error_file).await.unwrap();
+    let mut errors = service
+        .stream_result(&error_file, &request_options())
+        .await
+        .unwrap();
     let first = errors.next().await.unwrap().unwrap();
     assert!(String::from_utf8(first.to_vec()).unwrap().contains("row-2"));
     assert!(errors.next().await.is_none());
@@ -312,10 +329,16 @@ async fn query_and_cancel_reject_response_for_a_different_task_id() {
         },
     ]);
     let query_service = service(&query_mock, "account-a");
-    let file = query_service.upload_input(&input).await.unwrap();
-    let submitted = query_service.submit(&file, &options).await.unwrap();
+    let file = query_service
+        .upload_input(&input, &request_options())
+        .await
+        .unwrap();
+    let submitted = query_service
+        .submit(&file, &options, &request_options())
+        .await
+        .unwrap();
     assert!(matches!(
-        query_service.query(&submitted.reference).await,
+        query_service.query(&submitted.reference, &request_options()).await,
         Err(QwenBatchError::InvalidResponse(message))
             if message.contains("query response task ID")
     ));
@@ -338,10 +361,16 @@ async fn query_and_cancel_reject_response_for_a_different_task_id() {
         },
     ]);
     let cancel_service = service(&cancel_mock, "account-a");
-    let file = cancel_service.upload_input(&input).await.unwrap();
-    let submitted = cancel_service.submit(&file, &options).await.unwrap();
+    let file = cancel_service
+        .upload_input(&input, &request_options())
+        .await
+        .unwrap();
+    let submitted = cancel_service
+        .submit(&file, &options, &request_options())
+        .await
+        .unwrap();
     assert!(matches!(
-        cancel_service.cancel(&submitted.reference).await,
+        cancel_service.cancel(&submitted.reference, &request_options()).await,
         Err(QwenBatchError::OutcomeUnknownResponse {
             operation: "cancel",
             expected_id,
@@ -377,6 +406,7 @@ async fn list_uses_documented_filters_and_returns_scoped_task_references() {
                 .statuses(vec!["completed".into(), "expired".into()])
                 .create_after("20250304000000")
                 .create_before("20250306123000"),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -425,7 +455,9 @@ async fn list_preflights_options_and_rejects_non_advancing_pages() {
         QwenBatchListOptions::new().create_after("2025-03-04"),
     ] {
         assert!(matches!(
-            service(&no_io, "account-a").list(&options).await,
+            service(&no_io, "account-a")
+                .list(&options, &request_options())
+                .await,
             Err(QwenBatchError::InvalidInput(_))
         ));
     }
@@ -443,7 +475,10 @@ async fn list_preflights_options_and_rejects_non_advancing_pages() {
     )]);
     assert!(matches!(
         service(&stuck_cursor, "account-a")
-            .list(&QwenBatchListOptions::new().after("batch_task_1"))
+            .list(
+                &QwenBatchListOptions::new().after("batch_task_1"),
+                &request_options()
+            )
             .await,
         Err(QwenBatchError::InvalidResponse(_))
     ));
@@ -460,7 +495,7 @@ async fn list_preflights_options_and_rejects_non_advancing_pages() {
     )]);
     assert!(matches!(
         service(&duplicate_page, "account-a")
-            .list(&QwenBatchListOptions::new())
+            .list(&QwenBatchListOptions::new(), &request_options())
             .await,
         Err(QwenBatchError::InvalidResponse(_))
     ));
@@ -477,11 +512,15 @@ async fn rejects_foreign_scope_before_network_and_maps_provider_errors() {
     ]);
     let source = service(&mock, "account-a");
     let input = QwenBatchInput::new(vec![chat_line("row-1", "qwen-plus", None)]).unwrap();
-    let file = source.upload_input(&input).await.unwrap();
+    let file = source
+        .upload_input(&input, &request_options())
+        .await
+        .unwrap();
     let snapshot = source
         .submit(
             &file,
             &QwenBatchSubmitOptions::new(QwenBatchCompletionWindow::from_hours(24).unwrap()),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -512,7 +551,7 @@ async fn rejects_foreign_scope_before_network_and_maps_provider_errors() {
     }
     for foreign_ref in foreign_refs {
         assert!(matches!(
-            source.query(&foreign_ref).await,
+            source.query(&foreign_ref, &request_options()).await,
             Err(QwenBatchError::Llm(LlmError::PermissionDenied { .. }))
         ));
     }
@@ -520,12 +559,13 @@ async fn rejects_foreign_scope_before_network_and_maps_provider_errors() {
 
     let wrong_account = QwenBatchService::new(
         &mock,
-        Secret::new("sk-other".into()),
         scope("account-b", QwenBatchRegion::Beijing, Some("workspace-1")),
     )
     .unwrap();
     assert!(matches!(
-        wrong_account.query(&snapshot.reference).await,
+        wrong_account
+            .query(&snapshot.reference, &request_options())
+            .await,
         Err(QwenBatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
     assert_eq!(mock.requests.lock().unwrap().len(), count);
@@ -533,12 +573,13 @@ async fn rejects_foreign_scope_before_network_and_maps_provider_errors() {
     let denied = MockTransport::new([reply(401, json!({"message":"bad key"}))]);
     let denied_service = QwenBatchService::new(
         &denied,
-        Secret::new("sk-bad".into()),
         scope("account-a", QwenBatchRegion::Beijing, Some("workspace-1")),
     )
     .unwrap();
     assert!(matches!(
-        denied_service.query(&snapshot.reference).await,
+        denied_service
+            .query(&snapshot.reference, &request_options())
+            .await,
         Err(QwenBatchError::Llm(LlmError::Authentication { .. }))
     ));
 }
@@ -552,18 +593,18 @@ async fn singapore_scope_uses_singapore_batch_host_and_separate_scope() {
         ),
         reply(200, task("validating")),
     ]);
-    let service = QwenBatchService::new(
-        &mock,
-        Secret::new("sk-singapore".into()),
-        scope("account-a", QwenBatchRegion::Singapore, None),
-    )
-    .unwrap();
+    let service =
+        QwenBatchService::new(&mock, scope("account-a", QwenBatchRegion::Singapore, None)).unwrap();
     let input = QwenBatchInput::new(vec![chat_line("row-1", "qwen-plus", None)]).unwrap();
-    let file = service.upload_input(&input).await.unwrap();
+    let file = service
+        .upload_input(&input, &request_options())
+        .await
+        .unwrap();
     service
         .submit(
             &file,
             &QwenBatchSubmitOptions::new(QwenBatchCompletionWindow::from_hours(24).unwrap()),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -575,4 +616,45 @@ async fn singapore_scope_uses_singapore_batch_host_and_separate_scope() {
         mock.requests.lock().unwrap()[1].url,
         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/batches"
     );
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("sk-test-key".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        reply(401, json!({"error": "rejected"})),
+        reply(401, json!({"error": "rejected"})),
+    ]);
+    let service = service(&mock, "account-a");
+    let query = QwenBatchListOptions::default();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("Authorization")
+                && value == &format!("Bearer {key}")));
+    }
 }

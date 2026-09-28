@@ -2,15 +2,15 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt, TryStreamExt};
 use lingxi_llm_client::{
-    audio::AudioInput,
-    glm_cloud_audio::{
+    protocol::LlmError,
+    protocol::Secret,
+    providers::openai::audio::AudioInput,
+    providers::zhipu::cloud_audio::{
         GlmCloudAudioDispatch, GlmCloudAudioError, GlmCloudAudioRegion, GlmCloudAudioScope,
         GlmCloudAudioService, GlmCloudSpeechRequest, GlmCloudTranscriptionOutput,
         GlmCloudTranscriptionRequest, GLM_ASR_2512_MODEL, GLM_INTERNATIONAL_API_BASE,
         GLM_MAINLAND_API_BASE, GLM_TTS_MODEL,
     },
-    protocol::LlmError,
-    protocol::Secret,
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::Value;
@@ -348,7 +348,8 @@ async fn international_tts_is_rejected_before_transport() {
     assert!(matches!(
         &error,
         GlmCloudAudioError::UnsupportedRegion {
-            operation: lingxi_llm_client::glm_cloud_audio::GlmCloudAudioOperation::Speech,
+            operation:
+                lingxi_llm_client::providers::zhipu::cloud_audio::GlmCloudAudioOperation::Speech,
             region: GlmCloudAudioRegion::International,
         }
     ));

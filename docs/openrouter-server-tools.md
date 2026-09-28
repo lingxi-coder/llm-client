@@ -16,7 +16,7 @@ Chat Completions 会拒绝此工具。详见[服务端工具概览](https://open
 
 ## 工具搜索
 
-添加 `HostedTool::OpenRouterToolSearch`，并将希望模型搜索后再看到的函数工具的
+添加 `OpenRouterHostedTool::ToolSearch`，并将希望模型搜索后再看到的函数工具的
 `ToolSpec.defer_loading` 设为 `true`。发现后，函数仍由调用方执行：最终产生的
 `ToolUse` 仍属于宿主。`max_results` 默认使用 OpenRouter 的默认值，上限为 50。本客户端
 提供文档中的正则搜索变体；不提供 OpenRouter 的 Anthropic 别名或尚不支持的 BM25 变体。
@@ -27,9 +27,8 @@ Chat Completions 会拒绝此工具。详见[服务端工具概览](https://open
 同时使用时，会拒绝非 `Auto` 选择。Anthropic 原生搜索请求仍遵循原有的 Anthropic 工具选择行为。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, ConversationMessage, HostedTool, OpenRouterToolSearchConfig, ToolChoice, ToolSpec,
-};
+use lingxi_llm_client::providers::openrouter::types::{OpenRouterToolSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ToolChoice, ToolSpec};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::LlmError;
 use serde_json::{json, Value};
@@ -43,12 +42,12 @@ pub async fn discover_a_client_tool(
         prompt_cache: Default::default(),
         output_format: Default::default(),
         model: "openai/gpt-5.2".into(),
-        anthropic_client_toolsets: Vec::new(),
-        hosted_tools: vec![HostedTool::OpenRouterToolSearch(
+        native_options: Vec::new(),
+        hosted_tools: vec![lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
             OpenRouterToolSearchConfig {
                 max_results: Some(10),
             },
-        )],
+        ).into()],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage::user_text("Find the weather tool and check Tokyo.")],
@@ -64,7 +63,7 @@ pub async fn discover_a_client_tool(
             }),
             strict: false,
             defer_loading: true,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         }],
         tool_choice: ToolChoice::Auto,
         max_tokens: None,
@@ -84,7 +83,7 @@ pub async fn discover_a_client_tool(
 
 ## 托管 Shell
 
-`HostedTool::OpenRouterShell` 会发送 `type: "openrouter:shell"`。省略参数时，使用
+`OpenRouterHostedTool::Shell` 会发送 `type: "openrouter:shell"`。省略参数时，使用
 OpenRouter 默认值：`engine: "auto"`、临时 `container_auto` 环境、每条命令 120 秒超时、
 每个输出流最多 16,384 个字符，并禁用网络。显式的 `timeout_ms` 不得超过 300,000，
 `max_output_length` 不得超过 65,536。命令列表由模型生成；OpenRouter 每次调用最多允许
@@ -99,7 +98,7 @@ OpenRouter 默认值：`engine: "auto"`、临时 `container_auto` 环境、每�
 编解码器会将这些内容保留为并回放为 `ProviderContent`，不会把服务端 Shell 命令作为宿主
 需要执行的 `ToolUse` 返回。流式调用方应保留 `ProviderContent` 块，也可以检查附带的原始
 `ProviderEvent` 帧。Messages 流中返回的容器信息位于原始 `message_start` 事件里；流的终止
-事件不会重建 `ChatResponse.openrouter_container` 字段。
+事件不会重建 `ChatResponse::openrouter_container()` 字段。
 
 ### 复用容器
 
@@ -108,14 +107,13 @@ OpenRouter 按账号和 workspace 对持久容器进行隔离。本客户端要�
 端点和稳定的 `RequestOptions.account_scope`。复用引用的每次请求都要设置相同的
 `account_scope`。该 scope 只保存在本地；线上仅发送提供商返回的容器 ID。
 
-Messages 的 `ChatResponse.openrouter_container` 原样保留提供商返回的 envelope，不会自动
+Messages 的 `ChatResponse::openrouter_container()` 原样保留提供商返回的 envelope，不会自动
 将其信任或绑定到账号。调用方可以明确地将刚刚使用的 profile、端点和账号与观察到的 ID
 关联：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, HostedTool, OpenRouterContainerScope,
-};
+use lingxi_llm_client::providers::openrouter::types::{OpenRouterContainerScope};
+use lingxi_llm_client::protocol::{ChatRequest, };
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::LlmError;
 
@@ -131,8 +129,7 @@ pub async fn run_in_a_reused_container(
         account_scope,
     )?;
     let Some(container) = response
-        .openrouter_container
-        .as_ref()
+        .openrouter_container()
         .map(|metadata| metadata.reference_for(scope))
         .transpose()?
     else {

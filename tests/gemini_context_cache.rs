@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    gemini_context_cache::*,
     protocol::{LlmError, Secret},
+    providers::google::context_cache::*,
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};

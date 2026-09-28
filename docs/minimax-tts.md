@@ -5,7 +5,7 @@
 ```rust,no_run
 # async fn example(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
-    minimax_tts::{
+    providers::minimax::tts::{
         MiniMaxTtsConfig, MiniMaxTtsCredentials, MiniMaxTtsOutput, MiniMaxTtsRegion,
         MiniMaxTtsRequest, MiniMaxTtsService,
     },
@@ -44,7 +44,7 @@ With `MiniMaxTtsOutputFormat::Hex`, MiniMax returns `data.audio` as a hex string
 `synthesize_stream` 会逐个返回 `MiniMaxTtsStreamEvent`。每个 JSON event 都保留完整 native 对象，并在存在 `data.audio` 时将其从 hex 解码；`data.status == 2` 和 `[DONE]` 会结束流。收到音频后正常 EOF 也会结束流，与 MiniMax 已发布 CLI 的行为一致。可通过 `terminal_event_received()` 区分显式收到 status 2 / `[DONE]` 与正常 EOF；客户端不会伪造缺失的终止标记。客户端保留终止 event 中的 audio，不合并或去重 chunk，因为当前可查到的 provider contract 没有说明终止 event 的 audio 是增量还是完整聚合结果。流式字幕字段会保留在 native event 中；客户端不推测字幕 event schema，也不会下载字幕 URL。
 
 ```rust,no_run
-use lingxi_llm_client::minimax_tts::{
+use lingxi_llm_client::providers::minimax::tts::{
     MiniMaxTtsCredentials, MiniMaxTtsRequest, MiniMaxTtsService,
     MiniMaxTtsStreamEvent, MiniMaxTtsSubtitleType,
 };

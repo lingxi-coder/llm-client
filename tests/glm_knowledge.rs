@@ -3,14 +3,14 @@ use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use lingxi_llm_client::{
     files::UploadFileStream,
-    glm_knowledge::{
+    protocol::{LlmError, ProviderProfile, Region, Secret},
+    providers::zhipu::knowledge::{
         GlmCreateKnowledgeRequest, GlmKnowledgeContextual, GlmKnowledgeDocumentListRequest,
         GlmKnowledgeEmbedding, GlmKnowledgeError, GlmKnowledgeListRequest,
         GlmKnowledgeRecallMethod, GlmKnowledgeRef, GlmKnowledgeRerankModel,
         GlmKnowledgeRetrieveRequest, GlmUpdateKnowledgeRequest, GlmUploadFileDocumentsRequest,
         GlmUploadUrlDocumentsRequest, GlmUrlDocumentInput,
     },
-    protocol::{LlmError, ProviderProfile, Region, Secret},
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
     *,
 };
@@ -204,7 +204,9 @@ async fn submits_url_documents_and_retains_per_url_failures() {
     )]);
     let knowledge = knowledge_ref("account-a");
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_url_documents(
             &knowledge,
             &GlmUploadUrlDocumentsRequest {
@@ -269,7 +271,9 @@ async fn streams_file_documents_and_preserves_per_file_partial_results() {
         request_id: Some("request-abc".into()),
     };
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge,
             vec![
@@ -351,7 +355,9 @@ async fn file_upload_preflights_scope_and_form_before_dispatch() {
     let file =
         || UploadFileStream::from_bytes("guide.txt", "text/plain", Bytes::from_static(b"guide"));
     let cross_account = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge_ref("account-a"),
             vec![file()],
@@ -366,7 +372,9 @@ async fn file_upload_preflights_scope_and_form_before_dispatch() {
     ));
 
     let invalid = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge_ref("account-a"),
             vec![file()],
@@ -397,7 +405,9 @@ async fn interrupted_file_upload_is_unknown_and_is_not_retried() {
         .build()
         .unwrap();
     let error = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge_ref("account-a"),
             vec![UploadFileStream::from_bytes(
@@ -431,7 +441,9 @@ async fn incomplete_file_upload_response_reports_missing_input_files() {
         }),
     )]);
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge_ref("account-a"),
             vec![
@@ -457,7 +469,9 @@ async fn file_upload_timeout_and_malformed_success_responses_remain_uncertain() 
     server_error.status = 503;
     let (client, _) = setup(vec![server_error]);
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge_ref("account-a"),
             vec![UploadFileStream::from_bytes(
@@ -485,7 +499,9 @@ async fn file_upload_timeout_and_malformed_success_responses_remain_uncertain() 
         json!({"code":200,"message":"ok","provider_field":"retained"}),
     )]);
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .upload_file_documents(
             &knowledge_ref("account-a"),
             vec![UploadFileStream::from_bytes(
@@ -538,9 +554,10 @@ async fn creates_a_zhipu_knowledge_base_using_native_embedding_ids() {
         json!({"data":{"id":"kb_123"},"code":200,"message":"ok"}),
     )]);
     let created = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .create_knowledge(
-            "glm-account",
             &GlmCreateKnowledgeRequest {
                 embedding_id: GlmKnowledgeEmbedding::Embedding3,
                 name: "Product guides".into(),
@@ -583,9 +600,10 @@ async fn lists_knowledge_bases_and_returns_account_scoped_references() {
         }),
     )]);
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .list_knowledge(
-            "glm-account",
             &GlmKnowledgeListRequest {
                 page: Some(2),
                 size: Some(3),
@@ -625,7 +643,9 @@ async fn reads_updates_and_deletes_a_scoped_knowledge_base() {
     ]);
     let knowledge = knowledge_ref("account-a");
     let detail = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .get_knowledge(&knowledge, &options("account-a"))
         .await
         .unwrap();
@@ -633,7 +653,9 @@ async fn reads_updates_and_deletes_a_scoped_knowledge_base() {
     assert_eq!(detail.native["data"]["name"], "Returns");
 
     client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .update_knowledge(
             &knowledge,
             &GlmUpdateKnowledgeRequest {
@@ -647,7 +669,9 @@ async fn reads_updates_and_deletes_a_scoped_knowledge_base() {
         .await
         .unwrap();
     let deleted = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .delete_knowledge(&knowledge, &options("account-a"))
         .await
         .unwrap();
@@ -682,7 +706,9 @@ async fn lists_documents_with_references_bound_to_the_knowledge_base() {
     )]);
     let knowledge = knowledge_ref("account-a");
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .list_documents(
             &knowledge,
             &GlmKnowledgeDocumentListRequest {
@@ -716,22 +742,30 @@ async fn management_operations_reject_references_from_another_account_before_htt
 
     for result in [
         client
-            .glm_knowledge()
+            .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+            .unwrap()
+            .knowledge()
             .get_knowledge(&knowledge, &mismatched)
             .await
             .map(|_| ()),
         client
-            .glm_knowledge()
+            .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+            .unwrap()
+            .knowledge()
             .update_knowledge(&knowledge, &update, &mismatched)
             .await
             .map(|_| ()),
         client
-            .glm_knowledge()
+            .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+            .unwrap()
+            .knowledge()
             .delete_knowledge(&knowledge, &mismatched)
             .await
             .map(|_| ()),
         client
-            .glm_knowledge()
+            .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+            .unwrap()
+            .knowledge()
             .list_documents(&knowledge, &documents, &mismatched)
             .await
             .map(|_| ()),
@@ -757,7 +791,9 @@ async fn transport_failures_leave_update_and_delete_outcomes_unknown() {
     };
 
     let update_error = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .update_knowledge(&knowledge, &update, &options("account-a"))
         .await
         .unwrap_err();
@@ -770,7 +806,9 @@ async fn transport_failures_leave_update_and_delete_outcomes_unknown() {
     ));
 
     let delete_error = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .delete_knowledge(&knowledge, &options("account-a"))
         .await
         .unwrap_err();
@@ -798,10 +836,12 @@ async fn retrieval_uses_scoped_native_knowledge_and_document_ids() {
     let request = GlmKnowledgeRetrieveRequest {
         query: "What is the return window?".into(),
         request_id: Some("req-9".into()),
-        documents: vec![lingxi_llm_client::glm_knowledge::GlmKnowledgeDocumentRef {
-            knowledge: knowledge.clone(),
-            document_id: "doc_7".into(),
-        }],
+        documents: vec![
+            lingxi_llm_client::providers::zhipu::knowledge::GlmKnowledgeDocumentRef {
+                knowledge: knowledge.clone(),
+                document_id: "doc_7".into(),
+            },
+        ],
         top_k: Some(5),
         top_n: Some(20),
         recall_method: Some(GlmKnowledgeRecallMethod::Mixed),
@@ -811,7 +851,9 @@ async fn retrieval_uses_scoped_native_knowledge_and_document_ids() {
         fractional_threshold: Some(0.7),
     };
     let result = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .retrieve(&[knowledge], &request, &options("account-a"))
         .await
         .unwrap();
@@ -841,7 +883,9 @@ async fn retrieval_uses_scoped_native_knowledge_and_document_ids() {
 async fn rejects_cross_account_references_before_http() {
     let (client, mock) = setup(vec![]);
     let error = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .retrieve(
             &[knowledge_ref("account-a")],
             &GlmKnowledgeRetrieveRequest {
@@ -871,7 +915,9 @@ async fn rejects_cross_account_references_before_http() {
 async fn rejects_retrieval_thresholds_outside_the_open_unit_interval() {
     let (client, mock) = setup(vec![]);
     let error = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .retrieve(
             &[knowledge_ref("account-a")],
             &GlmKnowledgeRetrieveRequest {
@@ -907,7 +953,9 @@ async fn maps_zhipu_business_errors_even_when_http_is_successful() {
     failure.status = 200;
     let (client, _) = setup(vec![failure]);
     let error = client
-        .glm_knowledge()
+        .provider::<lingxi_llm_client::providers::ZhipuClient>("glm-account")
+        .unwrap()
+        .knowledge()
         .retrieve(
             &[knowledge_ref("account-a")],
             &GlmKnowledgeRetrieveRequest {

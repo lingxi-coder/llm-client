@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,10 @@ fn profile() -> ProviderProfile {
 }
 fn request(config: AnthropicWebFetchConfig) -> ChatRequest {
     let mut r:ChatRequest=serde_json::from_value(json!({"model":MODEL,"messages":[{"role":"user","content":[{"type":"text","text":"Read https://example.com/page"}]}]})).unwrap();
-    r.hosted_tools.push(HostedTool::AnthropicWebFetch(config));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(config)
+            .into(),
+    );
     r
 }
 fn encode(
@@ -104,8 +108,12 @@ fn wrong_routes_duplicates_name_collisions_and_domain_conflicts_fail() {
     p = profile();
     p.extra = json!({"body":{"tools":[{"type":"web_fetch_20260318","name":"web_fetch"}]}});
     assert!(encode(&r, &p, MODEL).is_err());
-    r.hosted_tools
-        .push(HostedTool::AnthropicWebFetch(Default::default()));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            Default::default(),
+        )
+        .into(),
+    );
     assert!(encode(&r, &profile(), MODEL).is_err());
     r = request(Default::default());
     r.tools.push(
@@ -177,8 +185,12 @@ fn citations_conflict_with_json_schema_in_config_and_native_replay() {
 #[test]
 fn fetch_can_coexist_with_search_code_execution_and_inline_references() {
     let mut r = request(Default::default());
-    r.hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(Default::default()));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
+            Default::default(),
+        )
+        .into(),
+    );
     r.hosted_tools
         .push(HostedTool::WebSearch(Default::default()));
     let mut p = profile();
@@ -207,7 +219,7 @@ fn fetch_results_errors_and_usage_are_native_not_client_calls() {
     let resp=AnthropicMessagesCodec.decode_response(&HttpResponse{status:200,headers:vec![],body:bytes::Bytes::from(serde_json::to_vec(&json!({"id":"msg_1","model":MODEL,"content":blocks,"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4,"server_tool_use":{"web_fetch_requests":1}}})).unwrap())},&ctx).unwrap();
     assert_eq!(resp.message.tool_uses().count(), 0);
     assert_eq!(
-        resp.anthropic_usage.as_ref().unwrap()["server_tool_use"]["web_fetch_requests"],
+        resp.anthropic_usage().unwrap()["server_tool_use"]["web_fetch_requests"],
         1
     );
     assert_eq!(
@@ -380,7 +392,9 @@ fn fetch_cache_markers_follow_mcp_wire_order_and_share_the_four_slot_limit() {
         .with_cache_control(AnthropicMcpCacheControl {
             ttl: Some(AnthropicMcpCacheTtl::OneHour),
         });
-    r.hosted_tools.push(HostedTool::AnthropicMcp(mcp));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp).into(),
+    );
     let (body, _) = encode(&r, &profile(), MODEL).unwrap();
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools[0]["type"], "mcp_toolset");
@@ -405,11 +419,14 @@ fn fetch_cache_markers_follow_mcp_wire_order_and_share_the_four_slot_limit() {
         cache_control: Some(CacheTtl::OneHour),
         ..Default::default()
     });
-    bad.hosted_tools.push(HostedTool::AnthropicMcp(
-        AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
-            .unwrap()
-            .with_cache_control(AnthropicMcpCacheControl::default()),
-    ));
+    bad.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
+                .unwrap()
+                .with_cache_control(AnthropicMcpCacheControl::default()),
+        )
+        .into(),
+    );
     assert!(encode(&bad, &profile(), MODEL).is_err());
 }
 #[test]
@@ -424,10 +441,14 @@ fn deferred_fetch_cannot_cache_but_can_use_tool_search() {
         defer_loading: true,
         ..Default::default()
     });
-    r.hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
     let (body, _) = encode(&r, &profile(), MODEL).unwrap();
     assert!(body["tools"]
         .as_array()

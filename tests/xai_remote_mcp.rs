@@ -4,8 +4,8 @@ use futures::StreamExt;
 use lingxi_llm_client::{
     codecs::{openai::responses::OpenAiResponsesCodec, EncodeRequest, WireCodec},
     protocol::{
-        ChatRequest, ContentBlock, HostedTool, LlmError, ProtocolFamily, ProviderProfile, Region,
-        StopReason, StreamEvent,
+        ChatRequest, ContentBlock, LlmError, ProtocolFamily, ProviderProfile, Region, StopReason,
+        StreamEvent,
     },
     transport::{HttpRequest, StreamResponse, Transport},
     HttpResponse, LlmClientBuilder, RequestOptions,
@@ -32,8 +32,8 @@ fn profile() -> ProviderProfile {
     .unwrap()
 }
 
-fn config() -> lingxi_llm_client::protocol::llm::XaiRemoteMcpConfig {
-    lingxi_llm_client::protocol::llm::XaiRemoteMcpConfig::new(
+fn config() -> lingxi_llm_client::providers::xai::types::XaiRemoteMcpConfig {
+    lingxi_llm_client::providers::xai::types::XaiRemoteMcpConfig::new(
         "docs",
         "https://mcp.example.test/mcp",
     )
@@ -51,7 +51,7 @@ fn request() -> ChatRequest {
     .unwrap();
     request
         .hosted_tools
-        .push(HostedTool::XaiRemoteMcp(config()));
+        .push(lingxi_llm_client::providers::xai::native::XaiHostedTool::RemoteMcp(config()).into());
     request
 }
 
@@ -86,19 +86,23 @@ fn xai_mcp_wire_uses_only_the_documented_configuration_fields() {
         .unwrap()
         .contains("authorization"));
     assert!(
-        serde_json::from_value::<lingxi_llm_client::protocol::llm::XaiRemoteMcpConfig>(json!({
-            "server_label":"docs",
-            "server_url":"https://mcp.example.test/mcp",
-            "require_approval":"always"
-        }))
+        serde_json::from_value::<lingxi_llm_client::providers::xai::types::XaiRemoteMcpConfig>(
+            json!({
+                "server_label":"docs",
+                "server_url":"https://mcp.example.test/mcp",
+                "require_approval":"always"
+            })
+        )
         .is_err()
     );
     assert!(
-        serde_json::from_value::<lingxi_llm_client::protocol::llm::XaiRemoteMcpConfig>(json!({
-            "server_label":"docs",
-            "server_url":"https://mcp.example.test/mcp",
-            "connector_id":"connector-1"
-        }))
+        serde_json::from_value::<lingxi_llm_client::providers::xai::types::XaiRemoteMcpConfig>(
+            json!({
+                "server_label":"docs",
+                "server_url":"https://mcp.example.test/mcp",
+                "connector_id":"connector-1"
+            })
+        )
         .is_err()
     );
 }
@@ -115,13 +119,16 @@ fn xai_route_and_provider_specific_configs_are_preflighted() {
     assert!(encoded(&request, &wrong_host).is_err());
 
     let mut mixed = request;
-    mixed.hosted_tools.push(HostedTool::RemoteMcp(
-        lingxi_llm_client::protocol::RemoteMcpConfig::new(
-            "openai-server",
-            "https://mcp.openai.example.test/mcp",
+    mixed.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(
+            lingxi_llm_client::providers::openai::types::RemoteMcpConfig::new(
+                "openai-server",
+                "https://mcp.openai.example.test/mcp",
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    ));
+        .into(),
+    );
     assert!(encoded(&mixed, &profile()).is_err());
 }
 

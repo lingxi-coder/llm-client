@@ -2,23 +2,27 @@
 
 [English](background.en.md)
 
-`client.background()` 对接 OpenAI [Background mode](https://developers.openai.com/api/docs/guides/background)。内置 `openai` profile 独立配置 Responses 后台路由；配置 v3 可继承或禁用。提交沿用选定模型的 Responses 编码和请求校验，加入 `background: true`。接口提供非流式提交、单次查询与取消，以及可恢复的原生事件流和 provider-neutral 解码事件流；轮询时间、句柄持久化及工具执行由宿主负责。
+先用 `client.provider::<OpenAiClient>(profile)?` 绑定具体 profile，再通过 `provider.background()` 调用资源。每次操作传入 `RequestOptions`，client 不保存凭证。
+
+`provider.background()` 对接 OpenAI [Background mode](https://developers.openai.com/api/docs/guides/background)。内置 `openai` profile 独立配置 Responses 后台路由；配置 v3 可继承或禁用。提交沿用选定模型的 Responses 编码和请求校验，加入 `background: true`。接口提供非流式提交、单次查询与取消，以及可恢复的原生事件流和 provider-neutral 解码事件流；轮询时间、句柄持久化及工具执行由宿主负责。
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::ChatRequest;
-use lingxi_llm_client::background::{BackgroundError, BackgroundJob, BackgroundJobRef};
+use lingxi_llm_client::providers::openai::background::{BackgroundError, BackgroundJob, BackgroundJobRef};
 
 async fn submit(client: &LlmClient, request: &ChatRequest, options: &RequestOptions)
-    -> Result<BackgroundJob, BackgroundError>
+    -> Result<BackgroundJob, Box<dyn std::error::Error>>
 {
-    client.background().submit("openai", request, options).await
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    provider.background().submit(request, options).await.map_err(Into::into)
 }
 
 async fn check(client: &LlmClient, reference: &BackgroundJobRef, options: &RequestOptions)
-    -> Result<BackgroundJob, BackgroundError>
+    -> Result<BackgroundJob, Box<dyn std::error::Error>>
 {
-    client.background().get(reference, options).await
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&reference.profile_name)?;
+    provider.background().get(reference, options).await.map_err(Into::into)
 }
 ```
 
@@ -27,19 +31,20 @@ async fn check(client: &LlmClient, reference: &BackgroundJobRef, options: &Reque
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::ChatRequest;
-use lingxi_llm_client::background::{BackgroundError, BackgroundEventCursor, BackgroundStreamError};
+use lingxi_llm_client::providers::openai::background::{BackgroundError, BackgroundEventCursor, BackgroundStreamError};
 
 async fn stream_job(client: &LlmClient, request: &ChatRequest, options: &RequestOptions)
-    -> Result<Option<BackgroundEventCursor>, BackgroundError>
+    -> Result<Option<BackgroundEventCursor>, Box<dyn std::error::Error>>
 {
-    let mut stream = client.background().submit_stream("openai", request, options).await?;
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    let mut stream = provider.background().submit_stream(request, options).await?;
     let mut last = None;
     loop {
         match stream.next_event().await {
             Ok(Some(event)) => last = Some(event.cursor),
             Ok(None) => break,
             Err(BackgroundStreamError::Interrupted { cursor, .. }) => {
-                // Persist cursor; reconnect later with client.background().resume_stream(cursor, options).
+                // Persist cursor; reconnect later with provider.background().resume_stream(cursor, options).
                 last = cursor.map(|cursor| *cursor);
                 break;
             }
@@ -61,7 +66,8 @@ async fn read_response(
     request: &ChatRequest,
     options: &RequestOptions,
 ) -> Result<Option<ChatResponse>, Box<dyn std::error::Error>> {
-    let mut stream = client.background().submit_chat_stream("openai", request, options).await?;
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    let mut stream = provider.background().submit_chat_stream(request, options).await?;
     while let Some(event) = stream.next_event().await? {
         // 处理事件后持久化 event.cursor。若宿主需要厂商事件字段，可保留 event.native。
         if let Some(response) = event.response {
@@ -81,13 +87,14 @@ async fn read_response(
 `background().delete(&reference, &options)` 单次发送 `DELETE /responses/{id}`，只有返回的 `id`、`object: "response"` 和 `deleted: true` 全部匹配才返回 `BackgroundDeletion`。回执保留作用域引用和原生字段。删除与取消推理是独立操作，由宿主决定何时删除持久化结果。它沿用查询的 provider/profile/endpoint/account 校验，不要求原模型仍在当前目录中。
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, RequestOptions, background::BackgroundJobRef};
+use lingxi_llm_client::{LlmClient, RequestOptions, providers::openai::background::BackgroundJobRef};
 async fn remove_saved_response(
     client: &LlmClient,
     reference: &BackgroundJobRef,
     options: &RequestOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let deleted = client.background().delete(reference, options).await?;
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&reference.profile_name)?;
+    let deleted = provider.background().delete(reference, options).await?;
     assert_eq!(deleted.reference.response_id, reference.response_id);
     Ok(())
 }

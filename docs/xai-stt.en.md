@@ -1,13 +1,13 @@
 # xAI Realtime Speech to Text
 
-`xai_stt::XaiSttSession` implements xAI's transcription-only WebSocket protocol at the fixed `wss://api.x.ai/v1/stt` route. It uses the shared bounded realtime transport, while keeping its binary audio and transcript-event contract separate from xAI's speech-to-speech conversation API. The host supplies an `Arc<dyn RealtimeTransport>` and a request-scoped API key. See xAI's [Speech to Text guide](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) for the current wire contract.
+`providers::xai::stt::XaiSttSession` implements xAI's transcription-only WebSocket protocol at the fixed `wss://api.x.ai/v1/stt` route. It uses the shared bounded realtime transport, while keeping its binary audio and transcript-event contract separate from xAI's speech-to-speech conversation API. The host supplies an `Arc<dyn RealtimeTransport>` and a request-scoped API key. See xAI's [Speech to Text guide](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text) for the current wire contract.
 
 ```rust,no_run
 use futures::future::join;
 use lingxi_llm_client::{
     protocol::Secret,
     realtime::{RealtimeError, RealtimeLimits, RealtimeTransport},
-    xai_stt::{XaiSttConfig, XaiSttEvent, XaiSttSession},
+    providers::xai::stt::{XaiSttConfig, XaiSttEvent, XaiSttSession},
 };
 use std::{error::Error, sync::Arc};
 

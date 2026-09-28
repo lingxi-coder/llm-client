@@ -1,12 +1,14 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
+use lingxi_llm_client::providers::openai::types::{
+    McpApprovalPolicy, McpApprovalRequest, McpApprovalResponse, RemoteMcpConfig,
+};
 use lingxi_llm_client::{
     codecs::{openai::responses::OpenAiResponsesCodec, EncodeRequest, WireCodec},
     protocol::{
         ChatRequest, ChatResponse, ContentBlock, ContinuationRef, HostedTool, LlmError,
-        McpApprovalPolicy, McpApprovalRequest, McpApprovalResponse, ProtocolFamily, ProviderId,
-        ProviderProfile, Region, RemoteMcpConfig, ResponseId, StopReason, StreamEvent,
+        ProtocolFamily, ProviderId, ProviderProfile, Region, ResponseId, StopReason, StreamEvent,
         WebSearchConfig,
     },
     transport::{HttpRequest, StreamResponse, Transport},
@@ -150,7 +152,9 @@ fn hosted_web_search_uses_confirmed_filter_names_and_retains_open_page_output() 
 #[test]
 fn remote_mcp_tool_is_native_provider_execution_with_no_serialized_secret() {
     let mut request = request();
-    request.hosted_tools.push(HostedTool::RemoteMcp(mcp()));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+    );
     let serialized = serde_json::to_string(&request).unwrap();
     assert!(!serialized.contains("authorization"));
     assert!(!serialized.contains("oauth-token"));
@@ -221,7 +225,9 @@ fn approval_required_and_mcp_output_are_retained_without_host_tool_calls() {
     // Replaying the host's explicit decision yields the documented Responses
     // input item. It remains a provider-native item, never a local ToolUse.
     let mut follow_up = request();
-    follow_up.hosted_tools.push(HostedTool::RemoteMcp(mcp()));
+    follow_up.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+    );
     follow_up.continuation = Some(ContinuationRef {
         response_id: ResponseId::new("resp-approval"),
         provider_id: ProviderId::new("openai"),
@@ -293,13 +299,16 @@ fn mcp_settings_and_native_replay_are_validated_before_encoding() {
     assert!(RemoteMcpConfig::new("", "https://mcp.example.test/mcp").is_err());
 
     let mut duplicate = request();
-    duplicate.hosted_tools = vec![HostedTool::RemoteMcp(mcp()), HostedTool::RemoteMcp(mcp())];
+    duplicate.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+    ];
     assert!(duplicate.validate_hosted_tools().is_err());
 
     let mut malformed_approval = request();
-    malformed_approval
-        .hosted_tools
-        .push(HostedTool::RemoteMcp(mcp()));
+    malformed_approval.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+    );
     malformed_approval.messages = vec![McpApprovalResponse {
         approval_request_id: "".into(),
         approve: true,
@@ -308,9 +317,9 @@ fn mcp_settings_and_native_replay_are_validated_before_encoding() {
     assert!(encode(&malformed_approval, &profile()).is_err());
 
     let mut foreign_native = request();
-    foreign_native
-        .hosted_tools
-        .push(HostedTool::RemoteMcp(mcp()));
+    foreign_native.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+    );
     foreign_native.messages = vec![lingxi_llm_client::protocol::ConversationMessage::assistant(
         vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiChat,
@@ -409,7 +418,9 @@ async fn request_options_inject_mcp_oauth_without_serializing_it_into_chat_histo
         .build()
         .unwrap();
     let mut request = request();
-    request.hosted_tools.push(HostedTool::RemoteMcp(mcp()));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
+    );
     let serialized = serde_json::to_string(&request).unwrap();
     assert!(!serialized.contains("Bearer"));
     assert!(!serialized.contains("oauth-token"));

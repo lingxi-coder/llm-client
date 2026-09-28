@@ -1,4 +1,5 @@
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{CodecContext, EncodeRequest, RequestMode, VertexClaudeCodec, WireCodec};
 use serde_json::{json, Value};
 
@@ -51,7 +52,7 @@ fn system(content: Vec<ContentBlock>) -> ConversationMessage {
     ConversationMessage {
         role: MessageRole::System,
         content,
-        anthropic: None,
+        native_options: Vec::new(),
     }
 }
 
@@ -192,6 +193,8 @@ fn vertex_rejects_inline_custom_definitions_and_mcp_toolsets() {
         .with_inline_toolset(true);
     mcp.messages
         .push(server.inline_tool_addition_message().unwrap());
-    mcp.hosted_tools.push(HostedTool::AnthropicMcp(server));
+    mcp.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(server).into(),
+    );
     assert!(encode(&mcp, &profile(), MODEL).is_err());
 }

@@ -6,15 +6,26 @@ use futures::{
     stream::{self, BoxStream},
     Stream, StreamExt,
 };
+use lingxi_llm_client::providers::openai::live::OpenAiLiveAudioFormat;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveCommand;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveConfig;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveDelegation;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveEvent;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveHistoryMessage;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveHistoryRole;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveResponsesConfig;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveResponsesTool;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveResponsesUpdate;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveRoute;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveScope;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveSession;
+use lingxi_llm_client::providers::openai::live::OpenAiLiveToolChoice;
+use lingxi_llm_client::providers::openai::live::OPENAI_LIVE_WEBSOCKET_ENDPOINT;
 use lingxi_llm_client::{
     protocol::Secret,
     realtime::{
-        OpenAiLiveAudioFormat, OpenAiLiveCommand, OpenAiLiveConfig, OpenAiLiveDelegation,
-        OpenAiLiveEvent, OpenAiLiveHistoryMessage, OpenAiLiveHistoryRole,
-        OpenAiLiveResponsesConfig, OpenAiLiveResponsesTool, OpenAiLiveResponsesUpdate,
-        OpenAiLiveRoute, OpenAiLiveScope, OpenAiLiveSession, OpenAiLiveToolChoice, RealtimeClose,
-        RealtimeConnectRequest, RealtimeConnection, RealtimeError, RealtimeFrame, RealtimeLimits,
-        RealtimeSink, RealtimeTransport, OPENAI_LIVE_WEBSOCKET_ENDPOINT,
+        RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError, RealtimeFrame,
+        RealtimeLimits, RealtimeSink, RealtimeTransport,
     },
 };
 use serde_json::{json, Value};
@@ -196,8 +207,8 @@ async fn connect_with(
     preface: &[Value],
 ) -> Result<
     (
-        lingxi_llm_client::realtime::OpenAiLiveSession,
-        lingxi_llm_client::realtime::OpenAiLiveDriver,
+        lingxi_llm_client::providers::openai::live::OpenAiLiveSession,
+        lingxi_llm_client::providers::openai::live::OpenAiLiveDriver,
         Arc<FakeTransport>,
         FakePeer,
     ),

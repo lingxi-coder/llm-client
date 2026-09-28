@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_audio_generation::{
+    providers::qwen::audio_generation::{
         QwenAudioGenerationChannels, QwenAudioGenerationDispatch, QwenAudioGenerationError,
         QwenAudioGenerationFormat, QwenAudioGenerationReference, QwenAudioGenerationRequest,
         QwenAudioGenerationSampleRate, QwenAudioGenerationScope, QwenAudioGenerationService,

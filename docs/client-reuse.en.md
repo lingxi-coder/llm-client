@@ -4,6 +4,8 @@
 
 Build one long-lived `LlmClient` at application startup and pass `clone()` handles to concurrent tasks. Cloning shares runtime resources and the configuration publication slot; it does not parse the catalog, create an HTTP connection pool, or copy model configuration. `model`, `thinking.effort`, `service_tier` (Fast), and credentials are request parameters, not client reuse keys. Build another client when region, transport/proxy/TLS, extension services, or configuration ownership must be independent.
 
+The 0.3.0 provider handles follow the same lifetime: `let provider = client.provider::<OpenAiClient>(profile)?` can be retained across operations, while `snapshot.provider::<OpenAiClient>(profile)?` stays fixed. Obtain native resources from that handle, keep credentials in each operation’s `RequestOptions`, and use `snapshot.profile(name)` when only reading configuration. Old resource entry points and provider module paths have been removed; see the [0.3.0 architecture](architecture-migration.en.md).
+
 ## Initialization and dynamic configuration
 
 `builtin_catalog()` returns a read-only built-in catalog parsed once per process. `builtin_providers()` returns an independent copy when editing is needed. `build()` returns a read-only request handle. For dynamic configuration, synchronous `build_managed()` returns a request handle and configuration manager:
@@ -60,7 +62,7 @@ async fn run(client: &LlmClient, request: &ChatRequest, options: &RequestOptions
 }
 ```
 
-`ClientSnapshot` exposes all services plus routing, token, pricing, and account queries. Borrowing `profiles()` and `provider()` queries move to the snapshot; bind the snapshot to a local variable before retaining references. Live-client listing and pricing conveniences return owned results, but independently capture configuration on each call and cannot recover historical prices. Old snapshots retain old account-source bindings for their operations. Keeping a snapshot for a long time extends the lifetime of that configuration.
+`ClientSnapshot` exposes all services plus routing, token, pricing, and account queries. Borrowing `profiles()` and `profile()` queries move to the snapshot; bind the snapshot to a local variable before retaining references. Live-client listing and pricing conveniences return owned results, but independently capture configuration on each call and cannot recover historical prices. Old snapshots retain old account-source bindings for their operations. Keeping a snapshot for a long time extends the lifetime of that configuration.
 
 ## Cache boundaries
 
@@ -78,7 +80,7 @@ Compiled structured-output schemas are reused by content, with at most 16 entrie
 
 - Replace per-task `build()` calls with startup construction and `client.clone()` in tasks.
 - Replace `let mut client = ...build()?` and client configuration APIs with `let (client, config) = ...build_managed()?`; invoke management methods as `config.method(...).await`.
-- Move `client.profiles()` / `client.provider(name)` borrowing queries to a local snapshot. `deleted_builtin_profiles()`, `tracked_models()`, and `configured_models()` return owned data asynchronously through config.
+- Move `client.profiles()` / `client.profile(name)` borrowing queries to a local snapshot. `deleted_builtin_profiles()`, `tracked_models()`, and `configured_models()` return owned data asynchronously through config.
 - Use one snapshot for multi-step operations requiring consistent configuration. Operations through the live client capture the latest state when they start.
 
 Run the release benchmark without contacting a real provider:

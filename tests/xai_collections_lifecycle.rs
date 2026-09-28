@@ -3,11 +3,11 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    transport::{HttpRequest, StreamResponse, Transport},
-    xai_collections::{
+    providers::xai::collections::{
         XaiCollectionRef, XaiCollectionsClient, XaiCollectionsConfig, XaiCollectionsCredentials,
         XaiDocumentRef,
     },
+    transport::{HttpRequest, StreamResponse, Transport},
 };
 use std::sync::Mutex;
 
@@ -114,7 +114,7 @@ async fn reindex_rejects_document_from_another_account_before_dispatch() {
 
     assert!(matches!(
         result,
-        Err(lingxi_llm_client::xai_collections::XaiCollectionsError::InvalidRequest(_))
+        Err(lingxi_llm_client::providers::xai::collections::XaiCollectionsError::InvalidRequest(_))
     ));
     assert!(transport.requests.lock().unwrap().is_empty());
 }

@@ -7,13 +7,14 @@
 The caller must create and publish a Knowledge Retrieval service in the console, then bind its `agent_id` as a `QwenKnowledgeSearchRef`. The client does not create, configure, or publish an Agent and does not take over multi-KB routing, weights, reranking, or other service strategies. Those settings remain in the published service. `QwenKnowledgeSearchRef` binds the provider, profile, account scope, region, workspace, and endpoint.
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeError, QwenKnowledgeRef, QwenKnowledgeSearchKbConfig,
     QwenKnowledgeSearchRequest, QwenKnowledgeService,
 };
 use serde_json::json;
 
 async fn search(
+    request_options: &lingxi_llm_client::RequestOptions,
     service: &QwenKnowledgeService<'_>,
     knowledge: &QwenKnowledgeRef,
 ) -> Result<(), QwenKnowledgeError> {
@@ -30,7 +31,7 @@ async fn search(
         ]),
     );
 
-    let result = service.knowledge_search(&request).await?;
+    let result = service.knowledge_search(&request, request_options).await?;
     for node in result.nodes {
         println!("score={:?} text={:?} metadata={}", node.score, node.text, node.metadata);
     }

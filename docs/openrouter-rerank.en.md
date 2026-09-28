@@ -10,7 +10,7 @@ Callers explicitly create a scope bound to a profile, stable non-secret account 
 
 ```rust,ignore
 use lingxi_llm_client::{
-    openrouter_rerank::{
+    providers::openrouter::rerank::{
         OpenRouterRerankRequest, OpenRouterRerankScope, OpenRouterRerankService,
         OPENROUTER_RERANK_ENDPOINT,
     },

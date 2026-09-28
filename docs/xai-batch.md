@@ -6,7 +6,7 @@
 use lingxi_llm_client::{
     protocol::Secret,
     transport::Transport,
-    xai_batch::{
+    providers::xai::batch::{
         XaiBatchChatCompletion, XaiBatchCreateRequest, XaiBatchInput,
         XaiBatchPageOptions, XaiBatchRequest, XaiBatchRequestBody,
         XaiBatchScope, XaiBatchService,
@@ -23,9 +23,13 @@ async fn xai_batch_example(
         "account-42",
         "https://api.x.ai/v1",
     )?;
-    let batch = XaiBatchService::new(transport, Secret::new(api_key), scope)?;
+    let request_options = lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new(api_key)),
+        ..Default::default()
+    };
+    let batch = XaiBatchService::new(transport, scope)?;
     let created = batch
-        .create(&XaiBatchCreateRequest::new("nightly-evaluation")?)
+        .create(&XaiBatchCreateRequest::new("nightly-evaluation")?, &request_options)
         .await?;
     let requests = XaiBatchInput::new(vec![XaiBatchRequest::new(
         "case-001",
@@ -34,11 +38,11 @@ async fn xai_batch_example(
             vec![json!({"role":"user", "content":"Summarize this report."})],
         )?),
     )?])?;
-    batch.submit(&created.reference, &requests).await?;
+    batch.submit(&created.reference, &requests, &request_options).await?;
 
-    let _status = batch.get(&created.reference).await?;
+    let _status = batch.get(&created.reference, &request_options).await?;
     let page = batch
-        .results(&created.reference, &XaiBatchPageOptions::new().limit(100))
+        .results(&created.reference, &XaiBatchPageOptions::new().limit(100), &request_options)
         .await?;
     let _result_count = page.results.len();
     Ok(())

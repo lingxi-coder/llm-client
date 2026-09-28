@@ -27,10 +27,9 @@ Anthropic 托管 Tool Search 支持 Foundry 的两种 hosting，但底层模型�
 请求里的 model 仍是部署名。下面的例子只做本地校验和请求编码，不会发起网络调用，也不配置凭证：
 
 ~~~rust
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, ChatRequest, FoundryDeployment,
-    FoundryHosting, HostedTool, ProviderProfile,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
+use lingxi_llm_client::protocol::{ChatRequest, FoundryDeployment,
+    FoundryHosting, ProviderProfile};
 use lingxi_llm_client::{
     CodecContext, EncodeRequest, FoundryClaudeCodec, RequestMode, WireCodec,
 };
@@ -58,11 +57,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "model": "prod-opus-55",
         "messages": [{"role":"user","content":[{"type":"text","text":"Find a calendar tool"}]}]
     }))?;
-    request.hosted_tools.push(HostedTool::AnthropicToolSearch(
+    request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
         AnthropicToolSearchConfig {
             strategy: AnthropicToolSearchStrategy::Bm25,
         },
-    ));
+    ).into());
 
     let context = CodecContext::new(&profile, "prod-opus-55", RequestMode::Complete);
     FoundryClaudeCodec.validate_request(&request, &context)?;
@@ -83,9 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Foundry 的 Azure 与 Anthropic 两种 hosting 均支持使用 `mcp-client-2025-11-20` 的类型化远程 MCP 基础连接器。该基础连接不要求 ModelProfile.foundry 或模型白名单。目前 Foundry 的公开文档确认的是基础 beta；并未确认较新的 `mcp-client-2026-09-15` beta 功能可用。因而本客户端会在 Foundry 拒绝依赖新 beta 的固定工具列表、mcp_tool_listing 和内联 MCP 变更，即使推理由 Anthropic hosting。Foundry 请求应保持列表未固定，也不要回放或添加这些较新的原生 block。下面的示例纯本地编码一个基础 MCP 连接：
 
 ~~~rust
-use lingxi_llm_client::protocol::{
-    AnthropicMcpConfig, ChatRequest, FoundryDeployment, FoundryHosting, HostedTool, ProviderProfile,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig};
+use lingxi_llm_client::protocol::{ChatRequest, FoundryDeployment, FoundryHosting, ProviderProfile};
 use lingxi_llm_client::{
     CodecContext, EncodeRequest, FoundryClaudeCodec, RequestMode, WireCodec,
 };
@@ -114,9 +112,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "model": "prod-opus-55",
         "messages": [{"role":"user","content":[{"type":"text","text":"Search the docs server"}]}]
     }))?;
-    request.hosted_tools.push(HostedTool::AnthropicMcp(
+    request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
         AnthropicMcpConfig::new("docs", "https://mcp.example.com/sse")?,
-    ));
+    ).into());
 
     let context = CodecContext::new(&profile, "prod-opus-55", RequestMode::Complete);
     FoundryClaudeCodec.validate_request(&request, &context)?;
@@ -138,6 +136,6 @@ Foundry 的模型目录、功能可用性、认证方式和部署区域可能变
 
 ## Code Execution 与程序化工具
 
-`HostedTool::AnthropicCodeExecution` 使用选中模型行的显式托管方式与底层模型身份。仅 Anthropic 托管且满足兼容表的模型允许执行，Azure 托管在发送前拒绝；wire `model` 仍使用部署名。程序化 caller 还需满足独立的模型限制。
+`AnthropicHostedTool::CodeExecution` 使用选中模型行的显式托管方式与底层模型身份。仅 Anthropic 托管且满足兼容表的模型允许执行，Azure 托管在发送前拒绝；wire `model` 仍使用部署名。程序化 caller 还需满足独立的模型限制。
 
 非流式和流式响应保留原生容器与用量 metadata。通过 `AnthropicContainerScope::new_foundry` 导入返回的容器 ID，绑定 profile、精确资源端点、稳定账户身份、部署名与 `FoundryDeployment`；这些信息改变后不能继续复用。不确定的执行结果不会触发自动重试或切换。文件和 Skill 的支持边界见 [Code Execution](anthropic-code-execution.md)。

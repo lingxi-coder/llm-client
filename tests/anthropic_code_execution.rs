@@ -2,12 +2,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::protocol::{
+    AttachmentRef, AuthStrategy, ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage,
+    DocumentSource, FailoverTriggers, LlmError, MessageRole, ProtocolFamily, ProviderFileSource,
+    ProviderProfile, Region, Secret, StopReason, StreamEvent, ToolChoice, ToolSpec, ToolUseId,
+};
+use lingxi_llm_client::providers::anthropic::types::{
     AnthropicCodeExecutionConfig, AnthropicContainerMetadata, AnthropicContainerRef,
     AnthropicContainerScope, AnthropicSkillRef, AnthropicSkillScope, AnthropicToolCaller,
-    AttachmentRef, AuthStrategy, ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage,
-    DocumentSource, FailoverTriggers, HostedTool, LlmError, MessageRole, ProtocolFamily,
-    ProviderFileSource, ProviderProfile, Region, Secret, StopReason, StreamEvent, ToolChoice,
-    ToolSpec, ToolUseId,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, Authenticator, CodecContext, EncodeRequest, GeminiCodec, HttpRequest,
@@ -41,23 +42,54 @@ fn request() -> ChatRequest {
         "model":MODEL, "max_tokens":4096,
         "messages":[{"role":"user","content":[{"type":"text","text":"Compute the mean using Python."}]}]
     })).unwrap();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
             AnthropicCodeExecutionConfig::default(),
-        ));
+        )
+        .into(),
+    );
     request
 }
 
-fn execution(request: &mut ChatRequest) -> &mut AnthropicCodeExecutionConfig {
-    request
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap()
+struct ExecutionEdit<'a> {
+    request: &'a mut ChatRequest,
+    config: AnthropicCodeExecutionConfig,
+}
+impl std::ops::Deref for ExecutionEdit<'_> {
+    type Target = AnthropicCodeExecutionConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+impl std::ops::DerefMut for ExecutionEdit<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.config
+    }
+}
+impl Drop for ExecutionEdit<'_> {
+    fn drop(&mut self) {
+        use lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool;
+        self.request
+            .hosted_tools
+            .iter_mut()
+            .find(|tool| {
+                matches!(
+                    tool.native::<AnthropicHostedTool>(),
+                    Some(AnthropicHostedTool::CodeExecution(_))
+                )
+            })
+            .unwrap()
+            .edit_native::<AnthropicHostedTool, _>(|tool| {
+                if let AnthropicHostedTool::CodeExecution(config) = tool {
+                    *config = self.config.clone();
+                }
+            })
+            .unwrap();
+    }
+}
+fn execution(request: &mut ChatRequest) -> ExecutionEdit<'_> {
+    let config = request.hosted_anthropic_code_execution().unwrap().clone();
+    ExecutionEdit { request, config }
 }
 
 fn scope() -> AnthropicContainerScope {
@@ -131,7 +163,12 @@ fn programmatic_tool() -> ToolSpec {
         input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![AnthropicToolCaller::CodeExecution20260120],
+        native_options: vec![lingxi_llm_client::protocol::NativeExtension::from_typed(
+            lingxi_llm_client::providers::anthropic::native::AnthropicToolOptions {
+                allowed_callers: vec![AnthropicToolCaller::CodeExecution20260120],
+            },
+        )
+        .unwrap()],
     }
 }
 
@@ -524,11 +561,12 @@ fn ambiguous_raw_controls_duplicate_tools_and_function_name_collisions_fail() {
         ));
     }
     profile.extra = json!({});
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
             AnthropicCodeExecutionConfig::default(),
-        ));
+        )
+        .into(),
+    );
     assert!(matches!(
         encode(&request, &context(&profile)),
         Err(LlmError::InvalidRequest { .. })
@@ -542,7 +580,7 @@ fn ambiguous_raw_controls_duplicate_tools_and_function_name_collisions_fail() {
         input_schema: json!({"type":"object"}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     assert!(matches!(
         encode(&request, &context(&profile)),
@@ -571,10 +609,10 @@ fn programmatic_callers_encode_and_preflight_documented_combinations() {
     );
 
     let mut direct_choice = request.clone();
-    direct_choice.tools[0].allowed_callers = vec![
+    direct_choice.tools[0].set_anthropic_allowed_callers(vec![
         AnthropicToolCaller::Direct,
         AnthropicToolCaller::CodeExecution20260521,
-    ];
+    ]);
     direct_choice.tool_choice = ToolChoice::Tool {
         name: "lookup".into(),
     };
@@ -643,10 +681,10 @@ fn programmatic_callers_encode_and_preflight_documented_combinations() {
     ));
 
     let mut aliases_duplicated = request.clone();
-    aliases_duplicated.tools[0].allowed_callers = vec![
+    aliases_duplicated.tools[0].set_anthropic_allowed_callers(vec![
         AnthropicToolCaller::CodeExecution20260120,
         AnthropicToolCaller::CodeExecution20260521,
-    ];
+    ]);
     assert!(matches!(
         encode(&aliases_duplicated, &context(&profile)),
         Err(LlmError::InvalidRequest { .. })
@@ -729,15 +767,14 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
     replay_request.tools.push(programmatic_tool());
     execution(&mut replay_request).container = Some(
         response
-            .anthropic_container
-            .as_ref()
+            .anthropic_container()
             .unwrap()
             .reference_for(scope())
             .unwrap(),
     );
     replay_request.messages.push(response.message);
     replay_request.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_programmatic"),
@@ -831,7 +868,7 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
         },
     ]));
     request.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_programmatic"),
@@ -869,13 +906,12 @@ fn synchronous_container_metadata_usage_and_paused_native_content_round_trip() {
             &context(&profile()),
         )
         .unwrap();
+    let response: lingxi_llm_client::protocol::ChatResponse =
+        serde_json::from_value(serde_json::to_value(&response).unwrap()).unwrap();
+    assert_eq!(response.anthropic_container().unwrap().envelope, envelope);
+    assert!(response.openrouter_container().is_none());
     assert_eq!(
-        response.anthropic_container.as_ref().unwrap().envelope,
-        envelope
-    );
-    assert!(response.openrouter_container.is_none());
-    assert_eq!(
-        response.anthropic_usage.as_ref().unwrap(),
+        response.anthropic_usage().unwrap(),
         &json!({
             "input_tokens":5,"output_tokens":7,"server_tool_use":{"code_execution_requests":1}
         })
@@ -895,7 +931,7 @@ fn synchronous_container_metadata_usage_and_paused_native_content_round_trip() {
     let mut request = request();
     execution(&mut request).container = Some(
         response
-            .anthropic_container
+            .anthropic_container()
             .unwrap()
             .reference_for(scope())
             .unwrap(),
@@ -1163,7 +1199,7 @@ async fn high_level_two_turn_loop_supplies_account_and_retains_original_context(
     let first = client.chat().complete(&request, &options).await.unwrap();
     execution(&mut request).container = Some(
         first
-            .anthropic_container
+            .anthropic_container()
             .unwrap()
             .reference_for(scope())
             .unwrap(),

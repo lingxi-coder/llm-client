@@ -6,7 +6,7 @@
 use lingxi_llm_client::{
     HttpTransport, RequestOptions,
     protocol::Secret,
-    qwen_tts::{
+    providers::qwen::tts::{
         QwenTtsLanguage, QwenTtsRegion, QwenTtsRequest, QwenTtsScope, QwenTtsService,
     },
 };
@@ -50,7 +50,7 @@ async fn synthesize() -> Result<(), Box<dyn std::error::Error>> {
 ```rust,no_run
 use lingxi_llm_client::{
     RequestOptions,
-    qwen_tts::{QwenTtsRequest, QwenTtsService, QwenTtsStreamEventKind},
+    providers::qwen::tts::{QwenTtsRequest, QwenTtsService, QwenTtsStreamEventKind},
 };
 
 async fn stream_audio(

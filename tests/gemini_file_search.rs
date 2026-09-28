@@ -3,8 +3,8 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     files::{provider_file_endpoint_fingerprint, ProviderFileRef},
-    gemini_file_search::*,
     protocol::*,
+    providers::google::file_search::*,
     transport::{HttpRequest, StreamResponse, Transport},
     *,
 };
@@ -165,9 +165,12 @@ async fn stores_use_documented_page_tokens_and_force_delete() {
             json!({}),
         ),
     ]);
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let page = service
-        .list_stores("gemini", Some(5), Some("older page"), &options())
+        .list_stores(Some(5), Some("older page"), &options())
         .await
         .unwrap();
     assert_eq!(page.items[0].reference, store_ref());
@@ -220,10 +223,12 @@ async fn create_store_import_and_get_operation_preserve_google_lro() {
             }),
         ),
     ]);
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let store = service
         .create_store(
-            "gemini",
             Some("Product docs"),
             Some("models/gemini-embedding-2"),
             &options(),
@@ -323,7 +328,10 @@ async fn direct_upload_uses_resumable_session_and_scoped_upload_operation() {
                 max_overlap_tokens: 20,
             });
 
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let operation = service
         .upload_to_store(&store_ref(), &request, &options())
         .await
@@ -392,7 +400,10 @@ async fn direct_upload_rejects_wrong_account_and_untrusted_session_origin() {
             "https://attacker.example/upload?session=secret".into(),
         )],
     )]);
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let request = GeminiFileSearchUploadRequest::new(Bytes::from_static(b"body"), "text/plain");
     let mut other = options();
     other.account_scope = Some("account-b".into());
@@ -452,7 +463,10 @@ async fn document_pages_keep_google_tokens_and_lifecycle_state() {
             json!({}),
         ),
     ]);
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let page = service
         .list_documents(&store_ref(), Some(20), Some("next/page"), &options())
         .await
@@ -482,7 +496,10 @@ async fn document_pages_keep_google_tokens_and_lifecycle_state() {
 #[tokio::test]
 async fn resource_scope_and_page_size_are_checked_before_network() {
     let (client, mock) = setup(vec![]);
-    let service = client.gemini_file_search();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap();
+    let service = service_provider.file_search();
     let mut other_account = options();
     other_account.account_scope = Some("account-b".into());
     assert!(matches!(
@@ -492,9 +509,7 @@ async fn resource_scope_and_page_size_are_checked_before_network() {
         ))
     ));
     assert!(matches!(
-        service
-            .list_stores("gemini", Some(21), None, &options())
-            .await,
+        service.list_stores(Some(21), None, &options()).await,
         Err(GeminiFileSearchError::Llm(LlmError::InvalidRequest { .. }))
     ));
     assert!(mock.sent.lock().unwrap().is_empty());

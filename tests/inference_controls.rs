@@ -450,15 +450,13 @@ fn standard_fast_quotes_and_unknown_prices_do_not_depend_on_effort() {
         },
         response_cache: None,
         message: ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![],
         },
         web_search: None,
         file_search: None,
-        openrouter_container: None,
-        anthropic_container: None,
-        anthropic_usage: None,
+        native_metadata: Vec::new(),
         stop_reason: StopReason::EndTurn,
         usage: UsageReport::measured(
             Usage {

@@ -1,4 +1,5 @@
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
 
@@ -103,7 +104,11 @@ fn scoped_messages_reject_cache_effort_tool_changes_and_wrong_roles() {
     }];
     assert!(encode(&r, &profile(), MODEL).is_err());
     r.messages[1] = scoped();
-    r.messages[1].anthropic.as_mut().unwrap().effort = Some(AnthropicMessageEffort::High);
+    r.messages[1].native_options[0]
+        .edit::<AnthropicMessageOptions, _>(|options| {
+            options.effort = Some(AnthropicMessageEffort::High)
+        })
+        .unwrap();
     assert!(encode(&r, &profile(), MODEL).is_err());
     r.messages[1] = scoped();
     r.messages[1].content.push(
@@ -299,15 +304,17 @@ async fn invalid_message_controls_fail_before_transport() {
         },
         title: None,
     });
-    r.messages[0].anthropic = Some(AnthropicMessageOptions {
-        clear_at: Some(AnthropicClearAt::NextUserMessage),
-        effort: None,
-    });
+    r.messages[0] = r.messages[0]
+        .clone()
+        .with_anthropic_options(AnthropicMessageOptions {
+            clear_at: Some(AnthropicClearAt::NextUserMessage),
+            effort: None,
+        });
     assert!(matches!(
         client.chat().complete(&r, &Default::default()).await,
         Err(LlmError::InvalidRequest { .. })
     ));
-    r.messages[0].anthropic = None;
+    r.messages[0].native_options.clear();
     r.messages.push(scoped());
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         position: CachePosition::Message { index: 1, block: 0 },
@@ -334,7 +341,11 @@ async fn invalid_message_controls_fail_before_transport() {
 fn explicit_never_keeps_effort_only_position_exception() {
     let mut r = req();
     let mut change = effort(AnthropicMessageEffort::Low);
-    change.anthropic.as_mut().unwrap().clear_at = Some(AnthropicClearAt::Never);
+    change.native_options[0]
+        .edit::<AnthropicMessageOptions, _>(|options| {
+            options.clear_at = Some(AnthropicClearAt::Never)
+        })
+        .unwrap();
     r.messages.insert(0, change);
     assert!(encode(&r, &profile(), MODEL).is_ok());
 }

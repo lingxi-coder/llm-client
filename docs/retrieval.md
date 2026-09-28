@@ -2,7 +2,9 @@
 
 [English](retrieval.en.md)
 
-`client.retrieval()` 使用独立于 Chat 和 Embeddings 的服务路由。当前实现 OpenAI Vector Stores 的索引创建、列举、查询、删除，关联已上传文件、查询索引状态、移除文件，以及语义搜索。内置 `openai` profile 配置了完整操作 URL；其他提供方的托管知识库接口尚未接入。接口依据 [OpenAI Retrieval 指南](https://developers.openai.com/api/docs/guides/retrieval) 与 [Vector Stores API](https://developers.openai.com/api/reference/resources/vector_stores)。
+先用 `client.provider::<OpenAiClient>(profile)?` 绑定具体 profile，再通过 `provider.retrieval()` 调用资源。每次操作传入 `RequestOptions`，client 不保存凭证。
+
+`provider.retrieval()` 使用独立于 Chat 和 Embeddings 的服务路由。当前实现 OpenAI Vector Stores 的索引创建、列举、查询、删除，关联已上传文件、查询索引状态、移除文件，以及语义搜索。内置 `openai` profile 配置了完整操作 URL；其他提供方的托管知识库接口尚未接入。接口依据 [OpenAI Retrieval 指南](https://developers.openai.com/api/docs/guides/retrieval) 与 [Vector Stores API](https://developers.openai.com/api/reference/resources/vector_stores)。
 
 Files 上传和索引处理是两个独立操作。调用方先通过该 provider/profile 的 `FileService` 上传文件，取得 `ProviderFileRef`，再将其传给 `attach_file()`。后者返回 `IndexTask`，状态可能是 `InProgress`；通过 `get_file()` 查询后续状态，只有 `status.is_ready()` 时才把该文件视为已完成索引。库不会擅自轮询、重传文件或把 HTTP 成功当成索引就绪。文件从索引删除后，搜索结果可能短暂仍包含其内容，调用方应按提供方的最终一致性处理。
 
@@ -10,19 +12,20 @@ Files 上传和索引处理是两个独立操作。调用方先通过该 provide
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions, ProviderFileRef};
-use lingxi_llm_client::retrieval::RetrievalError;
+use lingxi_llm_client::providers::openai::retrieval::RetrievalError;
 
 async fn index_file(
     client: &LlmClient,
     uploaded_file: &ProviderFileRef,
     options: &RequestOptions,
-) -> Result<(), RetrievalError> {
+) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
     // options.account_scope 与上传文件的 account_scope 必须是同一非密钥账号标识。
-    let store = client.retrieval().create_store("openai", "FAQ", options).await?;
-    let task = client.retrieval().attach_file(&store.reference, uploaded_file, options).await?;
-    let current = client.retrieval().get_file(&task.reference, options).await?;
+    let store = provider.retrieval().create_store("FAQ", options).await?;
+    let task = provider.retrieval().attach_file(&store.reference, uploaded_file, options).await?;
+    let current = provider.retrieval().get_file(&task.reference, options).await?;
     if current.status.is_ready() {
-        let results = client.retrieval().search(&store.reference, "退货期限", 10, options).await?;
+        let results = provider.retrieval().search(&store.reference, "退货期限", 10, options).await?;
         for hit in results.hits {
             println!("{}: {:?}", hit.file.file_id, hit.content);
         }
@@ -37,16 +40,17 @@ async fn index_file(
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, ProviderFileRef, RequestOptions};
-use lingxi_llm_client::retrieval::{BatchFileInput, FileChunking, RetrievalStoreRef, RetrievalError};
+use lingxi_llm_client::providers::openai::retrieval::{BatchFileInput, FileChunking, RetrievalStoreRef, RetrievalError};
 
-async fn index_many(client: &LlmClient, store: &RetrievalStoreRef, uploaded: Vec<ProviderFileRef>, options: &RequestOptions) -> Result<(), RetrievalError> {
+async fn index_many(client: &LlmClient, store: &RetrievalStoreRef, uploaded: Vec<ProviderFileRef>, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&store.profile_name)?;
     let files: Vec<_> = uploaded.into_iter().map(|file| BatchFileInput {
         file,
         attributes: None,
         chunking: Some(FileChunking::Auto),
     }).collect();
-    let batch = client.retrieval().create_file_batch(store, &files, options).await?;
-    let current = client.retrieval().get_file_batch(&batch.reference, options).await?;
+    let batch = provider.retrieval().create_file_batch(store, &files, options).await?;
+    let current = provider.retrieval().get_file_batch(&batch.reference, options).await?;
     println!("{:?}: {:?}", current.status, current.file_counts);
     Ok(())
 }
@@ -58,15 +62,16 @@ async fn index_many(client: &LlmClient, store: &RetrievalStoreRef, uploaded: Vec
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
-use lingxi_llm_client::retrieval::{RetrievalStoreRef, RetrievalFilter, SearchRequest, SearchRanking, SearchRanker, RetrievalError};
+use lingxi_llm_client::providers::openai::retrieval::{RetrievalStoreRef, RetrievalFilter, SearchRequest, SearchRanking, SearchRanker, RetrievalError};
 use serde_json::json;
 
-async fn filtered_search(client: &LlmClient, store: &RetrievalStoreRef, options: &RequestOptions) -> Result<(), RetrievalError> {
+async fn filtered_search(client: &LlmClient, store: &RetrievalStoreRef, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&store.profile_name)?;
     let mut request = SearchRequest::new("退货期限", 20);
     request.filters = Some(RetrievalFilter::Eq { key: "region".into(), value: json!("us") });
     request.ranking = Some(SearchRanking { ranker: Some(SearchRanker::Auto), score_threshold: Some(0.7) });
     request.rewrite_query = Some(true);
-    let result = client.retrieval().search_with(store, &request, options).await?;
+    let result = provider.retrieval().search_with(store, &request, options).await?;
     println!("rewritten query: {}", result.search_query);
     Ok(())
 }

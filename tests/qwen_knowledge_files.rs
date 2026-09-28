@@ -4,7 +4,7 @@ use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     files::UploadFileStream,
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeCategoryType, QwenKnowledgeError, QwenKnowledgeFileUploadRequest,
         QwenKnowledgeImportRequest, QwenKnowledgeParser, QwenKnowledgeParserConfig,
         QwenKnowledgeRegion, QwenKnowledgeRegisterFileRequest, QwenKnowledgeScope,
@@ -116,12 +116,7 @@ fn scope(account: &str) -> QwenKnowledgeScope {
 }
 
 fn service<'a>(mock: &'a Mock, account: &str) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-key-secret".to_owned()),
-        scope(account),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(account)).unwrap()
 }
 
 fn lease_body(url: &str, headers: Value) -> Value {
@@ -140,14 +135,19 @@ fn lease_body(url: &str, headers: Value) -> Value {
 
 async fn requested_lease(
     service: &QwenKnowledgeService<'_>,
-) -> Result<lingxi_llm_client::qwen_knowledge::QwenKnowledgeFileUploadLease, QwenKnowledgeError> {
+) -> Result<
+    lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeFileUploadLease,
+    QwenKnowledgeError,
+> {
     let request = QwenKnowledgeFileUploadRequest::new(
         "default",
         "guide.md",
         11,
         "d41d8cd98f00b204e9800998ecf8427e",
     );
-    service.request_file_upload_lease(&request).await
+    service
+        .request_file_upload_lease(&request, &request_options())
+        .await
 }
 
 fn upload_input<I>(chunks: I, polls: Arc<AtomicUsize>) -> UploadFileStream
@@ -206,6 +206,7 @@ async fn lease_put_register_describe_and_typed_import_are_separate_scoped_calls(
                 ],
                 polls.clone(),
             ),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -216,6 +217,7 @@ async fn lease_put_register_describe_and_typed_import_are_separate_scoped_calls(
             &lease,
             &QwenKnowledgeRegisterFileRequest::new(QwenKnowledgeParser::AutoSelect)
                 .with_tags(["guide", "policy"]),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -226,7 +228,10 @@ async fn lease_put_register_describe_and_typed_import_are_separate_scoped_calls(
     );
     assert_eq!(registered.status.as_deref(), Some("PARSING"));
 
-    let details = service.describe_file(&registered.reference).await.unwrap();
+    let details = service
+        .describe_file(&registered.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(details.status.as_deref(), Some("PARSING"));
     assert_eq!(details.size_bytes, Some(11));
 
@@ -237,6 +242,7 @@ async fn lease_put_register_describe_and_typed_import_are_separate_scoped_calls(
             &knowledge,
             &import,
             std::slice::from_ref(&registered.reference),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -330,7 +336,7 @@ async fn lease_preflight_rejects_wrong_origin_and_credentials_before_stream_poll
         let error = requested_lease(&service).await.unwrap_err();
         assert_eq!(
             error.dispatch(),
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Unknown
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Unknown
         );
         assert!(
             format!("{error:?}").contains("redacted")
@@ -366,7 +372,7 @@ async fn malformed_success_status_is_unknown_and_sensitive_lease_fields_are_reda
             .unwrap_err();
         assert_eq!(
             error.dispatch(),
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Unknown
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Unknown
         );
         let debug = format!("{error:?}");
         assert!(!debug.contains("secret-lease-id"));
@@ -382,21 +388,21 @@ async fn file_envelope_rejects_false_or_malformed_success_and_marks_server_statu
                 "code":"Success","success":false,"status":200,"status_code":200,
                 "data":{"type":"OSS.PreSignedUrl"}
             }),
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Rejected,
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Rejected,
         ),
         (
             json!({
                 "code":"Success","success":"true","status":200,
                 "data":{"type":"OSS.PreSignedUrl"}
             }),
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Unknown,
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Unknown,
         ),
         (
             json!({
                 "code":"Success","status":503,
                 "data":{"type":"OSS.PreSignedUrl"}
             }),
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Unknown,
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Unknown,
         ),
     ];
 
@@ -422,7 +428,7 @@ async fn explicit_business_rejection_is_rejected_but_malformed_registration_is_u
         .unwrap_err();
     assert_eq!(
         error.dispatch(),
-        lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Rejected
+        lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Rejected
     );
 
     let malformed_registration = Mock::new([
@@ -441,12 +447,13 @@ async fn explicit_business_rejection_is_rejected_but_malformed_registration_is_u
         .register_file(
             &lease,
             &QwenKnowledgeRegisterFileRequest::new(QwenKnowledgeParser::AutoSelect),
+            &request_options(),
         )
         .await
         .unwrap_err();
     assert_eq!(
         error.dispatch(),
-        lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Unknown
+        lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Unknown
     );
 }
 
@@ -466,10 +473,13 @@ async fn exact_size_stream_errors_are_unknown_mutations_and_never_close_successf
         let service = service(&mock, "acct-1");
         let lease = requested_lease(&service).await.unwrap();
         let file = UploadFileStream::new("guide.md", "text/plain", 11, stream::iter(chunks));
-        let error = service.upload_file_content(&lease, file).await.unwrap_err();
+        let error = service
+            .upload_file_content(&lease, file, &request_options())
+            .await
+            .unwrap_err();
         assert_eq!(
             error.dispatch(),
-            lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::Unknown
+            lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::Unknown
         );
         assert!(matches!(error, QwenKnowledgeError::OutcomeUnknown { .. }));
         assert!(mock.streams.lock().unwrap().is_empty());
@@ -492,12 +502,13 @@ async fn upload_scope_and_metadata_mismatches_do_not_poll_or_dispatch_the_body()
         .upload_file_content(
             &lease,
             upload_input([Ok(Bytes::from_static(b"hello world"))], polls.clone()),
+            &request_options(),
         )
         .await
         .unwrap_err();
     assert_eq!(
         error.dispatch(),
-        lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::NotSent
+        lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::NotSent
     );
     assert_eq!(polls.load(Ordering::SeqCst), 0);
     assert_eq!(mock.stream_attempts.load(Ordering::SeqCst), 0);
@@ -513,6 +524,7 @@ async fn upload_scope_and_metadata_mismatches_do_not_poll_or_dispatch_the_body()
             .upload_file_content(
                 &lease,
                 UploadFileStream::new(name, "text/plain", declared_size, body),
+                &request_options(),
             )
             .await
             .unwrap_err();
@@ -535,6 +547,7 @@ async fn missing_required_parser_configuration_fails_before_registration_dispatc
         .register_file(
             &lease,
             &QwenKnowledgeRegisterFileRequest::new(QwenKnowledgeParser::DashQwenVlParser),
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -550,12 +563,17 @@ async fn typed_import_rejects_cross_scope_and_session_files_before_dispatch() {
     let knowledge = first.knowledge_ref("index-1").unwrap();
     let request = QwenKnowledgeImportRequest::from_files(["file-123"]);
     let error = first
-        .submit_import_job_with_files(&knowledge, &request, &[other_scope_file])
+        .submit_import_job_with_files(
+            &knowledge,
+            &request,
+            &[other_scope_file],
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert_eq!(
         error.dispatch(),
-        lingxi_llm_client::qwen_knowledge::QwenKnowledgeDispatch::NotSent
+        lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeDispatch::NotSent
     );
 
     let session_file = scope("acct-1")
@@ -563,7 +581,12 @@ async fn typed_import_rejects_cross_scope_and_session_files_before_dispatch() {
         .unwrap();
     let session_request = QwenKnowledgeImportRequest::from_files(["file-session"]);
     let error = first
-        .submit_import_job_with_files(&knowledge, &session_request, &[session_file])
+        .submit_import_job_with_files(
+            &knowledge,
+            &session_request,
+            &[session_file],
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::InvalidInput(_)));
@@ -591,6 +614,7 @@ async fn qwen_vl_parser_accepts_multiline_prompt_and_emits_documented_config() {
                 .with_parser_config(QwenKnowledgeParserConfig::new(
                     "Read the table.\nKeep row order.",
                 )),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -599,4 +623,11 @@ async fn qwen_vl_parser_accepts_multiline_prompt_and_emits_documented_config() {
         serde_json::from_slice::<Value>(&requests[1].body).unwrap()["parserConfig"],
         json!({"modelName":"qwen3-vl-plus","modelPrompt":"Read the table.\nKeep row order."})
     );
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-key-secret".to_owned())),
+        ..Default::default()
+    }
 }

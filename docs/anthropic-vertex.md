@@ -5,10 +5,9 @@
 以下为纯编码示例，`auth: none` 不发送请求；实际调用需通过调用方的认证配置/Authenticator 提供 Google 凭证。
 
 ```rust
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
 use lingxi_llm_client::{CodecContext, EncodeRequest, RequestMode, VertexClaudeCodec, WireCodec};
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, ChatRequest, HostedTool, ProviderProfile,
-};
+use lingxi_llm_client::protocol::{ChatRequest, ProviderProfile};
 use serde_json::json;
 let profile: ProviderProfile = serde_json::from_value(json!({
     "provider_id": "google-vertex", "profile_name": "vertex",
@@ -20,9 +19,9 @@ let mut request: ChatRequest = serde_json::from_value(json!({
     "model":"claude-opus-5-5",
     "messages":[{"role":"user","content":[{"type":"text","text":"Find the right tool"}]}]
 })).unwrap();
-request.hosted_tools.push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(AnthropicToolSearchConfig {
     strategy: AnthropicToolSearchStrategy::Regex,
-}));
+}).into());
 let context = CodecContext::new(&profile, "claude-opus-5-5", RequestMode::Complete);
 let wire = VertexClaudeCodec.encode_request(EncodeRequest::new(&request), &context).unwrap();
 assert!(wire.url.ends_with("/publishers/anthropic/models/claude-opus-5-5:rawPredict"));
@@ -39,14 +38,13 @@ System 和 clear_at 支持 Fable 5/5.1、Mythos 5/5.1、Opus 4.8/5/5.5；逐消�
 下面的 lookup 必须已经在 request.tools 中声明，消息必须追加在合法的 user 或服务端结果位置。Vertex 的工具引用增删使用 `mid-conversation-tool-changes-2026-07-01`；第一方内联定义的 beta 不自动用于 Vertex。内联定义和 MCP 添加仍拒绝。
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicToolChange, AnthropicToolReference, ChatRequest, ConversationMessage, MessageRole,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolChange, AnthropicToolReference};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, MessageRole};
 # fn withdraw_declared_tool(request: &mut ChatRequest) {
 request.messages.push(ConversationMessage {
     role: MessageRole::System,
     content: vec![AnthropicToolChange::remove(AnthropicToolReference::tool("lookup")).into_content_block()],
-    anthropic: None,
+    native_options: Vec::new(),
 });
 # }
 ```

@@ -89,9 +89,7 @@ pub struct ModelStream {
     headers: Vec<(String, String)>,
     executed_profile: String,
     response_cache: Option<ResponseCacheObservation>,
-    observe_anthropic_container: bool,
-    anthropic_container: Option<crate::protocol::AnthropicContainerMetadata>,
-    anthropic_usage: Option<Value>,
+    provider_observation: crate::providers::dispatch::StreamObservation,
     continuation: Option<ContinuationRef>,
     continuation_completed: bool,
     automatic_file_cleanup: Option<(Arc<AutomaticFileCleanup>, Option<Instant>)>,
@@ -125,9 +123,7 @@ impl ModelStream {
             headers: resp.headers,
             executed_profile,
             response_cache,
-            observe_anthropic_container: false,
-            anthropic_container: None,
-            anthropic_usage: None,
+            provider_observation: Default::default(),
             continuation,
             continuation_completed: false,
             automatic_file_cleanup,
@@ -139,23 +135,28 @@ impl ModelStream {
         self
     }
 
-    pub(super) fn with_anthropic_container_observation(mut self, enabled: bool) -> Self {
-        self.observe_anthropic_container = enabled;
+    pub(super) fn with_provider_observation(
+        mut self,
+        observation: crate::providers::dispatch::StreamObservation,
+    ) -> Self {
+        self.provider_observation = observation;
         self
     }
 
     /// Latest first-party Anthropic container envelope observed in this stream.
     /// This metadata is available before completion and also after interruption;
     /// it does not assert that execution finished. The caller decides recovery.
-    pub fn anthropic_container(&self) -> Option<&crate::protocol::AnthropicContainerMetadata> {
-        self.anthropic_container.as_ref()
+    pub fn anthropic_container(
+        &self,
+    ) -> Option<&crate::providers::anthropic::types::AnthropicContainerMetadata> {
+        self.provider_observation.anthropic_container()
     }
 
     /// Native Anthropic usage with reported fields folded across stream frames.
     /// Original JSON frames remain available through `ProviderEvent`. This
     /// observation may be partial until the terminal usage event arrives.
     pub fn anthropic_usage(&self) -> Option<&Value> {
-        self.anthropic_usage.as_ref()
+        self.provider_observation.anthropic_usage()
     }
 
     /// The status the stream opened with.
@@ -285,6 +286,9 @@ impl ModelStream {
     /// A terminal outcome releases network resources even when the caller
     /// retains this handle to inspect usage and response headers.
     fn observe_event(&mut self, event: &mut Result<StreamEvent, LlmError>) {
+        if let Ok(event) = event {
+            self.provider_observation.observe(event);
+        }
         match &mut *event {
             Ok(StreamEvent::Inference { report })
             | Ok(StreamEvent::End {
@@ -293,28 +297,6 @@ impl ModelStream {
             _ => {}
         }
         match &*event {
-            Ok(StreamEvent::ProviderEvent {
-                protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-                payload,
-            }) if self.observe_anthropic_container => {
-                if let Some(usage) = crate::codecs::anthropic_code_execution::stream_usage(payload)
-                {
-                    if let Some(current) = &mut self.anthropic_usage {
-                        crate::codecs::usage::fold(current, usage);
-                    } else {
-                        self.anthropic_usage = Some(usage.clone());
-                    }
-                }
-                if let Some(container) =
-                    crate::codecs::anthropic_code_execution::stream_container(payload)
-                {
-                    self.anthropic_container = (!container.is_null()).then(|| {
-                        crate::protocol::AnthropicContainerMetadata {
-                            envelope: container.clone(),
-                        }
-                    });
-                }
-            }
             Ok(StreamEvent::Start {
                 response_id: Some(id),
                 ..
@@ -422,7 +404,7 @@ impl ModelStream {
         let Some((stop_reason, usage, inference)) = terminal else {
             return Err(StructuredStreamError::MissingEnd { events });
         };
-        let response = ChatResponse {
+        let mut response = ChatResponse {
             inference,
             response_cache: self.response_cache.clone(),
             message: ConversationMessage::assistant(
@@ -436,9 +418,7 @@ impl ModelStream {
             ),
             web_search: None,
             file_search: None,
-            openrouter_container: None,
-            anthropic_container: self.anthropic_container.clone(),
-            anthropic_usage: self.anthropic_usage.clone(),
+            native_metadata: Vec::new(),
             stop_reason,
             usage,
             model: model.unwrap_or_default(),
@@ -446,6 +426,10 @@ impl ModelStream {
             continuation: self.continuation().cloned(),
             executed_profile: Some(self.executed_profile.clone()),
         };
+        response.set_anthropic_metadata(
+            self.anthropic_container().cloned(),
+            self.anthropic_usage().cloned(),
+        );
         if saw_tool {
             return Err(StructuredStreamError::Validation {
                 source: StructuredOutputError {

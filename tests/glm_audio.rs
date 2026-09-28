@@ -2,10 +2,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    glm_audio::{
+    protocol::{LlmError, Secret},
+    providers::zhipu::audio::{
         GlmAsrDispatch, GlmAsrError, GlmAsrRequest, GlmAsrRoute, GlmAsrScope, GlmAsrService,
     },
-    protocol::{LlmError, Secret},
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -46,8 +46,7 @@ fn setup(reply: Reply) -> (GlmAsrService<'static>, &'static Mock) {
     }));
     let route = GlmAsrRoute::new("http://127.0.0.1:8000/v1").unwrap();
     let scope = GlmAsrScope::new("glm-asr-local", "acct-local-1", &route).unwrap();
-    let service =
-        GlmAsrService::new(transport, Secret::new("EMPTY".to_owned()), route, scope).unwrap();
+    let service = GlmAsrService::new(transport, route, scope).unwrap();
     (service, transport)
 }
 
@@ -63,7 +62,10 @@ async fn transcribes_using_the_documented_sglang_chat_request() {
         }),
     });
     let result = service
-        .transcribe(&GlmAsrRequest::new("example_zh.wav").unwrap())
+        .transcribe(
+            &GlmAsrRequest::new("example_zh.wav").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap();
 
@@ -109,7 +111,10 @@ async fn empty_or_control_character_audio_references_are_rejected_before_send() 
     for audio_url in [" ", "audio\nfile.wav"] {
         let request: GlmAsrRequest =
             serde_json::from_value(json!({"audio_url":audio_url})).unwrap();
-        let error = service.transcribe(&request).await.unwrap_err();
+        let error = service
+            .transcribe(&request, &request_options())
+            .await
+            .unwrap_err();
         assert!(matches!(error, GlmAsrError::InvalidInput(_)));
     }
     assert!(mock.requests.lock().unwrap().is_empty());
@@ -125,12 +130,7 @@ async fn scope_endpoint_mismatch_is_rejected_at_construction() {
         requests: Mutex::new(Vec::new()),
     }));
 
-    let error = match GlmAsrService::new(
-        transport,
-        Secret::new("EMPTY".to_owned()),
-        other_route,
-        scope,
-    ) {
+    let error = match GlmAsrService::new(transport, other_route, scope) {
         Ok(_) => panic!("endpoint mismatch must be rejected"),
         Err(error) => error,
     };
@@ -157,7 +157,10 @@ async fn provider_rejection_and_uncertain_transport_failures_are_not_retried() {
         body: json!({"error":{"message":"bad credential"}}),
     });
     let error = service
-        .transcribe(&GlmAsrRequest::new("example.wav").unwrap())
+        .transcribe(
+            &GlmAsrRequest::new("example.wav").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -174,7 +177,10 @@ async fn provider_rejection_and_uncertain_transport_failures_are_not_retried() {
         message: "connection closed".into(),
     }));
     let error = service
-        .transcribe(&GlmAsrRequest::new("example.wav").unwrap())
+        .transcribe(
+            &GlmAsrRequest::new("example.wav").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, GlmAsrError::OutcomeUnknown { .. }));
@@ -188,10 +194,61 @@ async fn success_without_transcript_is_marked_accepted_and_invalid() {
         body: json!({"id":"accepted-but-empty","choices":[]}),
     });
     let error = service
-        .transcribe(&GlmAsrRequest::new("example.wav").unwrap())
+        .transcribe(
+            &GlmAsrRequest::new("example.wav").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, GlmAsrError::InvalidResponse { .. }));
     assert_eq!(error.dispatch(), GlmAsrDispatch::Accepted);
     assert_eq!(mock.requests.lock().unwrap().len(), 1);
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("EMPTY".to_owned())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let (service, mock) = setup(Reply::Response {
+        status: 401,
+        body: json!({"error":"rejected"}),
+    });
+    let request = GlmAsrRequest::new("sample.wav").unwrap();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.transcribe(&request, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        *mock.reply.lock().unwrap() = Some(Reply::Response {
+            status: 401,
+            body: json!({"error":"rejected"}),
+        });
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            total_timeout: Some(std::time::Duration::from_secs(5)),
+            ..Default::default()
+        };
+        assert!(service.transcribe(&request, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
+                && value == &format!("Bearer {key}")));
+        assert!(request.timeout.is_some_and(
+            |timeout| !timeout.is_zero() && timeout <= std::time::Duration::from_secs(5)
+        ));
+    }
 }

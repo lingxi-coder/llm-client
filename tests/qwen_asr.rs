@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_asr::{
+    providers::qwen::asr::{
         QwenAsrError, QwenAsrLanguage, QwenAsrParameters, QwenAsrRegion, QwenAsrRequest,
         QwenAsrScope, QwenAsrService, QwenAsrSubmissionOutcome, QwenAsrTaskRef, QwenAsrTaskStatus,
         QwenAudioAsrContextTurn, QwenAudioAsrLanguage, QwenAudioAsrModel, QwenAudioAsrParameters,
@@ -185,9 +185,11 @@ async fn query_and_result_fetch_are_separate_and_segments_are_typed() {
         ),
     ]);
     let service = QwenAsrService::new(&transport, scope(QwenAsrRegion::Beijing)).unwrap();
-    let task_ref =
-        lingxi_llm_client::qwen_asr::QwenAsrTaskRef::new(scope(QwenAsrRegion::Beijing), "task-123")
-            .unwrap();
+    let task_ref = lingxi_llm_client::providers::qwen::asr::QwenAsrTaskRef::new(
+        scope(QwenAsrRegion::Beijing),
+        "task-123",
+    )
+    .unwrap();
     let task = service.get_task(&task_ref, &options()).await.unwrap();
     assert_eq!(task.status, QwenAsrTaskStatus::Succeeded);
     assert_eq!(task.duration_seconds, Some(4));
@@ -578,7 +580,8 @@ async fn successful_task_with_empty_transcription_object_is_rejected() {
             .fetch_transcription(task.result().unwrap(), &RequestOptions::default())
             .await,
         Err(QwenAsrError::InvalidResponse {
-            operation: lingxi_llm_client::qwen_asr::QwenAsrOperation::FetchTranscription,
+            operation:
+                lingxi_llm_client::providers::qwen::asr::QwenAsrOperation::FetchTranscription,
             ..
         })
     ));

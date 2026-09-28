@@ -3,9 +3,12 @@
 use crate::codecs::json::{WireRequest, WireValue};
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::protocol::{
+    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
+    ProviderProfile, ToolChoice, ToolSpec,
+};
+use crate::providers::anthropic::types::{
     AnthropicClearAt, AnthropicMessageEffort, AnthropicToolCaller, AnthropicToolSearchConfig,
-    AnthropicToolSearchStrategy, ContentBlock, ConversationMessage, DocumentSource, ImageSource,
-    LlmError, MessageRole, ProviderProfile, ToolChoice, ToolSpec, VideoSource,
+    AnthropicToolSearchStrategy,
 };
 
 use serde_json::{json, Map, Value};
@@ -20,17 +23,17 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
-    crate::codecs::anthropic_conversation::validate(req, opts)?;
-    crate::codecs::anthropic_client_toolsets::validate(req, opts)?;
-    crate::codecs::anthropic_tool_search::validate(req, opts)?;
-    crate::codecs::anthropic_mcp::validate(req, opts)?;
-    crate::codecs::anthropic_web_fetch::validate(req, opts)?;
-    crate::codecs::anthropic_code_execution::validate(req, opts)?;
+    crate::providers::anthropic::conversation::validate(req, opts)?;
+    crate::providers::anthropic::client_toolsets::validate(req, opts)?;
+    crate::providers::anthropic::tool_search::validate(req, opts)?;
+    crate::providers::anthropic::mcp::validate(req, opts)?;
+    crate::providers::anthropic::web_fetch::validate(req, opts)?;
+    crate::providers::anthropic::code_execution::validate(req, opts)?;
     req.validate_hosted_tools()?;
     crate::codecs::reject_code_interpreter(req, profile.protocol)?;
     let has_openrouter_server_tools =
-        crate::codecs::openrouter_server_tools::validate(req, profile, None, false)?;
-    let has_anthropic_mcp = crate::codecs::anthropic_mcp::has_top_level_toolsets(req);
+        crate::providers::openrouter::server_tools::validate(req, profile, None, false)?;
+    let has_anthropic_mcp = crate::providers::anthropic::mcp::has_top_level_toolsets(req);
     let has_openrouter_tool_search = req.hosted_openrouter_tool_search().is_some();
     let tool_search = req.hosted_anthropic_tool_search();
     let web_fetch = req.hosted_anthropic_web_fetch();
@@ -42,7 +45,7 @@ pub fn request<'a>(
     if req.tools.iter().any(|tool| tool.defer_loading)
         && tool_search.is_none()
         && !has_openrouter_tool_search
-        && !crate::codecs::anthropic_conversation::has_tool_additions(req)
+        && !crate::providers::anthropic::conversation::has_tool_additions(req)
     {
         return Err(LlmError::InvalidRequest {
             message: "defer_loading requires a supported hosted tool-search server tool on the same request".into(),
@@ -150,7 +153,7 @@ pub fn request<'a>(
         || has_openrouter_server_tools
         || has_anthropic_mcp
         || req.hosted_anthropic_code_execution().is_some()
-        || !req.anthropic_client_toolsets.is_empty()
+        || !req.anthropic_client_toolsets().is_empty()
     {
         body.insert(
             "tools".to_owned(),
@@ -159,7 +162,7 @@ pub fn request<'a>(
                     .iter()
                     .map(encode_tool)
                     .chain(tool_search.map(encode_tool_search))
-                    .chain(crate::codecs::openrouter_server_tools::response_tool_values(req))
+                    .chain(crate::providers::openrouter::server_tools::response_tool_values(req))
                     .collect(),
             ),
         );
@@ -168,10 +171,10 @@ pub fn request<'a>(
             encode_tool_choice(&req.tool_choice),
         );
     }
-    crate::codecs::anthropic_mcp::apply(req, &mut body)?;
-    crate::codecs::anthropic_web_fetch::apply(req, &mut body)?;
-    crate::codecs::anthropic_client_toolsets::apply(req, &mut body);
-    if crate::codecs::anthropic_conversation::has_tool_additions(req) {
+    crate::providers::anthropic::mcp::apply(req, &mut body)?;
+    crate::providers::anthropic::web_fetch::apply(req, &mut body)?;
+    crate::providers::anthropic::client_toolsets::apply(req, &mut body);
+    if crate::providers::anthropic::conversation::has_tool_additions(req) {
         body.entry("tool_choice")
             .or_insert_with(|| encode_tool_choice(&req.tool_choice));
     }
@@ -216,7 +219,7 @@ pub fn request<'a>(
     if !betas.is_empty() {
         headers.push(("anthropic-beta".to_owned(), betas.join(",")));
     }
-    crate::codecs::anthropic_code_execution::apply(req, opts, &mut body)?;
+    crate::providers::anthropic::code_execution::apply(req, opts, &mut body)?;
     if let Some(config) = req.hosted_anthropic_code_execution() {
         if !config.files.is_empty() {
             // Validation established a final user message. Preserve its text,
@@ -239,8 +242,8 @@ pub fn request<'a>(
     crate::wire_options::merge_headers(profile, &mut headers);
     // Canonicalize after profile headers and codec-specific controls are
     // merged so the current MCP beta cannot be shadowed by a legacy value.
-    crate::codecs::anthropic_mcp::apply_beta_header(req, profile, &mut headers);
-    crate::codecs::anthropic_conversation::apply_beta_header(req, profile, &mut headers);
+    crate::providers::anthropic::mcp::apply_beta_header(req, profile, &mut headers);
+    crate::providers::anthropic::conversation::apply_beta_header(req, profile, &mut headers);
 
     let mut body =
         WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages));
@@ -261,13 +264,8 @@ pub fn request<'a>(
             WireValue::from(block).with("text", WireValue::text(&req.system[index].text))
         });
     }
-    let endpoint = if profile.provider_id.as_str() == "openrouter"
-        && profile.base_url.trim_end_matches('/') == "https://openrouter.ai/api/v1"
-    {
-        "https://openrouter.ai/api/v1/messages".to_owned()
-    } else {
-        format!("{}/v1/messages", profile.base_url.trim_end_matches('/'))
-    };
+    let endpoint = crate::providers::openrouter::chat::messages_endpoint(profile)
+        .unwrap_or_else(|| format!("{}/v1/messages", profile.base_url.trim_end_matches('/')));
     let mut encoded = WireRequest::new(endpoint, headers, body);
     if opts.mode() == crate::RequestMode::CountTokens {
         encoded.http.url.push_str("/count_tokens");
@@ -311,7 +309,7 @@ fn encode_message<'a>(
     }
     let mut message =
         WireValue::from(json!({"role":role})).with("content", WireValue::array(blocks));
-    if let Some(options) = &m.anthropic {
+    if let Some(options) = &m.anthropic_options() {
         if let Some(clear_at) = options.clear_at {
             let value = match clear_at {
                 AnthropicClearAt::Never => "never",
@@ -491,24 +489,10 @@ fn encode_block<'a>(
             });
         }
         ContentBlock::Video { source } => {
-            let VideoSource::ProviderFile { file } = source else {
-                return Err(LlmError::UnsupportedCapability {
-                    message: "MiniMax video input requires a provider file uploaded for video_understanding".into(),
-                });
-            };
-            let file = crate::codecs::validate_provider_file(file, profile, opts)?;
-            if profile.provider_id.as_str() != "minimax"
-                || !model.eq_ignore_ascii_case("minimax-m3")
-                || file.protocol != crate::protocol::ProtocolFamily::AnthropicMessages
-                || file.purpose.as_deref() != Some("video_understanding")
-            {
-                return Err(LlmError::UnsupportedCapability {
-                    message: "video file references are supported only by MiniMax M3".into(),
-                });
-            }
+            let url = crate::providers::minimax::chat::video_uri(source, opts, model)?;
             json!({
                 "type": "video",
-                "source": {"type": "url", "url": format!("mm_file://{}", file.file_id)},
+                "source": {"type": "url", "url": url},
             })
         }
     };
@@ -527,9 +511,9 @@ fn encode_tool(t: &ToolSpec) -> Value {
     if t.defer_loading {
         tool["defer_loading"] = json!(true);
     }
-    if !t.allowed_callers.is_empty() {
+    if !t.anthropic_allowed_callers().is_empty() {
         tool["allowed_callers"] = Value::Array(
-            t.allowed_callers
+            t.anthropic_allowed_callers()
                 .iter()
                 .map(|caller| {
                     Value::String(

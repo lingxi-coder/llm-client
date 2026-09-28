@@ -1,6 +1,8 @@
 use async_trait::async_trait;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{
-    codecs::{hosted::FoundryClaudeCodec, CodecContext, EncodeRequest, RequestMode},
+    codecs::{CodecContext, EncodeRequest, RequestMode},
+    hosting::FoundryClaudeCodec,
     protocol::*,
     *,
 };
@@ -12,11 +14,14 @@ fn profile() -> ProviderProfile {
 }
 fn request(model: &str) -> ChatRequest {
     let mut request: ChatRequest = serde_json::from_value(json!({"model":model,"messages":[{"role":"user","content":[{"type":"text","text":"Find information"}]}]})).unwrap();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
     request
 }
 #[derive(Default)]
@@ -187,11 +192,19 @@ async fn foundry_mcp_and_fetch_are_not_retried_or_failed_over() {
                 version: AnthropicWebFetchVersion::V20250910,
                 ..Default::default()
             };
-            r.hosted_tools.push(HostedTool::AnthropicWebFetch(config));
+            r.hosted_tools.push(
+                lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+                    config,
+                )
+                .into(),
+            );
         } else {
-            r.hosted_tools.push(HostedTool::AnthropicMcp(
-                AnthropicMcpConfig::new("docs", "https://mcp.example.test/sse").unwrap(),
-            ));
+            r.hosted_tools.push(
+                lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+                    AnthropicMcpConfig::new("docs", "https://mcp.example.test/sse").unwrap(),
+                )
+                .into(),
+            );
         }
         assert!(client
             .chat()
@@ -205,19 +218,26 @@ async fn foundry_mcp_and_fetch_are_not_retried_or_failed_over() {
 fn fetch_and_mcp_cache() -> ChatRequest {
     let mut r = request("allowed");
     r.hosted_tools.clear();
-    r.hosted_tools
-        .push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
-            version: AnthropicWebFetchVersion::V20250910,
-            cache_control: Some(CacheTtl::FiveMinutes),
-            ..Default::default()
-        }));
-    r.hosted_tools.push(HostedTool::AnthropicMcp(
-        AnthropicMcpConfig::new("docs", "https://mcp.example.test/sse")
-            .unwrap()
-            .with_cache_control(AnthropicMcpCacheControl {
-                ttl: Some(AnthropicMcpCacheTtl::OneHour),
-            }),
-    ));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            AnthropicWebFetchConfig {
+                version: AnthropicWebFetchVersion::V20250910,
+                cache_control: Some(CacheTtl::FiveMinutes),
+                ..Default::default()
+            },
+        )
+        .into(),
+    );
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            AnthropicMcpConfig::new("docs", "https://mcp.example.test/sse")
+                .unwrap()
+                .with_cache_control(AnthropicMcpCacheControl {
+                    ttl: Some(AnthropicMcpCacheTtl::OneHour),
+                }),
+        )
+        .into(),
+    );
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
@@ -250,16 +270,20 @@ fn foundry_mcp_fetch_and_messages_share_cache_count_and_ttl_order() {
         .is_err());
     let mut bad = fetch_and_mcp_cache();
     bad.hosted_tools = vec![
-        HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
-            version: AnthropicWebFetchVersion::V20250910,
-            cache_control: Some(CacheTtl::OneHour),
-            ..Default::default()
-        }),
-        HostedTool::AnthropicMcp(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            AnthropicWebFetchConfig {
+                version: AnthropicWebFetchVersion::V20250910,
+                cache_control: Some(CacheTtl::OneHour),
+                ..Default::default()
+            },
+        )
+        .into(),
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
             AnthropicMcpConfig::new("docs", "https://mcp.example.test/sse")
                 .unwrap()
                 .with_cache_control(Default::default()),
-        ),
+        )
+        .into(),
     ];
     assert!(FoundryClaudeCodec.validate_request(&bad, &ctx).is_err());
     assert!(FoundryClaudeCodec
@@ -308,7 +332,7 @@ fn vertex_client_toolsets_share_the_same_cache_marker_budget() {
     let ctx = CodecContext::new(&p, "claude-opus-5-5", RequestMode::Complete);
     let mut r = request("claude-opus-5-5");
     r.hosted_tools.clear();
-    r.anthropic_client_toolsets = vec![
+    r.set_anthropic_client_toolsets(vec![
         AnthropicClientToolset::Browser(AnthropicBrowserToolsetConfig {
             cache_control: Some(AnthropicMcpCacheControl::default()),
             ..Default::default()
@@ -317,7 +341,7 @@ fn vertex_client_toolsets_share_the_same_cache_marker_budget() {
             cache_control: Some(AnthropicMcpCacheControl::default()),
             ..Default::default()
         }),
-    ];
+    ]);
     r.prompt_cache.automatic = Some(CacheTtl::FiveMinutes);
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         position: CachePosition::Message { index: 0, block: 0 },

@@ -2,9 +2,11 @@
 
 `AnthropicBatchService` exposes Anthropic's Messages Batch lifecycle as an independent provider service. It sends the documented inline `requests` array, retrieves and lists batch state, requests cancellation, deletes completed batches, and parses result records from the results response as they arrive. It does not write a JSONL file or buffer all results in memory.
 
+The bound service created by `AnthropicClient::batch(scope)` uses the profile's registered authenticator and the per-operation credential. A directly constructed standalone service continues to use an Anthropic API key.
+
 ```rust,no_run
 use lingxi_llm_client::{
-    anthropic_batch::{
+    providers::anthropic::batch::{
         AnthropicBatchInput, AnthropicBatchMessage, AnthropicBatchParams,
         AnthropicBatchRequest, AnthropicBatchRole, AnthropicBatchScope,
         AnthropicBatchService,
@@ -36,12 +38,16 @@ let params = AnthropicBatchParams::new(
 let input = AnthropicBatchInput::new(vec![AnthropicBatchRequest::new("document-1", params)?])?;
 
 // `transport` implements the crate's Transport trait. Keep the API key in
-// the host's credential store and pass its Secret value to the service.
-let batches = AnthropicBatchService::new(transport, Secret::new(api_key), scope)?;
-let created = batches.create(&input).await?;
-let current = batches.get(&created.reference).await?;
-let page = batches.list(&Default::default()).await?;
-let results = batches.stream_results(&current.reference).await?;
+// the host's credential store and pass its Secret value through each operation's RequestOptions.
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let batches = AnthropicBatchService::new(transport, scope)?;
+let created = batches.create(&input, &request_options).await?;
+let current = batches.get(&created.reference, &request_options).await?;
+let page = batches.list(&Default::default(), &request_options).await?;
+let results = batches.stream_results(&current.reference, &request_options).await?;
 let _ = (page, results);
 Ok(())
 }

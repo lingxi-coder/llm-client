@@ -7,13 +7,14 @@
 调用者需先在控制台创建并发布 Knowledge Retrieval service，再将其 `agent_id` 绑定为 `QwenKnowledgeSearchRef`。客户端不会创建、配置或发布 Agent，也不会接管多知识库路由、权重、重排等策略；这些策略由已发布服务保存。`QwenKnowledgeSearchRef` 绑定 provider、profile、account scope、region、workspace 和 endpoint。
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeError, QwenKnowledgeRef, QwenKnowledgeSearchKbConfig,
     QwenKnowledgeSearchRequest, QwenKnowledgeService,
 };
 use serde_json::json;
 
 async fn search(
+    request_options: &lingxi_llm_client::RequestOptions,
     service: &QwenKnowledgeService<'_>,
     knowledge: &QwenKnowledgeRef,
 ) -> Result<(), QwenKnowledgeError> {
@@ -30,7 +31,7 @@ async fn search(
         ]),
     );
 
-    let result = service.knowledge_search(&request).await?;
+    let result = service.knowledge_search(&request, request_options).await?;
     for node in result.nodes {
         println!("score={:?} text={:?} metadata={}", node.score, node.text, node.metadata);
     }

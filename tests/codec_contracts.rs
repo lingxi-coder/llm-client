@@ -2,9 +2,9 @@ use lingxi_llm_client::{
     codecs::{
         anthropic::AnthropicMessagesCodec,
         gemini::GeminiCodec,
-        hosted::*,
         openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec},
     },
+    hosting::*,
     protocol::*,
     *,
 };

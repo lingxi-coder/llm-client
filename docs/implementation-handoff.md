@@ -33,7 +33,7 @@ Latest user instruction: finish the remaining work, with functionality first and
 - Qwen Omni and GLM Realtime: ClearAudio. No guessed FinishSession event.
 - Gemini Speech: typed two-speaker dialogue and per-turn styles, sharing single/SSE synthesis paths.
 - Gemini Voices Beta: new `gemini_speech/voices.rs` exports create/list/get/delete, typed prompted/replicated input, explicit storage, filters/pagination, scoped references, ID/key mutual exclusion, redacted Debug and scoped speech-request helper. No automatic retries or downloads.
-- Vertex TTS: new public `vertex_speech` module. Explicit project/location/account/model and caller bearer token, single/two speakers, unary/SSE responses, bounded audio/native data, PCM MIME checks, finish/block reason and premature EOF. Does not add Cloud Text-to-Speech API or legacy first-party GenerateContent TTS compatibility.
+- Vertex TTS: new public `hosting::vertex::speech` module. Explicit project/location/account/model and caller bearer token, single/two speakers, unary/SSE responses, bounded audio/native data, PCM MIME checks, finish/block reason and premature EOF. Does not add Cloud Text-to-Speech API or legacy first-party GenerateContent TTS compatibility.
 
 New paired guides: gemini-chat-audio, gemini-voices, vertex-speech. Existing affected paired guides and README links updated. New guides registered in downstream-docs source. OpenAI/Gemini matrix now 41 service rows / 97 sources / 77 operation definitions (added four Voices operations); West remains 102/62/148, China 606/86/95. All live_validation values remain not_run.
 

@@ -9,7 +9,7 @@
 # ) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
     protocol::Secret,
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeFileListRequest, QwenKnowledgeFileTagUpdate,
         QwenKnowledgeFileTagUpdateMode, QwenKnowledgeFileTagUpdateRequest,
         QwenKnowledgeRegion, QwenKnowledgeScope, QwenKnowledgeService,
@@ -22,13 +22,17 @@ let scope = QwenKnowledgeScope::new(
     QwenKnowledgeRegion::Beijing,
     "llm-workspace-1",
 )?;
-let service = QwenKnowledgeService::new(http, Secret::new(api_key), scope)?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let service = QwenKnowledgeService::new(http, scope)?;
 
 let request = QwenKnowledgeFileListRequest::new("cate-1").with_max_result(20);
-let page = service.list_files(&request).await?;
+let page = service.list_files(&request, &request_options).await?;
 if let Some(next_token) = page.next_token.clone() {
     let next = QwenKnowledgeFileListRequest::new("cate-1").with_next_token(next_token);
-    let _next_page = service.list_files(&next).await?;
+    let _next_page = service.list_files(&next, &request_options).await?;
 }
 
 if let Some(file) = page.files.first() {
@@ -36,7 +40,7 @@ if let Some(file) = page.files.first() {
         QwenKnowledgeFileTagUpdate::new(file.reference.clone(), ["FAQ", "returns"]),
     ])
     .with_update_mode(QwenKnowledgeFileTagUpdateMode::Overwrite);
-    let _tag_result = service.update_file_tags(&tags).await?;
+    let _tag_result = service.update_file_tags(&tags, &request_options).await?;
 }
 # Ok(())
 # }

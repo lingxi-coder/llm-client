@@ -7,7 +7,7 @@ use futures::future::join;
 use lingxi_llm_client::{
     protocol::Secret,
     realtime::{RealtimeError, RealtimeLimits, RealtimeTransport},
-    xai_streaming_tts::{
+    providers::xai::streaming_tts::{
         XaiStreamingTtsConfig, XaiStreamingTtsEvent, XaiStreamingTtsSession,
     },
 };

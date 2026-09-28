@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    glm_async::{
+    protocol::{ChatRequest, LlmError, ProviderProfile, Secret},
+    providers::zhipu::async_tasks::{
         GlmAsyncConfig, GlmAsyncCredentials, GlmAsyncError, GlmAsyncRegion, GlmAsyncRequest,
         GlmAsyncService, GlmAsyncTaskStatus,
     },
-    protocol::{ChatRequest, LlmError, ProviderProfile, Secret},
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};

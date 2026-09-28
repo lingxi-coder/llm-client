@@ -1,17 +1,15 @@
 # Anthropic Browser / Computer 客户端工具集
 
-通过独立的 `ChatRequest.anthropic_client_toolsets` 声明稳定的 `browser_toolset_20260801` / `computer_toolset_20260801`。它们是客户端工具：LLM 返回调用，宿主负责权限、执行与结果。它们不属于 `hosted_tools`，客户端也不会打开浏览器或操纵桌面。
+通过独立的 `ChatRequest::set_anthropic_client_toolsets()` 声明稳定的 `browser_toolset_20260801` / `computer_toolset_20260801`。它们是客户端工具：LLM 返回调用，宿主负责权限、执行与结果。它们不属于 `hosted_tools`，客户端也不会打开浏览器或操纵桌面。
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicBrowserMember, AnthropicBrowserToolsetConfig, AnthropicClientToolConfig,
-    AnthropicClientToolset, ChatRequest,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicBrowserMember, AnthropicBrowserToolsetConfig, AnthropicClientToolConfig, AnthropicClientToolset};
+use lingxi_llm_client::protocol::{ChatRequest};
 # fn configure(request: &mut ChatRequest) {
 let mut browser = AnthropicBrowserToolsetConfig::default();
 browser.configs.insert(AnthropicBrowserMember::JavascriptExec,
     AnthropicClientToolConfig { enabled: Some(true), defer_loading: None });
-request.anthropic_client_toolsets.push(AnthropicClientToolset::Browser(browser));
+request.set_anthropic_client_toolsets(vec![AnthropicClientToolset::Browser(browser)]);
 # }
 ```
 

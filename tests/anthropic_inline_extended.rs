@@ -2,10 +2,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::protocol::{
+    CacheBreakpoint, CachePosition, CacheTtl, ChatRequest, ContentBlock, ConversationMessage,
+    LlmError, MessageRole, PromptCachePolicy, ProtocolFamily, ProviderFileSource, ProviderProfile,
+    Region, StreamEvent, ToolChoice, ToolSpec, ToolUseId,
+};
+use lingxi_llm_client::providers::anthropic::types::{
     AnthropicCodeExecutionConfig, AnthropicContainerRef, AnthropicContainerScope,
-    AnthropicWebFetchConfig, CacheBreakpoint, CachePosition, CacheTtl, ChatRequest, ContentBlock,
-    ConversationMessage, HostedTool, LlmError, MessageRole, PromptCachePolicy, ProtocolFamily,
-    ProviderFileSource, ProviderProfile, Region, StreamEvent, ToolChoice, ToolSpec, ToolUseId,
+    AnthropicWebFetchConfig,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, CodecContext, EncodeRequest, HttpRequest, LlmClientBuilder,
@@ -95,7 +98,7 @@ fn native(value: Value) -> ContentBlock {
 
 fn system(blocks: Vec<ContentBlock>) -> ConversationMessage {
     ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::System,
         content: blocks,
     }
@@ -147,7 +150,7 @@ fn spec(name: String, input_schema: Value, strict: bool) -> ToolSpec {
         input_schema,
         strict,
         defer_loading: false,
-        allowed_callers: Vec::new(),
+        native_options: Vec::new(),
     }
 }
 
@@ -160,11 +163,12 @@ fn strict_schema_with_optional_fields(count: usize) -> Value {
 
 fn code_execution_request() -> ChatRequest {
     let mut request = request();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
             AnthropicCodeExecutionConfig::default(),
-        ));
+        )
+        .into(),
+    );
     request
 }
 
@@ -200,7 +204,7 @@ fn programmatic_tool_call(caller_type: &str) -> ContentBlock {
 
 fn user_tool_result() -> ConversationMessage {
     ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_inline"),
@@ -451,15 +455,10 @@ fn pending_inline_programmatic_call_resumes_with_scoped_container() {
             .unwrap();
     let container = AnthropicContainerRef::new("container_inline", scope).unwrap();
     let mut request = code_execution_request();
-    let execution = request
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap();
-    execution.container = Some(container);
+    request.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config.container = Some(container); }
+        }).unwrap();
     request
         .messages
         .push(system(vec![addition(programmatic_definition(json!([
@@ -482,15 +481,10 @@ async fn full_client_preflights_pending_inline_ptc_for_complete_and_stream() {
             .unwrap();
     let container = AnthropicContainerRef::new("container_inline", scope).unwrap();
     let mut request = code_execution_request();
-    let execution = request
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap();
-    execution.container = Some(container);
+    request.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config.container = Some(container); }
+        }).unwrap();
     request
         .messages
         .push(system(vec![addition(programmatic_definition(json!([
@@ -652,15 +646,10 @@ async fn rejected_inline_server_definition_never_reaches_transport() {
 #[test]
 fn typed_server_tool_inline_placement_requires_exact_matching_config() {
     let mut execution = code_execution_request();
-    let code_execution = execution
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap();
-    code_execution.inline_definition = true;
+    execution.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config.inline_definition = true; }
+        }).unwrap();
     execution
         .messages
         .push(system(vec![addition(code_execution_definition())]));
@@ -682,30 +671,22 @@ fn typed_server_tool_inline_placement_requires_exact_matching_config() {
     }));
 
     let mut missing = code_execution_request();
-    missing
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap()
-        .inline_definition = true;
+    missing.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config
+        .inline_definition = true; }
+        }).unwrap();
     assert!(matches!(
         encode(&missing),
         Err(LlmError::InvalidRequest { .. })
     ));
 
     let mut mismatch = code_execution_request();
-    mismatch
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap()
-        .inline_definition = true;
+    mismatch.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config
+        .inline_definition = true; }
+        }).unwrap();
     let mut wrong_version = code_execution_definition();
     wrong_version["type"] = json!("code_execution_20260120");
     mismatch
@@ -722,9 +703,12 @@ fn typed_server_tool_inline_placement_requires_exact_matching_config() {
         ..Default::default()
     };
     inline_fetch_config.inline_definition = true;
-    fetch
-        .hosted_tools
-        .push(HostedTool::AnthropicWebFetch(inline_fetch_config));
+    fetch.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            inline_fetch_config,
+        )
+        .into(),
+    );
     fetch.messages.push(system(vec![addition(json!({
         "type":"web_fetch_20260318",
         "name":"web_fetch",
@@ -756,15 +740,9 @@ fn typed_server_tool_inline_placement_requires_exact_matching_config() {
 #[tokio::test]
 async fn inline_typed_server_tools_are_first_party_only_and_model_gated_before_file_preparation() {
     let mut execution = code_execution_request();
-    let config = execution
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap();
-    config.inline_definition = true;
+    execution.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config.inline_definition = true;
     config.files.push(ProviderFileSource {
         protocol: ProtocolFamily::AnthropicMessages,
         provider_id: "anthropic".into(),
@@ -777,7 +755,8 @@ async fn inline_typed_server_tools_are_first_party_only_and_model_gated_before_f
         processing_status: None,
         media_type: Some("text/csv".into()),
         purpose: None,
-    });
+    }); }
+        }).unwrap();
     execution
         .messages
         .push(system(vec![addition(code_execution_definition())]));
@@ -814,12 +793,15 @@ async fn inline_typed_server_tools_are_first_party_only_and_model_gated_before_f
     ));
 
     let mut foundry_fetch = request();
-    foundry_fetch
-        .hosted_tools
-        .push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
-            inline_definition: true,
-            ..Default::default()
-        }));
+    foundry_fetch.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            AnthropicWebFetchConfig {
+                inline_definition: true,
+                ..Default::default()
+            },
+        )
+        .into(),
+    );
     foundry_fetch.messages.push(system(vec![addition(json!({
         "type":"web_fetch_20260318",
         "name":"web_fetch"
@@ -840,15 +822,11 @@ async fn inline_hosted_execution_and_fetch_keep_no_retry_routing_pinned() {
         .unwrap();
 
     let mut execution = code_execution_request();
-    execution
-        .hosted_tools
-        .iter_mut()
-        .find_map(|tool| match tool {
-            HostedTool::AnthropicCodeExecution(config) => Some(config),
-            _ => None,
-        })
-        .unwrap()
-        .inline_definition = true;
+    execution.hosted_tools.iter_mut().find(|tool| matches!(tool.native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool>(), Some(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(_)))).unwrap()
+        .edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+            if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(config) = tool { config
+        .inline_definition = true; }
+        }).unwrap();
     execution
         .messages
         .push(system(vec![addition(code_execution_definition())]));
@@ -860,12 +838,15 @@ async fn inline_hosted_execution_and_fetch_keep_no_retry_routing_pinned() {
     assert_eq!(transport.0.load(Ordering::SeqCst), 1);
 
     let mut fetch = request();
-    fetch
-        .hosted_tools
-        .push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
-            inline_definition: true,
-            ..Default::default()
-        }));
+    fetch.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            AnthropicWebFetchConfig {
+                inline_definition: true,
+                ..Default::default()
+            },
+        )
+        .into(),
+    );
     fetch.messages.push(system(vec![addition(json!({
         "type":"web_fetch_20260318",
         "name":"web_fetch"
@@ -884,13 +865,16 @@ fn inline_web_fetch_cache_marker_is_counted_at_its_message_position_only() {
     request.tools = (0..3)
         .map(|index| spec(format!("tool_{index}"), schema(), false))
         .collect();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
-            cache_control: Some(CacheTtl::FiveMinutes),
-            inline_definition: true,
-            ..Default::default()
-        }));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            AnthropicWebFetchConfig {
+                cache_control: Some(CacheTtl::FiveMinutes),
+                inline_definition: true,
+                ..Default::default()
+            },
+        )
+        .into(),
+    );
     let mut definition = json!({
         "type":"web_fetch_20260318",
         "name":"web_fetch",

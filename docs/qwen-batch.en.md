@@ -9,7 +9,7 @@ The current interface covers text Chat Completions and Embeddings, with JSONL up
 # async fn example(client: &lingxi_llm_client::LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
     protocol::Secret,
-    qwen_batch::{
+    providers::qwen::batch::{
         QwenBatchChatMessage, QwenBatchChatRequest, QwenBatchChatRole, QwenBatchCompletionWindow,
         QwenBatchInput, QwenBatchLine, QwenBatchListOptions, QwenBatchMetadata, QwenBatchRegion,
         QwenBatchRequestBody, QwenBatchScope, QwenBatchSubmitOptions,
@@ -22,7 +22,12 @@ let scope = QwenBatchScope::new(
     QwenBatchRegion::Beijing,
     Some("workspace-456".into()),
 )?;
-let service = client.qwen_batch(Secret::new(api_key), scope)?;
+let provider = client.provider::<lingxi_llm_client::providers::qwen::QwenClient>(scope.profile_name())?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let service = provider.batch(scope)?;
 let input = QwenBatchInput::new(vec![QwenBatchLine {
     custom_id: "case-1".into(),
     body: QwenBatchRequestBody::Chat(QwenBatchChatRequest {
@@ -37,7 +42,7 @@ let input = QwenBatchInput::new(vec![QwenBatchLine {
         enable_thinking: Some(false),
     }),
 }])?;
-let file = service.upload_input(&input).await?;
+let file = service.upload_input(&input, &request_options).await?;
 let options = QwenBatchSubmitOptions {
     completion_window: QwenBatchCompletionWindow::from_hours(24)?,
     metadata: QwenBatchMetadata {
@@ -45,15 +50,15 @@ let options = QwenBatchSubmitOptions {
         description: None,
     },
 };
-let job = service.submit(&file, &options).await?;
-let _page = service.list(&QwenBatchListOptions::new().limit(10)).await?;
-let latest = service.query(&job.reference).await?;
+let job = service.submit(&file, &options, &request_options).await?;
+let _page = service.list(&QwenBatchListOptions::new().limit(10), &request_options).await?;
+let latest = service.query(&job.reference, &request_options).await?;
 if let Some(output) = latest.output_ref() {
-    let mut bytes = service.stream_result(&output).await?;
+    let mut bytes = service.stream_result(&output, &request_options).await?;
     // Consume the JSONL byte stream as needed.
 }
 if let Some(errors) = latest.error_ref() {
-    let mut bytes = service.stream_result(&errors).await?;
+    let mut bytes = service.stream_result(&errors, &request_options).await?;
     // Consume failed-request details as JSONL.
 }
 # Ok(())

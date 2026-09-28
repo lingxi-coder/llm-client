@@ -8,7 +8,7 @@
 use lingxi_llm_client::{
     HttpTransport,
     protocol::Secret,
-    qwen_audio_generation::{
+    providers::qwen::audio_generation::{
         QwenAudioGenerationFormat, QwenAudioGenerationReference,
         QwenAudioGenerationRequest, QwenAudioGenerationScope,
         QwenAudioGenerationService, QwenAudioReferenceFormat,

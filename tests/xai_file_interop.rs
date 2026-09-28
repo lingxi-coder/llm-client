@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
-use lingxi_llm_client::xai_collections::{
+use lingxi_llm_client::providers::xai::collections::{
     XaiCollectionsClient, XaiCollectionsConfig, XaiCollectionsCredentials, XaiCollectionsScope,
     XaiUploadedFile, XaiUploadedFileRef,
 };

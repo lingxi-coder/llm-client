@@ -5,17 +5,17 @@
 接口只记录在北京工作区：`POST https://{workspaceId}.cn-beijing.maas.aliyuncs.com/api/v2/apps/knowledge/chat`。调用方须先在控制台创建并发布 Knowledge Q&A 服务，再用当前 profile、账号、区域和 workspace 构造 `QwenKnowledgeChatRef`。客户端会在发送前检查引用作用域，并且每个请求只发送一次。
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeChatMessage, QwenKnowledgeChatRequest, QwenKnowledgeService,
 };
 
-async fn ask(service: &QwenKnowledgeService<'_>) -> Result<(), Box<dyn std::error::Error>> {
+async fn ask(request_options: &lingxi_llm_client::RequestOptions, service: &QwenKnowledgeService<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let published = service.scope().knowledge_chat_ref("aid-your-published-service")?;
     let request = QwenKnowledgeChatRequest::new(
         published,
         [QwenKnowledgeChatMessage::user_text("如何配置 API Key？")],
     );
-    let mut stream = service.knowledge_chat(&request).await?;
+    let mut stream = service.knowledge_chat(&request, request_options).await?;
     while let Some(event) = stream.next_event().await? {
         if event.is_complete() {
             // Native final frame is available from event.native().

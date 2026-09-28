@@ -1,27 +1,26 @@
 # OpenAI Responses tool search
 
-OpenAI Responses tool search loads function or MCP definitions only when they are needed. OpenAI documents it for GPT-5.4 and later. This client supports both OpenAI-hosted discovery and client-executed discovery through the typed `HostedTool::OpenAiToolSearch` configuration.
+OpenAI Responses tool search loads function or MCP definitions only when they are needed. OpenAI documents it for GPT-5.4 and later. This client supports both OpenAI-hosted discovery and client-executed discovery through the typed `OpenAiHostedTool::ToolSearch` configuration.
 
 ## OpenAI-hosted discovery
 
 Mark the function tools or MCP servers to defer, then add the server-executed search tool:
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, HostedTool, OpenAiToolSearchConfig, LlmError, RemoteMcpConfig,
-};
+use lingxi_llm_client::providers::openai::types::{OpenAiToolSearchConfig, RemoteMcpConfig};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError};
 
 fn configure(mut request: ChatRequest) -> Result<ChatRequest, LlmError> {
-request.hosted_tools.push(HostedTool::OpenAiToolSearch(
+request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
     OpenAiToolSearchConfig::default(),
-));
+).into());
 for tool in &mut request.tools {
     tool.defer_loading = true;
 }
 
 let mcp = RemoteMcpConfig::new("orders", "https://mcp.example.test/mcp")?
     .with_defer_loading(true);
-request.hosted_tools.push(HostedTool::RemoteMcp(mcp));
+request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp).into());
 Ok(request)
 }
 ```
@@ -33,13 +32,12 @@ The Responses request contains `{"type":"tool_search"}` and the deferred flags. 
 Use client execution when the inventory depends on application or tenant state. The search tool needs a description and a JSON Schema for its arguments:
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, HostedTool, OpenAiToolSearchConfig, OpenAiToolSearchExecution,
-};
+use lingxi_llm_client::providers::openai::types::{OpenAiToolSearchConfig, OpenAiToolSearchExecution};
+use lingxi_llm_client::protocol::{ChatRequest, };
 use serde_json::json;
 
 fn configure(mut request: ChatRequest) -> ChatRequest {
-request.hosted_tools.push(HostedTool::OpenAiToolSearch(
+request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
     OpenAiToolSearchConfig {
         execution: OpenAiToolSearchExecution::Client,
         description: Some("Find the tools needed for this task".into()),
@@ -50,7 +48,7 @@ request.hosted_tools.push(HostedTool::OpenAiToolSearch(
             "additionalProperties": false
         })),
     },
-));
+).into());
 request
 }
 ```

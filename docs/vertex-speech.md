@@ -1,13 +1,13 @@
 # Vertex AI Gemini 语音合成
 
-`vertex_speech` 通过 Vertex AI publisher-model REST API 调用 Gemini-TTS。它与 Gemini Developer API Interactions TTS 和 Cloud Text-to-Speech API 相互独立；调用者需要明确选择 Google Cloud 项目、地区、模型，并提供 bearer access token。
+`hosting::vertex::speech` 通过 Vertex AI publisher-model REST API 调用 Gemini-TTS。它与 Gemini Developer API Interactions TTS 和 Cloud Text-to-Speech API 相互独立；调用者需要明确选择 Google Cloud 项目、地区、模型，并提供 bearer access token。
 
 ```rust,no_run
 use lingxi_llm_client::{
     client::RequestOptions,
     protocol::Secret,
     transport::HttpTransport,
-    vertex_speech::{
+    hosting::vertex::speech::{
         VertexSpeechModel, VertexSpeechRequest, VertexSpeechScope, VertexSpeechService,
     },
 };

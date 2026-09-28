@@ -53,12 +53,12 @@ fn request() -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
@@ -93,7 +93,7 @@ fn single_text_and_multimodal_assistant_keep_their_wire_content() {
     assert_eq!(body_of(&encoded)["messages"][0]["content"], "hello");
 
     req.messages[0] = ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::Assistant,
         content: vec![
             ContentBlock::Text {
@@ -238,7 +238,7 @@ fn the_wire_model_is_the_routes_not_the_requests() {
 fn a_tool_result_becomes_its_own_message() {
     let mut req = request();
     req.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::Assistant,
         content: vec![ContentBlock::ToolUse {
             id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
@@ -251,7 +251,7 @@ fn a_tool_result_becomes_its_own_message() {
         }],
     });
     req.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
@@ -605,7 +605,7 @@ fn with_tools(choice: ToolChoice) -> ChatRequest {
         input_schema: json!({"type": "object"}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     req
 }
@@ -949,7 +949,7 @@ fn chat_preserves_explicit_tool_strictness() {
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             strict,
             defer_loading: false,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         });
         let http = OpenAiChatCodec
             .encode_request(
@@ -1237,7 +1237,7 @@ fn chat_replay_rejects_wrong_envelopes_roles_and_protocols() {
     ] {
         let mut req = request();
         req.messages.push(ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role,
             content: vec![ContentBlock::ProviderContent { protocol, value }],
         });

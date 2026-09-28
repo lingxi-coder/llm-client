@@ -20,8 +20,8 @@ mod cache;
 mod plan;
 mod prepare;
 mod resolve;
+pub(crate) use crate::providers::attachment_policy::{first_party_endpoint, FirstPartyEndpoint};
 use plan::*;
-pub(crate) use plan::{first_party_endpoint, FirstPartyEndpoint};
 
 pub(crate) struct AttachmentManager {
     http: Arc<dyn Transport>,
@@ -79,7 +79,6 @@ const MAX_PROVIDER_FILE_CACHE_ENTRIES: usize = 256;
 const ATTACHMENT_CONCURRENCY: usize = 4;
 const MAX_CONTENT_CACHE_ENTRIES: usize = 256;
 const MAX_CONTENT_CACHE_BYTES: usize = MAX_ATTACHMENT_BYTES as usize;
-const MAX_OPENAI_INPUT_FILE_BYTES: u64 = 50_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AttachmentKind {
     Image,

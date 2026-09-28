@@ -34,7 +34,7 @@ use std::sync::Arc;
 use lingxi_llm_client::{
     RequestOptions,
     realtime::RealtimeTransport,
-    qwen_tts_realtime::{
+    providers::qwen::tts_realtime::{
         QwenTtsRealtimeConfig, QwenTtsRealtimeError, QwenTtsRealtimeEventKind,
         QwenTtsRealtimeLimits, QwenTtsRealtimeRegion, QwenTtsRealtimeRequest,
         QwenTtsRealtimeService, QwenTtsRealtimeVoice,

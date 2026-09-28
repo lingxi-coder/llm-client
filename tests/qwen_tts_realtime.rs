@@ -8,8 +8,8 @@ use futures::{
 use lingxi_llm_client::{
     client::RequestOptions,
     protocol::Secret,
-    qwen_tts::QwenTtsLanguage,
-    qwen_tts_realtime::{
+    providers::qwen::tts::QwenTtsLanguage,
+    providers::qwen::tts_realtime::{
         QwenTtsRealtimeConfig, QwenTtsRealtimeEventKind, QwenTtsRealtimeFormat,
         QwenTtsRealtimeLimits, QwenTtsRealtimeMode, QwenTtsRealtimeRegion, QwenTtsRealtimeRequest,
         QwenTtsRealtimeService, QwenTtsRealtimeVoice,
@@ -452,7 +452,10 @@ fn session_finished() -> Value {
 fn make_service(
     transport: Arc<FakeTransport>,
     region: QwenTtsRealtimeRegion,
-) -> Result<QwenTtsRealtimeService, lingxi_llm_client::qwen_tts_realtime::QwenTtsRealtimeError> {
+) -> Result<
+    QwenTtsRealtimeService,
+    lingxi_llm_client::providers::qwen::tts_realtime::QwenTtsRealtimeError,
+> {
     QwenTtsRealtimeService::new(
         transport,
         QwenTtsRealtimeConfig::new(

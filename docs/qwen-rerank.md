@@ -16,7 +16,7 @@ POST https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/rerank/t
 
 ```rust,ignore
 use lingxi_llm_client::{
-    qwen_rerank::{QwenRerankRegion, QwenRerankRequest, QwenRerankScope, QwenRerankService},
+    providers::qwen::rerank::{QwenRerankRegion, QwenRerankRequest, QwenRerankScope, QwenRerankService},
     RequestOptions,
 };
 

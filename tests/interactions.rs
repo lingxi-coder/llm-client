@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
-use lingxi_llm_client::{interactions::*, protocol::*, *};
+use lingxi_llm_client::{protocol::*, providers::google::interactions::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -70,9 +70,10 @@ async fn model_create_continue_and_get_preserve_native_steps() {
         ),
     ]);
     let first = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create(
-            "gemini",
             &InteractionRequest::model("gemini-3.8-flash", "Hi"),
             &options(),
         )
@@ -83,11 +84,15 @@ async fn model_create_continue_and_get_preserve_native_steps() {
     let mut second_req = InteractionRequest::model("gemini-3.8-flash", "More");
     second_req.previous = first.reference;
     let second = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
-        .create("gemini", &second_req, &options())
+        .create(&second_req, &options())
         .await
         .unwrap();
     let fetched = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .get(second.reference.as_ref().unwrap(), &options())
         .await
@@ -114,9 +119,10 @@ async fn agent_background_and_account_scope_are_enforced() {
         json!({"id":"v1_research","agent":"deep-research-preview-04-2026","status":"in_progress","steps":[]}),
     )]);
     let job = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create(
-            "gemini",
             &InteractionRequest::agent("deep-research-preview-04-2026", "Investigate"),
             &options(),
         )
@@ -133,6 +139,8 @@ async fn agent_background_and_account_scope_are_enforced() {
     other.account_scope = Some("account-2".into());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+            .unwrap()
             .interactions()
             .get(job.reference.as_ref().unwrap(), &other)
             .await,
@@ -140,6 +148,8 @@ async fn agent_background_and_account_scope_are_enforced() {
     ));
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+            .unwrap()
             .interactions()
             .delete(job.reference.as_ref().unwrap(), &other)
             .await,
@@ -159,9 +169,10 @@ async fn provider_error_and_stateless_result_are_explicit() {
     ]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+            .unwrap()
             .interactions()
             .create(
-                "gemini",
                 &InteractionRequest::model("gemini-2.5-flash", "Hi"),
                 &options()
             )
@@ -171,8 +182,10 @@ async fn provider_error_and_stateless_result_are_explicit() {
     let mut request = InteractionRequest::model("gemini-2.5-flash", "Hi");
     request.store = false;
     let result = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
-        .create("gemini", &request, &options())
+        .create(&request, &options())
         .await
         .unwrap();
     assert!(result.reference.is_none());
@@ -183,9 +196,10 @@ async fn stream_preserves_native_steps_and_durable_reference() {
     let events = "data: {\"event_type\":\"interaction.created\",\"event_id\":\"e1\",\"interaction\":{\"id\":\"v1_stream\",\"status\":\"in_progress\"}}\n\ndata: {\"event_type\":\"step.delta\",\"event_id\":\"e2\",\"index\":0,\"delta\":{\"type\":\"text\",\"text\":\"Hi\"}}\n\ndata: {\"event_type\":\"interaction.completed\",\"interaction\":{\"id\":\"v1_stream\",\"status\":\"completed\"}}\n\ndata: [DONE]\n\n";
     let (client, mock) = setup(vec![(200, Value::String(events.into()))]);
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create_stream(
-            "gemini",
             &InteractionRequest::model("gemini-2.5-flash", "Hi"),
             &options(),
         )
@@ -216,9 +230,10 @@ async fn stream_without_done_reports_bound_reference() {
     let events = "data: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"v1_partial\"}}\n\n";
     let (client, _) = setup(vec![(200, Value::String(events.into()))]);
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create_stream(
-            "gemini",
             &InteractionRequest::model("gemini-2.5-flash", "Hi"),
             &options(),
         )
@@ -242,9 +257,10 @@ async fn stream_rejects_changing_id_and_preserves_http_error() {
         (429, json!({"error":{"message":"quota"}})),
     ]);
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create_stream(
-            "gemini",
             &InteractionRequest::model("gemini-2.5-flash", "Hi"),
             &options(),
         )
@@ -260,9 +276,10 @@ async fn stream_rejects_changing_id_and_preserves_http_error() {
     ));
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+            .unwrap()
             .interactions()
             .create_stream(
-                "gemini",
                 &InteractionRequest::model("gemini-2.5-flash", "Hi"),
                 &options()
             )
@@ -280,9 +297,10 @@ async fn interrupted_stream_resumes_after_the_last_opaque_event_cursor() {
         (200, Value::String(resumed.into())),
     ]);
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create_stream(
-            "gemini",
             &InteractionRequest::model("gemini-2.5-flash", "Hi"),
             &options(),
         )
@@ -298,6 +316,8 @@ async fn interrupted_stream_resumes_after_the_last_opaque_event_cursor() {
     ));
 
     let mut resumed = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .resume_stream(&reference, &cursor, &options())
         .await
@@ -335,9 +355,10 @@ async fn background_interaction_can_be_cancelled_then_deleted() {
         (204, Value::Null),
     ]);
     let job = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create(
-            "gemini",
             &InteractionRequest::agent("deep-research-preview-04-2026", "Research"),
             &options(),
         )
@@ -345,12 +366,16 @@ async fn background_interaction_can_be_cancelled_then_deleted() {
         .unwrap();
     let reference = job.reference.unwrap();
     let cancelled = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .cancel(&reference, &options())
         .await
         .unwrap();
     assert_eq!(cancelled.status, "cancelled");
     client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .delete(&reference, &options())
         .await
@@ -387,8 +412,10 @@ async fn multimodal_content_uses_interactions_content_blocks() {
     );
 
     client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
-        .create("gemini", &request, &options())
+        .create(&request, &options())
         .await
         .unwrap();
 
@@ -438,9 +465,10 @@ async fn function_tools_and_result_steps_use_native_interactions_shape() {
         }),
     );
     let first = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
         .create(
-            "gemini",
             &InteractionRequest::model("gemini-3.8-flash", "Weather in Paris?")
                 .with_tool(tool.clone())
                 .with_generation_config(json!({
@@ -464,8 +492,10 @@ async fn function_tools_and_result_steps_use_native_interactions_shape() {
     .with_tool(tool);
     next.previous = first.reference;
     client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
-        .create("gemini", &next, &options())
+        .create(&next, &options())
         .await
         .unwrap();
 
@@ -505,8 +535,10 @@ async fn gemini_3_remote_mcp_is_rejected_before_dispatch() {
     .unwrap();
     let request = InteractionRequest::model("gemini-3.8-flash", "Weather?").with_tool(tool);
     let error = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
-        .create("gemini", &request, &options())
+        .create(&request, &options())
         .await
         .unwrap_err();
     assert!(error
@@ -530,8 +562,10 @@ async fn streaming_create_uses_the_multimodal_and_tool_encoder() {
     )
     .with_tool(InteractionTool::google_search());
     let _stream = client
+        .provider::<lingxi_llm_client::providers::GoogleClient>("gemini")
+        .unwrap()
         .interactions()
-        .create_stream("gemini", &request, &options())
+        .create_stream(&request, &options())
         .await
         .unwrap();
     let sent = mock.sent.lock().unwrap();

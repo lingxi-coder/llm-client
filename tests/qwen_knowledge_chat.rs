@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeChatContentPart, QwenKnowledgeChatError, QwenKnowledgeChatMessage,
         QwenKnowledgeChatRequest, QwenKnowledgeChatToolCall, QwenKnowledgeDispatch,
         QwenKnowledgeRegion, QwenKnowledgeScope, QwenKnowledgeService,
@@ -106,15 +106,12 @@ fn scope(account: &str) -> QwenKnowledgeScope {
 }
 
 fn make_service<'a>(mock: &'a Mock, account: &str) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-chat-api-key".to_owned()),
-        scope(account),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(account)).unwrap()
 }
 
-fn chat_ref(scope: &QwenKnowledgeScope) -> lingxi_llm_client::qwen_knowledge::QwenKnowledgeChatRef {
+fn chat_ref(
+    scope: &QwenKnowledgeScope,
+) -> lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeChatRef {
     scope.knowledge_chat_ref("aid-published-chat-1").unwrap()
 }
 
@@ -216,7 +213,10 @@ async fn sends_official_native_wire_with_full_tool_history_images_session_files_
     .with_session_files([session_file])
     .with_cache_control(true);
 
-    let mut output = service.knowledge_chat(&request).await.unwrap();
+    let mut output = service
+        .knowledge_chat(&request, &request_options())
+        .await
+        .unwrap();
     let final_event = output.next_event().await.unwrap().unwrap();
     assert!(final_event.is_complete());
     assert_eq!(final_event.native()["usage"]["future_usage"], 7);
@@ -286,10 +286,13 @@ async fn intermediate_native_phases_are_preserved_and_stop_waits_for_clean_eof()
     let mock = Mock::new([stream_reply(bytes.into_iter().map(|byte| vec![byte]))]);
     let service = make_service(&mock, "account-1");
     let mut output = service
-        .knowledge_chat(&QwenKnowledgeChatRequest::new(
-            chat_ref(service.scope()),
-            [QwenKnowledgeChatMessage::user_text("Question")],
-        ))
+        .knowledge_chat(
+            &QwenKnowledgeChatRequest::new(
+                chat_ref(service.scope()),
+                [QwenKnowledgeChatMessage::user_text("Question")],
+            ),
+            &request_options(),
+        )
         .await
         .unwrap();
 
@@ -314,10 +317,13 @@ async fn provider_error_after_stop_prevents_false_completion_and_keeps_native_er
     let mock = Mock::new([stream_reply([bytes])]);
     let service = make_service(&mock, "account-1");
     let mut output = service
-        .knowledge_chat(&QwenKnowledgeChatRequest::new(
-            chat_ref(service.scope()),
-            [QwenKnowledgeChatMessage::user_text("Question")],
-        ))
+        .knowledge_chat(
+            &QwenKnowledgeChatRequest::new(
+                chat_ref(service.scope()),
+                [QwenKnowledgeChatMessage::user_text("Question")],
+            ),
+            &request_options(),
+        )
         .await
         .unwrap();
     let error = output.next_event().await.expect_err("expected an error");
@@ -352,10 +358,13 @@ async fn malformed_success_envelopes_with_stop_never_complete() {
         let mock = Mock::new([stream_reply([sse(malformed)])]);
         let service = make_service(&mock, "account-1");
         let mut output = service
-            .knowledge_chat(&QwenKnowledgeChatRequest::new(
-                chat_ref(service.scope()),
-                [QwenKnowledgeChatMessage::user_text("Question")],
-            ))
+            .knowledge_chat(
+                &QwenKnowledgeChatRequest::new(
+                    chat_ref(service.scope()),
+                    [QwenKnowledgeChatMessage::user_text("Question")],
+                ),
+                &request_options(),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -379,10 +388,13 @@ async fn non_sse_success_response_retains_native_body_in_error() {
     }]);
     let service = make_service(&mock, "account-1");
     let error = service
-        .knowledge_chat(&QwenKnowledgeChatRequest::new(
-            chat_ref(service.scope()),
-            [QwenKnowledgeChatMessage::user_text("Question")],
-        ))
+        .knowledge_chat(
+            &QwenKnowledgeChatRequest::new(
+                chat_ref(service.scope()),
+                [QwenKnowledgeChatMessage::user_text("Question")],
+            ),
+            &request_options(),
+        )
         .await
         .err()
         .expect("expected an error");
@@ -423,7 +435,10 @@ async fn eof_without_stop_and_body_interruption_are_unknown_not_success() {
         )
     };
 
-    let mut clean_eof = service.knowledge_chat(&request()).await.unwrap();
+    let mut clean_eof = service
+        .knowledge_chat(&request(), &request_options())
+        .await
+        .unwrap();
     let _ = clean_eof.next_event().await.unwrap().unwrap();
     let error = clean_eof.next_event().await.expect_err("expected an error");
     assert!(matches!(
@@ -432,7 +447,10 @@ async fn eof_without_stop_and_body_interruption_are_unknown_not_success() {
     ));
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
 
-    let mut interrupted = service.knowledge_chat(&request()).await.unwrap();
+    let mut interrupted = service
+        .knowledge_chat(&request(), &request_options())
+        .await
+        .unwrap();
     let _ = interrupted.next_event().await.unwrap().unwrap();
     let error = interrupted
         .next_event()
@@ -453,10 +471,13 @@ async fn scope_image_and_session_file_limits_fail_before_http() {
     let other_scope = scope("account-2");
     let foreign_ref = other_scope.knowledge_chat_ref("aid-other").unwrap();
     let error = service
-        .knowledge_chat(&QwenKnowledgeChatRequest::new(
-            foreign_ref,
-            [QwenKnowledgeChatMessage::user_text("Question")],
-        ))
+        .knowledge_chat(
+            &QwenKnowledgeChatRequest::new(
+                foreign_ref,
+                [QwenKnowledgeChatMessage::user_text("Question")],
+            ),
+            &request_options(),
+        )
         .await
         .err()
         .expect("expected an error");
@@ -472,7 +493,9 @@ async fn scope_image_and_session_file_limits_fail_before_http() {
         ])],
     );
     assert!(matches!(
-        service.knowledge_chat(&invalid_image).await,
+        service
+            .knowledge_chat(&invalid_image, &request_options())
+            .await,
         Err(QwenKnowledgeChatError::InvalidInput(_))
     ));
 
@@ -485,7 +508,7 @@ async fn scope_image_and_session_file_limits_fail_before_http() {
     )
     .with_session_files(files);
     assert!(matches!(
-        service.knowledge_chat(&too_many).await,
+        service.knowledge_chat(&too_many, &request_options()).await,
         Err(QwenKnowledgeChatError::InvalidInput(_))
     ));
     assert!(mock.requests().is_empty());
@@ -519,7 +542,7 @@ async fn transport_failure_is_not_retried_and_http_errors_keep_native_status() {
     };
 
     let error = service
-        .knowledge_chat(&request())
+        .knowledge_chat(&request(), &request_options())
         .await
         .err()
         .expect("expected an error");
@@ -530,7 +553,7 @@ async fn transport_failure_is_not_retried_and_http_errors_keep_native_status() {
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
 
     let error = service
-        .knowledge_chat(&request())
+        .knowledge_chat(&request(), &request_options())
         .await
         .err()
         .expect("expected an error");
@@ -547,7 +570,7 @@ async fn transport_failure_is_not_retried_and_http_errors_keep_native_status() {
     }
 
     let error = service
-        .knowledge_chat(&request())
+        .knowledge_chat(&request(), &request_options())
         .await
         .err()
         .expect("expected an error");
@@ -574,16 +597,21 @@ async fn body_limit_is_enforced_and_dropping_stream_cancels_body() {
         )],
     );
     assert!(matches!(
-        service.knowledge_chat(&large_request).await,
+        service
+            .knowledge_chat(&large_request, &request_options())
+            .await,
         Err(QwenKnowledgeChatError::InvalidInput(_))
     ));
     assert!(mock.requests().is_empty());
 
     let mut overlong_event = service
-        .knowledge_chat(&QwenKnowledgeChatRequest::new(
-            chat_ref(service.scope()),
-            [QwenKnowledgeChatMessage::user_text("Question")],
-        ))
+        .knowledge_chat(
+            &QwenKnowledgeChatRequest::new(
+                chat_ref(service.scope()),
+                [QwenKnowledgeChatMessage::user_text("Question")],
+            ),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -595,12 +623,22 @@ async fn body_limit_is_enforced_and_dropping_stream_cancels_body() {
     let drop_mock = Mock::new([Reply::DropTracked(dropped.clone())]);
     let drop_service = make_service(&drop_mock, "account-1");
     let stream = drop_service
-        .knowledge_chat(&QwenKnowledgeChatRequest::new(
-            chat_ref(drop_service.scope()),
-            [QwenKnowledgeChatMessage::user_text("Question")],
-        ))
+        .knowledge_chat(
+            &QwenKnowledgeChatRequest::new(
+                chat_ref(drop_service.scope()),
+                [QwenKnowledgeChatMessage::user_text("Question")],
+            ),
+            &request_options(),
+        )
         .await
         .unwrap();
     drop(stream);
     assert!(dropped.load(Ordering::SeqCst));
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-chat-api-key".to_owned())),
+        ..Default::default()
+    }
 }

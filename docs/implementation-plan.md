@@ -566,7 +566,7 @@ Anthropic 第一方 Messages Remote MCP 尚无类型化请求入口：当前 enc
 
 ## 2026-09-27 第二十轮：Anthropic Browser / Computer 客户端工具集
 
-增加独立ChatRequest.anthropic_client_toolsets声明，支持稳定20260801的Browser/Computer成员配置、默认启用状态、direct-only caller、工具搜索/延迟加载、缓存、模型/协议与命名冲突限制。宿主仍执行工具，不纳入HostedTool。ToolUse、ToolResult和ToolCallDelta完整保留toolset_name；tool_uses()改返回(id,namespace,name,input)，相关Rust字面量及双语API示例同步迁移，不保留旧API兼容分支。
+增加独立ChatRequest::set_anthropic_client_toolsets()声明，支持稳定20260801的Browser/Computer成员配置、默认启用状态、direct-only caller、工具搜索/延迟加载、缓存、模型/协议与命名冲突限制。宿主仍执行工具，不纳入HostedTool。ToolUse、ToolResult和ToolCallDelta完整保留toolset_name；tool_uses()改返回(id,namespace,name,input)，相关Rust字面量及双语API示例同步迁移，不保留旧API兼容分支。
 
 历史校验覆盖已知调用/结果命名空间、允许的原生结果块、标签管理结果和browser_state结构、可空状态/下载字段。截图与其他成员的图片/文本输出约定按官方说明由宿主执行，不误当作API硬限制。独立审查后补齐内联custom定义命名冲突、下载大小非负整数、MCP与客户端工具集合计上限的附件前预检。缓存计数/TTL顺序与实际wire顺序一致；本地token估算显式列出未计入的提供方成员定义。
 

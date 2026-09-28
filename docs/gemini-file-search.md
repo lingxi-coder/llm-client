@@ -1,10 +1,12 @@
 # Gemini File Search
 
+先用 `client.provider::<GoogleClient>(profile)?` 绑定具体 profile，再通过 `provider.file_search()` 调用资源。每次操作传入 `RequestOptions`，client 不保存凭证。
+
 Gemini File Search 为检索增强生成托管索引。该模块管理 File Search stores，支持直接上传字节或导入已有 Gemini Files API 文件，查询两类索引 operation 状态，以及列出、读取和删除 documents。请求仍由调用方提供 API key 和稳定的非秘密 `account_scope`。
 
 ```rust,ignore
 use lingxi_llm_client::{
-    gemini_file_search::{GeminiFileSearchMetadata, GeminiFileSearchMetadataValue,
+    providers::google::file_search::{GeminiFileSearchMetadata, GeminiFileSearchMetadataValue,
         GeminiFileSearchOperationState, GeminiFileSearchWhiteSpaceChunking},
     LlmClient, ProviderFileRef, RequestOptions,
 };
@@ -14,10 +16,10 @@ async fn manage(
     options: &RequestOptions,
     file: &ProviderFileRef,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let service = client.gemini_file_search();
+    let provider = client.provider::<lingxi_llm_client::providers::google::GoogleClient>("gemini")?;
+    let service = provider.file_search();
     let store = service
         .create_store(
-            "gemini",
             Some("Product documents"),
             Some("models/gemini-embedding-2"),
             options,
@@ -64,7 +66,7 @@ async fn manage(
 
 ```rust,ignore
 use bytes::Bytes;
-use lingxi_llm_client::gemini_file_search::GeminiFileSearchUploadRequest;
+use lingxi_llm_client::providers::google::file_search::GeminiFileSearchUploadRequest;
 
 let upload = GeminiFileSearchUploadRequest::new(
     Bytes::from_static(b"Product documentation"),

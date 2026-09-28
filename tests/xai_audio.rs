@@ -2,13 +2,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    audio::AudioInput,
     protocol::{LlmError, Secret},
-    transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
-    xai_audio::{
+    providers::openai::audio::AudioInput,
+    providers::xai::audio::{
         XaiAudioConfig, XaiAudioCredentials, XaiAudioError, XaiAudioService, XaiSpeechOutput,
         XaiSpeechRequest, XaiTranscriptionRequest,
     },
+    transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
 use std::{collections::VecDeque, sync::Mutex, time::Duration};

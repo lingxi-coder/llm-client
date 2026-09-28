@@ -4,8 +4,8 @@ use futures::{StreamExt, TryStreamExt};
 use lingxi_llm_client::{
     files::{UploadFile, UploadFileStream},
     protocol::{LlmError, Secret},
+    providers::xai::collections::*,
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
-    xai_collections::*,
 };
 use serde_json::{json, Value};
 use std::{

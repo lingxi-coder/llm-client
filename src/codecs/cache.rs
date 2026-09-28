@@ -24,7 +24,7 @@ fn control(ttl: CacheTtl) -> Value {
 }
 
 fn uses_anthropic_marker_rules(context: &CodecContext) -> bool {
-    crate::codecs::anthropic_code_execution::is_official_profile(context.profile())
+    crate::providers::anthropic::code_execution::is_official_profile(context.profile())
         || matches!(
             context.profile().protocol,
             ProtocolFamily::FoundryClaude | ProtocolFamily::VertexClaude
@@ -34,19 +34,20 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
     let native_openai_responses_controls = req.prompt_cache.prompt_cache_key.is_some()
         || req.prompt_cache.prompt_cache_options.is_some()
         || req.prompt_cache.prompt_cache_retention.is_some();
-    if native_openai_responses_controls && !super::openai::responses::cache::applies(context) {
+    if native_openai_responses_controls && !crate::providers::openai::prompt_cache::applies(context)
+    {
         return Err(unsupported(
             "native OpenAI prompt-cache controls require the official OpenAI Responses endpoint",
         ));
     }
-    if super::openai::responses::cache::applies(context) {
-        return super::openai::responses::cache::validate(req, context);
+    if crate::providers::openai::prompt_cache::applies(context) {
+        return crate::providers::openai::prompt_cache::validate(req, context);
     }
-    if super::qwen_cache::applies(context) {
-        return super::qwen_cache::validate(req, context);
+    if crate::providers::qwen::cache::applies(context) {
+        return crate::providers::qwen::cache::validate(req, context);
     }
-    if super::openai::chat::openrouter_cache::applies(context) {
-        return super::openai::chat::openrouter_cache::validate(req, context);
+    if crate::providers::openrouter::prompt_cache::applies(context) {
+        return crate::providers::openrouter::prompt_cache::validate(req, context);
     }
     if uses_anthropic_marker_rules(context) {
         return validate_anthropic_markers(req, context);
@@ -66,17 +67,7 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
             "explicit prompt cache policy has no encoder for this protocol",
         ));
     }
-    if context.profile().provider_id.as_str() == "minimax"
-        && (policy.automatic.is_some()
-            || policy
-                .breakpoints
-                .iter()
-                .any(|b| b.ttl == CacheTtl::OneHour))
-    {
-        return Err(unsupported(
-            "MiniMax supports explicit five-minute cache breakpoints only",
-        ));
-    }
+    crate::providers::minimax::cache::validate(req, context)?;
     if policy.breakpoints.len() + usize::from(policy.automatic.is_some()) > 4 {
         return Err(invalid(
             "at most four cache breakpoints including automatic caching are allowed",
@@ -219,8 +210,8 @@ fn validate_anthropic_markers(req: &ChatRequest, context: &CodecContext) -> Resu
         automatic = Some(raw_ttl);
     }
 
-    let mcp_ttls = super::anthropic_mcp::cache_ttls(req);
-    let client_toolset_ttls = super::anthropic_client_toolsets::cache_ttls(req);
+    let mcp_ttls = crate::providers::anthropic::mcp::cache_ttls(req);
+    let client_toolset_ttls = crate::providers::anthropic::client_toolsets::cache_ttls(req);
     let fetch_ttl = req
         .hosted_anthropic_web_fetch()
         .filter(|fetch| !fetch.inline_definition)
@@ -299,8 +290,11 @@ fn validate_breakpoint_positions(
     for breakpoint in &policy.breakpoints {
         if let CachePosition::Message { index, .. } = breakpoint.position {
             if req.messages.get(index).is_some_and(|message| {
-                message.anthropic.as_ref().is_some_and(|options| {
-                    options.clear_at == Some(crate::protocol::AnthropicClearAt::NextUserMessage)
+                message.anthropic_options().is_some_and(|options| {
+                    options.clear_at
+                        == Some(
+                            crate::providers::anthropic::types::AnthropicClearAt::NextUserMessage,
+                        )
                 })
             }) {
                 return Err(invalid(

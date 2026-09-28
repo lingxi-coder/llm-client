@@ -1,7 +1,5 @@
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, ChatRequest, HostedTool, LlmError,
-    ProtocolFamily, ProviderProfile,
-};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError, ProtocolFamily, ProviderProfile};
+use lingxi_llm_client::providers::anthropic::types::AnthropicToolSearchStrategy;
 use lingxi_llm_client::{
     AnthropicMessagesCodec, BedrockClaudeCodec, CodecContext, EncodeRequest, RequestMode,
     VertexClaudeCodec, WireCodec,
@@ -35,8 +33,7 @@ fn request(model: &str) -> ChatRequest {
         "model": model,
         "messages": [{"role":"user","content":[{"type":"text","text":"Find a tool"}]}],
         "hosted_tools": [{
-            "type": "anthropic_tool_search",
-            "config": {"strategy":"regex"}
+            "type": "native", "config": {"format":"anthropic.hosted_tool.v1", "data":{"type":"tool_search", "config":{"strategy":"regex"}}}
         }]
     }))
     .unwrap()
@@ -188,10 +185,9 @@ fn route_test_request_uses_typed_tool_search() {
     // Keep this explicit assertion near the helper so changes to the serde
     // spelling cannot accidentally turn route tests into ordinary requests.
     let request = request("claude-opus-5-5");
-    assert!(matches!(
-        request.hosted_tools.as_slice(),
-        [HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex
-        })]
-    ));
+    assert_eq!(request.hosted_tools.len(), 1);
+    assert_eq!(
+        request.hosted_anthropic_tool_search().unwrap().strategy,
+        AnthropicToolSearchStrategy::Regex
+    );
 }

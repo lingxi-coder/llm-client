@@ -1,40 +1,6 @@
 //! Automatic upload ownership and cleanup.
 use super::*;
 
-/// Pace automatic file operations for one configured Qwen connection. The
-/// upload and metadata/delete buckets have separate documented QPS limits.
-pub(crate) struct QwenFileRateLimiter {
-    next_upload: futures::lock::Mutex<Instant>,
-    next_metadata: futures::lock::Mutex<Instant>,
-}
-
-impl QwenFileRateLimiter {
-    pub(crate) fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            next_upload: futures::lock::Mutex::new(now),
-            next_metadata: futures::lock::Mutex::new(now),
-        }
-    }
-
-    pub(crate) async fn wait_upload(&self) {
-        Self::wait(&self.next_upload, QWEN_UPLOAD_INTERVAL).await;
-    }
-
-    pub(crate) async fn wait_metadata(&self) {
-        Self::wait(&self.next_metadata, QWEN_METADATA_INTERVAL).await;
-    }
-
-    async fn wait(next: &futures::lock::Mutex<Instant>, interval: Duration) {
-        let mut next = next.lock().await;
-        let delay = next.saturating_duration_since(Instant::now());
-        if !delay.is_zero() {
-            async_delay(delay).await;
-        }
-        *next = Instant::now() + interval;
-    }
-}
-
 /// Owns automatic Qwen uploads until the model response or stream is finished.
 /// A dropped preparation/stream still schedules deletion, including when a
 /// request is cancelled while file parsing is in progress.

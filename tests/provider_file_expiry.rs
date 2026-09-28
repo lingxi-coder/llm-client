@@ -3,10 +3,11 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::files::{provider_file_endpoint_fingerprint, FileService, ProviderFileRef};
 use lingxi_llm_client::protocol::{
-    AnthropicCodeExecutionConfig, AttachmentRef, AuthStrategy, ChatRequest, ContentBlock,
-    ConversationMessage, DocumentSource, HostedTool, ImageSource, LlmError, MessageRole,
-    ProtocolFamily, ProviderFileSource, ProviderProfile, Region, Secret, VideoSource,
+    AttachmentRef, AuthStrategy, ChatRequest, ContentBlock, ConversationMessage, DocumentSource,
+    ImageSource, LlmError, MessageRole, ProtocolFamily, ProviderFileSource, ProviderProfile,
+    Region, Secret, VideoSource,
 };
+use lingxi_llm_client::providers::anthropic::types::AnthropicCodeExecutionConfig;
 use lingxi_llm_client::transport::Clock;
 use lingxi_llm_client::{
     AnthropicMessagesCodec, Authenticator, CodecContext, EncodeRequest, GeminiCodec, HttpRequest,
@@ -70,7 +71,7 @@ fn request(profile: &ProviderProfile, source: ProviderFileSource) -> ChatRequest
         serde_json::from_value(json!({"model":profile.models[0].request_model,"messages":[]}))
             .unwrap();
     request.messages = vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Document {
             source: DocumentSource::ProviderFile { file: source },
@@ -202,15 +203,16 @@ fn image_video_and_sandbox_uploads_share_expiry_validation() {
     request.messages = vec![ConversationMessage::user_text("Analyze the CSV")];
     let mut source = file(&anthropic, Some("2000000000")).model_reference();
     source.media_type = Some("text/csv".into());
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
             AnthropicCodeExecutionConfig {
                 files: vec![source],
                 skills: vec![],
                 ..Default::default()
             },
-        ));
+        )
+        .into(),
+    );
     assert!(matches!(
         AnthropicMessagesCodec.encode_request(EncodeRequest::new(&request), &context(&anthropic)),
         Err(LlmError::InvalidRequest { .. })

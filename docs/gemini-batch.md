@@ -2,11 +2,11 @@
 
 `gemini_batch` 提供 Google Gemini Developer API `generateContent` Batch 操作，支持 inline 请求和 JSONL 文件：创建、更新、读取、单页列表、请求取消、删除，以及 inline 或文件形式的结果。另有独立的异步 `EmbedContent` Batch typed 生命周期、inline 单项结果和逐行解析的 typed JSONL 结果流。文件输入使用官方文档中的 Gemini Files API 可恢复上传流程。服务只保存 transport 和非密钥作用域；宿主在每次操作时传入 `&Secret<String>`，并自行负责凭据刷新和轮换。服务不会自动轮询、翻页或重试。generateContent JSONL 输出仍以原始字节提供；embedding JSONL 输出会逐行解码。
 
-路由和 JSON 结构依据 Google 的 [Batch API guide](https://ai.google.dev/gemini-api/docs/batch-api)、[Batch API REST reference](https://ai.google.dev/api/batch-api) 与 [Files API reference](https://ai.google.dev/api/files)：创建使用 `POST /v1beta/models/{model}:batchGenerateContent`；更新使用 `PATCH /v1beta/batches/{batchId}:updateGenerateContentBatch`；状态读取使用 `GET /v1beta/batches/{batchId}`；列表使用 `GET /v1beta/batches?pageSize=...&pageToken=...`；取消使用 `POST /v1beta/batches/{batchId}:cancel`；删除使用 `DELETE /v1beta/batches/{batchId}`。API key 通过 `x-goog-api-key` 发送。
+路由和 JSON 结构依据 Google 的 [Batch API guide](https://ai.google.dev/gemini-api/docs/batch-api)、[Batch API REST reference](https://ai.google.dev/api/batch-api) 与 [Files API reference](https://ai.google.dev/api/files)：创建使用 `POST /v1beta/models/{model}:batchGenerateContent`；更新使用 `PATCH /v1beta/batches/{batchId}:updateGenerateContentBatch`；状态读取使用 `GET /v1beta/batches/{batchId}`；列表使用 `GET /v1beta/batches?pageSize=...&pageToken=...`；取消使用 `POST /v1beta/batches/{batchId}:cancel`；删除使用 `DELETE /v1beta/batches/{batchId}`。独立构造的服务通过 `x-goog-api-key` 发送 API key；`GoogleClient::batch(scope)` 的绑定服务使用 profile 注册的鉴权器。
 
 ```rust,no_run
 use lingxi_llm_client::{
-    gemini_batch::{
+    providers::google::batch::{
         GeminiBatchCreateRequest, GeminiBatchError, GeminiBatchGenerateContentRequest,
         GeminiBatchInput, GeminiBatchListOptions, GeminiBatchRequest, GeminiBatchScope,
         GeminiBatchService,
@@ -68,7 +68,7 @@ inline 输入对象采用 Gemini REST schema 的 `batch.input_config.requests.re
 
 ```rust,no_run
 use futures::StreamExt;
-use lingxi_llm_client::gemini_batch::{
+use lingxi_llm_client::providers::google::batch::{
     GeminiBatchCreateRequest, GeminiBatchError, GeminiBatchFileRef,
     GeminiBatchGenerateContentRequest, GeminiBatchInput, GeminiBatchJsonlInput,
     GeminiBatchJsonlRequest, GeminiBatchScope, GeminiBatchService, GeminiBatchState,
@@ -136,7 +136,7 @@ Batch 创建、更新和文件上传都不会自动重试。上传、创建、�
 `update_generate_content_batch` 使用官方 `PATCH /v1beta/batches/{batchId}:updateGenerateContentBatch`。`GeminiBatchUpdateRequest` 会编码必需的 `model`、`displayName`、`inputConfig`；可选 `priority` 按十进制字符串发送 int64，Google 文档允许负值。可选 `updateMask` 只接受资源字段名 `model`、`displayName`、`inputConfig` 和 `priority`。文件输入的资源字段使用 `inputConfig.fileName`。inline 更新资源使用与 inline 创建相同的客户端 20,000,000 字节上限；更大的批次请使用文件输入。Google 直接返回 `GenerateContentBatch` 资源，因此客户端会校验响应名称与带作用域的引用一致，并解析资源必需字段。传输错误或无法解码的 2xx 响应会携带引用返回 `OutcomeUnknown` 或 `OutcomeUnknownResponse`，且不会重试。REST 文档没有规定额外的 priority 范围或批次状态前置条件，客户端也不自行添加。
 
 ```rust,no_run
-use lingxi_llm_client::gemini_batch::{
+use lingxi_llm_client::providers::google::batch::{
     GeminiBatchError, GeminiBatchGenerateContentRequest, GeminiBatchInput,
     GeminiBatchRequest, GeminiBatchSnapshot, GeminiBatchUpdateField,
     GeminiBatchUpdateRequest, GeminiBatchService,
@@ -179,7 +179,7 @@ async fn update_example(
 
 ```rust,no_run
 use lingxi_llm_client::{
-    gemini_batch::{
+    providers::google::batch::{
         GeminiBatchEmbeddingConfig, GeminiBatchEmbedContentItem,
         GeminiBatchEmbedContentRequest, GeminiBatchListOptions,
         GeminiEmbeddingBatchCreateRequest, GeminiEmbeddingBatchInput,
@@ -239,7 +239,7 @@ async fn embed_corpus(
 文件输入可以用 `GeminiEmbeddingBatchJsonlInput` 构造带 key 的原生 embedding 请求行，再调用 `upload_embedding_input_jsonl`。编码器会在开始上传前校验 key 唯一且非空，并遵守官方 2 GB 文件上限。返回的 `GeminiEmbeddingBatchFileRef` 会保留模型、输入顺序中的 request key 和输出维度；将其传给 `GeminiEmbeddingBatchInput::from_file` 即可创建任务。如果宿主已有 JSONL 流，也可以使用 `upload_embedding_input_stream`。
 
 ```rust,no_run
-use lingxi_llm_client::gemini_batch::{
+use lingxi_llm_client::providers::google::batch::{
     GeminiBatchEmbeddingConfig, GeminiBatchEmbedContentRequest,
     GeminiEmbeddingBatchCreateRequest, GeminiEmbeddingBatchInput,
     GeminiEmbeddingBatchJsonlInput, GeminiEmbeddingBatchJsonlRequest,

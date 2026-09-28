@@ -5,7 +5,7 @@
 ```rust,no_run
 # async fn example(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
-    minimax_tts::{
+    providers::minimax::tts::{
         MiniMaxTtsConfig, MiniMaxTtsCredentials, MiniMaxTtsOutput, MiniMaxTtsRegion,
         MiniMaxTtsRequest, MiniMaxTtsService,
     },
@@ -44,7 +44,7 @@ With `MiniMaxTtsOutputFormat::Hex`, MiniMax returns `data.audio` as hexadecimal 
 `synthesize_stream` returns one `MiniMaxTtsStreamEvent` at a time. Each JSON event retains its full native object and decodes `data.audio` from hex when present; `data.status == 2` and `[DONE]` end the stream. A clean EOF after audio is also accepted, matching MiniMax's published CLI behavior. Check `terminal_event_received()` to distinguish an explicit status-2 or `[DONE]` marker from clean EOF; the client does not synthesize a missing terminal marker. It preserves terminal event audio and does not combine or deduplicate chunks because the provider contract available to this client does not say whether terminal audio is another delta or a complete aggregate. Streaming subtitle fields remain inside each native event; this client does not invent a subtitle event schema or download subtitle URLs.
 
 ```rust,no_run
-use lingxi_llm_client::minimax_tts::{
+use lingxi_llm_client::providers::minimax::tts::{
     MiniMaxTtsCredentials, MiniMaxTtsRequest, MiniMaxTtsService,
     MiniMaxTtsStreamEvent, MiniMaxTtsSubtitleType,
 };

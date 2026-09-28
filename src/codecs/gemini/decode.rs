@@ -51,11 +51,9 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
         response_cache: None,
         web_search: crate::codecs::web_search_decode::gemini(&candidate),
         file_search: None,
-        openrouter_container: None,
-        anthropic_container: None,
-        anthropic_usage: None,
+        native_metadata: Vec::new(),
         message: ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content,
         },

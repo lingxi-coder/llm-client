@@ -7,10 +7,11 @@ mod wire_api;
 use async_trait::async_trait;
 use bytes::Bytes;
 use lingxi_llm_client::protocol::{
-    AttachmentRef, AuthStrategy, ChatRequest, ContentBlock, DocumentSource, GeminiLatLng,
-    GeminiMapsGroundingConfig, HostedTool, LlmError, ProtocolFamily, ProviderFileSource,
-    ProviderId, ProviderProfile, Region, Secret, StreamEvent, ToolSpec, WebSearchConfig,
+    AttachmentRef, AuthStrategy, ChatRequest, ContentBlock, DocumentSource, HostedTool, LlmError,
+    ProtocolFamily, ProviderFileSource, ProviderId, ProviderProfile, Region, Secret, StreamEvent,
+    ToolSpec, WebSearchConfig,
 };
+use lingxi_llm_client::providers::google::types::{GeminiLatLng, GeminiMapsGroundingConfig};
 use lingxi_llm_client::{
     AttachmentResolver, Authenticator, EncodeRequest, GeminiCodec, HttpRequest, HttpResponse,
     LlmClientBuilder, RequestOptions, StreamResponse, Transport, VertexGeminiCodec, WireCodec,
@@ -86,7 +87,8 @@ fn response(parts: Value, candidate_metadata: Value) -> HttpResponse {
 fn first_party_tools_use_native_generate_content_shapes() {
     let model = "gemini-3.8-flash";
     let mut code = new_request(model);
-    code.hosted_tools.push(HostedTool::GeminiCodeExecution);
+    code.hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     let code_body = body(&encode(&code, model));
     assert_eq!(code_body["tools"], json!([{"codeExecution": {}}]));
     assert_eq!(
@@ -99,17 +101,22 @@ fn first_party_tools_use_native_generate_content_shapes() {
 
     let model = "gemini-2.5-flash";
     let mut url = new_request(model);
-    url.hosted_tools.push(HostedTool::GeminiUrlContext);
+    url.hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::UrlContext.into());
     let url_body = body(&encode(&url, model));
     assert_eq!(url_body["tools"], json!([{"urlContext": {}}]));
     assert!(url_body.get("toolConfig").is_none());
 
     let mut maps = new_request(model);
-    maps.hosted_tools
-        .push(HostedTool::GeminiMapsGrounding(GeminiMapsGroundingConfig {
-            enable_widget: Some(false),
-            lat_lng: Some(GeminiLatLng::new(37.78193, -122.40476).unwrap()),
-        }));
+    maps.hosted_tools.push(
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::MapsGrounding(
+            GeminiMapsGroundingConfig {
+                enable_widget: Some(false),
+                lat_lng: Some(GeminiLatLng::new(37.78193, -122.40476).unwrap()),
+            },
+        )
+        .into(),
+    );
     let maps_body = body(&encode(&maps, model));
     assert_eq!(
         maps_body["tools"],
@@ -127,7 +134,7 @@ fn gemini_3_functions_and_google_search_use_tool_context_circulation() {
     let mut request = new_request(model);
     request.hosted_tools = vec![
         HostedTool::WebSearch(WebSearchConfig::default()),
-        HostedTool::GeminiCodeExecution,
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into(),
     ];
     request.tools.push(ToolSpec {
         tool_type: None,
@@ -137,7 +144,7 @@ fn gemini_3_functions_and_google_search_use_tool_context_circulation() {
         input_schema: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     let encoded = body(&encode(&request, model));
     assert_eq!(
@@ -159,7 +166,9 @@ fn gemini_3_functions_and_google_search_use_tool_context_circulation() {
 fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
     let model = "gemini-2.5-flash";
     let mut request = new_request(model);
-    request.hosted_tools.push(HostedTool::GeminiCodeExecution);
+    request
+        .hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     request.tools.push(ToolSpec {
         tool_type: None,
         extra: serde_json::Value::Null,
@@ -168,7 +177,7 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
         input_schema: json!({"type": "object"}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     let profile = gemini_profile(model);
     assert!(matches!(
@@ -180,7 +189,10 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
     let mut maps_search = new_request(model);
     maps_search.tools.clear();
     maps_search.hosted_tools = vec![
-        HostedTool::GeminiMapsGrounding(GeminiMapsGroundingConfig::default()),
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::MapsGrounding(
+            GeminiMapsGroundingConfig::default(),
+        )
+        .into(),
         HostedTool::WebSearch(WebSearchConfig::default()),
     ];
     let profile = gemini_profile(model);
@@ -192,8 +204,11 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
     let model = "gemini-3.8-flash";
     let mut multiple = new_request(model);
     multiple.hosted_tools = vec![
-        HostedTool::GeminiUrlContext,
-        HostedTool::GeminiMapsGrounding(GeminiMapsGroundingConfig::default()),
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::UrlContext.into(),
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::MapsGrounding(
+            GeminiMapsGroundingConfig::default(),
+        )
+        .into(),
     ];
     let profile = gemini_profile(model);
     assert!(matches!(
@@ -205,7 +220,7 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
     let mut unsupported_model = new_request(model);
     unsupported_model
         .hosted_tools
-        .push(HostedTool::GeminiCodeExecution);
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     let profile = gemini_profile(model);
     assert!(matches!(
         GeminiCodec.validate_request(&unsupported_model, &context(&profile, model)),
@@ -215,7 +230,9 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
     let mut gateway = gemini_profile("gemini-3.8-flash");
     gateway.base_url = "https://gateway.example/v1beta".into();
     let mut hosted = new_request("gemini-3.8-flash");
-    hosted.hosted_tools.push(HostedTool::GeminiUrlContext);
+    hosted
+        .hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::UrlContext.into());
     assert!(matches!(
         GeminiCodec.validate_request(&hosted, &context(&gateway, "gemini-3.8-flash")),
         Err(LlmError::UnsupportedCapability { .. })
@@ -243,11 +260,12 @@ fn maps_location_and_multimodal_constraints_are_preflighted() {
             data: "aGVsbG8=".into(),
         },
     });
-    multimodal
-        .hosted_tools
-        .push(HostedTool::GeminiMapsGrounding(
+    multimodal.hosted_tools.push(
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::MapsGrounding(
             GeminiMapsGroundingConfig::default(),
-        ));
+        )
+        .into(),
+    );
     let profile = gemini_profile(model);
     assert!(matches!(
         GeminiCodec.validate_request(&multimodal, &context(&profile, model)),
@@ -258,18 +276,19 @@ fn maps_location_and_multimodal_constraints_are_preflighted() {
     inline_history
         .messages
         .push(lingxi_llm_client::protocol::ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: lingxi_llm_client::protocol::MessageRole::Assistant,
             content: vec![ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::GeminiGenerateContent,
                 value: json!({"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}),
             }],
         });
-    inline_history
-        .hosted_tools
-        .push(HostedTool::GeminiMapsGrounding(
+    inline_history.hosted_tools.push(
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::MapsGrounding(
             GeminiMapsGroundingConfig::default(),
-        ));
+        )
+        .into(),
+    );
     assert!(matches!(
         GeminiCodec.validate_request(&inline_history, &context(&profile, model)),
         Err(LlmError::UnsupportedCapability { .. })
@@ -281,9 +300,12 @@ fn maps_location_and_multimodal_constraints_are_preflighted() {
         "body": {"generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
     });
     let mut maps = new_request(model);
-    maps.hosted_tools.push(HostedTool::GeminiMapsGrounding(
-        GeminiMapsGroundingConfig::default(),
-    ));
+    maps.hosted_tools.push(
+        lingxi_llm_client::providers::google::native::GoogleHostedTool::MapsGrounding(
+            GeminiMapsGroundingConfig::default(),
+        )
+        .into(),
+    );
     assert!(matches!(
         GeminiCodec.validate_request(&maps, &context(&multimodal_output_profile, model)),
         Err(LlmError::UnsupportedCapability { .. })
@@ -317,7 +339,9 @@ fn native_code_artifact_and_server_tool_parts_round_trip_without_rewriting() {
     }
 
     let mut follow_up = new_request("gemini-3.8-flash");
-    follow_up.hosted_tools.push(HostedTool::GeminiCodeExecution);
+    follow_up
+        .hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     follow_up.messages.push(decoded.message);
     let encoded = body(&encode(&follow_up, "gemini-3.8-flash"));
     assert_eq!(encoded["contents"][1]["parts"], code_parts);
@@ -333,7 +357,9 @@ fn native_code_artifact_and_server_tool_parts_round_trip_without_rewriting() {
         )
         .unwrap();
     let mut follow_up = new_request("gemini-3.8-flash");
-    follow_up.hosted_tools.push(HostedTool::GeminiUrlContext);
+    follow_up
+        .hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::UrlContext.into());
     follow_up.messages.push(decoded.message);
     let encoded = body(&encode(&follow_up, "gemini-3.8-flash"));
     assert_eq!(encoded["contents"][1]["parts"], tool_parts);
@@ -467,7 +493,9 @@ async fn unsupported_cross_protocol_tool_fails_before_attachment_auth_or_network
     }))
     .unwrap();
     let mut request = new_request("m");
-    request.hosted_tools.push(HostedTool::GeminiCodeExecution);
+    request
+        .hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     request.messages[0].content.push(ContentBlock::Document {
         source: DocumentSource::Attachment {
             attachment: AttachmentRef {
@@ -599,7 +627,10 @@ async fn server_side_tools_are_not_replayed_after_uncertain_outcomes() {
                 .build()
                 .unwrap();
             let mut req = new_request("gemini-3.8-flash");
-            req.hosted_tools.push(HostedTool::GeminiCodeExecution);
+            req.hosted_tools.push(
+                lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution
+                    .into(),
+            );
             let result = if streaming {
                 client
                     .chat()
@@ -647,7 +678,8 @@ async fn missing_provider_file_does_not_automatically_repeat_hosted_execution() 
         .build()
         .unwrap();
     let mut req = new_request("gemini-3.8-flash");
-    req.hosted_tools.push(HostedTool::GeminiCodeExecution);
+    req.hosted_tools
+        .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     req.messages[0].content.push(ContentBlock::Document {
         source: DocumentSource::ProviderFile {
             file: ProviderFileSource {

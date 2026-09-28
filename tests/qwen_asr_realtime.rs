@@ -7,7 +7,7 @@ use futures::{
 use lingxi_llm_client::{
     client::RequestOptions,
     protocol::Secret,
-    qwen_asr_realtime::{
+    providers::qwen::asr_realtime::{
         QwenAsrLanguage, QwenAsrRealtimeAudioFormat, QwenAsrRealtimeConfig, QwenAsrRealtimeError,
         QwenAsrRealtimeEventKind, QwenAsrRealtimeLimits, QwenAsrRealtimeRegion,
         QwenAsrRealtimeRequest, QwenAsrRealtimeService, QwenAsrRealtimeTurnDetection,

@@ -8,14 +8,14 @@ use futures::{
 };
 use lingxi_llm_client::{
     protocol::Secret,
+    providers::xai::audio::{XaiSpeechCodec, XaiSpeechFormat},
+    providers::xai::streaming_tts::{
+        XaiStreamingTtsConfig, XaiStreamingTtsEvent, XaiStreamingTtsSession,
+        XAI_STREAMING_TTS_WEBSOCKET_ENDPOINT,
+    },
     realtime::{
         RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError, RealtimeFrame,
         RealtimeLimits, RealtimeSink, RealtimeTransport,
-    },
-    xai_audio::{XaiSpeechCodec, XaiSpeechFormat},
-    xai_streaming_tts::{
-        XaiStreamingTtsConfig, XaiStreamingTtsEvent, XaiStreamingTtsSession,
-        XAI_STREAMING_TTS_WEBSOCKET_ENDPOINT,
     },
 };
 use serde_json::{json, Value};
@@ -161,10 +161,10 @@ fn connect(
     limits: RealtimeLimits,
 ) -> Result<
     (
-        lingxi_llm_client::xai_streaming_tts::XaiStreamingTtsSession,
-        lingxi_llm_client::xai_streaming_tts::XaiStreamingTtsDriver,
+        lingxi_llm_client::providers::xai::streaming_tts::XaiStreamingTtsSession,
+        lingxi_llm_client::providers::xai::streaming_tts::XaiStreamingTtsDriver,
     ),
-    lingxi_llm_client::xai_streaming_tts::XaiStreamingTtsError,
+    lingxi_llm_client::providers::xai::streaming_tts::XaiStreamingTtsError,
 > {
     block_on(XaiStreamingTtsSession::connect(
         fake,
@@ -176,7 +176,7 @@ fn connect(
 
 fn spawn_driver(
     pool: &LocalPool,
-    driver: lingxi_llm_client::xai_streaming_tts::XaiStreamingTtsDriver,
+    driver: lingxi_llm_client::providers::xai::streaming_tts::XaiStreamingTtsDriver,
 ) -> oneshot::Receiver<Result<(), RealtimeError>> {
     let (send, receive) = oneshot::channel();
     pool.spawner()
@@ -194,7 +194,7 @@ fn next_sent(pool: &mut LocalPool, peer: &mut FakePeer) -> RealtimeFrame {
 
 fn next_event(
     pool: &mut LocalPool,
-    events: &mut lingxi_llm_client::xai_streaming_tts::XaiStreamingTtsEvents,
+    events: &mut lingxi_llm_client::providers::xai::streaming_tts::XaiStreamingTtsEvents,
 ) -> XaiStreamingTtsEvent {
     pool.run_until(events.next())
         .expect("driver emits the expected event")
@@ -271,7 +271,7 @@ fn invalid_config_is_rejected_before_the_websocket_handshake() {
     assert!(matches!(
         result,
         Err(
-            lingxi_llm_client::xai_streaming_tts::XaiStreamingTtsError::Realtime(
+            lingxi_llm_client::providers::xai::streaming_tts::XaiStreamingTtsError::Realtime(
                 RealtimeError::InvalidConfig { .. }
             )
         )

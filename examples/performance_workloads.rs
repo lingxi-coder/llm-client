@@ -223,7 +223,7 @@ fn main() {
                 input_schema: schema(20),
                 strict: true,
                 defer_loading: false,
-                allowed_callers: vec![],
+                native_options: Vec::new(),
             })
             .collect();
         bench_request(&format!("tools_{count}_x20fields_prepare"), &req, n);

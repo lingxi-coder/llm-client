@@ -6,6 +6,8 @@
 
 协议类型由本 crate 自身定义，可通过 `lingxi_llm_client::protocol` 使用。应用负责工具执行、权限、会话历史、凭证刷新和上下文压缩；接入示例见 [API 指南](docs/api.md#宿主工具执行与上下文恢复)。
 
+版本 **0.3.0** 按 `providers/<provider_id>` 组织实现。通用操作使用 `client.chat()`、`client.images()` 和 `client.embeddings()`；原生资源先通过 `client.provider::<OpenAiClient>("openai")?` 绑定，再调用 `provider.audio()`、`provider.batches()` 或 `provider.retrieval()`。专属类型位于各自 provider 模块。本版本删除旧入口和模块路径，不提供兼容别名。详见 [0.3.0 架构说明](docs/architecture-migration.md)和[固定版本的官方 SDK 参考](docs/provider-sdk-references.md)。
+
 ## Features
 
 - [推理控制与 fast 定价](docs/inference.md)：查询模型能力，设置 budget、effort 和 fast，读取标准／fast 价格及实际档位。Effort 影响用量，不改变单价。
@@ -46,7 +48,7 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 
 构建 client 时必须通过 `with_region(Region::ChinaMainland)` 或 `with_region(Region::International)` 选择使用区域。provider/model 列表、模型解析和故障切换均按区域过滤；完整配置仍保留。自定义 profile 可通过 `regions` 声明可用区域，未声明时两区可用。详见[区域过滤](docs/api.md#region-区域过滤)。
 
-默认构建不包含 tokenizer 后端及资产；按需启用方式见[离线估算输入 token](#6-离线估算输入-token)。公开扩展接口、用量报告和配置 v3 的变化见[架构与 API 迁移指南](docs/architecture-migration.md)。
+默认构建不包含 tokenizer 后端及资产；按需启用方式见[离线估算输入 token](#6-离线估算输入-token)。公开扩展接口、用量报告和配置 v3 的变化见[0.3.0 架构与 API 指南](docs/architecture-migration.md)。
 
 ### 能力支持表
 
@@ -169,7 +171,7 @@ cargo run
 
 这里由示例代码读取环境变量；客户端不会自动读取密钥。`openai` 是内置 profile 名，`gpt-4.1-mini` 是仓库内置目录中的模型 ID，需要你的账号有权访问。可通过 `client.providers()` 和 `client.chat().models()` 查看配置中的连接与模型。
 
-对话通过 `client.chat()` 调用：`complete_in()` 指定连接，`complete()` 按模型自动路由，`stream_in()` / `stream()` 返回流式事件。`client.chat().models()` 会过滤元数据中声明图像输出的模型；`client.images().models()` 读取独立图像目录。原有顶层对话和流式方法仍可用，使用相同执行路径。详见 [ChatService](docs/api.md#chatservice) 和[流式响应](docs/api.md#流式响应)。
+对话通过 `client.chat()` 调用：`complete_in()` 指定连接，`complete()` 按模型自动路由，`stream_in()` / `stream()` 返回流式事件。`client.chat().models()` 会过滤元数据中声明图像输出的模型；`client.images().models()` 读取独立图像目录。旧顶层对话和流式方法已删除。详见 [ChatService](docs/api.md#chatservice) 和[流式响应](docs/api.md#流式响应)。
 
 #### 流式 Chat 响应
 
@@ -216,7 +218,7 @@ async fn stream_chat(
 | 需求 | 接口 |
 | --- | --- |
 | 新增或替换连接 | `config.add_provider(profile).await?`；配置包含 profile 名、协议、地址和模型 |
-| 读取连接配置 | `snapshot.provider("openai")` / `snapshot.profiles()` |
+| 读取连接配置 | `snapshot.profile("openai")` / `snapshot.profiles()` |
 | 获取连接与可见模型列表 | `client.providers()` / `client.chat().models()` |
 | 从服务端更新模型目录 | `config.sync_provider("openai", options.credential.as_ref()).await?` |
 | 设置 provider 的模型白名单 | `config.set_tracked_models(provider_id, model_ids).await?` |

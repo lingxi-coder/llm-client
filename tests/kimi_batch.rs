@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    kimi_batch::*,
     protocol::{LlmError, Secret},
+    providers::kimi::batch::*,
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -88,7 +88,7 @@ fn scope(account: &str) -> KimiBatchScope {
 }
 
 fn service<'a>(http: &'a MockTransport, account: &str) -> KimiBatchService<'a> {
-    KimiBatchService::new(http, Secret::new("sk-kimi-test".into()), scope(account)).unwrap()
+    KimiBatchService::new(http, scope(account)).unwrap()
 }
 
 fn task(status: &str) -> Value {
@@ -127,21 +127,34 @@ async fn submit_get_cancel_and_stream_result_use_documented_routes() {
     let service = service(&http, "account-a");
 
     let created = service
-        .submit(&input_file("account-a"), KimiBatchSubmitOptions::default())
+        .submit(
+            &input_file("account-a"),
+            KimiBatchSubmitOptions::default(),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(created.status, KimiBatchStatus::Validating);
     assert_eq!(created.reference.model(), KimiBatchModel::KimiK2_6);
 
-    let completed = service.get(&created.reference).await.unwrap();
+    let completed = service
+        .get(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(completed.status, KimiBatchStatus::Completed);
     assert!(completed.status.is_terminal());
     let output = completed.output_ref().unwrap();
 
-    let cancelled = service.cancel(&created.reference).await.unwrap();
+    let cancelled = service
+        .cancel(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(cancelled.status, KimiBatchStatus::Cancelling);
 
-    let mut stream = service.stream_result(&output).await.unwrap();
+    let mut stream = service
+        .stream_result(&output, &request_options())
+        .await
+        .unwrap();
     assert_eq!(
         stream.next().await.unwrap().unwrap(),
         Bytes::from_static(b"{\"custom_id\":\"first\"}\n")
@@ -197,7 +210,10 @@ async fn list_returns_a_scoped_page_without_inventing_a_missing_model() {
     ]);
     let service = service(&http, "account-a");
     let page = service
-        .list(&KimiBatchListOptions::new().after("batch_test_0").limit(3))
+        .list(
+            &KimiBatchListOptions::new().after("batch_test_0").limit(3),
+            &request_options(),
+        )
         .await
         .unwrap();
 
@@ -212,7 +228,7 @@ async fn list_returns_a_scoped_page_without_inventing_a_missing_model() {
     let reference = listed
         .reference_with_model(KimiBatchModel::KimiK2_6)
         .unwrap();
-    let fetched = service.get(&reference).await.unwrap();
+    let fetched = service.get(&reference, &request_options()).await.unwrap();
     assert_eq!(fetched.reference.model(), KimiBatchModel::KimiK2_6);
 
     let requests = http.requests.lock().unwrap();
@@ -235,13 +251,16 @@ async fn list_rejects_invalid_options_before_network_access() {
     let http = MockTransport::new([]);
     assert!(matches!(
         service(&http, "account-a")
-            .list(&KimiBatchListOptions::new().limit(0))
+            .list(&KimiBatchListOptions::new().limit(0), &request_options())
             .await,
         Err(KimiBatchError::InvalidInput(_))
     ));
     assert!(matches!(
         service(&http, "account-a")
-            .list(&KimiBatchListOptions::new().after("bad/id"))
+            .list(
+                &KimiBatchListOptions::new().after("bad/id"),
+                &request_options()
+            )
             .await,
         Err(KimiBatchError::InvalidInput(_))
     ));
@@ -256,7 +275,7 @@ async fn list_rejects_duplicate_or_non_advancing_pages() {
     ))]);
     assert!(matches!(
         service(&empty_page, "account-a")
-            .list(&KimiBatchListOptions::new())
+            .list(&KimiBatchListOptions::new(), &request_options())
             .await,
         Err(KimiBatchError::InvalidResponse(_))
     ));
@@ -271,7 +290,7 @@ async fn list_rejects_duplicate_or_non_advancing_pages() {
     ))]);
     assert!(matches!(
         service(&repeated_page, "account-a")
-            .list(&KimiBatchListOptions::new())
+            .list(&KimiBatchListOptions::new(), &request_options())
             .await,
         Err(KimiBatchError::InvalidResponse(_))
     ));
@@ -286,7 +305,10 @@ async fn list_rejects_duplicate_or_non_advancing_pages() {
     ))]);
     assert!(matches!(
         service(&stuck_cursor, "account-a")
-            .list(&KimiBatchListOptions::new().after("batch_test_1"))
+            .list(
+                &KimiBatchListOptions::new().after("batch_test_1"),
+                &request_options()
+            )
             .await,
         Err(KimiBatchError::InvalidResponse(_))
     ));
@@ -297,14 +319,20 @@ async fn references_are_bound_to_profile_account_and_endpoint_before_network_acc
     let http = MockTransport::new([Ok(Reply::json(200, task("validating")))]);
     let source = service(&http, "account-a");
     let created = source
-        .submit(&input_file("account-a"), KimiBatchSubmitOptions::default())
+        .submit(
+            &input_file("account-a"),
+            KimiBatchSubmitOptions::default(),
+            &request_options(),
+        )
         .await
         .unwrap();
     let before = http.requests.lock().unwrap().len();
 
     let foreign_account = service(&http, "account-b");
     assert!(matches!(
-        foreign_account.get(&created.reference).await,
+        foreign_account
+            .get(&created.reference, &request_options())
+            .await,
         Err(KimiBatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
 
@@ -312,7 +340,7 @@ async fn references_are_bound_to_profile_account_and_endpoint_before_network_acc
     encoded["scope"]["profile_name"] = json!("other-profile");
     let foreign_profile: KimiBatchJobRef = serde_json::from_value(encoded).unwrap();
     assert!(matches!(
-        source.get(&foreign_profile).await,
+        source.get(&foreign_profile, &request_options()).await,
         Err(KimiBatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
 
@@ -320,7 +348,7 @@ async fn references_are_bound_to_profile_account_and_endpoint_before_network_acc
     encoded["endpoint_fingerprint"] = json!("different-endpoint");
     let foreign_endpoint: KimiBatchJobRef = serde_json::from_value(encoded).unwrap();
     assert!(matches!(
-        source.get(&foreign_endpoint).await,
+        source.get(&foreign_endpoint, &request_options()).await,
         Err(KimiBatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
     assert_eq!(http.requests.lock().unwrap().len(), before);
@@ -332,7 +360,11 @@ async fn submit_reports_unknown_outcome_after_transport_failure() {
         message: "HTTP request timed out".into(),
     })]);
     let result = service(&http, "account-a")
-        .submit(&input_file("account-a"), KimiBatchSubmitOptions::default())
+        .submit(
+            &input_file("account-a"),
+            KimiBatchSubmitOptions::default(),
+            &request_options(),
+        )
         .await;
     assert!(matches!(
         result,
@@ -363,7 +395,11 @@ async fn successful_but_mismatched_submit_reply_reports_unknown_outcome() {
     body["input_file_id"] = json!("file_unexpected");
     let http = MockTransport::new([Ok(Reply::json(200, body))]);
     let result = service(&http, "account-a")
-        .submit(&input_file("account-a"), KimiBatchSubmitOptions::default())
+        .submit(
+            &input_file("account-a"),
+            KimiBatchSubmitOptions::default(),
+            &request_options(),
+        )
         .await;
     assert!(matches!(
         result,
@@ -382,10 +418,58 @@ async fn output_reference_is_only_available_after_completion() {
     ]);
     let service = service(&http, "account-a");
     let created = service
-        .submit(&input_file("account-a"), KimiBatchSubmitOptions::default())
+        .submit(
+            &input_file("account-a"),
+            KimiBatchSubmitOptions::default(),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert!(created.output_ref().is_none());
-    let complete = service.get(&created.reference).await.unwrap();
+    let complete = service
+        .get(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(complete.output_ref().unwrap().file_id(), "file_output_1");
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("sk-kimi-test".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        Ok(Reply::json(401, json!({"error": "rejected"}))),
+        Ok(Reply::json(401, json!({"error": "rejected"}))),
+    ]);
+    let service = service(&mock, "account-a");
+    let query = KimiBatchListOptions::default();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("Authorization")
+                && value == &format!("Bearer {key}")));
+    }
 }

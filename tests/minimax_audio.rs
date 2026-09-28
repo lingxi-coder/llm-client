@@ -2,17 +2,21 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    audio::AudioInput,
-    minimax_audio::{
+    protocol::{AuthStrategy, LlmError, ProviderProfile, Region, Secret},
+    providers::minimax::audio::{
         MiniMaxAudioDispatch, MiniMaxAudioError, MiniMaxAudioService, MiniMaxSpeechLanguage,
         MiniMaxTimestampLevel, MiniMaxTranscriptFormat, MiniMaxTranscriptionRequest,
         MINIMAX_ASR_CHINA_ENDPOINT, MINIMAX_ASR_INTERNATIONAL_ENDPOINT,
     },
-    protocol::{LlmError, Secret},
-    HttpRequest, HttpStreamRequest, RequestOptions, StreamResponse, Transport,
+    providers::openai::audio::AudioInput,
+    Authenticator, HttpRequest, HttpStreamRequest, LlmClientBuilder, RequestOptions,
+    StreamResponse, Transport,
 };
 use serde_json::json;
-use std::{collections::VecDeque, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 struct SentRequest {
     method: String,
@@ -146,6 +150,60 @@ fn options() -> RequestOptions {
         credential: Some(Secret::new("mini-secret".to_owned())),
         ..Default::default()
     }
+}
+
+struct HeaderAuthenticator;
+
+#[async_trait]
+impl Authenticator for HeaderAuthenticator {
+    async fn apply(
+        &self,
+        request: &mut HttpRequest,
+        _profile: &ProviderProfile,
+        credential: Option<&Secret<String>>,
+    ) -> Result<(), LlmError> {
+        request.headers.push((
+            "x-custom-auth".into(),
+            credential
+                .expect("request credential")
+                .expose_secret()
+                .clone(),
+        ));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn typed_minimax_asr_uses_registered_authenticator() {
+    let transport = Arc::new(MockTransport::new([json_reply(json!({"text":"ok"}))]));
+    let profile: ProviderProfile = serde_json::from_value(json!({
+        "provider_id":"minimax", "profile_name":"mini", "protocol":"open_ai_chat",
+        "base_url":"https://api.minimax.io/v1", "auth":"api_key",
+        "chat_enabled":false, "models":[]
+    }))
+    .unwrap();
+    let mut builder = LlmClientBuilder::with_transport(transport.clone(), &[profile])
+        .with_region(Region::International);
+    builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(HeaderAuthenticator));
+    let client = builder.build().unwrap();
+    let provider = client
+        .provider::<lingxi_llm_client::providers::MiniMaxClient>("mini")
+        .unwrap();
+    let service = provider.audio(MINIMAX_ASR_INTERNATIONAL_ENDPOINT).unwrap();
+    let result = service
+        .transcribe(input(), &MiniMaxTranscriptionRequest::default(), &options())
+        .await
+        .unwrap();
+    assert_eq!(result.text, "ok");
+    let sent = transport.sent.lock().unwrap();
+    assert!(sent[0]
+        .headers
+        .iter()
+        .any(|(name, value)| name == "x-custom-auth" && value == "mini-secret"));
+    assert!(!sent[0]
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
 }
 
 #[tokio::test]

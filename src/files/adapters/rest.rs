@@ -1,54 +1,32 @@
 //! Shared file REST shapes; vendor exceptions dispatch to their adapter.
 use super::super::*;
 pub(crate) fn files_url(profile: &ProviderProfile, adapter: Adapter) -> String {
-    let base = profile.base_url.trim_end_matches('/');
     match adapter {
-        Adapter::Anthropic if base.ends_with("/v1") => format!("{base}/files"),
-        Adapter::Anthropic => format!("{base}/v1/files"),
-        Adapter::Gemini if base.ends_with("/v1beta") => format!("{base}/files"),
-        Adapter::Gemini => format!("{base}/v1beta/files"),
-        Adapter::MiniMax => minimax_files_root(profile),
-        _ => format!("{base}/files"),
+        Adapter::Anthropic => crate::providers::anthropic::files::files_url(profile),
+        Adapter::Gemini => crate::providers::google::files::files_url(profile),
+        Adapter::MiniMax => crate::providers::minimax::files::minimax_files_root(profile),
+        _ => format!("{}/files", profile.base_url.trim_end_matches('/')),
     }
 }
 
 pub(crate) fn content_url(profile: &ProviderProfile, adapter: Adapter, file_id: &str) -> String {
-    let encoded = path_segment(file_id);
     match adapter {
-        Adapter::OpenRouter | Adapter::Xai | Adapter::OpenAi => {
-            format!("{}/{encoded}/content", files_url(profile, adapter))
-        }
-        Adapter::Anthropic => format!("{}/{encoded}/content", files_url(profile, adapter)),
-        Adapter::Gemini => format!("{}:download?alt=media", file_url(profile, adapter, file_id)),
-        Adapter::Moonshot => format!("{}/{encoded}/content", files_url(profile, adapter)),
+        Adapter::Gemini => crate::providers::google::files::content_url(profile, file_id),
         Adapter::MiniMax => format!("{}/retrieve_content", files_url(profile, adapter)),
-        Adapter::Qwen => format!("{}/{encoded}/content", files_url(profile, adapter)),
-        Adapter::Zai | Adapter::Zhipu => {
-            format!("{}/{encoded}/content", files_url(profile, adapter))
-        }
+        _ => format!(
+            "{}/{}/content",
+            files_url(profile, adapter),
+            path_segment(file_id)
+        ),
     }
 }
 
 pub(crate) fn file_url(profile: &ProviderProfile, adapter: Adapter, file_id: &str) -> String {
-    if adapter == Adapter::MiniMax {
-        let _ = file_id;
-        return format!("{}/retrieve", files_url(profile, adapter));
+    match adapter {
+        Adapter::Gemini => crate::providers::google::files::file_url(profile, file_id),
+        Adapter::MiniMax => format!("{}/retrieve", files_url(profile, adapter)),
+        _ => format!("{}/{}", files_url(profile, adapter), path_segment(file_id)),
     }
-    if adapter == Adapter::Gemini {
-        let resource_name = if file_id.starts_with("files/") {
-            file_id.to_owned()
-        } else {
-            format!("files/{file_id}")
-        };
-        let base = profile.base_url.trim_end_matches('/');
-        let base = if base.ends_with("/v1beta") {
-            base.to_owned()
-        } else {
-            format!("{base}/v1beta")
-        };
-        return format!("{base}/{}", encoded_path(&resource_name));
-    }
-    format!("{}/{}", files_url(profile, adapter), path_segment(file_id))
 }
 
 pub(crate) fn list_url(
@@ -177,15 +155,15 @@ pub(crate) fn decode_metadata_for_adapter(
         .get("uri")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| match (adapter, purpose.as_deref()) {
-            (Adapter::Qwen, Some("file-extract")) => Some(format!("fileid://{file_id}")),
-            (Adapter::MiniMax, Some("video_understanding")) => Some(format!("mm_file://{file_id}")),
+        .or_else(|| match adapter {
+            Adapter::Qwen => {
+                crate::providers::qwen::files::metadata_uri(&file_id, purpose.as_deref())
+            }
+            Adapter::MiniMax => {
+                crate::providers::minimax::files::metadata_uri(&file_id, purpose.as_deref())
+            }
             _ => None,
         });
-    if adapter == Adapter::Gemini && uri.is_none() {
-        // Some metadata/list responses omit URI, but uploaded model refs must
-        // retain the URI from the upload response.
-    }
     let file = ProviderFileRef {
         provider_id: profile.provider_id.clone(),
         profile_name: profile.profile_name.clone(),
@@ -215,24 +193,10 @@ pub(crate) fn decode_metadata_for_adapter(
             .or_else(|| value.get("expirationTime"))
             .and_then(json_optional_scalar_string),
         processing_status: status.clone(),
-        // Gemini only returns content for generated files with a download URI.
-        // `download` uses the canonical API endpoint, so credentials are never
-        // forwarded to the metadata-provided URI.
-        downloadable: if adapter == Adapter::Gemini {
-            Some(
-                value.get("source").and_then(Value::as_str) == Some("GENERATED")
-                    && value
-                        .get("downloadUri")
-                        .and_then(nonempty_string)
-                        .is_some_and(|uri| valid_download_uri(&uri)),
-            )
-        } else if adapter == Adapter::MiniMax {
-            value
-                .get("download_url")
-                .or_else(|| value.get("downloadable"))
-                .and_then(|v| v.as_bool().or_else(|| nonempty_string(v).map(|_| true)))
-        } else {
-            value.get("downloadable").and_then(Value::as_bool)
+        downloadable: match adapter {
+            Adapter::Gemini => crate::providers::google::files::metadata_downloadable(value),
+            Adapter::MiniMax => crate::providers::minimax::files::metadata_downloadable(value),
+            _ => value.get("downloadable").and_then(Value::as_bool),
         },
         purpose,
     };

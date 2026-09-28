@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -10,10 +11,10 @@ fn profile() -> ProviderProfile {
 }
 fn request() -> ChatRequest {
     let mut r: ChatRequest = serde_json::from_value(json!({"model":MODEL,"messages":[{"role":"user","content":[{"type":"text","text":"Inspect the page"}]}]})).unwrap();
-    r.anthropic_client_toolsets = vec![
+    r.set_anthropic_client_toolsets(vec![
         AnthropicClientToolset::Browser(Default::default()),
         AnthropicClientToolset::Computer(Default::default()),
-    ];
+    ]);
     r
 }
 fn encode(r: &ChatRequest, p: &ProviderProfile, model: &str) -> Result<Value, LlmError> {
@@ -23,12 +24,41 @@ fn encode(r: &ChatRequest, p: &ProviderProfile, model: &str) -> Result<Value, Ll
     )?;
     Ok(serde_json::from_slice(&wire.body).unwrap())
 }
-fn browser(r: &mut ChatRequest) -> &mut AnthropicBrowserToolsetConfig {
-    match &mut r.anthropic_client_toolsets[0] {
-        AnthropicClientToolset::Browser(config) => config,
-        _ => unreachable!(),
+struct BrowserEdit<'a> {
+    request: &'a mut ChatRequest,
+    toolsets: Vec<AnthropicClientToolset>,
+}
+impl std::ops::Deref for BrowserEdit<'_> {
+    type Target = AnthropicBrowserToolsetConfig;
+    fn deref(&self) -> &Self::Target {
+        match &self.toolsets[0] {
+            AnthropicClientToolset::Browser(config) => config,
+            _ => unreachable!(),
+        }
     }
 }
+impl std::ops::DerefMut for BrowserEdit<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match &mut self.toolsets[0] {
+            AnthropicClientToolset::Browser(config) => config,
+            _ => unreachable!(),
+        }
+    }
+}
+impl Drop for BrowserEdit<'_> {
+    fn drop(&mut self) {
+        self.request
+            .set_anthropic_client_toolsets(std::mem::take(&mut self.toolsets));
+    }
+}
+fn browser(r: &mut ChatRequest) -> BrowserEdit<'_> {
+    let toolsets = r.anthropic_client_toolsets().to_vec();
+    BrowserEdit {
+        request: r,
+        toolsets,
+    }
+}
+
 fn tool(name: &str) -> ToolSpec {
     serde_json::from_value(json!({"name":name,"description":"A custom tool","input_schema":{"type":"object","properties":{}}})).unwrap()
 }
@@ -141,9 +171,9 @@ fn deferred_members_require_uniform_policy_search_and_no_cache() {
         .map(|name| (name.to_owned(), json!({"enabled":false})))
         .collect::<serde_json::Map<_, _>>();
     let mut r = request();
-    r.anthropic_client_toolsets = vec![AnthropicClientToolset::Browser(
+    r.set_anthropic_client_toolsets(vec![AnthropicClientToolset::Browser(
         serde_json::from_value(json!({"configs":configs})).unwrap(),
-    )];
+    )]);
     assert!(encode(&r, &profile(), MODEL).is_err());
     browser(&mut r).configs.insert(
         AnthropicBrowserMember::Screenshot,
@@ -153,10 +183,14 @@ fn deferred_members_require_uniform_policy_search_and_no_cache() {
         },
     );
     assert!(encode(&r, &profile(), MODEL).is_err());
-    r.hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
     assert!(encode(&r, &profile(), MODEL).is_ok());
     browser(&mut r).cache_control = Some(AnthropicMcpCacheControl::default());
     assert!(encode(&r, &profile(), MODEL).is_err());
@@ -190,7 +224,8 @@ fn deferred_limit_counts_each_toolset_as_one_definition() {
             },
         );
     }
-    if let AnthropicClientToolset::Computer(config) = &mut r.anthropic_client_toolsets[1] {
+    let mut toolsets = r.anthropic_client_toolsets().to_vec();
+    if let AnthropicClientToolset::Computer(config) = &mut toolsets[1] {
         for member in AnthropicComputerMember::ALL {
             config.configs.insert(
                 *member,
@@ -201,10 +236,15 @@ fn deferred_limit_counts_each_toolset_as_one_definition() {
             );
         }
     }
-    r.hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
+    r.set_anthropic_client_toolsets(toolsets);
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
     r.tools = (0..9_998)
         .map(|index| {
             let mut t = tool(&format!("lookup_{index}"));
@@ -221,8 +261,11 @@ fn deferred_limit_counts_each_toolset_as_one_definition() {
 #[test]
 fn duplicate_sets_names_and_forced_member_choice_are_rejected() {
     let mut r = request();
-    r.anthropic_client_toolsets
-        .push(AnthropicClientToolset::Browser(Default::default()));
+    {
+        let mut toolsets = r.anthropic_client_toolsets().to_vec();
+        toolsets.push(AnthropicClientToolset::Browser(Default::default()));
+        r.set_anthropic_client_toolsets(toolsets);
+    };
     assert!(encode(&r, &profile(), MODEL).is_err());
     for name in ["browser", "computer"] {
         let mut r = request();
@@ -264,14 +307,14 @@ fn inline_definitions_cannot_take_declared_toolset_names() {
 fn unsupported_models_fine_grained_header_and_raw_entries_fail() {
     assert!(encode(&request(), &profile(), "claude-opus-4-6").is_err());
     let mut history = calls_and_results("screenshot", Some("browser"), Value::Null, true);
-    history.anthropic_client_toolsets.clear();
+    history.set_anthropic_client_toolsets(Vec::new());
     assert!(encode(&history, &profile(), MODEL).is_ok());
     assert!(encode(&history, &profile(), "claude-opus-4-6").is_err());
     let mut p = profile();
     p.extra = json!({"betas":["fine-grained-tool-streaming-2025-05-14"]});
     assert!(encode(&request(), &p, MODEL).is_err());
     let mut r = request();
-    r.anthropic_client_toolsets.clear();
+    r.set_anthropic_client_toolsets(Vec::new());
     p.extra = json!({"body":{"tools":[{"type":"browser_toolset_20260801"}]}});
     assert!(encode(&r, &p, MODEL).is_err());
 }
@@ -292,7 +335,7 @@ fn declaration_and_replay_metadata_are_rejected_by_other_protocols() {
         json!([{"type":"text","text":"done"}]),
         false,
     );
-    history.anthropic_client_toolsets.clear();
+    history.set_anthropic_client_toolsets(Vec::new());
     for codec in codecs {
         let mut p = profile();
         p.provider_id = "other".into();
@@ -316,18 +359,24 @@ fn declaration_and_replay_metadata_are_rejected_by_other_protocols() {
 #[test]
 fn toolset_cache_markers_follow_fetch_and_share_global_limit() {
     let mut r = request();
-    r.hosted_tools
-        .push(HostedTool::AnthropicWebFetch(AnthropicWebFetchConfig {
-            cache_control: Some(CacheTtl::OneHour),
-            ..Default::default()
-        }));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(
+            AnthropicWebFetchConfig {
+                cache_control: Some(CacheTtl::OneHour),
+                ..Default::default()
+            },
+        )
+        .into(),
+    );
     browser(&mut r).cache_control = Some(AnthropicMcpCacheControl::default());
     let body = encode(&r, &profile(), MODEL).unwrap();
     assert_eq!(body["tools"][0]["name"], "web_fetch");
     assert_eq!(body["tools"][1]["type"], "browser_toolset_20260801");
-    if let AnthropicClientToolset::Computer(config) = &mut r.anthropic_client_toolsets[1] {
+    let mut toolsets = r.anthropic_client_toolsets().to_vec();
+    if let AnthropicClientToolset::Computer(config) = &mut toolsets[1] {
         config.cache_control = Some(AnthropicMcpCacheControl::default());
     }
+    r.set_anthropic_client_toolsets(toolsets);
     r.prompt_cache.automatic = Some(CacheTtl::FiveMinutes);
     assert!(encode(&r, &profile(), MODEL).is_ok());
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
@@ -336,9 +385,11 @@ fn toolset_cache_markers_follow_fetch_and_share_global_limit() {
     });
     assert!(encode(&r, &profile(), MODEL).is_err());
     r.prompt_cache.breakpoints.clear();
-    if let HostedTool::AnthropicWebFetch(config) = &mut r.hosted_tools[0] {
+    r.hosted_tools[0].edit_native::<lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool, _>(|tool| {
+        if let lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::WebFetch(config) = tool {
         config.cache_control = Some(CacheTtl::FiveMinutes);
-    }
+    } else { unreachable!(); }
+    }).unwrap();
     browser(&mut r).cache_control = Some(AnthropicMcpCacheControl {
         ttl: Some(AnthropicMcpCacheTtl::OneHour),
     });
@@ -448,7 +499,7 @@ fn namespace_metadata_cannot_turn_plain_or_computer_results_into_browser_state()
         json!([{"type":"browser_state","tabs":[]}]),
         false,
     );
-    r.anthropic_client_toolsets.clear();
+    r.set_anthropic_client_toolsets(Vec::new());
     for m in &mut r.messages {
         for b in &mut m.content {
             match b {
@@ -520,8 +571,11 @@ async fn invalid_declaration_fails_before_attachment_read_or_transport() {
     builder.with_attachment_resolver(Arc::new(Never));
     let client = builder.build().unwrap();
     let mut r = request();
-    r.anthropic_client_toolsets
-        .push(AnthropicClientToolset::Browser(Default::default()));
+    {
+        let mut toolsets = r.anthropic_client_toolsets().to_vec();
+        toolsets.push(AnthropicClientToolset::Browser(Default::default()));
+        r.set_anthropic_client_toolsets(toolsets);
+    };
     r.messages[0].content.push(ContentBlock::Document {
         source: DocumentSource::Attachment {
             attachment: AttachmentRef {
@@ -539,7 +593,7 @@ async fn invalid_declaration_fails_before_attachment_read_or_transport() {
         .complete(&r, &Default::default())
         .await
         .is_err());
-    r.anthropic_client_toolsets = vec![AnthropicClientToolset::Browser(Default::default())];
+    r.set_anthropic_client_toolsets(vec![AnthropicClientToolset::Browser(Default::default())]);
     for member in AnthropicBrowserMember::ALL {
         browser(&mut r).configs.insert(
             *member,
@@ -556,24 +610,31 @@ async fn invalid_declaration_fails_before_attachment_read_or_transport() {
             t
         })
         .collect();
-    r.hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
-    r.hosted_tools.push(HostedTool::AnthropicMcp(
-        AnthropicMcpConfig::new("remote", "https://mcp.example.test/sse")
-            .unwrap()
-            .with_default_config(AnthropicMcpToolConfig {
-                enabled: None,
-                defer_loading: Some(true),
-            })
-            .with_tools([AnthropicMcpTool {
-                name: "remote_lookup".into(),
-                description: None,
-                input_schema: json!({"type":"object","properties":{}}),
-            }])
-            .unwrap(),
-    ));
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
+    r.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            AnthropicMcpConfig::new("remote", "https://mcp.example.test/sse")
+                .unwrap()
+                .with_default_config(AnthropicMcpToolConfig {
+                    enabled: None,
+                    defer_loading: Some(true),
+                })
+                .with_tools([AnthropicMcpTool {
+                    name: "remote_lookup".into(),
+                    description: None,
+                    input_schema: json!({"type":"object","properties":{}}),
+                }])
+                .unwrap(),
+        )
+        .into(),
+    );
     let error = client
         .chat()
         .complete(&r, &Default::default())

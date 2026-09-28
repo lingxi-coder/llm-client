@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeChunkMode, QwenKnowledgeCreateRequest, QwenKnowledgeDispatch,
         QwenKnowledgeDocumentPageRequest, QwenKnowledgeError, QwenKnowledgeImportRequest,
         QwenKnowledgeRegion, QwenKnowledgeRetrieveRequest, QwenKnowledgeScope,
@@ -73,12 +73,7 @@ fn service<'a>(
     account: &str,
     workspace: &str,
 ) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-key-test".to_owned()),
-        scope(region, account, workspace),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(region, account, workspace)).unwrap()
 }
 
 fn success(data: Value) -> Value {
@@ -129,6 +124,7 @@ async fn retrieves_chunks_through_the_documented_beijing_route() {
         .retrieve(
             &knowledge,
             &QwenKnowledgeRetrieveRequest::new("What is the return window?").with_top_k(5),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -192,7 +188,10 @@ async fn creates_knowledge_base_and_initial_import_with_exact_camel_case_contrac
     request.knowledge_scene = Some("basic_document_qa".into());
     request.embedding_model_name = Some("text-embedding-v4".into());
 
-    let result = service.create_knowledge_base(&request).await.unwrap();
+    let result = service
+        .create_knowledge_base(&request, &request_options())
+        .await
+        .unwrap();
     assert_eq!(result.knowledge.index_id(), "index-123");
     assert_eq!(result.job.job_id(), "job-9");
     assert_eq!(result.status.as_deref(), Some("PENDING"));
@@ -248,7 +247,11 @@ async fn lists_and_finds_knowledge_bases_using_only_the_documented_list_route() 
         "llm-workspace-1",
     );
     let target = service.knowledge_ref("index-123").unwrap();
-    let found = service.find_knowledge_base(&target).await.unwrap().unwrap();
+    let found = service
+        .find_knowledge_base(&target, &request_options())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(found.name.as_deref(), Some("Returns"));
     assert_eq!(found.description.as_deref(), Some("Policy"));
 
@@ -282,10 +285,14 @@ async fn update_and_delete_knowledge_base_use_documented_fields_and_routes() {
                 .with_name("Returns 2026")
                 .with_description("Updated return information")
                 .with_rerank_min_score(0.12),
+            &request_options(),
         )
         .await
         .unwrap();
-    service.delete_knowledge_base(&knowledge).await.unwrap();
+    service
+        .delete_knowledge_base(&knowledge, &request_options())
+        .await
+        .unwrap();
 
     let requests = mock.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
@@ -332,18 +339,30 @@ async fn lists_details_and_deletes_only_same_knowledge_base_documents() {
     );
     let knowledge = service.knowledge_ref("index-123").unwrap();
     let page = service
-        .list_documents(&knowledge, QwenKnowledgeDocumentPageRequest::new(1, 1))
+        .list_documents(
+            &knowledge,
+            QwenKnowledgeDocumentPageRequest::new(1, 1),
+            &request_options(),
+        )
         .await
         .unwrap();
     let detail = service
-        .list_document_details(&knowledge, QwenKnowledgeDocumentPageRequest::new(1, 1))
+        .list_document_details(
+            &knowledge,
+            QwenKnowledgeDocumentPageRequest::new(1, 1),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(page.documents[0].reference.document_id(), "file-doc-1");
     assert_eq!(detail.documents[0].native["future_field"]["kept"], true);
     assert_eq!(detail.documents[0].status.as_deref(), Some("FINISH"));
     let deleted = service
-        .delete_documents(&knowledge, &[page.documents[0].reference.clone()])
+        .delete_documents(
+            &knowledge,
+            &[page.documents[0].reference.clone()],
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -400,6 +419,7 @@ async fn appends_files_and_queries_import_status_once() {
                 overlap_size: Some(100),
                 ..QwenKnowledgeImportRequest::from_files(["file-2"])
             },
+            &request_options(),
         )
         .await
         .unwrap();
@@ -407,6 +427,7 @@ async fn appends_files_and_queries_import_status_once() {
         .get_import_job_status(
             &imported.reference,
             QwenKnowledgeDocumentPageRequest::default(),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -442,7 +463,7 @@ async fn cross_scope_knowledge_document_and_job_refs_are_rejected_before_http() 
         .unwrap();
     let foreign_document = foreign_knowledge.document_ref("file-doc-1").unwrap();
     let error = service
-        .delete_documents(&knowledge, &[foreign_document])
+        .delete_documents(&knowledge, &[foreign_document], &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -452,7 +473,11 @@ async fn cross_scope_knowledge_document_and_job_refs_are_rejected_before_http() 
 
     let foreign_job = foreign_knowledge.job_ref("job-9").unwrap();
     let error = service
-        .get_import_job_status(&foreign_job, QwenKnowledgeDocumentPageRequest::default())
+        .get_import_job_status(
+            &foreign_job,
+            QwenKnowledgeDocumentPageRequest::default(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -472,11 +497,10 @@ async fn singapore_mutations_are_preflighted_without_guessing_a_route() {
         "llm-workspace-sg",
     );
     let error = service
-        .create_knowledge_base(&QwenKnowledgeCreateRequest::new(
-            "Returns",
-            "Description",
-            ["file-1"],
-        ))
+        .create_knowledge_base(
+            &QwenKnowledgeCreateRequest::new("Returns", "Description", ["file-1"]),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -497,11 +521,10 @@ async fn uncertain_create_is_not_retried_and_reports_unknown_dispatch() {
         "llm-workspace-1",
     );
     let error = service
-        .create_knowledge_base(&QwenKnowledgeCreateRequest::new(
-            "Returns",
-            "Description",
-            ["file-1"],
-        ))
+        .create_knowledge_base(
+            &QwenKnowledgeCreateRequest::new("Returns", "Description", ["file-1"]),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
@@ -522,7 +545,10 @@ async fn server_failure_is_unknown_but_explicit_client_rejection_is_definite() {
         "llm-workspace-1",
     );
     let error = server_service
-        .delete_knowledge_base(&server_service.knowledge_ref("index-123").unwrap())
+        .delete_knowledge_base(
+            &server_service.knowledge_ref("index-123").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
@@ -539,7 +565,10 @@ async fn server_failure_is_unknown_but_explicit_client_rejection_is_definite() {
         "llm-workspace-1",
     );
     let error = client_service
-        .delete_knowledge_base(&client_service.knowledge_ref("index-123").unwrap())
+        .delete_knowledge_base(
+            &client_service.knowledge_ref("index-123").unwrap(),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Rejected);
@@ -564,7 +593,11 @@ async fn business_errors_on_http_200_are_not_reported_as_empty_success() {
     );
     let knowledge = service.knowledge_ref("index-123").unwrap();
     let error = service
-        .retrieve(&knowledge, &QwenKnowledgeRetrieveRequest::new("query"))
+        .retrieve(
+            &knowledge,
+            &QwenKnowledgeRetrieveRequest::new("query"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -589,19 +622,138 @@ async fn invalid_requests_are_rejected_before_http() {
     );
     let knowledge = service.knowledge_ref("index-123").unwrap();
     assert!(service
-        .retrieve(&knowledge, &QwenKnowledgeRetrieveRequest::new("  "))
+        .retrieve(
+            &knowledge,
+            &QwenKnowledgeRetrieveRequest::new("  "),
+            &request_options()
+        )
         .await
         .is_err());
     assert!(service
         .submit_import_job(
             &knowledge,
             &QwenKnowledgeImportRequest::from_files(std::iter::empty::<&str>()),
+            &request_options()
         )
         .await
         .is_err());
     assert!(service
-        .update_knowledge_base(&knowledge, &QwenKnowledgeUpdateRequest::new())
+        .update_knowledge_base(
+            &knowledge,
+            &QwenKnowledgeUpdateRequest::new(),
+            &request_options()
+        )
         .await
         .is_err());
     assert!(mock.requests.lock().unwrap().is_empty());
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-key-test".to_owned())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = Mock::new([
+        response(401, json!({"error":"rejected"})),
+        response(401, json!({"error":"rejected"})),
+    ]);
+    let service = service(
+        &mock,
+        QwenKnowledgeRegion::Beijing,
+        "acct-1",
+        "llm-workspace-1",
+    );
+    let knowledge = service.knowledge_ref("index-123").unwrap();
+    let request = QwenKnowledgeRetrieveRequest::new("hello");
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service
+            .retrieve(&knowledge, &request, &options)
+            .await
+            .is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            total_timeout: Some(std::time::Duration::from_secs(5)),
+            ..Default::default()
+        };
+        assert!(service
+            .retrieve(&knowledge, &request, &options)
+            .await
+            .is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
+                && value == &format!("Bearer {key}")));
+        assert!(request.timeout.is_some_and(
+            |timeout| !timeout.is_zero() && timeout <= std::time::Duration::from_secs(5)
+        ));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn finding_knowledge_base_shares_one_deadline_across_pages() {
+    use std::{sync::Mutex, time::Duration};
+    struct DelayedPages(Mutex<Vec<HttpRequest>>);
+    #[async_trait]
+    impl Transport for DelayedPages {
+        async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+            let page = {
+                let mut requests = self.0.lock().unwrap();
+                requests.push(request);
+                requests.len()
+            };
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let body = success(json!({
+                "page_number":page,"page_size":1,"total_count":2,
+                "rows":[{"id":if page==1{"other-index"}else{"target-index"},"name":"Knowledge","structureType":"unstructured"}]
+            }));
+            Ok(lingxi_llm_client::HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: body.to_string().into(),
+            }
+            .into())
+        }
+    }
+    let transport = DelayedPages(Mutex::new(Vec::new()));
+    let service = QwenKnowledgeService::new(
+        &transport,
+        scope(QwenKnowledgeRegion::Beijing, "acct-1", "llm-workspace-1"),
+    )
+    .unwrap();
+    let target = service.knowledge_ref("target-index").unwrap();
+    let options = lingxi_llm_client::RequestOptions {
+        total_timeout: Some(Duration::from_millis(100)),
+        ..request_options()
+    };
+    let started = tokio::time::Instant::now();
+    let error = service
+        .find_knowledge_base(&target, &options)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        QwenKnowledgeError::Llm(LlmError::TransportTimeout { .. })
+    ));
+    assert!(started.elapsed() >= Duration::from_millis(100));
+    assert!(started.elapsed() <= Duration::from_millis(102));
+    let requests = transport.0.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].timeout, Some(Duration::from_millis(100)));
+    assert!(requests[1].timeout.unwrap() <= Duration::from_millis(40));
 }

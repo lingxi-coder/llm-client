@@ -5,7 +5,7 @@
 ```rust,no_run
 # async fn example(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
-    minimax_async_tts::{
+    providers::minimax::async_tts::{
         MiniMaxAsyncTtsConfig, MiniMaxAsyncTtsRegion, MiniMaxAsyncTtsRequest,
         MiniMaxAsyncTtsService, MiniMaxAsyncTtsStatus,
     },

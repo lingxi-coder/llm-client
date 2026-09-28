@@ -61,7 +61,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
@@ -78,7 +78,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
 
 fn user(text: &str) -> ConversationMessage {
     ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
@@ -119,7 +119,7 @@ fn the_assistants_role_on_this_wire_is_model() {
     let req = request(vec![
         user("hi"),
         ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
@@ -168,7 +168,7 @@ fn streaming_and_non_streaming_are_different_urls_not_a_body_flag() {
 fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
     let req = request(vec![
         ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
                 id: ToolUseId::new("call-1"),
@@ -181,7 +181,7 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             }],
         },
         ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
@@ -213,7 +213,7 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
 #[test]
 fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
     let req = request(vec![ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("orphan"),
@@ -278,7 +278,7 @@ fn tools_are_wrapped_in_function_declarations() {
         input_schema: json!({"type": "object"}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     let b = body(&encode(
         &GeminiCodec,
@@ -618,7 +618,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
 
     let mut req = request(vec![user("read both"), decoded.message]);
     req.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: calls
             .iter()
@@ -934,7 +934,7 @@ fn gemini_and_vertex_encode_typed_audio_and_validate_base64() {
             "data:audio/wav;base64,AA==",
         ] {
             let req = request(vec![ConversationMessage {
-                anthropic: None,
+                native_options: Vec::new(),
                 role: MessageRole::User,
                 content: vec![ContentBlock::Audio {
                     format: "wav".into(),
@@ -950,7 +950,7 @@ fn gemini_and_vertex_encode_typed_audio_and_validate_base64() {
             );
         }
         let mut req = request(vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![ContentBlock::Audio {
                 format: "wav".into(),

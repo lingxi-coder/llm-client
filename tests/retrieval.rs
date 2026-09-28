@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use lingxi_llm_client::{files::*, protocol::*, retrieval::*, *};
+use lingxi_llm_client::{files::*, protocol::*, providers::openai::retrieval::*, *};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -152,6 +152,8 @@ async fn advanced_search_encodes_filter_ranking_and_rewrite() {
     });
     request.rewrite_query = Some(true);
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .search_with(&store_ref(), &request, &options("account-a"))
         .await
@@ -182,6 +184,8 @@ async fn invalid_advanced_search_fails_before_http() {
     });
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .search_with(&store_ref(), &request, &options("account-a"))
             .await,
@@ -194,6 +198,8 @@ async fn invalid_advanced_search_fails_before_http() {
     });
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .search_with(&store_ref(), &request, &options("account-a"))
             .await,
@@ -211,6 +217,8 @@ async fn file_attributes_are_validated_and_sent_when_attaching() {
     )]);
     let mut attrs = BTreeMap::from([("region".into(), json!("us"))]);
     client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .attach_file_with_attributes(&store_ref(), &file(), Some(&attrs), &options("account-a"))
         .await
@@ -222,6 +230,8 @@ async fn file_attributes_are_validated_and_sent_when_attaching() {
     attrs.insert("invalid".into(), json!({"nested":true}));
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .attach_file_with_attributes(&store_ref(), &file(), Some(&attrs), &options("account-a"))
             .await,
@@ -281,18 +291,24 @@ async fn batch_index_lifecycle_preserves_status_and_file_pagination() {
     ];
     let opts = options("account-a");
     let created = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .create_file_batch(&store_ref(), &entries, &opts)
         .await
         .unwrap();
     assert_eq!(created.status, IndexStatus::InProgress);
     let current = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .get_file_batch(&created.reference, &opts)
         .await
         .unwrap();
     assert_eq!(current.file_counts.total, 2);
     let page = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .list_batch_files(&created.reference, 1, Some("file_old"), &opts)
         .await
@@ -301,6 +317,8 @@ async fn batch_index_lifecycle_preserves_status_and_file_pagination() {
     assert_eq!(page.last_id.as_deref(), Some("file_123"));
     assert_eq!(page.files[0].status, IndexStatus::Completed);
     let cancelled = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .cancel_file_batch(&created.reference, &opts)
         .await
@@ -331,6 +349,8 @@ async fn batch_preflight_rejects_mixed_scope_and_bad_chunking_without_http() {
     }];
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .create_file_batch(&store_ref(), &inputs, &opts)
             .await,
@@ -346,6 +366,8 @@ async fn batch_preflight_rejects_mixed_scope_and_bad_chunking_without_http() {
     }];
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .create_file_batch(&store_ref(), &invalid, &opts)
             .await,
@@ -365,6 +387,8 @@ async fn batch_submission_transport_failure_has_unknown_outcome() {
     }]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .create_file_batch(
                 &store_ref(),
@@ -396,6 +420,8 @@ async fn store_file_listing_supports_reconciliation_and_cursor() {
         ],"has_more":true,"last_id":"file_456"}),
     )]);
     let page = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .list_store_files(&store_ref(), 2, Some("file_old"), &options("account-a"))
         .await
@@ -422,6 +448,8 @@ async fn store_file_listing_encodes_status_sort_and_reverse_cursor() {
         ..Default::default()
     };
     let page = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .list_store_files_with(&store_ref(), &request, &options("account-a"))
         .await
@@ -441,6 +469,8 @@ async fn invalid_store_file_listing_fails_before_http() {
     };
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .list_store_files_with(&store_ref(), &request, &options("account-a"))
             .await,
@@ -458,6 +488,8 @@ async fn file_attributes_can_be_replaced_without_reindexing() {
             "attributes":{"region":"eu"}}),
     )]);
     let updated = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .update_file_attributes(
             &RetrievalFileRef {
@@ -525,12 +557,16 @@ async fn store_file_index_search_and_delete_are_separate_scoped_operations() {
     ]);
     let opts = options("account-a");
     let store = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
-        .create_store("openai", "FAQ", &opts)
+        .create_store("FAQ", &opts)
         .await
         .unwrap();
     assert_eq!(store.reference.store_id, "vs_123");
     let task = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .attach_file(&store.reference, &file(), &opts)
         .await
@@ -538,12 +574,16 @@ async fn store_file_index_search_and_delete_are_separate_scoped_operations() {
     assert_eq!(task.status, IndexStatus::InProgress);
     assert!(!task.status.is_ready());
     let ready = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .get_file(&task.reference, &opts)
         .await
         .unwrap();
     assert!(ready.status.is_ready());
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .search(&store.reference, "return policy", 10, &opts)
         .await
@@ -552,11 +592,15 @@ async fn store_file_index_search_and_delete_are_separate_scoped_operations() {
     assert_eq!(result.hits[0].content[0]["text"], "30 days");
     assert_eq!(result.request_id.as_deref(), Some("request-1"));
     client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .delete_file(&ready.reference, &opts)
         .await
         .unwrap();
     client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .delete_store(&store.reference, &opts)
         .await
@@ -587,6 +631,8 @@ async fn resource_scope_and_uploaded_file_scope_are_checked_before_http() {
     };
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .search(&store, "query", 10, &options("account-b"))
             .await,
@@ -596,6 +642,8 @@ async fn resource_scope_and_uploaded_file_scope_are_checked_before_http() {
     wrong_file.account_scope = Some("account-b".into());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .attach_file(&store, &wrong_file, &options("account-a"))
             .await,
@@ -615,8 +663,10 @@ async fn unknown_create_outcome_is_explicit_and_never_resubmitted() {
     }]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
-            .create_store("openai", "FAQ", &options("account-a"))
+            .create_store("FAQ", &options("account-a"))
             .await,
         Err(RetrievalError::OutcomeUnknown {
             operation: "create_store",
@@ -646,6 +696,8 @@ async fn read_only_search_transport_failure_keeps_transport_classification() {
     };
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .retrieval()
             .search(&store, "query", 10, &options("account-a"))
             .await,
@@ -672,14 +724,18 @@ async fn listing_can_reconcile_an_uncertain_create_and_retrieve_store_state() {
     ]);
     let opts = options("account-a");
     let (stores, has_more, last_id) = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
-        .list_stores("openai", 2, Some("vs_old"), &opts)
+        .list_stores(2, Some("vs_old"), &opts)
         .await
         .unwrap();
     assert_eq!(stores.len(), 1);
     assert!(!has_more);
     assert_eq!(last_id.as_deref(), Some("vs_123"));
     let current = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .retrieval()
         .get_store(&stores[0].reference, &opts)
         .await

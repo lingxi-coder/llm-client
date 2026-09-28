@@ -104,22 +104,26 @@ struct Preset {
     #[serde(default)]
     embeddings: crate::protocol::ServiceSetting<crate::embeddings::EmbeddingRoute>,
     #[serde(default)]
-    retrieval: crate::protocol::ServiceSetting<crate::retrieval::RetrievalRoute>,
+    retrieval: crate::protocol::ServiceSetting<crate::providers::openai::retrieval::RetrievalRoute>,
     #[serde(default)]
-    batches: crate::protocol::ServiceSetting<crate::batches::BatchRoute>,
+    batches: crate::protocol::ServiceSetting<crate::providers::openai::batches::BatchRoute>,
     #[serde(default)]
-    deferred: crate::protocol::ServiceSetting<crate::deferred::DeferredRoute>,
+    deferred: crate::protocol::ServiceSetting<crate::providers::xai::deferred::DeferredRoute>,
     #[serde(default)]
-    background: crate::protocol::ServiceSetting<crate::background::BackgroundRoute>,
+    background:
+        crate::protocol::ServiceSetting<crate::providers::openai::background::BackgroundRoute>,
     #[serde(default)]
-    audio: crate::protocol::ServiceSetting<crate::audio::AudioRoute>,
+    audio: crate::protocol::ServiceSetting<crate::providers::openai::audio::AudioRoute>,
     #[serde(default)]
-    interactions: crate::protocol::ServiceSetting<crate::interactions::InteractionRoute>,
+    interactions:
+        crate::protocol::ServiceSetting<crate::providers::google::interactions::InteractionRoute>,
     #[serde(default)]
-    gemini_file_search:
-        crate::protocol::ServiceSetting<crate::gemini_file_search::GeminiFileSearchRoute>,
+    gemini_file_search: crate::protocol::ServiceSetting<
+        crate::providers::google::file_search::GeminiFileSearchRoute,
+    >,
     #[serde(default)]
-    glm_knowledge: crate::protocol::ServiceSetting<crate::glm_knowledge::GlmKnowledgeRoute>,
+    glm_knowledge:
+        crate::protocol::ServiceSetting<crate::providers::zhipu::knowledge::GlmKnowledgeRoute>,
 }
 
 /// The provider-level half of pricing: when the listed rates apply.

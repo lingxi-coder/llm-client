@@ -3,9 +3,10 @@
 mod wire_api;
 
 use lingxi_llm_client::protocol::{
-    AuthStrategy, BillingMode, ChatRequest, CredentialConfig, FileSearchConfig, LlmError,
-    ProviderId, ProviderProfile, StreamEvent, ToolChoice, ToolSpec,
+    AuthStrategy, BillingMode, ChatRequest, CredentialConfig, LlmError, ProviderId,
+    ProviderProfile, StreamEvent, ToolChoice, ToolSpec,
 };
+use lingxi_llm_client::providers::qwen::types::FileSearchConfig;
 use lingxi_llm_client::{
     AnthropicMessagesCodec, HttpResponse, LlmClientBuilder, OpenAiChatCodec, OpenAiResponsesCodec,
     RequestOptions, WireCodec,
@@ -102,7 +103,7 @@ fn provider_tools_are_opt_in_and_coexist_with_functions() {
             input_schema: json!({"type":"object","properties":{}}),
             strict: false,
             defer_loading: false,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         });
         let body = encode(&req, &p).unwrap();
         assert_eq!(body["tools"].as_array().unwrap().len(), 2);
@@ -581,7 +582,7 @@ fn qwen_file_search_alone_honors_tool_choice_and_validates_named_functions() {
         input_schema: json!({"type":"object"}),
         strict: false,
         defer_loading: false,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     });
     assert_eq!(
         encode(&req, &p).unwrap()["tool_choice"],

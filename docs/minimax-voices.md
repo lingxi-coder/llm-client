@@ -5,7 +5,7 @@
 ```rust,no_run
 # async fn example(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
-    minimax_voices::{
+    providers::minimax::voices::{
         MiniMaxVoiceDesignRequest, MiniMaxVoiceListRequest, MiniMaxVoicesConfig,
         MiniMaxVoicesCredentials, MiniMaxVoicesRegion, MiniMaxVoicesService,
     },
@@ -44,7 +44,7 @@ let _ = (catalog, designed.reference, designed.trial_audio);
 ```rust,no_run
 use lingxi_llm_client::{
     files::ProviderFileRef,
-    minimax_voices::{
+    providers::minimax::voices::{
         MiniMaxVoiceCloneRequest, MiniMaxVoiceRef,
         MiniMaxVoicesCredentials, MiniMaxVoicesError, MiniMaxVoicesService,
     },

@@ -3,12 +3,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    gemini_speech::{
+    protocol::{LlmError, Secret},
+    providers::google::speech::{
         GeminiSpeechModel, GeminiSpeechScope, GeminiVoiceAudioData, GeminiVoiceCreateRequest,
         GeminiVoiceListOptions, GeminiVoicesDispatch, GeminiVoicesScope, GeminiVoicesService,
         GEMINI_SPEECH_ENDPOINT, GEMINI_VOICES_ENDPOINT,
     },
-    protocol::{LlmError, Secret},
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -264,8 +264,8 @@ async fn list_repeats_filters_preserves_page_token_and_scopes_each_voice() {
                 .with_accents(["American", "British"])
                 .with_language_codes(["en-US"])
                 .with_types([
-                    lingxi_llm_client::gemini_speech::GeminiVoiceType::Replicated,
-                    lingxi_llm_client::gemini_speech::GeminiVoiceType::Prebuilt,
+                    lingxi_llm_client::providers::google::speech::GeminiVoiceType::Replicated,
+                    lingxi_llm_client::providers::google::speech::GeminiVoiceType::Prebuilt,
                 ])
                 .with_search("warm voice"),
         )

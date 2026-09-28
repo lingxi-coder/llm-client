@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeDispatch, QwenKnowledgeError, QwenKnowledgeRef, QwenKnowledgeRegion,
         QwenKnowledgeScope, QwenKnowledgeSearchKbConfig, QwenKnowledgeSearchRef,
         QwenKnowledgeSearchRequest, QwenKnowledgeService,
@@ -73,12 +73,7 @@ fn scope(account: &str) -> QwenKnowledgeScope {
 }
 
 fn service<'a>(mock: &'a Mock, account: &str) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-search-api-key".to_owned()),
-        scope(account),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(account)).unwrap()
 }
 
 fn search_ref(scope: &QwenKnowledgeScope) -> QwenKnowledgeSearchRef {
@@ -143,7 +138,10 @@ async fn native_search_uses_published_agent_and_returns_raw_nodes_and_metadata()
                     json!({"price":{"gte":100,"lte":500}}),
                 ]),
             );
-    let result = service.knowledge_search(&request).await.unwrap();
+    let result = service
+        .knowledge_search(&request, &request_options())
+        .await
+        .unwrap();
 
     assert_eq!(result.total, 1);
     assert_eq!(result.cost_time_ms, 12);
@@ -204,7 +202,10 @@ async fn image_only_search_sends_the_required_empty_query() {
         search_ref(service.scope()),
         ["https://images.example.test/product.jpg"],
     );
-    let result = service.knowledge_search(&request).await.unwrap();
+    let result = service
+        .knowledge_search(&request, &request_options())
+        .await
+        .unwrap();
     assert!(result.nodes.is_empty());
     let body: Value = serde_json::from_slice(&mock.requests.lock().unwrap()[0].body).unwrap();
     assert_eq!(body["query"], "");
@@ -226,7 +227,10 @@ async fn explicit_search_filters_do_not_restrict_agent_bound_result_knowledge_ba
             service.scope(),
             "kb-with-extra-filter",
         )));
-    let result = service.knowledge_search(&request).await.unwrap();
+    let result = service
+        .knowledge_search(&request, &request_options())
+        .await
+        .unwrap();
     assert_eq!(
         result.nodes[0].knowledge.as_ref().unwrap().index_id(),
         "another-agent-bound-kb"
@@ -240,7 +244,7 @@ async fn search_and_knowledge_refs_from_another_scope_are_rejected_before_http()
     let foreign_request =
         QwenKnowledgeSearchRequest::new(search_ref(&scope("acct-2")), "find something");
     let error = service
-        .knowledge_search(&foreign_request)
+        .knowledge_search(&foreign_request, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(&error, QwenKnowledgeError::Llm(_)));
@@ -253,7 +257,7 @@ async fn search_and_knowledge_refs_from_another_scope_are_rejected_before_http()
                 "kb-foreign",
             )));
     let error = service
-        .knowledge_search(&foreign_kb_request)
+        .knowledge_search(&foreign_kb_request, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(&error, QwenKnowledgeError::Llm(_)));
@@ -272,7 +276,9 @@ async fn duplicate_knowledge_ids_and_documented_filter_limits_fail_before_http()
             QwenKnowledgeSearchKbConfig::new(knowledge.clone()),
         ]);
     assert!(matches!(
-        service.knowledge_search(&duplicate).await,
+        service
+            .knowledge_search(&duplicate, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
 
@@ -282,7 +288,9 @@ async fn duplicate_knowledge_ids_and_documented_filter_limits_fail_before_http()
                 .with_search_filters([json!({"tags":vec!["tag"; 1001]})]),
         );
     assert!(matches!(
-        service.knowledge_search(&too_many_tags).await,
+        service
+            .knowledge_search(&too_many_tags, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
 
@@ -295,7 +303,9 @@ async fn duplicate_knowledge_ids_and_documented_filter_limits_fail_before_http()
                 .with_search_filters([large_filter]),
         ]);
     assert!(matches!(
-        service.knowledge_search(&too_many_bytes).await,
+        service
+            .knowledge_search(&too_many_bytes, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
     assert!(mock.requests.lock().unwrap().is_empty());
@@ -310,7 +320,10 @@ async fn generic_filter_configs_leave_knowledge_type_specific_limits_to_the_prov
             QwenKnowledgeSearchKbConfig::new(kb_ref(service.scope(), "kb-type-not-declared"))
                 .with_search_filters([json!({"tags":vec!["tag"; 1001]})]),
         );
-    service.knowledge_search(&request).await.unwrap();
+    service
+        .knowledge_search(&request, &request_options())
+        .await
+        .unwrap();
 
     let requests = mock.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
@@ -330,7 +343,9 @@ async fn empty_search_intent_and_mismatched_result_workspace_fail_without_retry(
     let empty_service = service(&empty_mock, "acct-1");
     let empty = QwenKnowledgeSearchRequest::new(search_ref(empty_service.scope()), "");
     assert!(matches!(
-        empty_service.knowledge_search(&empty).await,
+        empty_service
+            .knowledge_search(&empty, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
     assert!(empty_mock.requests.lock().unwrap().is_empty());
@@ -340,7 +355,9 @@ async fn empty_search_intent_and_mismatched_result_workspace_fail_without_retry(
         ["file:///tmp/private.png"],
     );
     assert!(matches!(
-        empty_service.knowledge_search(&invalid_image).await,
+        empty_service
+            .knowledge_search(&invalid_image, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
     assert!(empty_mock.requests.lock().unwrap().is_empty());
@@ -350,10 +367,10 @@ async fn empty_search_intent_and_mismatched_result_workspace_fail_without_retry(
         "kb-1"
     )])))]);
     let error = service(&mismatch, "acct-1")
-        .knowledge_search(&QwenKnowledgeSearchRequest::new(
-            search_ref(&scope("acct-1")),
-            "query",
-        ))
+        .knowledge_search(
+            &QwenKnowledgeSearchRequest::new(search_ref(&scope("acct-1")), "query"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(&error, QwenKnowledgeError::InvalidResponse { .. }));
@@ -362,12 +379,19 @@ async fn empty_search_intent_and_mismatched_result_workspace_fail_without_retry(
 
     let timeout = Mock::new([Reply::Failure]);
     let error = service(&timeout, "acct-1")
-        .knowledge_search(&QwenKnowledgeSearchRequest::new(
-            search_ref(&scope("acct-1")),
-            "query",
-        ))
+        .knowledge_search(
+            &QwenKnowledgeSearchRequest::new(search_ref(&scope("acct-1")), "query"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(&error, QwenKnowledgeError::Llm(_)));
     assert_eq!(timeout.requests.lock().unwrap().len(), 1);
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-search-api-key".to_owned())),
+        ..Default::default()
+    }
 }

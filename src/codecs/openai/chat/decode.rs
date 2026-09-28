@@ -104,11 +104,9 @@ pub(super) fn response_with_usage_mode(
             body.get("usage"),
         ),
         file_search: None,
-        openrouter_container: None,
-        anthropic_container: None,
-        anthropic_usage: None,
+        native_metadata: Vec::new(),
         message: ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content,
         },
@@ -338,7 +336,7 @@ pub(crate) fn normalize_usage(raw: &Value, separate_reasoning: bool, qwen_cache:
         }
     }
     if qwen_cache {
-        crate::codecs::qwen_cache::normalize_usage(&mut normalized);
+        crate::providers::qwen::cache::normalize_usage(&mut normalized);
     }
     if separate_reasoning {
         if let Some(output) = raw.get("completion_tokens").and_then(Value::as_u64) {

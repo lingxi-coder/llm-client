@@ -1,13 +1,13 @@
 # Gemini Voices API
 
-`gemini_speech::GeminiVoicesService` 封装 Gemini Developer API 的 Voices 资源，支持 `POST/GET https://generativelanguage.googleapis.com/v1beta/voices` 和 `GET/DELETE /v1beta/voices/{voice_id}`。它支持通过提示创建自定义语音、使用参考录音和同意录音创建复制语音、列出语音目录并筛选、分页，以及查询和删除已存储语音。此资源与 TTS Interactions 和 Live API 相互独立。
+`providers::google::speech::GeminiVoicesService` 封装 Gemini Developer API 的 Voices 资源，支持 `POST/GET https://generativelanguage.googleapis.com/v1beta/voices` 和 `GET/DELETE /v1beta/voices/{voice_id}`。它支持通过提示创建自定义语音、使用参考录音和同意录音创建复制语音、列出语音目录并筛选、分页，以及查询和删除已存储语音。此资源与 TTS Interactions 和 Live API 相互独立。
 
 每个服务都绑定到一个 Google 配置档、调用方提供的账号/项目标识，以及确切的 Voices 端点。每次调用都传入 `&Secret<String>`；服务不会保留 API 密钥。返回的已存储语音引用会绑定到该作用域。只有在 Google 提供方、配置档和账号均与传入的 `GeminiSpeechScope` 匹配时，`GeminiVoice::speech_request` 才会把语音 ID 或无状态密钥用于 Interactions TTS 请求。
 
 ```rust,ignore
 use bytes::Bytes;
 use lingxi_llm_client::{
-    gemini_speech::{
+    providers::google::speech::{
         GeminiSpeechModel, GeminiSpeechScope, GeminiVoicesScope, GeminiVoicesService,
         GeminiVoiceAudioData, GeminiVoiceCreateRequest, GeminiVoiceListOptions,
         GEMINI_SPEECH_ENDPOINT, GEMINI_VOICES_ENDPOINT,
@@ -34,7 +34,7 @@ let created = voices
 let page = voices
     .list(&key, &GeminiVoiceListOptions::new()
         .with_page_size(100)
-        .with_types([lingxi_llm_client::gemini_speech::GeminiVoiceType::Prompted]))
+        .with_types([lingxi_llm_client::providers::google::speech::GeminiVoiceType::Prompted]))
     .await?;
 let _next_page_token = page.next_page_token;
 

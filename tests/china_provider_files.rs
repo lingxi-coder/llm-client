@@ -343,12 +343,12 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         controls: Default::default(),
         service_tier: None,
         model: "MiniMax-M3".into(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::Video {
                 source: VideoSource::ProviderFile { file },

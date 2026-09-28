@@ -8,7 +8,7 @@
 #     api_key: String,
 # ) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
-    minimax_bidi_tts::{
+    providers::minimax::bidi_tts::{
         MiniMaxBidiTtsConfig, MiniMaxBidiTtsCredentials, MiniMaxBidiTtsError,
         MiniMaxBidiTtsEventKind, MiniMaxBidiTtsLanguageBoost, MiniMaxBidiTtsLimits,
         MiniMaxBidiTtsParameters, MiniMaxBidiTtsRegion, MiniMaxBidiTtsRequest,

@@ -8,11 +8,11 @@
 # async fn example(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
 use std::sync::Arc;
 use lingxi_llm_client::{
-    minimax_streaming_tts::{
+    providers::minimax::streaming_tts::{
         MiniMaxStreamingTtsConfig, MiniMaxStreamingTtsEvent, MiniMaxStreamingTtsLimits,
         MiniMaxStreamingTtsRequest, MiniMaxStreamingTtsService,
     },
-    minimax_tts::MiniMaxTtsRegion,
+    providers::minimax::tts::MiniMaxTtsRegion,
     protocol::Secret,
     realtime::{RealtimeTransport, RustlsWebSocketTransport},
 };

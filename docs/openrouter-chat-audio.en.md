@@ -7,9 +7,7 @@ OpenRouter Chat Completions accepts base64 audio input for compatible models. Au
 Represent user-message audio as `ContentBlock::Audio`. The `data` value is standard base64 of the audio bytes, without a `data:` URL prefix. The codec accepts the common formats documented by OpenRouter (`wav`, `mp3`, `aiff`, `aac`, `ogg`, `flac`, `m4a`, `pcm16`, and `pcm24`), checks base64 syntax, and checks the selected model's published `input_modalities` when present. Audio URLs are not supported. Provider and model format support still varies, so select a model whose catalog row includes `audio` input and confirm the format for that route.
 
 ```rust,ignore
-use lingxi_llm_client::protocol::{
-    ContentBlock,
-};
+use lingxi_llm_client::protocol::{ContentBlock};
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 request.messages[0].content.push(ContentBlock::Audio {
@@ -25,9 +23,7 @@ The `STANDARD` value above is `base64::engine::general_purpose::STANDARD`. The a
 Use `OpenRouterChatAudioOutput` to add the documented per-request configuration to `ChatRequest.metadata`; the helper preserves other object metadata. The selected model must advertise `audio` in `output_modalities`, and the request must use `.chat().stream(...)`.
 
 ```rust,ignore
-use lingxi_llm_client::protocol::message::{
-    OpenRouterChatAudioFormat, OpenRouterChatAudioOutput,
-};
+use lingxi_llm_client::protocol::{OpenRouterChatAudioFormat, OpenRouterChatAudioOutput};
 use lingxi_llm_client::protocol::{ProtocolFamily, StreamEvent};
 
 OpenRouterChatAudioOutput::new("alloy", OpenRouterChatAudioFormat::Mp3)

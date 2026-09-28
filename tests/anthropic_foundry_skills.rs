@@ -1,12 +1,13 @@
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{stream, StreamExt};
+use lingxi_llm_client::providers::anthropic::types::AnthropicSkillScope;
 use lingxi_llm_client::{
-    anthropic_skills::{
+    protocol::{FoundryHosting, LlmError, ProviderProfile, Secret},
+    providers::anthropic::skills::{
         AnthropicSkillFile, AnthropicSkillListOptions, AnthropicSkillVersionListOptions,
         AnthropicSkillsError, AnthropicSkillsService,
     },
-    protocol::{AnthropicSkillScope, FoundryHosting, LlmError, ProviderProfile, Secret},
     ApiKeyAuthenticator, BearerAuthenticator, CodecContext, EncodeRequest, FoundryClaudeCodec,
     HttpRequest, HttpStreamRequest, RequestMode, StreamResponse, Transport, WireCodec,
 };
@@ -188,7 +189,6 @@ async fn foundry_custom_skills_use_resource_routes_for_crud_and_versions() {
         ACCOUNT,
         FoundryHosting::Anthropic,
         &auth,
-        Secret::new("foundry-api-key".into()),
     )
     .unwrap();
 
@@ -199,6 +199,7 @@ async fn foundry_custom_skills_use_resource_routes_for_crud_and_versions() {
                 Bytes::from_static(b"---\nname: quarterly-report\n---"),
             )],
             Some("Quarterly report"),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -211,11 +212,18 @@ async fn foundry_custom_skills_use_resource_routes_for_crud_and_versions() {
     let reference = created.reference.clone();
 
     let listed = service
-        .list(&AnthropicSkillListOptions::default())
+        .list(&AnthropicSkillListOptions::default(), &request_options())
         .await
         .unwrap();
     assert_eq!(listed.skills[0].id, "skill_foundry");
-    assert_eq!(service.get(&reference).await.unwrap().id, "skill_foundry");
+    assert_eq!(
+        service
+            .get(&reference, &request_options())
+            .await
+            .unwrap()
+            .id,
+        "skill_foundry"
+    );
     let version = service
         .create_version(
             &reference,
@@ -223,31 +231,39 @@ async fn foundry_custom_skills_use_resource_routes_for_crud_and_versions() {
                 "quarterly-report/SKILL.md",
                 Bytes::from_static(b"updated"),
             )],
+            &request_options(),
         )
         .await
         .unwrap();
     let versions = service
-        .list_versions(&reference, &AnthropicSkillVersionListOptions::default())
+        .list_versions(
+            &reference,
+            &AnthropicSkillVersionListOptions::default(),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(versions.versions[0].id, version.id);
     assert_eq!(
         service
-            .get_version(&reference, "skver_one")
+            .get_version(&reference, "skver_one", &request_options())
             .await
             .unwrap()
             .id,
         "skver_one"
     );
     service
-        .delete_version(&reference, "skver_one")
+        .delete_version(&reference, "skver_one", &request_options())
         .await
         .unwrap();
-    service.delete(&reference).await.unwrap();
+    service
+        .delete(&reference, &request_options())
+        .await
+        .unwrap();
 
     assert!(matches!(
         service
-            .download_version_content(&reference, "skver_one")
+            .download_version_content(&reference, "skver_one", &request_options())
             .await,
         Err(AnthropicSkillsError::Llm(
             LlmError::UnsupportedCapability { .. }
@@ -306,11 +322,16 @@ async fn foundry_skills_support_bearer_auth_and_reject_azure_or_wrong_protocol()
         ACCOUNT,
         FoundryHosting::Anthropic,
         &auth,
-        Secret::new("entra-token".into()),
     )
     .unwrap();
     service
-        .list(&AnthropicSkillListOptions::default())
+        .list(
+            &AnthropicSkillListOptions::default(),
+            &lingxi_llm_client::RequestOptions {
+                credential: Some(Secret::new("entra-token".into())),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     let requests = transport.requests();
@@ -331,7 +352,6 @@ async fn foundry_skills_support_bearer_auth_and_reject_azure_or_wrong_protocol()
             ACCOUNT,
             FoundryHosting::Azure,
             &auth,
-            Secret::new("token".into()),
         ),
         Err(AnthropicSkillsError::Llm(
             LlmError::UnsupportedCapability { .. }
@@ -345,7 +365,6 @@ async fn foundry_skills_support_bearer_auth_and_reject_azure_or_wrong_protocol()
         ACCOUNT,
         FoundryHosting::Anthropic,
         &auth,
-        Secret::new("token".into()),
     )
     .is_err());
     assert!(no_requests.requests().is_empty());
@@ -358,12 +377,13 @@ async fn foundry_mutation_server_errors_report_unknown_outcome_after_one_dispatc
     let skill_scope =
         AnthropicSkillScope::new_foundry(PROFILE, ENDPOINT, ACCOUNT, FoundryHosting::Anthropic)
             .unwrap();
-    let reference = lingxi_llm_client::anthropic_skills::AnthropicSkillResourceRef::new(
-        "skill_foundry",
-        "custom",
-        skill_scope,
-    )
-    .unwrap();
+    let reference =
+        lingxi_llm_client::providers::anthropic::skills::AnthropicSkillResourceRef::new(
+            "skill_foundry",
+            "custom",
+            skill_scope,
+        )
+        .unwrap();
 
     let cases = [
         ("create", 500u16, None),
@@ -379,7 +399,6 @@ async fn foundry_mutation_server_errors_report_unknown_outcome_after_one_dispatc
             ACCOUNT,
             FoundryHosting::Anthropic,
             &auth,
-            Secret::new("foundry-api-key".into()),
         )
         .unwrap();
         let error = match operation {
@@ -390,6 +409,7 @@ async fn foundry_mutation_server_errors_report_unknown_outcome_after_one_dispatc
                         Bytes::from_static(b"skill"),
                     )],
                     None,
+                    &request_options(),
                 )
                 .await
                 .unwrap_err(),
@@ -400,12 +420,16 @@ async fn foundry_mutation_server_errors_report_unknown_outcome_after_one_dispatc
                         "quarterly-report/SKILL.md",
                         Bytes::from_static(b"skill"),
                     )],
+                    &request_options(),
                 )
                 .await
                 .unwrap_err(),
-            "delete" => service.delete(&reference).await.unwrap_err(),
+            "delete" => service
+                .delete(&reference, &request_options())
+                .await
+                .unwrap_err(),
             "delete version" => service
-                .delete_version(&reference, "skver_one")
+                .delete_version(&reference, "skver_one", &request_options())
                 .await
                 .unwrap_err(),
             _ => unreachable!(),
@@ -441,12 +465,13 @@ async fn foundry_read_server_errors_remain_provider_errors() {
         ACCOUNT,
         FoundryHosting::Anthropic,
         &auth,
-        Secret::new("foundry-api-key".into()),
     )
     .unwrap();
 
     assert!(matches!(
-        service.list(&AnthropicSkillListOptions::default()).await,
+        service
+            .list(&AnthropicSkillListOptions::default(), &request_options())
+            .await,
         Err(AnthropicSkillsError::Provider { status: 500, .. })
     ));
     assert_eq!(transport.requests().len(), 1);
@@ -480,12 +505,7 @@ fn foundry_skill_scope_is_explicit_and_rejects_azure_or_first_party_reuse() {
         .with_workspace_id("wrkspc_not_supported_on_foundry")
         .is_err());
     let transport = MockTransport::new([]);
-    assert!(AnthropicSkillsService::new(
-        &transport,
-        Secret::new("foundry-key".into()),
-        foundry_scope,
-    )
-    .is_err());
+    assert!(AnthropicSkillsService::new(&transport, foundry_scope,).is_err());
 }
 
 #[test]
@@ -493,7 +513,7 @@ fn foundry_custom_skill_reference_matches_resource_and_account_not_deployment_mo
     let scope =
         AnthropicSkillScope::new_foundry(PROFILE, ENDPOINT, ACCOUNT, FoundryHosting::Anthropic)
             .unwrap();
-    let skill = lingxi_llm_client::protocol::AnthropicSkillRef::custom(
+    let skill = lingxi_llm_client::providers::anthropic::types::AnthropicSkillRef::custom(
         "skill_foundry_custom",
         scope.clone(),
     );
@@ -507,12 +527,13 @@ fn foundry_custom_skill_reference_matches_resource_and_account_not_deployment_mo
         }))
         .unwrap();
         request.hosted_tools.push(
-            lingxi_llm_client::protocol::HostedTool::AnthropicCodeExecution(
-                lingxi_llm_client::protocol::AnthropicCodeExecutionConfig {
+            lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
+                lingxi_llm_client::providers::anthropic::types::AnthropicCodeExecutionConfig {
                     skills: vec![skill.clone()],
                     ..Default::default()
                 },
-            ),
+            )
+            .into(),
         );
         FoundryClaudeCodec.encode_request(
             EncodeRequest::new(&request),
@@ -549,4 +570,11 @@ fn foundry_custom_skill_reference_matches_resource_and_account_not_deployment_mo
         "claude-opus-5-5",
     );
     assert!(encode_with(&azure, ACCOUNT).is_err());
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("foundry-api-key".into())),
+        ..Default::default()
+    }
 }

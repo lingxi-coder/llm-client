@@ -31,10 +31,9 @@ For 4.5 Foundry deployments, use the documented undated Foundry IDs such as `cla
 The request model stays the deployment name. This example performs local request validation and encoding only; it makes no network call and configures no credential:
 
 ~~~rust
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, ChatRequest, FoundryDeployment,
-    FoundryHosting, HostedTool, ProviderProfile,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
+use lingxi_llm_client::protocol::{ChatRequest, FoundryDeployment,
+    FoundryHosting, ProviderProfile};
 use lingxi_llm_client::{
     CodecContext, EncodeRequest, FoundryClaudeCodec, RequestMode, WireCodec,
 };
@@ -62,11 +61,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "model": "prod-opus-55",
         "messages": [{"role":"user","content":[{"type":"text","text":"Find a calendar tool"}]}]
     }))?;
-    request.hosted_tools.push(HostedTool::AnthropicToolSearch(
+    request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
         AnthropicToolSearchConfig {
             strategy: AnthropicToolSearchStrategy::Bm25,
         },
-    ));
+    ).into());
 
     let context = CodecContext::new(&profile, "prod-opus-55", RequestMode::Complete);
     FoundryClaudeCodec.validate_request(&request, &context)?;
@@ -87,9 +86,8 @@ The typed Web Fetch adapter supports the Foundry endpoint and requires an explic
 Foundry supports the typed remote MCP connector on both hosting options using `mcp-client-2025-11-20`. The base connector does not require ModelProfile.foundry or a model allowlist. The current public Foundry documentation establishes the base `mcp-client-2025-11-20` connector, but does not establish availability of the newer `mcp-client-2026-09-15` beta features used for pinned lists, mcp_tool_listing, or inline MCP changes. This client therefore rejects those newer operations on Foundry, including Anthropic-hosted deployments; leave the pinned list unset and do not replay or add those native blocks. See the [MCP connector guide](anthropic-mcp.en.md) for a typed configuration example and the remaining request contract.
 
 ~~~rust
-use lingxi_llm_client::protocol::{
-    AnthropicMcpConfig, ChatRequest, FoundryDeployment, FoundryHosting, HostedTool, ProviderProfile,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig};
+use lingxi_llm_client::protocol::{ChatRequest, FoundryDeployment, FoundryHosting, ProviderProfile};
 use lingxi_llm_client::{
     CodecContext, EncodeRequest, FoundryClaudeCodec, RequestMode, WireCodec,
 };
@@ -118,9 +116,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "model": "prod-opus-55",
         "messages": [{"role":"user","content":[{"type":"text","text":"Search the docs server"}]}]
     }))?;
-    request.hosted_tools.push(HostedTool::AnthropicMcp(
+    request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
         AnthropicMcpConfig::new("docs", "https://mcp.example.com/sse")?,
-    ));
+    ).into());
 
     let context = CodecContext::new(&profile, "prod-opus-55", RequestMode::Complete);
     FoundryClaudeCodec.validate_request(&request, &context)?;
@@ -143,6 +141,6 @@ References: [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/bu
 
 ## Code Execution and programmatic tools
 
-`HostedTool::AnthropicCodeExecution` uses the selected row's explicit hosting and underlying model identity. Only supported models hosted on Anthropic accept execution; Azure-hosted deployments fail preflight. The wire `model` remains the deployment name. Programmatic tool callers additionally follow their own documented model restrictions.
+`AnthropicHostedTool::CodeExecution` uses the selected row's explicit hosting and underlying model identity. Only supported models hosted on Anthropic accept execution; Azure-hosted deployments fail preflight. The wire `model` remains the deployment name. Programmatic tool callers additionally follow their own documented model restrictions.
 
 Complete and streaming responses retain native container and usage metadata. Import a returned container ID with `AnthropicContainerScope::new_foundry`, binding the profile, exact resource endpoint, stable account identity, deployment name and `FoundryDeployment`; changing any of those prevents reuse. An uncertain execution outcome does not trigger automatic retry or failover. See [Code Execution](anthropic-code-execution.en.md) for the supported file and Skill boundaries.

@@ -2,14 +2,14 @@
 
 [中文](qwen-knowledge.md)
 
-`client.qwen_knowledge(api_key, scope)` provides Alibaba Cloud Model Studio RAG REST operations for knowledge bases, documents, and import jobs, while retaining low-level `retrieve`. Knowledge-base, document, and import-job references bind the account scope, profile, region, workspace, and parent knowledge-base ID so they cannot be reused across connections or bases.
+`client.provider::<QwenClient>(profile)?.knowledge(scope)` provides Alibaba Cloud Model Studio RAG REST operations for knowledge bases, documents, and import jobs, while retaining low-level `retrieve`. Knowledge-base, document, and import-job references bind the account scope, profile, region, workspace, and parent knowledge-base ID so they cannot be reused across connections or bases.
 
 The current REST overview documents the Beijing workspace URL: `https://{workspace_id}.cn-beijing.maas.aliyuncs.com`. `QwenKnowledgeRegion::Singapore` remains available to describe the origin of a reference, but this service rejects every Singapore RAG REST call before sending it rather than guessing a route. This applies to retrieval, reads, and writes.
 
 ```rust,ignore
 use lingxi_llm_client::{
     protocol::Secret,
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeCreateRequest, QwenKnowledgeDocumentPageRequest,
         QwenKnowledgeRegion, QwenKnowledgeScope,
     },
@@ -21,7 +21,12 @@ let scope = QwenKnowledgeScope::new(
     QwenKnowledgeRegion::Beijing,
     "llm-your-workspace-id",
 )?;
-let service = client.qwen_knowledge(Secret::new(api_key), scope)?;
+let provider = client.provider::<lingxi_llm_client::providers::qwen::QwenClient>(scope.profile_name())?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(Secret::new(api_key)),
+    ..Default::default()
+};
+let service = provider.knowledge(scope)?;
 
 // create_v2 creates the knowledge base and starts its initial import job.
 let created = service
@@ -29,17 +34,18 @@ let created = service
         "Returns",
         "Return policy documents",
         ["registered-file-id"],
-    ))
+    ), &request_options)
     .await?;
 
 // The caller triggers later operations separately; the service does not poll.
 let documents = service
-    .list_documents(&created.knowledge, QwenKnowledgeDocumentPageRequest::default())
+    .list_documents(&created.knowledge, QwenKnowledgeDocumentPageRequest::default(), &request_options)
     .await?;
 let import = service
     .get_import_job_status(
         &created.job,
         QwenKnowledgeDocumentPageRequest::default(),
+        &request_options,
     )
     .await?;
 let _ = (documents, import);
@@ -72,7 +78,7 @@ The current data-import REST reference documents `applyFileUploadLease` → OSS 
 use lingxi_llm_client::{
     files::UploadFileStream,
     protocol::LlmError,
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeFileUploadRequest, QwenKnowledgeParser,
         QwenKnowledgeRegisterFileRequest, QwenKnowledgeService,
         QwenKnowledgeError,
@@ -80,6 +86,7 @@ use lingxi_llm_client::{
 };
 
 async fn upload_file(
+    request_options: &lingxi_llm_client::RequestOptions,
     service: &QwenKnowledgeService<'_>,
     content_md5: &str,
 ) -> Result<(), QwenKnowledgeError> {
@@ -89,7 +96,7 @@ async fn upload_file(
             "guide.md",
             11,
             content_md5, // computed by the caller before streaming
-        ))
+        ), request_options)
         .await?;
     service
         .upload_file_content(
@@ -100,15 +107,17 @@ async fn upload_file(
                 11,
                 futures::stream::iter([Ok::<_, LlmError>(b"hello world".to_vec().into())]),
             ),
+            request_options,
         )
         .await?;
     let registered = service
         .register_file(
             &lease,
             &QwenKnowledgeRegisterFileRequest::new(QwenKnowledgeParser::AutoSelect),
+            request_options,
         )
         .await?;
-    let details = service.describe_file(&registered.reference).await?;
+    let details = service.describe_file(&registered.reference, request_options).await?;
     let _ = details;
     Ok(())
 }
@@ -138,12 +147,13 @@ The implementation follows Alibaba Cloud's first-party [RAG API overview](https:
 
 ```rust,no_run
 # async fn example(
-#     service: &lingxi_llm_client::qwen_knowledge::QwenKnowledgeService<'_>,
-#     knowledge: &lingxi_llm_client::qwen_knowledge::QwenKnowledgeRef,
+#     request_options: &lingxi_llm_client::RequestOptions,
+#     service: &lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeService<'_>,
+#     knowledge: &lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeRef,
 # ) -> Result<(), Box<dyn std::error::Error>> {
-use lingxi_llm_client::qwen_knowledge::QwenKnowledgeMonitoringRequest;
+use lingxi_llm_client::providers::qwen::knowledge::QwenKnowledgeMonitoringRequest;
 let window = QwenKnowledgeMonitoringRequest::new(1_750_000_000, 1_750_086_400);
-let result = service.get_knowledge_base_monitoring(knowledge, &window).await?;
+let result = service.get_knowledge_base_monitoring(knowledge, &window, request_options).await?;
 let _ = (result.data, result.request_id);
 # Ok(())
 # }

@@ -18,6 +18,34 @@ pub(super) struct RequestRoute<'a> {
     pub connections: Vec<ResolvedConnection<'a>>,
 }
 
+impl RequestRoute<'_> {
+    /// A typed provider client may use sibling profiles, but never another
+    /// provider's implementation from the same routing group.
+    pub(super) fn retain_provider(&mut self, provider_id: &str) -> Result<(), LlmError> {
+        if self
+            .connections
+            .first()
+            .is_none_or(|head| head.profile.provider_id.as_str() != provider_id)
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "bound provider no longer matches the selected route".into(),
+            });
+        }
+        self.connections
+            .retain(|connection| connection.profile.provider_id.as_str() == provider_id);
+        self.route.connection_chain = self
+            .connections
+            .iter()
+            .skip(1)
+            .map(|connection| ConnectionHop {
+                profile_name: connection.profile.profile_name.clone(),
+                request_model: connection.model.request_model.clone(),
+            })
+            .collect();
+        Ok(())
+    }
+}
+
 /// Why `resolve` could not produce a route. Each names what a user has to
 /// change, which is why they are distinct variants rather than one string.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

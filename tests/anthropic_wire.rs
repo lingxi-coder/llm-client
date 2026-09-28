@@ -61,12 +61,12 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
-        anthropic_client_toolsets: Vec::new(),
+        native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content,
         }],
@@ -862,7 +862,7 @@ fn strict_tools_are_enabled_only_when_requested() {
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
             strict,
             defer_loading: false,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         });
         let body = encode(&req, Value::Null).unwrap();
         assert_eq!(

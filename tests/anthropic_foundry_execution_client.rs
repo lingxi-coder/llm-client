@@ -16,9 +16,12 @@ fn request(model: &str) -> ChatRequest {
     let mut request: ChatRequest = serde_json::from_value(json!({
         "model":model,"messages":[{"role":"user","content":[{"type":"text","text":"Calculate 1+1"}]}]
     })).unwrap();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicCodeExecution(Default::default()));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
+            Default::default(),
+        )
+        .into(),
+    );
     request
 }
 #[derive(Default)]
@@ -90,11 +93,11 @@ async fn selected_hosting_is_used_and_complete_stream_preserve_execution_metadat
         let allowed = request("enabled");
         let response = client.chat().complete(&allowed, &options).await.unwrap();
         assert_eq!(
-            response.anthropic_container.unwrap().envelope["future_field"],
+            response.anthropic_container().unwrap().envelope["future_field"],
             "preserve"
         );
         assert_eq!(
-            response.anthropic_usage.unwrap()["server_tool_use"]["code_execution_requests"],
+            response.anthropic_usage().unwrap()["server_tool_use"]["code_execution_requests"],
             1
         );
         let mut stream = client.chat().stream(&allowed, &options).await.unwrap();

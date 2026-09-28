@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-pub(super) fn is_media_part(value: &Value) -> bool {
+pub(crate) fn is_media_part(value: &Value) -> bool {
     value.get("inlineData").is_some() || value.get("fileData").is_some()
 }
 

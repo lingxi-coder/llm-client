@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
-use lingxi_llm_client::{audio::*, protocol::*, *};
+use lingxi_llm_client::{protocol::*, providers::openai::audio::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -192,17 +192,16 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
         ),
     ];
     let (client, mock) = setup(replies);
-    let service = client.audio().voices();
-
-    let phrases = service
-        .list_consent_phrases("openai", &options())
-        .await
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
         .unwrap();
+    let service = service_provider.audio().voices();
+
+    let phrases = service.list_consent_phrases(&options()).await.unwrap();
     assert_eq!(phrases["catalog"][0]["language"], "en");
 
     let created_consent = service
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "John Doe".into(),
                 language: "en-US".into(),
@@ -216,7 +215,6 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
 
     let page = service
         .list_consents(
-            "openai",
             &VoiceConsentListQuery {
                 after: Some("cons_previous".into()),
                 limit: Some(20),
@@ -229,7 +227,7 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
 
     assert_eq!(
         service
-            .get_consent("openai", created_consent.reference(), &options())
+            .get_consent(created_consent.reference(), &options())
             .await
             .unwrap()
             .language,
@@ -238,7 +236,6 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
     assert_eq!(
         service
             .update_consent(
-                "openai",
                 created_consent.reference(),
                 &VoiceConsentUpdateRequest {
                     name: "John updated".into(),
@@ -252,7 +249,6 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
     );
     let voice = service
         .create_voice(
-            "openai",
             &CustomVoiceCreateRequest {
                 name: "John voice".into(),
                 consent: created_consent.reference().clone(),
@@ -276,7 +272,7 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
         files::provider_file_endpoint_fingerprint("https://api.openai.com/v1/audio/voices")
     );
     let imported = service
-        .import_approved_voice("openai", voice.id.clone(), &options())
+        .import_approved_voice(voice.id.clone(), &options())
         .unwrap();
     assert_eq!(voice.reference(), &imported);
     let saved_reference = serde_json::to_value(voice.reference()).unwrap();
@@ -288,7 +284,7 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
     assert!(!saved_reference.to_string().contains("api.openai.com"));
     assert!(
         service
-            .delete_consent("openai", created_consent.reference(), &options())
+            .delete_consent(created_consent.reference(), &options())
             .await
             .unwrap()
             .deleted
@@ -360,11 +356,13 @@ async fn documented_consent_lifecycle_and_voice_creation_use_exact_routes_and_fi
 #[tokio::test]
 async fn recording_validation_rejects_unsupported_mime_and_oversize_before_dispatch() {
     let (client, mock) = setup(vec![(200, bytes(consent_json("cons_1234")))]);
-    let service = client.audio().voices();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap();
+    let service = service_provider.audio().voices();
 
     let error = service
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "speaker".into(),
                 language: "en-US".into(),
@@ -381,7 +379,6 @@ async fn recording_validation_rejects_unsupported_mime_and_oversize_before_dispa
 
     let consent = service
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "speaker".into(),
                 language: "en-US".into(),
@@ -400,7 +397,6 @@ async fn recording_validation_rejects_unsupported_mime_and_oversize_before_dispa
     };
     let error = service
         .create_voice(
-            "openai",
             &CustomVoiceCreateRequest {
                 name: "speaker".into(),
                 consent: consent.reference().clone(),
@@ -425,10 +421,12 @@ async fn consent_references_reject_account_and_profile_mismatches_before_http() 
         vec![(200, bytes(consent_json("cons_1234")))],
         vec![profile(), alternate],
     );
-    let service = client.audio().voices();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap();
+    let service = service_provider.audio().voices();
     let consent = service
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "speaker".into(),
                 language: "en-US".into(),
@@ -442,7 +440,7 @@ async fn consent_references_reject_account_and_profile_mismatches_before_http() 
     let mut another_account = options();
     another_account.account_scope = Some("different-project".into());
     let account_error = service
-        .get_consent("openai", consent.reference(), &another_account)
+        .get_consent(consent.reference(), &another_account)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -450,8 +448,13 @@ async fn consent_references_reject_account_and_profile_mismatches_before_http() 
         VoiceResourceError::Llm(LlmError::InvalidRequest { .. })
     ));
 
-    let profile_error = service
-        .get_consent("openai-alternate", consent.reference(), &options())
+    let alternate_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai-alternate")
+        .unwrap();
+    let profile_error = alternate_provider
+        .audio()
+        .voices()
+        .get_consent(consent.reference(), &options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -463,7 +466,7 @@ async fn consent_references_reject_account_and_profile_mismatches_before_http() 
     wrong_endpoint_value["endpoint_fingerprint"] = Value::String("different-endpoint".into());
     let wrong_endpoint: VoiceConsentRef = serde_json::from_value(wrong_endpoint_value).unwrap();
     let endpoint_error = service
-        .get_consent("openai", &wrong_endpoint, &options())
+        .get_consent(&wrong_endpoint, &options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -476,26 +479,29 @@ async fn consent_references_reject_account_and_profile_mismatches_before_http() 
 #[tokio::test]
 async fn existing_voice_import_requires_explicit_profile_and_account_scope() {
     let (client, mock) = setup(vec![]);
-    let service = client.audio().voices();
+    let service_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap();
+    let service = service_provider.audio().voices();
     let mut missing_scope = options();
     missing_scope.account_scope = None;
     assert!(matches!(
-        service.import_approved_voice("openai", "voice_1234", &missing_scope),
+        service.import_approved_voice("voice_1234", &missing_scope),
         Err(VoiceResourceError::Llm(LlmError::InvalidRequest { .. }))
     ));
     let mut padded_scope = options();
     padded_scope.account_scope = Some(" openai-project ".into());
     assert!(matches!(
-        service.import_approved_voice("openai", "voice_1234", &padded_scope),
+        service.import_approved_voice("voice_1234", &padded_scope),
         Err(VoiceResourceError::Llm(LlmError::InvalidRequest { .. }))
     ));
     assert!(matches!(
-        service.import_approved_voice("openai", "not-a-voice-id", &options()),
+        service.import_approved_voice("not-a-voice-id", &options()),
         Err(VoiceResourceError::Llm(LlmError::InvalidRequest { .. }))
     ));
     assert!(matches!(
-        service.import_approved_voice("unknown-profile", "voice_1234", &options()),
-        Err(VoiceResourceError::Llm(LlmError::InvalidRequest { .. }))
+        client.provider::<lingxi_llm_client::providers::OpenAiClient>("unknown-profile"),
+        Err(lingxi_llm_client::providers::ProviderBindingError::UnknownProfile { .. })
     ));
     assert!(mock.sent.lock().unwrap().is_empty());
 }
@@ -515,10 +521,12 @@ async fn created_voice_reference_is_accepted_by_speech_without_leaking_scope() {
         ),
         (200, b"audio bytes".to_vec()),
     ]);
-    let voices = client.audio().voices();
+    let voices_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap();
+    let voices = voices_provider.audio().voices();
     let consent = voices
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "speaker".into(),
                 language: "en-US".into(),
@@ -530,7 +538,6 @@ async fn created_voice_reference_is_accepted_by_speech_without_leaking_scope() {
         .unwrap();
     let voice = voices
         .create_voice(
-            "openai",
             &CustomVoiceCreateRequest {
                 name: "speaker voice".into(),
                 consent: consent.reference().clone(),
@@ -549,8 +556,10 @@ async fn created_voice_reference_is_accepted_by_speech_without_leaking_scope() {
         speed: None,
     };
     let mut speech = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
-        .synthesize("openai", &request, &options())
+        .synthesize(&request, &options())
         .await
         .unwrap();
     assert_eq!(
@@ -580,10 +589,12 @@ async fn malformed_success_after_voice_creation_reports_unknown_outcome() {
             })),
         ),
     ]);
-    let voices = client.audio().voices();
+    let voices_provider = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap();
+    let voices = voices_provider.audio().voices();
     let consent = voices
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "speaker".into(),
                 language: "en-US".into(),
@@ -595,7 +606,6 @@ async fn malformed_success_after_voice_creation_reports_unknown_outcome() {
         .unwrap();
     let error = voices
         .create_voice(
-            "openai",
             &CustomVoiceCreateRequest {
                 name: "speaker voice".into(),
                 consent: consent.reference().clone(),
@@ -620,10 +630,11 @@ async fn interrupted_consent_upload_reports_unknown_outcome_without_retry() {
     let (client, mock) = setup(vec![]);
     *mock.fail_next_after_send.lock().unwrap() = true;
     let result = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .audio()
         .voices()
         .create_consent(
-            "openai",
             &VoiceConsentCreateRequest {
                 name: "speaker".into(),
                 language: "en-US".into(),

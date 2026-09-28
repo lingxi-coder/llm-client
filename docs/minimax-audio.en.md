@@ -2,17 +2,19 @@
 
 [简体中文](minimax-audio.md)
 
-`client.minimax_audio(endpoint).transcribe(...)` is an independent synchronous file transcription service for MiniMax ASR 1.0. It does not use Chat's `base_url` or OpenAI's transcription fields. The caller must select a full regional endpoint explicitly and provide the matching account API key in `RequestOptions::credential` on every call:
+`client.provider::<MiniMaxClient>(profile)?.audio(endpoint).transcribe(...)` is an independent synchronous file transcription service for MiniMax ASR 1.0. It does not use Chat's `base_url` or OpenAI's transcription fields. The caller must select a full regional endpoint explicitly and provide the matching account API key in `RequestOptions::credential` on every call:
 
 - International: `https://api.minimax.io/v1/speech_to_text`
 - Mainland China: `https://api.minimax.cn/v1/speech_to_text`
 
 The service accepts only the `/v1/speech_to_text` path on those two HTTPS hosts. It rejects URL userinfo, queries, fragments, and non-443 ports. The caller chooses the endpoint; the service does not infer it from a chat route, switch regions, or fail over. ASR is stateless, so the service does not retain account scope, credentials, or cached data.
 
+When bound through `MiniMaxClient`, the request uses the authenticator registered for that profile, which must have a non-`none` authentication strategy. Direct construction with `MiniMaxAudioService::new` still sends the supplied API key as a Bearer header.
+
 ```rust,no_run
 use lingxi_llm_client::{
-    audio::AudioInput,
-    minimax_audio::{
+    providers::openai::audio::AudioInput,
+    providers::minimax::audio::{
         MiniMaxAudioService, MiniMaxSpeechLanguage, MiniMaxTranscriptionRequest,
         MINIMAX_ASR_INTERNATIONAL_ENDPOINT,
     },
@@ -38,7 +40,7 @@ async fn transcribe() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-An existing `LlmClient` or `ClientSnapshot` can also create this service with `client.minimax_audio(endpoint)`. Both constructors require the endpoint explicitly. Do not derive the audio endpoint from a MiniMax Chat `base_url`.
+An existing `LlmClient` or `ClientSnapshot` can also create this service with `client.provider::<MiniMaxClient>(profile)?.audio(endpoint)`. Both constructors require the endpoint explicitly. Do not derive the audio endpoint from a MiniMax Chat `base_url`.
 
 `AudioInput` is a one-shot byte stream with a declared size. MiniMax accepts WAV, AIFF, FLAC, M4A/ALAC, MP3, AAC, Opus, and Ogg containers up to 50 MB and 500 seconds; raw PCM without a container is unsupported. The client checks size, MIME type, filename extension, and actual byte count while sending multipart form data. It cannot infer recording duration from a generic stream, so MiniMax may reject recordings over 500 seconds.
 
@@ -50,14 +52,14 @@ An existing `LlmClient` or `ClientSnapshot` can also create this service with `c
 use futures::StreamExt;
 
 async fn transcribe_incrementally(
-    service: &lingxi_llm_client::minimax_audio::MiniMaxAudioService<'_>,
-    input: lingxi_llm_client::audio::AudioInput,
+    service: &lingxi_llm_client::providers::minimax::audio::MiniMaxAudioService<'_>,
+    input: lingxi_llm_client::providers::openai::audio::AudioInput,
     options: &lingxi_llm_client::RequestOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut events = service
         .transcribe_stream(
             input,
-            &lingxi_llm_client::minimax_audio::MiniMaxTranscriptionRequest::default(),
+            &lingxi_llm_client::providers::minimax::audio::MiniMaxTranscriptionRequest::default(),
             options,
         )
         .await?;

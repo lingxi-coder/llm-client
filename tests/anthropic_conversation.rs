@@ -25,7 +25,7 @@ fn native(value: Value) -> ContentBlock {
 }
 fn system(content: Vec<ContentBlock>) -> ConversationMessage {
     ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::System,
         content,
     }
@@ -126,7 +126,7 @@ fn malformed_or_unresolved_changes_and_changes_outside_system_fail() {
     for role in [MessageRole::User, MessageRole::Assistant] {
         let mut req = request();
         req.messages.push(ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role,
             content: vec![native(definition("x"))],
         });
@@ -274,8 +274,8 @@ fn custom_definition_replacement_is_valid_but_limits_apply_after_each_message() 
 
 #[test]
 fn inline_mcp_keeps_connection_top_level_and_toolset_only_in_history() {
-    use lingxi_llm_client::protocol::{
-        AnthropicMcpCacheControl, AnthropicMcpCacheTtl, AnthropicMcpConfig, HostedTool,
+    use lingxi_llm_client::providers::anthropic::types::{
+        AnthropicMcpCacheControl, AnthropicMcpCacheTtl, AnthropicMcpConfig,
     };
     let config = AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
         .unwrap()
@@ -286,7 +286,9 @@ fn inline_mcp_keeps_connection_top_level_and_toolset_only_in_history() {
     let mut req = request();
     req.messages
         .push(config.inline_tool_addition_message().unwrap());
-    req.hosted_tools.push(HostedTool::AnthropicMcp(config));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     let (body, headers) = encode(&req, &profile(), MODEL).unwrap();
     assert_eq!(body["mcp_servers"][0]["name"], "calendar");
     assert!(body
@@ -328,7 +330,9 @@ fn inline_mcp_keeps_connection_top_level_and_toolset_only_in_history() {
 
 #[test]
 fn typed_change_helpers_emit_documented_reference_shapes() {
-    use lingxi_llm_client::protocol::{AnthropicToolChange, AnthropicToolReference};
+    use lingxi_llm_client::providers::anthropic::types::{
+        AnthropicToolChange, AnthropicToolReference,
+    };
     let tool = serde_json::from_value(
         json!({"name":"lookup","description":"Lookup","input_schema":{"type":"object"}}),
     )
@@ -372,9 +376,8 @@ fn inline_definition_policies_are_not_silently_bypassed() {
 
 #[test]
 fn deferred_mcp_toolset_can_be_surfaced_by_reference_without_search() {
-    use lingxi_llm_client::protocol::{
+    use lingxi_llm_client::providers::anthropic::types::{
         AnthropicMcpConfig, AnthropicMcpToolConfig, AnthropicToolChange, AnthropicToolReference,
-        HostedTool,
     };
     let config = AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
         .unwrap()
@@ -383,7 +386,9 @@ fn deferred_mcp_toolset_can_be_surfaced_by_reference_without_search() {
             defer_loading: Some(true),
         });
     let mut req = request();
-    req.hosted_tools.push(HostedTool::AnthropicMcp(config));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     req.messages.push(
         AnthropicToolChange::add_reference(AnthropicToolReference::mcp_toolset("calendar"))
             .into_system_message(),
@@ -404,7 +409,7 @@ fn inline_only_tools_preserve_explicit_tool_choice() {
 
 #[test]
 fn native_text_and_repeated_identical_inline_mcp_are_preserved() {
-    use lingxi_llm_client::protocol::{AnthropicMcpConfig, HostedTool};
+    use lingxi_llm_client::providers::anthropic::types::AnthropicMcpConfig;
     let config = AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
         .unwrap()
         .with_inline_toolset(true);
@@ -414,15 +419,17 @@ fn native_text_and_repeated_identical_inline_mcp_are_preserved() {
         config.inline_tool_addition().unwrap(),
         config.inline_tool_addition().unwrap(),
     ]));
-    req.hosted_tools.push(HostedTool::AnthropicMcp(config));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     let (body, _) = encode(&req, &profile(), MODEL).unwrap();
     assert_eq!(body["messages"][1]["content"].as_array().unwrap().len(), 3);
 }
 
 #[test]
 fn inline_mcp_references_require_prior_definition() {
-    use lingxi_llm_client::protocol::{
-        AnthropicMcpConfig, AnthropicToolChange, AnthropicToolReference, HostedTool,
+    use lingxi_llm_client::providers::anthropic::types::{
+        AnthropicMcpConfig, AnthropicToolChange, AnthropicToolReference,
     };
     let config = AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
         .unwrap()
@@ -434,15 +441,16 @@ fn inline_mcp_references_require_prior_definition() {
     );
     req.messages
         .push(config.inline_tool_addition_message().unwrap());
-    req.hosted_tools.push(HostedTool::AnthropicMcp(config));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     assert!(encode(&req, &profile(), MODEL).is_err());
 }
 
 #[test]
 fn pinned_mcp_limits_use_effective_members_after_each_message() {
-    use lingxi_llm_client::protocol::{
+    use lingxi_llm_client::providers::anthropic::types::{
         AnthropicMcpConfig, AnthropicMcpTool, AnthropicToolChange, AnthropicToolReference,
-        HostedTool,
     };
     let config = AnthropicMcpConfig::new("many", "https://mcp.example.test/many")
         .unwrap()
@@ -459,7 +467,9 @@ fn pinned_mcp_limits_use_effective_members_after_each_message() {
         AnthropicToolChange::remove(AnthropicToolReference::mcp_tool("many", "tool_0"))
             .into_content_block(),
     ]));
-    req.hosted_tools.push(HostedTool::AnthropicMcp(config));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     assert!(encode(&req, &profile(), MODEL).is_ok());
     let definition = req.messages[1].content[0].clone();
     req.messages.push(system(vec![definition]));
@@ -471,14 +481,16 @@ fn pinned_mcp_limits_use_effective_members_after_each_message() {
 
 #[test]
 fn inline_and_mcp_betas_preserve_other_tokens_without_reviving_old_mcp() {
-    use lingxi_llm_client::protocol::{AnthropicMcpConfig, HostedTool};
+    use lingxi_llm_client::providers::anthropic::types::AnthropicMcpConfig;
     let config = AnthropicMcpConfig::new("calendar", "https://mcp.example.test/calendar")
         .unwrap()
         .with_inline_toolset(true);
     let mut req = request();
     req.messages
         .push(config.inline_tool_addition_message().unwrap());
-    req.hosted_tools.push(HostedTool::AnthropicMcp(config));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     let mut p = profile();
     p.extra =
         json!({"headers":{"anthropic-beta":"token-counting-2024-11-01,mcp-client-2025-11-20"}});

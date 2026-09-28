@@ -2,10 +2,12 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::protocol::{
-    AnthropicMcpCacheControl, AnthropicMcpCacheTtl, AnthropicMcpConfig, AnthropicMcpTool,
-    AnthropicMcpToolConfig, AnthropicToolSearchConfig, AnthropicToolSearchStrategy, AuthStrategy,
-    ChatRequest, ContentBlock, ConversationMessage, HostedTool, LlmError, ProtocolFamily,
+    AuthStrategy, ChatRequest, ContentBlock, ConversationMessage, LlmError, ProtocolFamily,
     ProviderProfile, Region, Secret, StopReason,
+};
+use lingxi_llm_client::providers::anthropic::types::{
+    AnthropicMcpCacheControl, AnthropicMcpCacheTtl, AnthropicMcpConfig, AnthropicMcpTool,
+    AnthropicMcpToolConfig, AnthropicToolSearchConfig, AnthropicToolSearchStrategy,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, Authenticator, CodecContext, EncodeRequest, HttpRequest,
@@ -58,35 +60,41 @@ fn encode(
 #[test]
 fn typed_connector_encodes_one_server_and_matching_toolset_with_current_beta() {
     let mut request = request();
-    request.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("workspace")
-            .with_default_config(AnthropicMcpToolConfig {
-                enabled: Some(false),
-                defer_loading: None,
-            })
-            .with_tool_config(
-                "dynamic_remote_tool",
-                AnthropicMcpToolConfig {
-                    enabled: Some(true),
-                    defer_loading: Some(true),
-                },
-            )
-            .unwrap()
-            .with_tools([AnthropicMcpTool {
-                name: "search".into(),
-                description: Some("Search the workspace".into()),
-                input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
-            }])
-            .unwrap()
-            .with_cache_control(AnthropicMcpCacheControl {
-                ttl: Some(AnthropicMcpCacheTtl::OneHour),
-            }),
-    ));
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Bm25,
-        }));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("workspace")
+                .with_default_config(AnthropicMcpToolConfig {
+                    enabled: Some(false),
+                    defer_loading: None,
+                })
+                .with_tool_config(
+                    "dynamic_remote_tool",
+                    AnthropicMcpToolConfig {
+                        enabled: Some(true),
+                        defer_loading: Some(true),
+                    },
+                )
+                .unwrap()
+                .with_tools([AnthropicMcpTool {
+                    name: "search".into(),
+                    description: Some("Search the workspace".into()),
+                    input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
+                }])
+                .unwrap()
+                .with_cache_control(AnthropicMcpCacheControl {
+                    ttl: Some(AnthropicMcpCacheTtl::OneHour),
+                }),
+        )
+        .into(),
+    );
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Bm25,
+            },
+        )
+        .into(),
+    );
 
     let (body, headers) = encode(&request, &profile()).unwrap();
     assert_eq!(
@@ -132,16 +140,22 @@ fn typed_connector_encodes_one_server_and_matching_toolset_with_current_beta() {
 fn pinned_tool_list_distinguishes_unpinned_from_explicit_empty() {
     let profile = profile();
     let mut unpinned = request();
-    unpinned
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    unpinned.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
     let (unpinned_body, _) = encode(&unpinned, &profile).unwrap();
     assert!(unpinned_body["tools"][0].get("tools").is_none());
 
     let mut pinned_empty = request();
-    pinned_empty.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("workspace").with_tools(Vec::new()).unwrap(),
-    ));
+    pinned_empty.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("workspace").with_tools(Vec::new()).unwrap(),
+        )
+        .into(),
+    );
     let (pinned_body, _) = encode(&pinned_empty, &profile).unwrap();
     assert_eq!(pinned_body["tools"][0]["tools"], json!([]));
 }
@@ -184,30 +198,35 @@ fn replayed_listing_is_pinned_on_first_party_and_stays_generic_on_gateways() {
 fn only_effectively_deferred_mcp_tools_require_anthropic_tool_search() {
     let profile = profile();
     let mut disabled_default = request();
-    disabled_default.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("disabled").with_default_config(AnthropicMcpToolConfig {
-            enabled: Some(false),
-            defer_loading: Some(true),
-        }),
-    ));
+    disabled_default.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("disabled").with_default_config(AnthropicMcpToolConfig {
+                enabled: Some(false),
+                defer_loading: Some(true),
+            }),
+        )
+        .into(),
+    );
     assert!(encode(&disabled_default, &profile).is_ok());
 
     let mut pinned_empty = request();
-    pinned_empty.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("empty")
-            .with_default_config(AnthropicMcpToolConfig {
-                enabled: Some(true),
-                defer_loading: Some(true),
-            })
-            .with_tools(Vec::new())
-            .unwrap(),
-    ));
+    pinned_empty.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("empty")
+                .with_default_config(AnthropicMcpToolConfig {
+                    enabled: Some(true),
+                    defer_loading: Some(true),
+                })
+                .with_tools(Vec::new())
+                .unwrap(),
+        )
+        .into(),
+    );
     assert!(encode(&pinned_empty, &profile).is_ok());
 
     let mut override_disabled = request();
-    override_disabled
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(
+    override_disabled.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
             mcp_config("override")
                 .with_default_config(AnthropicMcpToolConfig {
                     enabled: Some(true),
@@ -227,16 +246,21 @@ fn only_effectively_deferred_mcp_tools_require_anthropic_tool_search() {
                     input_schema: json!({"type":"object"}),
                 }])
                 .unwrap(),
-        ));
+        )
+        .into(),
+    );
     assert!(encode(&override_disabled, &profile).is_ok());
 
     let mut deferred = request();
-    deferred.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("deferred").with_default_config(AnthropicMcpToolConfig {
-            enabled: Some(true),
-            defer_loading: Some(true),
-        }),
-    ));
+    deferred.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("deferred").with_default_config(AnthropicMcpToolConfig {
+                enabled: Some(true),
+                defer_loading: Some(true),
+            }),
+        )
+        .into(),
+    );
     assert!(matches!(
         encode(&deferred, &profile),
         Err(LlmError::InvalidRequest { message }) if message.contains("tool search")
@@ -247,9 +271,12 @@ fn only_effectively_deferred_mcp_tools_require_anthropic_tool_search() {
 fn invalid_routes_raw_connector_injection_and_cross_provider_use_are_rejected() {
     assert!(AnthropicMcpConfig::new("workspace", "http://mcp.example.test").is_err());
     let mut typed = request();
-    typed
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    typed.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
     let mut gateway = profile();
     gateway.base_url = "https://gateway.example.test".into();
     assert!(matches!(
@@ -289,9 +316,9 @@ fn unknown_remote_names_are_not_rejected_locally_and_server_limit_is_enforced() 
             },
         )
         .unwrap();
-    configured
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(config));
+    configured.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config).into(),
+    );
     assert_eq!(
         encode(&configured, &profile()).unwrap().0["tools"][0]["configs"]["not_returned_yet"]
             ["enabled"],
@@ -300,11 +327,12 @@ fn unknown_remote_names_are_not_rejected_locally_and_server_limit_is_enforced() 
 
     let mut too_many = request();
     for index in 0..21 {
-        too_many
-            .hosted_tools
-            .push(HostedTool::AnthropicMcp(mcp_config(&format!(
-                "server-{index}"
-            ))));
+        too_many.hosted_tools.push(
+            lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+                &format!("server-{index}"),
+            ))
+            .into(),
+        );
     }
     assert!(matches!(
         encode(&too_many, &profile()),
@@ -343,9 +371,12 @@ async fn authorization_is_injected_per_request_and_never_serialized_in_chat_hist
         .build()
         .unwrap();
     let mut request = request();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
     assert!(!serde_json::to_string(&request).unwrap().contains(TOKEN));
     let mut options = RequestOptions::default();
     options
@@ -372,9 +403,12 @@ async fn malformed_or_unmatched_per_request_tokens_fail_before_transport() {
         .build()
         .unwrap();
     let mut request = request();
-    request
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
 
     for (name, token) in [
         ("workspace", "Bearer bad\ntoken"),
@@ -400,12 +434,15 @@ async fn deferred_toolset_without_search_fails_in_request_preflight() {
         .build()
         .unwrap();
     let mut request = request();
-    request.hosted_tools.push(HostedTool::AnthropicMcp(
-        mcp_config("workspace").with_default_config(AnthropicMcpToolConfig {
-            enabled: Some(true),
-            defer_loading: Some(true),
-        }),
-    ));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(
+            mcp_config("workspace").with_default_config(AnthropicMcpToolConfig {
+                enabled: Some(true),
+                defer_loading: Some(true),
+            }),
+        )
+        .into(),
+    );
     assert!(matches!(
         client.chat().complete(&request, &RequestOptions::default()).await,
         Err(LlmError::InvalidRequest { message }) if message.contains("tool search")
@@ -434,8 +471,12 @@ async fn injected_token_crossing_anthropic_body_limit_fails_before_auth_or_trans
     let mut profile = profile();
     profile.auth = AuthStrategy::ApiKey;
     let mut chat = request();
-    chat.hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    chat.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
 
     let key_bytes = serde_json::to_vec("authorization_token").unwrap().len();
     let token_bytes = serde_json::to_vec("t").unwrap().len();
@@ -522,9 +563,12 @@ async fn uncertain_mcp_execution_is_not_retried_or_failed_over() {
         .build()
         .unwrap();
     let mut configured = request();
-    configured
-        .hosted_tools
-        .push(HostedTool::AnthropicMcp(mcp_config("workspace")));
+    configured.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(mcp_config(
+            "workspace",
+        ))
+        .into(),
+    );
     assert!(client
         .chat()
         .complete(&configured, &RequestOptions::default())

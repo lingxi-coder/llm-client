@@ -1,27 +1,26 @@
 # OpenAI Responses Tool Search
 
-OpenAI Responses Tool Search 会按需把函数或 MCP 工具定义加载到模型上下文。OpenAI 当前将此功能限定为 GPT-5.4 及更新模型。本客户端通过类型化的 `HostedTool::OpenAiToolSearch` 同时支持 OpenAI 托管搜索和客户端执行搜索。
+OpenAI Responses Tool Search 会按需把函数或 MCP 工具定义加载到模型上下文。OpenAI 当前将此功能限定为 GPT-5.4 及更新模型。本客户端通过类型化的 `OpenAiHostedTool::ToolSearch` 同时支持 OpenAI 托管搜索和客户端执行搜索。
 
 ## OpenAI 托管搜索
 
 将函数工具或 MCP 服务标记为延迟加载，再添加由 OpenAI 执行的搜索工具：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, HostedTool, LlmError, OpenAiToolSearchConfig, RemoteMcpConfig,
-};
+use lingxi_llm_client::providers::openai::types::{OpenAiToolSearchConfig, RemoteMcpConfig};
+use lingxi_llm_client::protocol::{ChatRequest, LlmError};
 
 fn configure(mut request: ChatRequest) -> Result<ChatRequest, LlmError> {
-    request.hosted_tools.push(HostedTool::OpenAiToolSearch(
+    request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
         OpenAiToolSearchConfig::default(),
-    ));
+    ).into());
     for tool in &mut request.tools {
         tool.defer_loading = true;
     }
 
     let mcp = RemoteMcpConfig::new("orders", "https://mcp.example.test/mcp")?
         .with_defer_loading(true);
-    request.hosted_tools.push(HostedTool::RemoteMcp(mcp));
+    request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp).into());
     Ok(request)
 }
 ```
@@ -33,13 +32,12 @@ Responses 请求会包含 `{"type":"tool_search"}` 及相应的延迟标记。�
 当工具列表取决于应用或租户状态时，使用客户端执行模式。搜索工具需要一段说明和用于搜索参数的 JSON Schema：
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, HostedTool, OpenAiToolSearchConfig, OpenAiToolSearchExecution,
-};
+use lingxi_llm_client::providers::openai::types::{OpenAiToolSearchConfig, OpenAiToolSearchExecution};
+use lingxi_llm_client::protocol::{ChatRequest, };
 use serde_json::json;
 
 fn configure(mut request: ChatRequest) -> ChatRequest {
-    request.hosted_tools.push(HostedTool::OpenAiToolSearch(
+    request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
         OpenAiToolSearchConfig {
             execution: OpenAiToolSearchExecution::Client,
             description: Some("查找完成当前任务所需的工具".into()),
@@ -50,7 +48,7 @@ fn configure(mut request: ChatRequest) -> ChatRequest {
                 "additionalProperties": false
             })),
         },
-    ));
+    ).into());
     request
 }
 ```

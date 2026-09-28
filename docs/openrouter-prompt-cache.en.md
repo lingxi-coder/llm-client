@@ -13,9 +13,7 @@ The supported combinations are:
 Breakpoints currently accept only nonempty text blocks. They cannot mark tool definitions, images, audio, or file blocks. OpenAI GPT-5.5 and earlier, Grok, automatically cached DeepSeek, automatically cached Gemini, and other unlisted models need no request controls; an explicit policy for them is rejected. OpenRouter does not document a caller-settable TTL or breakpoint for these automatic caches.
 
 ```rust
-use lingxi_llm_client::protocol::{
-    CacheBreakpoint, CachePosition, CacheTtl, PromptCachePolicy,
-};
+use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, PromptCachePolicy};
 
 let policy = PromptCachePolicy {
     automatic: None,

@@ -9,7 +9,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     files::UploadFile,
-    openai_containers::{
+    providers::openai::containers::{
         OpenAiContainerCreateRequest, OpenAiContainerFileListOptions,
         OpenAiContainerListOptions, OpenAiContainerMemoryLimit,
         OpenAiContainerScope, OpenAiContainersError, OpenAiContainersService,

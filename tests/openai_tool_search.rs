@@ -1,10 +1,13 @@
 use async_trait::async_trait;
+use lingxi_llm_client::providers::openai::types::{
+    OpenAiToolSearchConfig, OpenAiToolSearchExecution, RemoteMcpConfig,
+};
 use lingxi_llm_client::{
     codecs::{openai::responses::OpenAiResponsesCodec, EncodeRequest, WireCodec},
     protocol::{
         ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage, FailoverTriggers,
-        HostedTool, LlmError, OpenAiToolSearchConfig, OpenAiToolSearchExecution, ProtocolFamily,
-        ProviderProfile, Region, RemoteMcpConfig, StopReason, StreamEvent, ToolSpec,
+        HostedTool, LlmError, ProtocolFamily, ProviderProfile, Region, StopReason, StreamEvent,
+        ToolSpec,
     },
     transport::{HttpRequest, StreamResponse, Transport},
     CodecContext, HttpResponse, LlmClientBuilder, RequestMode, RequestOptions,
@@ -53,12 +56,15 @@ fn deferred_tool(name: &str) -> ToolSpec {
         }),
         strict: true,
         defer_loading: true,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     }
 }
 
 fn server_search() -> HostedTool {
-    HostedTool::OpenAiToolSearch(OpenAiToolSearchConfig::default())
+    lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
+        OpenAiToolSearchConfig::default(),
+    )
+    .into()
 }
 
 fn encode(request: &ChatRequest, model: &str) -> Result<Value, LlmError> {
@@ -94,11 +100,14 @@ fn hosted_search_encodes_deferred_functions_and_server_mcp() {
 
     let mut mcp_request = request();
     mcp_request.hosted_tools.push(server_search());
-    mcp_request.hosted_tools.push(HostedTool::RemoteMcp(
-        RemoteMcpConfig::new("orders", "https://mcp.example.test/mcp")
-            .unwrap()
-            .with_defer_loading(true),
-    ));
+    mcp_request.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(
+            RemoteMcpConfig::new("orders", "https://mcp.example.test/mcp")
+                .unwrap()
+                .with_defer_loading(true),
+        )
+        .into(),
+    );
     let wire = encode(&mcp_request, "gpt-6-astra").unwrap();
     assert_eq!(wire["tools"][0]["type"], "tool_search");
     assert_eq!(wire["tools"][1]["type"], "mcp");
@@ -108,17 +117,21 @@ fn hosted_search_encodes_deferred_functions_and_server_mcp() {
 #[test]
 fn client_search_encodes_its_schema_and_requires_gpt_5_4_or_later() {
     let mut req = request();
-    req.hosted_tools
-        .push(HostedTool::OpenAiToolSearch(OpenAiToolSearchConfig {
-            execution: OpenAiToolSearchExecution::Client,
-            description: Some("Find the tools needed for this task".into()),
-            parameters: Some(json!({
-                "type":"object",
-                "properties":{"goal":{"type":"string"}},
-                "required":["goal"],
-                "additionalProperties":false
-            })),
-        }));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
+            OpenAiToolSearchConfig {
+                execution: OpenAiToolSearchExecution::Client,
+                description: Some("Find the tools needed for this task".into()),
+                parameters: Some(json!({
+                    "type":"object",
+                    "properties":{"goal":{"type":"string"}},
+                    "required":["goal"],
+                    "additionalProperties":false
+                })),
+            },
+        )
+        .into(),
+    );
     assert_eq!(
         encode(&req, "gpt-5.4-mini").unwrap()["tools"][0],
         json!({
@@ -186,13 +199,16 @@ fn client_search_calls_require_host_action_and_keep_call_id_correlated_on_replay
     )));
 
     let mut replay = request();
-    replay
-        .hosted_tools
-        .push(HostedTool::OpenAiToolSearch(OpenAiToolSearchConfig {
-            execution: OpenAiToolSearchExecution::Client,
-            description: Some("Find the right tool".into()),
-            parameters: Some(json!({"type":"object","properties":{}})),
-        }));
+    replay.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
+            OpenAiToolSearchConfig {
+                execution: OpenAiToolSearchExecution::Client,
+                description: Some("Find the right tool".into()),
+                parameters: Some(json!({"type":"object","properties":{}})),
+            },
+        )
+        .into(),
+    );
     replay.messages = vec![ConversationMessage::assistant(vec![
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,

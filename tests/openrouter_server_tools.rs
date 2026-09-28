@@ -1,12 +1,16 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, AttachmentRef, AuthStrategy,
-    ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage, HostedTool, LlmError,
-    MessageRole, OpenRouterContainerRef, OpenRouterContainerScope, OpenRouterShellConfig,
-    OpenRouterShellEngine, OpenRouterShellEnvironment, OpenRouterShellNetworkPolicy,
-    OpenRouterToolSearchConfig, ProtocolFamily, ProviderProfile, Region, Secret, StreamEvent,
-    ToolChoice, ToolSpec, ToolUseId,
+    AttachmentRef, AuthStrategy, ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage,
+    HostedTool, LlmError, MessageRole, ProtocolFamily, ProviderProfile, Region, Secret,
+    StreamEvent, ToolChoice, ToolSpec, ToolUseId,
+};
+use lingxi_llm_client::providers::anthropic::types::{
+    AnthropicToolSearchConfig, AnthropicToolSearchStrategy,
+};
+use lingxi_llm_client::providers::openrouter::types::{
+    OpenRouterContainerRef, OpenRouterContainerScope, OpenRouterShellConfig, OpenRouterShellEngine,
+    OpenRouterShellEnvironment, OpenRouterShellNetworkPolicy, OpenRouterToolSearchConfig,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, Authenticator, CodecContext, EncodeRequest, FoundryClaudeCodec,
@@ -63,22 +67,25 @@ fn deferred_tool(name: &str) -> ToolSpec {
         }),
         strict: false,
         defer_loading: true,
-        allowed_callers: vec![],
+        native_options: Vec::new(),
     }
 }
 
 fn shell(config: OpenRouterShellConfig) -> HostedTool {
-    HostedTool::OpenRouterShell(config)
+    lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::Shell(config).into()
 }
 
 #[test]
 fn tool_search_is_encoded_for_responses_and_messages_with_deferred_client_tools() {
     let mut req = request();
-    req.hosted_tools.push(HostedTool::OpenRouterToolSearch(
-        OpenRouterToolSearchConfig {
-            max_results: Some(12),
-        },
-    ));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
+            OpenRouterToolSearchConfig {
+                max_results: Some(12),
+            },
+        )
+        .into(),
+    );
     req.tools.push(deferred_tool("find_events"));
 
     let responses_profile = profile(
@@ -222,9 +229,12 @@ fn a_container_scope_matches_the_profile_root_with_a_trailing_slash_after_serde_
 #[test]
 fn search_deferred_choice_and_protocol_limits_are_rejected_without_loosening_native_messages() {
     let mut req = request();
-    req.hosted_tools.push(HostedTool::OpenRouterToolSearch(
-        OpenRouterToolSearchConfig::default(),
-    ));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
+            OpenRouterToolSearchConfig::default(),
+        )
+        .into(),
+    );
     req.tools.push(deferred_tool("find_events"));
     req.tool_choice = ToolChoice::None;
     let responses_profile = profile(
@@ -241,13 +251,14 @@ fn search_deferred_choice_and_protocol_limits_are_rejected_without_loosening_nat
     ));
 
     let mut too_many_results = request();
-    too_many_results
-        .hosted_tools
-        .push(HostedTool::OpenRouterToolSearch(
+    too_many_results.hosted_tools.push(
+        lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
             OpenRouterToolSearchConfig {
                 max_results: Some(51),
             },
-        ));
+        )
+        .into(),
+    );
     assert!(matches!(
         OpenAiResponsesCodec.encode_request(
             EncodeRequest::new(&too_many_results),
@@ -312,11 +323,12 @@ fn search_deferred_choice_and_protocol_limits_are_rejected_without_loosening_nat
     ));
 
     let mut shell_with_search = shell_only_deferred.clone();
-    shell_with_search
-        .hosted_tools
-        .push(HostedTool::OpenRouterToolSearch(
+    shell_with_search.hosted_tools.push(
+        lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
             OpenRouterToolSearchConfig::default(),
-        ));
+        )
+        .into(),
+    );
     assert!(OpenAiResponsesCodec
         .encode_request(
             EncodeRequest::new(&shell_with_search),
@@ -345,11 +357,14 @@ fn search_deferred_choice_and_protocol_limits_are_rejected_without_loosening_nat
     // OpenRouter's search tool must not turn off the already-supported
     // Anthropic-native deferral path when no OpenRouter tool was requested.
     let mut native = request();
-    native
-        .hosted_tools
-        .push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
-            strategy: AnthropicToolSearchStrategy::Regex,
-        }));
+    native.hosted_tools.push(
+        lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
+            AnthropicToolSearchConfig {
+                strategy: AnthropicToolSearchStrategy::Regex,
+            },
+        )
+        .into(),
+    );
     native.tools.push(deferred_tool("find_events"));
     native.tool_choice = ToolChoice::None;
     let mut anthropic = profile(
@@ -420,17 +435,13 @@ fn openrouter_messages_container_metadata_is_raw_and_explicitly_importable() {
             }
         ]
     );
-    assert_eq!(
-        response.openrouter_container.as_ref().unwrap().envelope,
-        container
-    );
+    assert_eq!(response.openrouter_container().unwrap().envelope, container);
 
     let scope =
         OpenRouterContainerScope::new("or-messages", "https://openrouter.ai/api/v1", "tenant-a")
             .unwrap();
     let imported = response
-        .openrouter_container
-        .as_ref()
+        .openrouter_container()
         .unwrap()
         .reference_for(scope)
         .unwrap();
@@ -471,7 +482,7 @@ fn openrouter_messages_container_metadata_is_raw_and_explicitly_importable() {
             &CodecContext::new(&native_anthropic, "any/model", RequestMode::Complete),
         )
         .unwrap();
-    assert!(generic.openrouter_container.is_none());
+    assert!(generic.openrouter_container().is_none());
 }
 
 #[test]
@@ -520,7 +531,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
         let mut replay = request();
         replay.messages.push(response.message);
         replay.messages.push(ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new(id),
@@ -568,7 +579,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
     let mut replay = request();
     replay.messages.push(response.message);
     replay.messages.push(ConversationMessage {
-        anthropic: None,
+        native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("tool_foundry"),
@@ -914,9 +925,12 @@ async fn a_server_tool_request_is_not_retried_on_a_sibling_connection() {
         .build()
         .unwrap();
     let mut req = request();
-    req.hosted_tools.push(HostedTool::OpenRouterToolSearch(
-        OpenRouterToolSearchConfig::default(),
-    ));
+    req.hosted_tools.push(
+        lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
+            OpenRouterToolSearchConfig::default(),
+        )
+        .into(),
+    );
 
     let result = client
         .chat()

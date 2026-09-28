@@ -235,7 +235,7 @@ impl OpenAiStreamDecoder {
         Self {
             inference: crate::codecs::inference::StreamInference::new(context),
             separate_reasoning: super::separate_reasoning(&context.profile.extra),
-            qwen_cache: crate::codecs::qwen_cache::applies(context),
+            qwen_cache: crate::providers::qwen::cache::applies(context),
             ..Default::default()
         }
     }

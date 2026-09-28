@@ -28,8 +28,7 @@ fn request(deployment: &str) -> ChatRequest {
         "model": deployment,
         "messages": [{"role":"user","content":[{"type":"text","text":"Find a tool"}]}],
         "hosted_tools": [{
-            "type": "anthropic_tool_search",
-            "config": {"strategy":"bm25"}
+            "type": "native", "config": {"format":"anthropic.hosted_tool.v1", "data":{"type":"tool_search", "config":{"strategy":"bm25"}}}
         }]
     }))
     .unwrap()

@@ -5,15 +5,8 @@
 //! The host runs the returned [`RealtimeDriver`] on its executor; the built-in
 //! WebSocket transport specifically requires a Tokio runtime.
 
-mod gemini;
-mod glm;
-mod openai;
-mod openai_live;
-mod qwen;
-mod qwen_translate;
 #[cfg(feature = "realtime-websocket")]
 mod websocket;
-mod xai;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -36,49 +29,8 @@ const MAX_QUEUE_CAPACITY: usize = 65_536;
 /// memory/latency guard, not a provider limit.
 pub const MAX_REALTIME_TOOL_RESULTS: usize = 128;
 
-pub use gemini::{
-    GeminiLiveConfig, GeminiLiveEvent, GeminiLiveEvents, GeminiLiveResumeHandle,
-    GeminiLiveResumeUpdate, GeminiLiveSession,
-};
-pub use glm::{
-    GlmRealtimeConfig, GlmRealtimeEvent, GlmRealtimeEvents, GlmRealtimeFunctionTool,
-    GlmRealtimeOutputAudioFormat, GlmRealtimeRegion, GlmRealtimeRoute, GlmRealtimeScope,
-    GlmRealtimeSession, GlmRealtimeToolChoice, GlmRealtimeTurnDetection,
-    GLM_REALTIME_MAINLAND_ENDPOINT,
-};
-pub use openai::{
-    OpenAiAudioFormat, OpenAiOutputMode, OpenAiRealtimeCodec, OpenAiRealtimeConfig,
-    OpenAiRealtimeFunctionTool, OpenAiRealtimeToolChoice, OpenAiRealtimeVoice,
-};
-pub use openai_live::{
-    OpenAiLiveAudioFormat, OpenAiLiveCommand, OpenAiLiveConfig, OpenAiLiveControl,
-    OpenAiLiveDelegation, OpenAiLiveDriver, OpenAiLiveEvent, OpenAiLiveEvents,
-    OpenAiLiveHistoryMessage, OpenAiLiveHistoryRole, OpenAiLiveModel, OpenAiLiveResponsesConfig,
-    OpenAiLiveResponsesTool, OpenAiLiveResponsesUpdate, OpenAiLiveRoute, OpenAiLiveScope,
-    OpenAiLiveSession, OpenAiLiveToolChoice, OPENAI_LIVE_WEBSOCKET_ENDPOINT,
-};
-pub use qwen::{
-    QwenRealtimeConfig, QwenRealtimeControl, QwenRealtimeEvent, QwenRealtimeEvents,
-    QwenRealtimeModel, QwenRealtimeOutputMode, QwenRealtimeRegion, QwenRealtimeRoute,
-    QwenRealtimeScope, QwenRealtimeSession, QwenRealtimeTurnDetection, QwenRealtimeVideoMode,
-    QWEN_REALTIME_WEBSOCKET_PATH,
-};
-pub use qwen_translate::{
-    Qwen35LiveTranslateConfig, Qwen35LiveTranslateInputAudioFormat,
-    Qwen35LiveTranslateTurnDetection, Qwen38LiveTranslateConfig, Qwen38LiveTranslateTurnDetection,
-    QwenLiveTranslateConfig, QwenLiveTranslateControl, QwenLiveTranslateEvent,
-    QwenLiveTranslateEvents, QwenLiveTranslateModel, QwenLiveTranslateOutputMode,
-    QwenLiveTranslateRegion, QwenLiveTranslateRoute, QwenLiveTranslateSameLanguageSkip,
-    QwenLiveTranslateScope, QwenLiveTranslateSession, QwenLiveTranslateVoiceCloneFrequency,
-    QWEN_LIVETRANSLATE_WEBSOCKET_PATH,
-};
 #[cfg(feature = "realtime-websocket")]
 pub use websocket::RustlsWebSocketTransport;
-pub use xai::{
-    XaiRealtimeAudioTransport, XaiRealtimeCommand, XaiRealtimeConfig, XaiRealtimeControl,
-    XaiRealtimeEvent, XaiRealtimeEvents, XaiRealtimeFunctionTool, XaiRealtimeReasoningEffort,
-    XaiRealtimeResumeRef, XaiRealtimeSession, XaiRealtimeVadOptions, XaiTurnDetection,
-};
 
 /// A WebSocket-style data frame. Ping/Pong/Close stay outside provider data
 /// frames: callers may request Ping through [`RealtimeSink::ping`], while the
@@ -458,6 +410,22 @@ pub struct RealtimeControl {
 }
 
 impl RealtimeControl {
+    /// Queue one provider-native command with the same frame and queue bounds.
+    pub(crate) fn send_provider_frame(&self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
+        validate_frame(&frame, self.limits.max_frame_bytes)?;
+        self.outbound
+            .lock()
+            .unwrap()
+            .try_send(Command::Frames(vec![frame]))
+            .map_err(|error| {
+                if error.is_full() {
+                    RealtimeError::QueueFull
+                } else {
+                    RealtimeError::Closed
+                }
+            })
+    }
+
     /// Encode and enqueue one logical input without waiting. Returns
     /// [`RealtimeError::QueueFull`] when the bounded queue cannot accept it.
     pub fn send(&self, input: RealtimeInput) -> Result<(), RealtimeError> {

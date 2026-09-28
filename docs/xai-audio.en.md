@@ -5,10 +5,10 @@
 ```rust,no_run
 # async fn example(api_key: String, audio_bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
 use lingxi_llm_client::{
-    audio::AudioInput,
+    providers::openai::audio::AudioInput,
     HttpTransport,
     protocol::Secret,
-    xai_audio::{
+    providers::xai::audio::{
         XaiAudioConfig, XaiAudioCredentials, XaiAudioService, XaiSpeechOutput,
         XaiSpeechRequest, XaiTranscriptionRequest, XaiTranscriptionUrl,
     },

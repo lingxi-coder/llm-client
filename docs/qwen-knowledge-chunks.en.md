@@ -4,18 +4,19 @@
 
 `QwenKnowledgeService` now supports Model Studio's native RAG chunk operations: add, paginated list, update, and batch delete. These routes are separate from OpenAI Vector Stores. The implementation follows Alibaba Cloud's official [RAG API overview](https://help.aliyun.com/en/model-studio/rag-api-overview), [Add Chunk](https://help.aliyun.com/en/model-studio/rag-api-add-chunk), [List Chunks](https://help.aliyun.com/en/model-studio/rag-api-list-chunks), [Update Chunk](https://help.aliyun.com/en/model-studio/rag-api-update-chunk), and [Delete Chunks](https://help.aliyun.com/en/model-studio/rag-api-delete-chunk) documentation.
 
-The service reuses `QwenKnowledgeService` credentials, the Beijing workspace endpoint, and knowledge-base scope checks. A chunk reference binds to its knowledge base and, when available, its source document. Updates require the source document ID; a chunk whose list metadata has no `doc_id` can be deleted but cannot be updated. The provider requires `docId` when listing chunks for document and multimedia knowledge bases, so callers must pass a scoped document reference for those types.
+The service uses caller-provided `RequestOptions` credentials, the Beijing workspace endpoint, and knowledge-base scope checks. A chunk reference binds to its knowledge base and, when available, its source document. Updates require the source document ID; a chunk whose list metadata has no `doc_id` can be deleted but cannot be updated. The provider requires `docId` when listing chunks for document and multimedia knowledge bases, so callers must pass a scoped document reference for those types.
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeAddChunkRequest, QwenKnowledgeChunkFields,
     QwenKnowledgeListChunksRequest, QwenKnowledgeUpdateChunkRequest,
 };
 
-# use lingxi_llm_client::qwen_knowledge::{
+# use lingxi_llm_client::providers::qwen::knowledge::{
 #     QwenKnowledgeDocumentRef, QwenKnowledgeError, QwenKnowledgeRef, QwenKnowledgeService,
 # };
 # async fn manage_chunks(
+#     request_options: &lingxi_llm_client::RequestOptions,
 #     service: &QwenKnowledgeService<'_>,
 #     knowledge: &QwenKnowledgeRef,
 #     document: &QwenKnowledgeDocumentRef,
@@ -24,6 +25,7 @@ let page = service
     .list_chunks(
         knowledge,
         &QwenKnowledgeListChunksRequest::default().for_document(document),
+        request_options,
     )
     .await?;
 let Some(chunk) = page.chunks.first() else {
@@ -38,14 +40,15 @@ service
             true,
         )
         .with_title("Updated title"),
+        request_options,
     )
     .await?;
 
 let fields = QwenKnowledgeChunkFields::document("A new indexed paragraph.")
     .with_title("New paragraph")?;
 let add = QwenKnowledgeAddChunkRequest::for_document(document, fields);
-service.add_chunk(knowledge, &add).await?;
-service.delete_chunks(knowledge, &[chunk.reference.clone()]).await?;
+service.add_chunk(knowledge, &add, request_options).await?;
+service.delete_chunks(knowledge, &[chunk.reference.clone()], request_options).await?;
 # Ok(())
 # }
 ```

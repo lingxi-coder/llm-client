@@ -35,8 +35,9 @@ let web = HostedTool::WebSearch(WebSearchConfig {
 `RemoteMcpConfig` 只包含非秘密服务设置；OAuth token 通过 `RequestOptions.mcp_authorizations` 按 `server_label` 注入到本次 Responses 请求的 `authorization` 字段。它不会进入可序列化的 `ChatRequest` 或历史。调用方必须在每次 Responses 创建请求（包括继续审批后的请求）重新提供当前授权 token。客户端不连接 MCP 服务器，也不在宿主执行 MCP 工具。
 
 ```rust,no_run
+use lingxi_llm_client::providers::openai::types::{McpApprovalPolicy, RemoteMcpConfig};
 use lingxi_llm_client::{
-    protocol::{HostedTool, McpApprovalPolicy, RemoteMcpConfig, Secret},
+    protocol::{HostedTool, Secret},
     RequestOptions,
 };
 use std::collections::BTreeMap;
@@ -46,7 +47,7 @@ let remote = RemoteMcpConfig::new("docs", "https://mcp.example.test/mcp")?
     .with_description("Read-only documentation")
     .with_allowed_tools(["search", "fetch"])?
     .with_require_approval(McpApprovalPolicy::Always);
-let hosted_tool = HostedTool::RemoteMcp(remote);
+let hosted_tool: lingxi_llm_client::protocol::HostedTool = lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(remote).into();
 
 let mut options = RequestOptions::default();
 options.mcp_authorizations = BTreeMap::from([(

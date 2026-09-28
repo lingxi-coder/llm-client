@@ -2,7 +2,9 @@
 
 [简体中文](glm-knowledge.md)
 
-`client.glm_knowledge()` exposes Zhipu's native personal Knowledge Base API separately from `client.retrieval()`, which uses OpenAI Vector Stores. It supports paginated knowledge-base listing, create, detail, partial update and delete; paginated document listing, URL import and streamed multipart file upload; and retrieval. The routes follow Zhipu's current [knowledge-base list](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E5%88%97%E8%A1%A8), [knowledge-base detail](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E8%AF%A6%E6%83%85), [edit knowledge base](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%BC%96%E8%BE%91%E7%9F%A5%E8%AF%86%E5%BA%93), [delete knowledge base](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E5%88%A0%E9%99%A4%E7%9F%A5%E8%AF%86%E5%BA%93), [document list](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E6%96%87%E6%A1%A3%E5%88%97%E8%A1%A8), [URL document upload](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0url%E6%96%87%E6%A1%A3), [file document upload](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0%E6%96%87%E4%BB%B6%E6%96%87%E6%A1%A3), and [knowledge retrieval](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E6%A3%80%E7%B4%A2) references.
+Bind `client.provider::<ZhipuClient>(profile)?` to an exact profile, then use `provider.knowledge()`. Each operation takes `RequestOptions`; the client retains no credential.
+
+`provider.knowledge()` exposes Zhipu's native personal Knowledge Base API separately from `OpenAiClient::retrieval()`, which uses OpenAI Vector Stores. It supports paginated knowledge-base listing, create, detail, partial update and delete; paginated document listing, URL import and streamed multipart file upload; and retrieval. The routes follow Zhipu's current [knowledge-base list](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E5%88%97%E8%A1%A8), [knowledge-base detail](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E8%AF%A6%E6%83%85), [edit knowledge base](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%BC%96%E8%BE%91%E7%9F%A5%E8%AF%86%E5%BA%93), [delete knowledge base](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E5%88%A0%E9%99%A4%E7%9F%A5%E8%AF%86%E5%BA%93), [document list](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E6%96%87%E6%A1%A3%E5%88%97%E8%A1%A8), [URL document upload](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0url%E6%96%87%E6%A1%A3), [file document upload](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E4%B8%8A%E4%BC%A0%E6%96%87%E4%BB%B6%E6%96%87%E6%A1%A3), and [knowledge retrieval](https://docs.bigmodel.cn/api-reference/%E7%9F%A5%E8%AF%86%E5%BA%93-api/%E7%9F%A5%E8%AF%86%E5%BA%93%E6%A3%80%E7%B4%A2) references.
 
 Configure the independent service root on a Zhipu/GLM profile. Pass the API key and a stable, non-secret account identity on each request; the client does not look up or store credentials.
 
@@ -17,9 +19,10 @@ Knowledge-base creation requires a documented Zhipu Embedding ID (3, 11, or 12).
 
 ```rust,no_run
 # async fn example(client: &lingxi_llm_client::LlmClient, api_key: String) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::zhipu::ZhipuClient>("glm-mainland")?;
 use lingxi_llm_client::{protocol::Secret, RequestOptions};
 use lingxi_llm_client::files::UploadFileStream;
-use lingxi_llm_client::glm_knowledge::{
+use lingxi_llm_client::providers::zhipu::knowledge::{
     GlmCreateKnowledgeRequest, GlmKnowledgeDocumentListRequest, GlmKnowledgeEmbedding,
     GlmKnowledgeListRequest, GlmKnowledgeRetrieveRequest, GlmKnowledgeService,
     GlmUpdateKnowledgeRequest, GlmUrlDocumentInput, GlmUploadFileDocumentsRequest,
@@ -31,9 +34,8 @@ let options = RequestOptions {
     credential: Some(Secret::new(api_key)),
     ..Default::default()
 };
-let service: GlmKnowledgeService<'_> = client.glm_knowledge();
+let service: GlmKnowledgeService<'_> = provider.knowledge();
 let knowledge = service.create_knowledge(
-    "glm-mainland",
     &GlmCreateKnowledgeRequest {
         embedding_id: GlmKnowledgeEmbedding::Embedding3,
         name: "Product docs".into(),
@@ -76,7 +78,6 @@ let uploaded = service.upload_file_documents(
     &options,
 ).await?;
 let page = service.list_knowledge(
-    "glm-mainland",
     &GlmKnowledgeListRequest { page: Some(1), size: Some(10) },
     &options,
 ).await?;

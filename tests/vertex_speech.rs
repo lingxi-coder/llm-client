@@ -3,12 +3,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    protocol::{LlmError, Secret},
-    transport::{HttpRequest, StreamResponse, Transport},
-    vertex_speech::{
+    hosting::vertex::speech::{
         VertexSpeechError, VertexSpeechModel, VertexSpeechRequest, VertexSpeechScope,
         VertexSpeechService, VertexSpeechSpeaker, VertexSpeechStreamError, VertexSpeechTurn,
     },
+    protocol::{LlmError, Secret},
+    transport::{HttpRequest, StreamResponse, Transport},
     RequestOptions,
 };
 use serde_json::{json, Value};

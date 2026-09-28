@@ -1,84 +1,12 @@
 //! Feature-gated tokenizer assets and their one-time decompression.
-use super::{
-    backends::{bundled_encoder, Encoder},
-    LocalTokenCountError,
-};
+#[cfg(test)]
+use super::backends::bundled_encoder;
+use super::LocalTokenCountError;
 use std::{io::Read, sync::OnceLock};
 use tokenizers::Tokenizer;
 use xz2::read::XzDecoder;
 
-#[cfg(feature = "tokenizer-deepseek")]
-static DEEPSEEK_V4: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
-#[cfg(feature = "tokenizer-deepseek")]
-static DEEPSEEK_V41: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
-#[cfg(feature = "tokenizer-qwen")]
-static QWEN38: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
-#[cfg(feature = "tokenizer-kimi")]
-static KIMI_K3: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
-#[cfg(feature = "tokenizer-glm")]
-static GLM5: OnceLock<Result<Tokenizer, String>> = OnceLock::new();
-
-#[cfg(feature = "tokenizer-deepseek")]
-pub(super) fn deepseek_v4() -> Result<Option<Encoder>, LocalTokenCountError> {
-    let name = "DeepSeek V4 Pro (2026-09)";
-    Ok(Some(bundled_encoder(
-        load(
-            &DEEPSEEK_V4,
-            include_bytes!("../../data/tokenizers/deepseek/v4.json.xz"),
-            name,
-        )?,
-        name,
-    )))
-}
-#[cfg(feature = "tokenizer-deepseek")]
-pub(super) fn deepseek_v41() -> Result<Option<Encoder>, LocalTokenCountError> {
-    let name = "DeepSeek V4.1 Flash (2026-09)";
-    Ok(Some(bundled_encoder(
-        load(
-            &DEEPSEEK_V41,
-            include_bytes!("../../data/tokenizers/deepseek/v41.json.xz"),
-            name,
-        )?,
-        name,
-    )))
-}
-#[cfg(feature = "tokenizer-qwen")]
-pub(super) fn qwen38() -> Result<Option<Encoder>, LocalTokenCountError> {
-    let name = "Qwen 3.8 tokenizer (Qwen3.8-27B asset)";
-    Ok(Some(bundled_encoder(
-        load(
-            &QWEN38,
-            include_bytes!("../../data/tokenizers/qwen/qwen3.8.json.xz"),
-            name,
-        )?,
-        name,
-    )))
-}
-#[cfg(feature = "tokenizer-kimi")]
-pub(super) fn kimi_k3() -> Result<Option<Encoder>, LocalTokenCountError> {
-    let name = "Kimi K3 tokenizer (verified fast-tokenizer conversion)";
-    Ok(Some(bundled_encoder(
-        load(
-            &KIMI_K3,
-            include_bytes!("../../data/tokenizers/kimi/k3.json.xz"),
-            name,
-        )?,
-        name,
-    )))
-}
-#[cfg(feature = "tokenizer-glm")]
-pub(super) fn glm5() -> Result<Option<Encoder>, LocalTokenCountError> {
-    let name = "GLM 5 tokenizer (2026-09)";
-    Ok(Some(bundled_encoder(
-        load(
-            &GLM5,
-            include_bytes!("../../data/tokenizers/glm/glm5.json.xz"),
-            name,
-        )?,
-        name,
-    )))
-}
-fn load(
+pub(crate) fn load(
     slot: &'static OnceLock<Result<Tokenizer, String>>,
     bytes: &[u8],
     name: &str,
@@ -133,7 +61,7 @@ mod tests {
     #[test]
     fn deepseek_v4_fast_count_matches() {
         assert_fast_count_matches(
-            &DEEPSEEK_V4,
+            &crate::providers::deepseek::token_count::DEEPSEEK_V4,
             include_bytes!("../../data/tokenizers/deepseek/v4.json.xz"),
             "deepseek-v4",
         );
@@ -143,7 +71,7 @@ mod tests {
     #[test]
     fn deepseek_v41_fast_count_matches() {
         assert_fast_count_matches(
-            &DEEPSEEK_V41,
+            &crate::providers::deepseek::token_count::DEEPSEEK_V41,
             include_bytes!("../../data/tokenizers/deepseek/v41.json.xz"),
             "deepseek-v41",
         );
@@ -153,7 +81,7 @@ mod tests {
     #[test]
     fn qwen38_fast_count_matches() {
         assert_fast_count_matches(
-            &QWEN38,
+            &crate::providers::qwen::token_count::QWEN38,
             include_bytes!("../../data/tokenizers/qwen/qwen3.8.json.xz"),
             "qwen3.8",
         );
@@ -163,7 +91,7 @@ mod tests {
     #[test]
     fn kimi_k3_fast_count_matches() {
         assert_fast_count_matches(
-            &KIMI_K3,
+            &crate::providers::kimi::token_count::KIMI_K3,
             include_bytes!("../../data/tokenizers/kimi/k3.json.xz"),
             "kimi-k3",
         );
@@ -173,7 +101,7 @@ mod tests {
     #[test]
     fn glm5_fast_count_matches() {
         assert_fast_count_matches(
-            &GLM5,
+            &crate::providers::zhipu::token_count::GLM5,
             include_bytes!("../../data/tokenizers/glm/glm5.json.xz"),
             "glm5",
         );

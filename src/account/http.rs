@@ -1,7 +1,7 @@
 //! Bounded account HTTP, pagination values and parsing helpers.
 use super::*;
 
-pub(super) async fn get_json(
+pub(crate) async fn get_json(
     http: &dyn Transport,
     url: String,
     headers: Vec<(String, String)>,
@@ -32,14 +32,14 @@ pub(super) async fn get_json(
     serde_json::from_slice(&response.body).map_err(|_| AccountFailure::InvalidResponse)
 }
 
-pub(super) fn header_bearer(key: &Secret<String>) -> Vec<(String, String)> {
+pub(crate) fn header_bearer(key: &Secret<String>) -> Vec<(String, String)> {
     vec![(
         "authorization".into(),
         format!("Bearer {}", key.expose_secret()),
     )]
 }
 
-pub(super) fn field_from_result<T>(
+pub(crate) fn field_from_result<T>(
     result: Result<T, AccountFailure>,
     scope: AccountScope,
     source: &str,
@@ -52,7 +52,7 @@ pub(super) fn field_from_result<T>(
 
 /// Parse an ISO calendar day or RFC3339 timestamp to UTC Unix seconds without
 /// introducing a date-time dependency for account metadata.
-pub(super) fn parse_iso_utc(value: &str) -> Option<u64> {
+pub(crate) fn parse_iso_utc(value: &str) -> Option<u64> {
     let date = value.get(..10)?;
     let bytes = date.as_bytes();
     if bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {

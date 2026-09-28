@@ -2,25 +2,29 @@
 
 [简体中文](deferred.md)
 
-`client.deferred()` wraps single submission and retrieval for xAI [Deferred Chat Completions](https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions). The built-in `grok` Chat profile has a separate Deferred route; `grok-responses` does not use this Chat-only API. Configuration v3 can inherit or explicitly disable the route. The service does not poll, retry, or fail over.
+Bind `client.provider::<XaiClient>(profile)?` to an exact profile, then use `provider.deferred()`. Each operation takes `RequestOptions`; the client retains no credential.
+
+`provider.deferred()` wraps single submission and retrieval for xAI [Deferred Chat Completions](https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions). The built-in `grok` Chat profile has a separate Deferred route; `grok-responses` does not use this Chat-only API. Configuration v3 can inherit or explicitly disable the route. The service does not poll, retry, or fail over.
 
 Submit a `ChatRequest` with a stable, non-secret account identifier in `RequestOptions.account_scope`. The client encodes with the selected Chat codec, adds `deferred: true`, and returns a `DeferredJobRef` scoped to provider, profile, submission endpoint, result endpoint, account, and model. Responses continuation and hosted tools are not supported in this combination. Unresolved application attachments fail before sending. The host remains responsible for executing ordinary function tools.
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::ChatRequest;
-use lingxi_llm_client::deferred::{DeferredError, DeferredJob, DeferredJobRef, DeferredPoll};
+use lingxi_llm_client::providers::xai::deferred::{DeferredError, DeferredJob, DeferredJobRef, DeferredPoll};
 
 async fn submit(client: &LlmClient, request: &ChatRequest, options: &RequestOptions)
-    -> Result<DeferredJob, DeferredError>
+    -> Result<DeferredJob, Box<dyn std::error::Error>>
 {
-    client.deferred().submit("grok", request, options).await
+    let provider = client.provider::<lingxi_llm_client::providers::xai::XaiClient>("grok")?;
+    provider.deferred().submit(request, options).await.map_err(Into::into)
 }
 
 async fn check(client: &LlmClient, ticket: DeferredJobRef, options: &RequestOptions)
-    -> Result<DeferredPoll, DeferredError>
+    -> Result<DeferredPoll, Box<dyn std::error::Error>>
 {
-    client.deferred().fetch_once(ticket, options).await
+    let provider = client.provider::<lingxi_llm_client::providers::xai::XaiClient>(&ticket.profile_name)?;
+    provider.deferred().fetch_once(ticket, options).await.map_err(Into::into)
 }
 ```
 

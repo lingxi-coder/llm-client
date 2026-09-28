@@ -3,16 +3,18 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     files::{provider_file_endpoint_fingerprint, ProviderFileRef},
-    minimax_async_tts::{
+    protocol::{LlmError, ProtocolFamily, ProviderId, Secret},
+    providers::minimax::async_tts::{
         MiniMaxAsyncTtsAudioFormat, MiniMaxAsyncTtsAudioSetting, MiniMaxAsyncTtsConfig,
         MiniMaxAsyncTtsDispatch, MiniMaxAsyncTtsError, MiniMaxAsyncTtsFileRef,
         MiniMaxAsyncTtsRegion, MiniMaxAsyncTtsRequest, MiniMaxAsyncTtsService,
         MiniMaxAsyncTtsStatus, MiniMaxAsyncTtsTaskRef, MINIMAX_ASYNC_TTS_CHINA_BASE,
         MINIMAX_ASYNC_TTS_INTERNATIONAL_BASE,
     },
-    minimax_tts::{MiniMaxTtsModel, MiniMaxTtsPronunciationDict},
-    minimax_voices::{MiniMaxVoiceKind, MiniMaxVoiceRef, MiniMaxVoicesRegion, MiniMaxVoicesScope},
-    protocol::{LlmError, ProtocolFamily, ProviderId, Secret},
+    providers::minimax::tts::{MiniMaxTtsModel, MiniMaxTtsPronunciationDict},
+    providers::minimax::voices::{
+        MiniMaxVoiceKind, MiniMaxVoiceRef, MiniMaxVoicesRegion, MiniMaxVoicesScope,
+    },
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -456,7 +458,7 @@ async fn wrong_profile_or_account_references_are_rejected_before_http() {
 
     let mut request =
         MiniMaxAsyncTtsRequest::from_text_file(text_file_ref(&service, "900"), "voice");
-    if let lingxi_llm_client::minimax_async_tts::MiniMaxAsyncTtsInput::TextFile(file) =
+    if let lingxi_llm_client::providers::minimax::async_tts::MiniMaxAsyncTtsInput::TextFile(file) =
         &mut request.input
     {
         file.account_scope = Some("other-account".into());

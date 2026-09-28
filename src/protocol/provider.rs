@@ -744,22 +744,27 @@ pub struct ProviderProfile {
     #[serde(default)]
     pub embeddings: crate::protocol::ServiceSetting<crate::embeddings::EmbeddingRoute>,
     #[serde(default)]
-    pub retrieval: crate::protocol::ServiceSetting<crate::retrieval::RetrievalRoute>,
+    pub retrieval:
+        crate::protocol::ServiceSetting<crate::providers::openai::retrieval::RetrievalRoute>,
     #[serde(default)]
-    pub batches: crate::protocol::ServiceSetting<crate::batches::BatchRoute>,
+    pub batches: crate::protocol::ServiceSetting<crate::providers::openai::batches::BatchRoute>,
     #[serde(default)]
-    pub deferred: crate::protocol::ServiceSetting<crate::deferred::DeferredRoute>,
+    pub deferred: crate::protocol::ServiceSetting<crate::providers::xai::deferred::DeferredRoute>,
     #[serde(default)]
-    pub background: crate::protocol::ServiceSetting<crate::background::BackgroundRoute>,
+    pub background:
+        crate::protocol::ServiceSetting<crate::providers::openai::background::BackgroundRoute>,
     #[serde(default)]
-    pub audio: crate::protocol::ServiceSetting<crate::audio::AudioRoute>,
+    pub audio: crate::protocol::ServiceSetting<crate::providers::openai::audio::AudioRoute>,
     #[serde(default)]
-    pub interactions: crate::protocol::ServiceSetting<crate::interactions::InteractionRoute>,
+    pub interactions:
+        crate::protocol::ServiceSetting<crate::providers::google::interactions::InteractionRoute>,
     #[serde(default)]
-    pub gemini_file_search:
-        crate::protocol::ServiceSetting<crate::gemini_file_search::GeminiFileSearchRoute>,
+    pub gemini_file_search: crate::protocol::ServiceSetting<
+        crate::providers::google::file_search::GeminiFileSearchRoute,
+    >,
     #[serde(default)]
-    pub glm_knowledge: crate::protocol::ServiceSetting<crate::glm_knowledge::GlmKnowledgeRoute>,
+    pub glm_knowledge:
+        crate::protocol::ServiceSetting<crate::providers::zhipu::knowledge::GlmKnowledgeRoute>,
     #[serde(default)]
     pub pricing: PricingConfig,
     #[serde(default)]

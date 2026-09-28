@@ -3,7 +3,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
     protocol::{LlmError, Secret},
-    qwen_knowledge::{
+    providers::qwen::knowledge::{
         QwenKnowledgeDispatch, QwenKnowledgeError, QwenKnowledgeFileListRequest,
         QwenKnowledgeFileTagUpdate, QwenKnowledgeFileTagUpdateMode,
         QwenKnowledgeFileTagUpdateRequest, QwenKnowledgeRegion, QwenKnowledgeScope,
@@ -83,12 +83,7 @@ fn service<'a>(
     region: QwenKnowledgeRegion,
     account: &str,
 ) -> QwenKnowledgeService<'a> {
-    QwenKnowledgeService::new(
-        mock,
-        Secret::new("qwen-file-key".to_owned()),
-        scope(region, account, "llm-files-workspace"),
-    )
-    .unwrap()
+    QwenKnowledgeService::new(mock, scope(region, account, "llm-files-workspace")).unwrap()
 }
 
 fn file_row(file_id: &str, file_name: &str) -> Value {
@@ -126,7 +121,10 @@ async fn list_files_uses_the_documented_post_body_and_preserves_native_rows() {
         .with_file_ids(["file_abc123_1"])
         .with_next_token("cursor-previous")
         .with_max_result(10);
-    let result = service.list_files(&request).await.unwrap();
+    let result = service
+        .list_files(&request, &request_options())
+        .await
+        .unwrap();
 
     assert_eq!(result.files.len(), 1);
     assert_eq!(result.files[0].reference.file_id(), "file_abc123_1");
@@ -195,7 +193,10 @@ async fn list_files_advances_cursor_and_rejects_nonprogressing_pages() {
     ]);
     let service = service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     let first = service
-        .list_files(&QwenKnowledgeFileListRequest::new("cate-1"))
+        .list_files(
+            &QwenKnowledgeFileListRequest::new("cate-1"),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(first.next_token.as_deref(), Some("cursor-2"));
@@ -203,13 +204,17 @@ async fn list_files_advances_cursor_and_rejects_nonprogressing_pages() {
     let second = service
         .list_files(
             &QwenKnowledgeFileListRequest::new("cate-1").with_next_token(first.next_token.unwrap()),
+            &request_options(),
         )
         .await
         .unwrap();
     assert_eq!(second.files[0].reference.file_id(), "file_second_2");
 
     let error = service
-        .list_files(&QwenKnowledgeFileListRequest::new("cate-1").with_next_token("cursor-2"))
+        .list_files(
+            &QwenKnowledgeFileListRequest::new("cate-1").with_next_token("cursor-2"),
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, QwenKnowledgeError::InvalidResponse { .. }));
@@ -238,7 +243,10 @@ async fn list_files_requires_progress_when_has_next_and_rejects_duplicate_page_i
         let service = service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
         assert!(matches!(
             service
-                .list_files(&QwenKnowledgeFileListRequest::new("cate-1"))
+                .list_files(
+                    &QwenKnowledgeFileListRequest::new("cate-1"),
+                    &request_options()
+                )
                 .await,
             Err(QwenKnowledgeError::InvalidResponse { .. })
         ));
@@ -251,7 +259,10 @@ async fn list_files_requires_progress_when_has_next_and_rejects_duplicate_page_i
     let service = service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     assert!(matches!(
         service
-            .list_files(&QwenKnowledgeFileListRequest::new("cate-1").with_next_token("cursor-1"))
+            .list_files(
+                &QwenKnowledgeFileListRequest::new("cate-1").with_next_token("cursor-1"),
+                &request_options()
+            )
             .await,
         Err(QwenKnowledgeError::InvalidResponse { .. })
     ));
@@ -262,7 +273,10 @@ async fn delete_file_uses_scoped_file_id_and_accepts_documented_empty_data() {
     let mock = Mock::new([response(200, success(json!({})))]);
     let service = service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     let file = service.scope().file_ref("file_abc123_1").unwrap();
-    let result = service.delete_file(&file).await.unwrap();
+    let result = service
+        .delete_file(&file, &request_options())
+        .await
+        .unwrap();
     assert_eq!(result.reference, file);
     assert_eq!(result.deleted_file_id, None);
     assert_eq!(result.status, None);
@@ -295,11 +309,17 @@ async fn delete_file_preserves_confirmed_status_and_marks_mismatched_success_unk
     ]);
     let service = service(&mock, QwenKnowledgeRegion::Beijing, "account-1");
     let file = service.scope().file_ref("file_abc123_1").unwrap();
-    let result = service.delete_file(&file).await.unwrap();
+    let result = service
+        .delete_file(&file, &request_options())
+        .await
+        .unwrap();
     assert_eq!(result.deleted_file_id.as_deref(), Some("file_abc123_1"));
     assert_eq!(result.status.as_deref(), Some("DELETED"));
 
-    let error = service.delete_file(&file).await.unwrap_err();
+    let error = service
+        .delete_file(&file, &request_options())
+        .await
+        .unwrap_err();
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
     assert!(matches!(
         error,
@@ -328,7 +348,10 @@ async fn batch_update_tags_encodes_mode_and_preserves_per_file_results() {
         QwenKnowledgeFileTagUpdate::new(second.clone(), ["FAQ"]),
     ])
     .with_update_mode(QwenKnowledgeFileTagUpdateMode::Overwrite);
-    let result = service.update_file_tags(&request).await.unwrap();
+    let result = service
+        .update_file_tags(&request, &request_options())
+        .await
+        .unwrap();
     let rows = result.per_file_results.unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].reference, second);
@@ -364,7 +387,10 @@ async fn batch_update_tags_accepts_documented_empty_data_and_omits_optional_mode
         file,
         std::iter::empty::<String>(),
     )]);
-    let result = service.update_file_tags(&request).await.unwrap();
+    let result = service
+        .update_file_tags(&request, &request_options())
+        .await
+        .unwrap();
     assert_eq!(result.per_file_results, None);
 
     let requests = mock.requests.lock().unwrap();
@@ -386,7 +412,7 @@ async fn mutations_preflight_scopes_limits_and_uncertain_dispatch_without_retry(
     .file_ref("file_foreign_1")
     .unwrap();
     assert!(matches!(
-        service.delete_file(&foreign).await,
+        service.delete_file(&foreign, &request_options()).await,
         Err(QwenKnowledgeError::Llm(LlmError::PermissionDenied { .. }))
     ));
     let foreign_update = QwenKnowledgeFileTagUpdateRequest::new([QwenKnowledgeFileTagUpdate::new(
@@ -394,7 +420,9 @@ async fn mutations_preflight_scopes_limits_and_uncertain_dispatch_without_retry(
         ["tag"],
     )]);
     assert!(matches!(
-        service.update_file_tags(&foreign_update).await,
+        service
+            .update_file_tags(&foreign_update, &request_options())
+            .await,
         Err(QwenKnowledgeError::Llm(LlmError::PermissionDenied { .. }))
     ));
 
@@ -404,7 +432,9 @@ async fn mutations_preflight_scopes_limits_and_uncertain_dispatch_without_retry(
         std::iter::repeat_n("t".to_owned(), 101),
     )]);
     assert!(matches!(
-        service.update_file_tags(&too_many_tags).await,
+        service
+            .update_file_tags(&too_many_tags, &request_options())
+            .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
 
@@ -412,14 +442,18 @@ async fn mutations_preflight_scopes_limits_and_uncertain_dispatch_without_retry(
         service
             .list_files(
                 &QwenKnowledgeFileListRequest::new("cate-1")
-                    .with_file_ids((0..21).map(|index| format!("file_id_{index}")))
+                    .with_file_ids((0..21).map(|index| format!("file_id_{index}"))),
+                &request_options()
             )
             .await,
         Err(QwenKnowledgeError::InvalidInput(_))
     ));
     assert!(mock.requests.lock().unwrap().is_empty());
 
-    let error = service.delete_file(&file).await.unwrap_err();
+    let error = service
+        .delete_file(&file, &request_options())
+        .await
+        .unwrap_err();
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::Unknown);
     assert!(matches!(error, QwenKnowledgeError::OutcomeUnknown { .. }));
     assert_eq!(mock.requests.lock().unwrap().len(), 1);
@@ -448,7 +482,7 @@ async fn batch_tag_preflight_enforces_each_documented_limit_without_io() {
     ];
     for request in requests {
         assert!(matches!(
-            service.update_file_tags(&request).await,
+            service.update_file_tags(&request, &request_options()).await,
             Err(QwenKnowledgeError::InvalidInput(_))
         ));
     }
@@ -460,11 +494,21 @@ async fn unsupported_region_fails_before_file_management_io() {
     let mock = Mock::new([]);
     let service = service(&mock, QwenKnowledgeRegion::Singapore, "account-sg");
     let file = service.scope().file_ref("file_abc123_1").unwrap();
-    let error = service.delete_file(&file).await.unwrap_err();
+    let error = service
+        .delete_file(&file, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         error,
         QwenKnowledgeError::Llm(LlmError::UnsupportedCapability { .. })
     ));
     assert_eq!(error.dispatch(), QwenKnowledgeDispatch::NotSent);
     assert!(mock.requests.lock().unwrap().is_empty());
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("qwen-file-key".to_owned())),
+        ..Default::default()
+    }
 }

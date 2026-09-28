@@ -9,11 +9,9 @@ Source: the [official MetaGLM Realtime SDK protocol guide](https://github.com/Me
 Each connection receives an explicit regional route, a non-secret account scope, and a fresh credential. The credential is sent only in that WebSocket handshake as `Authorization: Bearer …`. The host owns API keys and host-issued JWTs. `GlmRealtimeScope` records the profile name, account identity, region, and endpoint fingerprint; it does not store credentials.
 
 ```rust,no_run
+use lingxi_llm_client::providers::zhipu::realtime::{GlmRealtimeRoute, GlmRealtimeScope, GlmRealtimeSession, GlmRealtimeConfig};
 use std::sync::Arc;
-use lingxi_llm_client::{protocol::Secret, realtime::{
-    GlmRealtimeRoute, GlmRealtimeScope, GlmRealtimeSession, GlmRealtimeConfig,
-    RealtimeLimits, RealtimeTransport,
-}};
+use lingxi_llm_client::{protocol::Secret, realtime::{RealtimeLimits, RealtimeTransport}};
 async fn connect(
     transport: Arc<dyn RealtimeTransport>,
     credential: Secret<String>,

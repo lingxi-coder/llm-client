@@ -9,7 +9,6 @@
 
 pub(crate) mod decode;
 pub(crate) mod encode;
-pub(crate) mod openrouter_cache;
 mod reasoning;
 mod stream;
 
@@ -42,10 +41,14 @@ impl WireCodec for OpenAiChatCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
-        crate::codecs::openrouter_server_tools::validate(req, context.profile(), None, false)?;
-        crate::codecs::qwen_cache::validate(req, context)?;
-        openrouter_cache::validate(req, context)?;
-        encode::validate_audio_request(req, context.profile(), context)?;
+        crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
+        crate::providers::qwen::cache::validate(req, context)?;
+        crate::providers::openrouter::prompt_cache::validate(req, context)?;
+        crate::providers::openrouter::chat_audio::validate_audio_request(
+            req,
+            context.profile(),
+            context,
+        )?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())
     }
     fn family(&self) -> ProtocolFamily {
@@ -74,7 +77,7 @@ impl WireCodec for OpenAiChatCodec {
         decode::response_with_usage_mode(
             resp,
             separate_reasoning(&context.profile.extra),
-            crate::codecs::qwen_cache::applies(context),
+            crate::providers::qwen::cache::applies(context),
         )
         .map(|mut response| {
             response.inference = crate::codecs::inference::response(resp, context.profile());

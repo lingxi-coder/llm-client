@@ -1,6 +1,6 @@
 //! Independent image generation and native task service.
 
-mod wire;
+pub(crate) mod wire;
 
 use crate::client::{ClientSnapshot, ClientSource};
 use crate::protocol::{
@@ -76,18 +76,27 @@ pub trait ImageAdapter: Send + Sync + 'static {
         model: &ImageModelProfile,
         profile: &ProviderProfile,
     ) -> Result<ImageResponse, ImageError>;
-    fn task_id(&self, body: &Value) -> Result<String, ImageError>;
+    fn check_response(&self, _body: &Value) -> Result<(), ImageError> {
+        Ok(())
+    }
+    fn task_id(&self, _body: &Value) -> Result<String, ImageError> {
+        Err(wire::unsupported("image route has no task response").into())
+    }
     fn task_query(
         &self,
-        route: &ImageRouteConfig,
-        task_id: &str,
-    ) -> Result<HttpRequest, ImageError>;
+        _route: &ImageRouteConfig,
+        _task_id: &str,
+    ) -> Result<HttpRequest, ImageError> {
+        Err(wire::unsupported("image route has no task query endpoint").into())
+    }
     fn decode_task(
         &self,
-        body: &Value,
-        task: &ImageTaskRef,
-        profile: &ProviderProfile,
-    ) -> Result<ImageTaskSnapshot, ImageError>;
+        _body: &Value,
+        _task: &ImageTaskRef,
+        _profile: &ProviderProfile,
+    ) -> Result<ImageTaskSnapshot, ImageError> {
+        Err(wire::unsupported("image route has no task decoder").into())
+    }
 }
 
 #[async_trait]
@@ -100,76 +109,22 @@ pub trait ImageAuthenticator: Send + Sync + 'static {
     ) -> Result<(), LlmError>;
 }
 
-struct BuiltinImageAdapter(ImageApi);
-impl ImageAdapter for BuiltinImageAdapter {
-    fn api(&self) -> ImageApi {
-        self.0
-    }
-    fn validate(
-        &self,
-        request: &ImageRequest,
-        model: &ImageModelProfile,
-        route: &ImageRouteConfig,
-        asynchronous: bool,
-    ) -> Result<(), ImageError> {
-        wire::validate(request, model, route, asynchronous)
-    }
-    fn encode(
-        &self,
-        request: &ImageRequest,
-        model: &ImageModelProfile,
-        route: &ImageRouteConfig,
-        asynchronous: bool,
-    ) -> Result<HttpRequest, ImageError> {
-        wire::encode(request, model, route, asynchronous)
-    }
-    fn decode(
-        &self,
-        body: &Value,
-        model: &ImageModelProfile,
-        profile: &ProviderProfile,
-    ) -> Result<ImageResponse, ImageError> {
-        wire::decode(self.0, body, model, profile)
-    }
-    fn task_id(&self, body: &Value) -> Result<String, ImageError> {
-        wire::task_id(self.0, body)
-    }
-    fn task_query(
-        &self,
-        route: &ImageRouteConfig,
-        task_id: &str,
-    ) -> Result<HttpRequest, ImageError> {
-        wire::task_query(route, task_id)
-    }
-    fn decode_task(
-        &self,
-        body: &Value,
-        task: &ImageTaskRef,
-        profile: &ProviderProfile,
-    ) -> Result<ImageTaskSnapshot, ImageError> {
-        wire::decode_task(self.0, body, task, profile)
-    }
-}
-
 pub(crate) fn builtin_adapters() -> BTreeMap<ImageApi, Arc<dyn ImageAdapter>> {
-    [
-        ImageApi::OpenAi,
-        ImageApi::Gemini,
-        ImageApi::Qwen,
-        ImageApi::Wan,
-        ImageApi::Xai,
-        ImageApi::Minimax,
-        ImageApi::Zai,
-        ImageApi::OpenRouter,
-    ]
-    .into_iter()
-    .map(|api| {
-        (
-            api,
-            Arc::new(BuiltinImageAdapter(api)) as Arc<dyn ImageAdapter>,
-        )
-    })
-    .collect()
+    use crate::providers::{google, minimax, openai, openrouter, qwen, xai, zhipu};
+    let adapters: Vec<Arc<dyn ImageAdapter>> = vec![
+        Arc::new(openai::images::OpenAiImages),
+        Arc::new(google::images::GoogleImages),
+        Arc::new(qwen::images::QwenImages),
+        Arc::new(qwen::images::WanImages),
+        Arc::new(xai::images::XaiImages),
+        Arc::new(minimax::images::MinimaxImages),
+        Arc::new(zhipu::images::ZhipuImages),
+        Arc::new(openrouter::images::OpenRouterImages),
+    ];
+    adapters
+        .into_iter()
+        .map(|adapter| (adapter.api(), adapter))
+        .collect()
 }
 
 /// A service handle whose live configuration is captured once per operation.
@@ -283,6 +238,68 @@ impl<'a> ImageService<'a> {
     }
 }
 
+/// Image operations bound to one exact provider profile.
+/// The same provider adapters and transport kernel serve the unified API.
+#[derive(Clone, Copy)]
+pub struct ProviderImageService<'a> {
+    source: ClientSource<'a>,
+    profile: &'a str,
+}
+impl<'a> ProviderImageService<'a> {
+    pub(crate) fn new(source: ClientSource<'a>, profile: &'a str) -> Self {
+        Self { source, profile }
+    }
+    pub fn capabilities(&self, model: &str) -> Result<ImageCapabilities, ImageError> {
+        let snapshot = self.source.pin()?;
+        PinnedImageService { client: &snapshot }.capabilities_in(self.profile, model)
+    }
+    pub async fn generate(
+        &self,
+        request: &ImageGenerationRequest,
+        options: &ImageRequestOptions,
+    ) -> Result<ImageResponse, ImageError> {
+        let snapshot = self.source.pin()?;
+        PinnedImageService { client: &snapshot }
+            .generate_in(self.profile, request, options)
+            .await
+    }
+    pub async fn edit(
+        &self,
+        request: &ImageEditRequest,
+        options: &ImageRequestOptions,
+    ) -> Result<ImageResponse, ImageError> {
+        let snapshot = self.source.pin()?;
+        PinnedImageService { client: &snapshot }
+            .edit_in(self.profile, request, options)
+            .await
+    }
+    pub async fn submit(
+        &self,
+        request: &ImageRequest,
+        options: &ImageRequestOptions,
+    ) -> Result<ImageTaskRef, ImageError> {
+        let snapshot = self.source.pin()?;
+        PinnedImageService { client: &snapshot }
+            .submit_in(self.profile, request, options)
+            .await
+    }
+    pub async fn get_task(
+        &self,
+        task: &ImageTaskRef,
+        options: &ImageRequestOptions,
+    ) -> Result<ImageTaskSnapshot, ImageError> {
+        let snapshot = self.source.pin()?;
+        if task.profile_name != self.profile {
+            return Err(ImageError::TaskScopeMismatch(
+                "task does not belong to the bound profile".into(),
+            ));
+        }
+        PinnedImageService { client: &snapshot }
+            .get_task(task, options)
+            .await
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PinnedImageService<'a> {
     client: &'a ClientSnapshot,
@@ -387,7 +404,7 @@ impl<'a> PinnedImageService<'a> {
         let deadline = Deadline::after(Some(opts.total_timeout.unwrap_or(Duration::from_secs(60))));
         let profile = self
             .client
-            .provider(&task.profile_name)
+            .profile(&task.profile_name)
             .filter(|p| p.supports_region(self.client.region()))
             .ok_or_else(|| {
                 ImageError::TaskScopeMismatch("profile is unavailable in this region".into())
@@ -405,7 +422,7 @@ impl<'a> PinnedImageService<'a> {
                 "task identity, endpoint, or account changed".into(),
             ));
         }
-        let adapter = self.adapter(route.api)?;
+        let adapter = self.adapter(profile, route.api)?;
         let mut request = adapter.task_query(route, &task.provider_task_id)?;
         deadline
             .run(authenticate(self.client, &mut request, route, opts))
@@ -420,6 +437,9 @@ impl<'a> PinnedImageService<'a> {
                 dispatch: ImageDispatch::Unknown,
             })?;
         let body = wire::parse_json(&response)
+            .map_err(|error| classify_response_error(error, response.status))?;
+        adapter
+            .check_response(&body)
             .map_err(|error| classify_response_error(error, response.status))?;
         adapter.decode_task(&body, task, profile)
     }
@@ -436,7 +456,7 @@ impl<'a> PinnedImageService<'a> {
                 .unwrap_or(Duration::from_secs(if asynchronous { 60 } else { 300 })),
         ));
         let (profile, model, route) = self.resolve(req.model(), scope)?;
-        let adapter = self.adapter(route.api)?;
+        let adapter = self.adapter(profile, route.api)?;
         adapter.validate(&req, model, route, asynchronous)?;
         if asynchronous && opts.account_scope.as_deref().is_none_or(str::is_empty) {
             return Err(LlmError::InvalidRequest {
@@ -459,6 +479,9 @@ impl<'a> PinnedImageService<'a> {
                 dispatch: ImageDispatch::Unknown,
             })?;
         let body = wire::parse_json(&response)
+            .map_err(|error| classify_response_error(error, response.status))?;
+        adapter
+            .check_response(&body)
             .map_err(|error| classify_response_error(error, response.status))?;
         if asynchronous {
             let task_id = adapter.task_id(&body)?;
@@ -490,7 +513,7 @@ impl<'a> PinnedImageService<'a> {
         let matches_scope = |profile: &ProviderProfile, scope: &str| {
             if self
                 .client
-                .provider(scope)
+                .profile(scope)
                 .is_some_and(|p| p.supports_region(self.client.region()))
             {
                 profile.profile_name == scope
@@ -543,7 +566,31 @@ impl<'a> PinnedImageService<'a> {
         .into())
     }
 
-    fn adapter(&self, api: ImageApi) -> Result<&dyn ImageAdapter, ImageError> {
+    fn adapter(
+        &self,
+        profile: &ProviderProfile,
+        api: ImageApi,
+    ) -> Result<&dyn ImageAdapter, ImageError> {
+        let supported = match profile.provider_id.as_str() {
+            "openai" => api == ImageApi::OpenAi,
+            "google" => api == ImageApi::Gemini,
+            "qwen" => matches!(api, ImageApi::Qwen | ImageApi::Wan),
+            "xai" => api == ImageApi::Xai,
+            "minimax" => api == ImageApi::Minimax,
+            "zhipu" => api == ImageApi::Zai,
+            "openrouter" => api == ImageApi::OpenRouter,
+            "anthropic" | "kimi" | "deepseek" | "github-copilot" => false,
+            _ => true,
+        };
+        if !supported {
+            return Err(LlmError::UnsupportedCapability {
+                message: format!(
+                    "provider {} does not support the configured {api:?} image API",
+                    profile.provider_id
+                ),
+            }
+            .into());
+        }
         self.client
             .runtime
             .image_adapters

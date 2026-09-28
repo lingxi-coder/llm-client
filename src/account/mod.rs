@@ -8,18 +8,15 @@ mod execution;
 mod service;
 pub use execution::{AccountExecutionOptions, AccountFetchContext, AccountReport};
 pub(crate) use service::{Registry, Service};
-#[path = "providers/admin/mod.rs"]
-mod admin;
-#[path = "providers/local/mod.rs"]
-mod local;
-#[path = "providers/minimax.rs"]
-mod minimax;
-#[path = "providers/public/mod.rs"]
-mod public;
-#[path = "providers/qwen.rs"]
-mod qwen;
+pub(crate) mod support;
 
-pub use local::{AccountRpc, CodexAccountSource, CopilotAccountSource, KimiCodeAccountSource};
+/// An RPC connection already authenticated and owned by the embedding host.
+/// This crate neither starts a CLI process nor reads its credential store.
+/// `call` returns the method's JSON-RPC `result` payload.
+#[async_trait]
+pub trait AccountRpc: Send + Sync + 'static {
+    async fn call(&self, method: &str, params: &Value) -> Result<Value, AccountFailure>;
+}
 
 use crate::protocol::{ProviderId, ProviderProfile, Secret};
 use crate::transport::{HttpRequest, Transport};
@@ -55,14 +52,19 @@ pub(crate) fn builtin_sources(
 ) -> BTreeMap<(String, AccountIdentity), std::sync::Arc<dyn AccountUsageSource>> {
     let mut sources: BTreeMap<(String, AccountIdentity), std::sync::Arc<dyn AccountUsageSource>> =
         BTreeMap::new();
-    public::register(&mut sources);
-    admin::register(&mut sources);
-    qwen::register(&mut sources);
-    minimax::register(&mut sources);
+    crate::providers::openai::account::register(&mut sources);
+    crate::providers::anthropic::account::register(&mut sources);
+    crate::providers::google::account::register(&mut sources);
+    crate::providers::xai::account::register(&mut sources);
+    crate::providers::openrouter::account::register(&mut sources);
+    crate::providers::deepseek::account::register(&mut sources);
+    crate::providers::kimi::account::register(&mut sources);
+    crate::providers::qwen::account::register(&mut sources);
+    crate::providers::minimax::account::register(&mut sources);
     sources
 }
-mod http;
-use http::*;
+pub(crate) mod http;
+pub(crate) use http::*;
 #[cfg(test)]
 mod tests {
     use super::{parse_iso_utc, AccountIdentity, AccountQuery};

@@ -149,9 +149,9 @@ async fn account_binding_and_connection_are_published_together_during_inflight_q
         .account_usage("p", &AccountQuery::new(AccountIdentity::AuthUser))
         .await
         .unwrap();
-    assert_eq!(pinned.provider("p").unwrap().base_url, original.base_url);
+    assert_eq!(pinned.profile("p").unwrap().base_url, original.base_url);
     assert_eq!(
-        client.snapshot().provider("p").unwrap().base_url,
+        client.snapshot().profile("p").unwrap().base_url,
         replacement.base_url
     );
     release.notify_one();
@@ -306,7 +306,7 @@ async fn failed_validation_and_io_leave_all_clones_on_the_previous_revision() {
     assert_eq!(directory.bytes(), bytes);
     assert_eq!(client.snapshot().revision(), before.revision());
     assert_eq!(clone.snapshot().revision(), before.revision());
-    assert!(!client.snapshot().provider("p").unwrap().models[0].hidden);
+    assert!(!client.snapshot().profile("p").unwrap().models[0].hidden);
 }
 
 struct ConcurrentDirectory {
@@ -380,7 +380,7 @@ async fn parallel_directory_fetches_merge_with_configuration_changes_before_appl
     assert_eq!(q.unwrap(), 1);
     let snapshot = client.snapshot();
     for (name, added) in [("p", "p-live"), ("q", "q-live")] {
-        let profile = snapshot.provider(name).unwrap();
+        let profile = snapshot.profile(name).unwrap();
         assert!(
             profile
                 .models

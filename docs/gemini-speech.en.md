@@ -20,7 +20,7 @@ Google returns base64 audio in the completed Interaction's `steps[].content[]`. 
 
 ```rust,ignore
 use lingxi_llm_client::{
-    gemini_speech::{
+    providers::google::speech::{
         GeminiSpeechFormat, GeminiSpeechModel, GeminiSpeechSampleRate,
         GeminiSpeechScope, GeminiSpeechService, GeminiSpeechRequest,
         GEMINI_SPEECH_ENDPOINT,
@@ -53,7 +53,7 @@ audio_sink.write_all(&result.audio).await?;
 For a two-speaker dialogue, use `GeminiSpeechSpeaker` to map two speaker labels to prebuilt voices and `GeminiSpeechTurn` for each separately labeled text segment. Each turn may carry its own style. The request sends `speech_config.mode: "conversational"`; every turn must name one configured speaker. This API follows Google's single-request multi-speaker limit of two speakers and requires prebuilt voices. Designed or replicated custom voices should be synthesized in separate per-speaker calls.
 
 ```rust,ignore
-use lingxi_llm_client::gemini_speech::{
+use lingxi_llm_client::providers::google::speech::{
     GeminiSpeechModel, GeminiSpeechRequest, GeminiSpeechSpeaker, GeminiSpeechTurn,
 };
 
@@ -81,7 +81,7 @@ Interactions streaming uses SSE. For TTS, an audio `step.delta` has base64 audio
 
 ```rust,ignore
 use lingxi_llm_client::{
-    gemini_speech::{GeminiSpeechModel, GeminiSpeechRequest, GeminiSpeechScope, GeminiSpeechService, GEMINI_SPEECH_ENDPOINT},
+    providers::google::speech::{GeminiSpeechModel, GeminiSpeechRequest, GeminiSpeechScope, GeminiSpeechService, GEMINI_SPEECH_ENDPOINT},
     protocol::Secret,
     transport::HttpTransport,
 };

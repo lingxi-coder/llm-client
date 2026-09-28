@@ -2,14 +2,14 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    audio::AudioInput,
     protocol::{LlmError, Secret},
-    transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
-    xai_audio::{
+    providers::openai::audio::AudioInput,
+    providers::xai::audio::{
         XaiAudioConfig, XaiAudioCredentials, XaiAudioError, XaiAudioService, XaiCustomVoiceAge,
         XaiCustomVoiceCreateRequest, XaiCustomVoiceGender, XaiCustomVoiceListRequest,
         XaiCustomVoicePatch, XaiCustomVoiceRef, XaiCustomVoiceTone, XaiCustomVoiceUseCase,
     },
+    transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
 use std::{

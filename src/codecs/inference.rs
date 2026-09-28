@@ -1,6 +1,7 @@
 //! Declarative inference controls shared by encoding, discovery and pricing.
 use super::CodecContext;
 use crate::protocol::*;
+use crate::providers::anthropic::types::*;
 use serde_json::{json, Map, Value};
 
 fn invalid(message: impl Into<String>) -> LlmError {
@@ -228,9 +229,9 @@ pub(crate) fn validate(
     profile: &ProviderProfile,
     model: &str,
 ) -> Result<(), LlmError> {
-    if (!req.anthropic_client_toolsets.is_empty()
-        || crate::codecs::anthropic_client_toolset_history::has_metadata(req))
-        && !crate::codecs::anthropic_client_toolsets::supports_profile(profile)
+    if (!req.anthropic_client_toolsets().is_empty()
+        || crate::providers::anthropic::client_toolset_history::has_metadata(req))
+        && !crate::providers::anthropic::client_toolsets::supports_profile(profile)
     {
         return Err(unsupported(
             "Anthropic client toolsets and toolset_name require first-party Anthropic Messages or Vertex Claude",
@@ -239,15 +240,15 @@ pub(crate) fn validate(
     if req
         .messages
         .iter()
-        .any(|message| message.anthropic.is_some())
-        && !crate::codecs::anthropic_conversation::supports_profile(profile)
+        .any(|message| message.anthropic_options().is_some())
+        && !crate::providers::anthropic::conversation::supports_profile(profile)
     {
         return Err(unsupported(
             "Anthropic per-message controls require the first-party Messages or Vertex Claude protocol",
         ));
     }
     if req.hosted_anthropic_web_fetch().is_some()
-        && !crate::codecs::anthropic_code_execution::is_official_profile(profile)
+        && !crate::providers::anthropic::code_execution::is_official_profile(profile)
         && profile.protocol != ProtocolFamily::FoundryClaude
     {
         return Err(unsupported(
@@ -596,7 +597,7 @@ pub(crate) fn merge_json(target: &mut Value, incoming: &Value, path: &str) -> Re
 // Per-message effort begins at the next user turn, including a tool-result
 // turn. This reports the current request without mutating its stable prefix.
 fn current_message_effort(req: &ChatRequest, profile: &ProviderProfile) -> Option<ReasoningEffort> {
-    if !crate::codecs::anthropic_conversation::supports_profile(profile) {
+    if !crate::providers::anthropic::conversation::supports_profile(profile) {
         return None;
     }
     let mut pending = None;
@@ -604,8 +605,7 @@ fn current_message_effort(req: &ChatRequest, profile: &ProviderProfile) -> Optio
     for message in &req.messages {
         if message.role == MessageRole::System {
             if let Some(effort) = message
-                .anthropic
-                .as_ref()
+                .anthropic_options()
                 .and_then(|options| options.effort)
             {
                 pending = Some(match effort {

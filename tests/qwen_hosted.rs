@@ -1,13 +1,15 @@
+use lingxi_llm_client::providers::openai::types::{
+    CodeInterpreterConfig, CodeInterpreterMemoryLimit,
+};
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
 use lingxi_llm_client::{
     codecs::{openai::responses::OpenAiResponsesCodec, EncodeRequest, WireCodec},
-    openai_containers::{OpenAiContainerRef, OpenAiContainerScope},
     protocol::{
-        ChatRequest, CodeInterpreterConfig, CodeInterpreterMemoryLimit, ContentBlock, HostedTool,
-        LlmError, ProtocolFamily, ProviderProfile, Region, StreamEvent,
+        ChatRequest, ContentBlock, LlmError, ProtocolFamily, ProviderProfile, Region, StreamEvent,
     },
+    providers::openai::containers::{OpenAiContainerRef, OpenAiContainerScope},
     HttpResponse, LlmClientBuilder, RequestOptions,
 };
 use serde_json::{json, Value};
@@ -34,12 +36,15 @@ fn request() -> ChatRequest {
         "messages":[{"role":"user","content":[{"type":"text","text":"Calculate 2 + 2"}]}]
     }))
     .unwrap();
-    request
-        .hosted_tools
-        .push(HostedTool::CodeInterpreter(CodeInterpreterConfig {
-            memory_limit: None,
-            ..CodeInterpreterConfig::default()
-        }));
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig {
+                memory_limit: None,
+                ..CodeInterpreterConfig::default()
+            },
+        )
+        .into(),
+    );
     request
 }
 
@@ -68,14 +73,18 @@ async fn undocumented_combinations_are_rejected_before_transport() {
         .unwrap();
 
     let mut with_memory = request();
-    with_memory.hosted_tools = vec![HostedTool::CodeInterpreter(CodeInterpreterConfig {
-        memory_limit: Some(CodeInterpreterMemoryLimit::FourG),
-        ..CodeInterpreterConfig::default()
-    })];
+    with_memory.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig {
+                memory_limit: Some(CodeInterpreterMemoryLimit::FourG),
+                ..CodeInterpreterConfig::default()
+            },
+        )
+        .into(),
+    ];
 
     let mut with_function = request();
     with_function.tools = serde_json::from_value(json!([{
-        "type":"function",
         "name":"local_function",
         "description":"A caller-owned function",
         "input_schema":{"type":"object"}
@@ -113,9 +122,12 @@ async fn qwen_rejects_openai_container_references_before_transport() {
     let scope = OpenAiContainerScope::new("qwen-search-test", "account-a").unwrap();
     let container = OpenAiContainerRef::from_id(&scope, "cntr_openai-only").unwrap();
     let mut request = request();
-    request.hosted_tools = vec![HostedTool::CodeInterpreter(
-        CodeInterpreterConfig::default().with_container(container),
-    )];
+    request.hosted_tools = vec![
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::CodeInterpreter(
+            CodeInterpreterConfig::default().with_container(container),
+        )
+        .into(),
+    ];
 
     assert!(matches!(
         client

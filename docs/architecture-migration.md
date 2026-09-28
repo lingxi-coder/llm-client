@@ -2,7 +2,37 @@
 
 [English](architecture-migration.en.md)
 
-本次更新仍是一个独立 Rust crate，公开扩展接口有破坏性调整，不兼容旧配置和旧响应格式。请通过公开配置 API 重新建立 v3 配置；读取 v1 会返回 `UnsupportedVersion`，不会改写原文件。
+0.3.0 保留单个独立 Rust crate，采用按 provider 组织的 client 和资源模块。旧入口和模块路径直接删除，不提供别名或转发兼容层。持久化配置仍为 v3；不兼容旧配置和旧响应格式。读取 v1/v2 会返回 `UnsupportedVersion`，不会改写原文件。
+
+## Provider Client 与共享执行
+
+公开调用链为 **统一服务 → Provider Client → 共享 codec 与 runtime**。`providers/<provider_id>` 拥有原生资源、类型、能力校验及 wire 差异；`codecs` 实现共享协议，`hosting` 放置 Azure、Bedrock、Vertex 和 Foundry 适配；`runtime`、`transport`、`auth` 共享快照、deadline、连接和请求认证。
+
+Chat、Images、Embeddings 保留统一入口。原生 Audio、Batch、Background、Vector Stores、Interactions、File Search 和知识库通过对应的 typed client 访问，资源方法不再重复接收 profile。`provider::<T>(profile)` 只接受确切的 profile，拒绝 provider 身份不匹配和路由组，也不要求该连接存在 Chat 模型行。provider 身份与区域、Search、Coding 和协议变体配置相互独立。
+
+Typed Chat 的故障切换只使用相同 provider ID 的备用 profile；统一 Chat 仍按显式路由组策略选择备用连接。缓冲文件上传在发送后遇到传输失败、5xx 或无法解码的成功响应时返回 `FileUploadOutcomeUnknown`，避免将结果不明的上传用于自动故障切换；Gemini 上传及恢复轮询在已取得文件 ID 后超时，返回携带可恢复引用的 `ProviderFileProcessing`。绑定的 Anthropic 与 Google Batch 服务使用该 profile 注册的鉴权器。
+
+```rust,no_run
+use lingxi_llm_client::{LlmClient, RequestOptions};
+use lingxi_llm_client::providers::openai::OpenAiClient;
+use lingxi_llm_client::providers::openai::audio::{AudioInput, TranscriptionModel, TranscriptionRequest};
+
+async fn transcribe(client: &LlmClient, input: AudioInput, options: &RequestOptions)
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    let provider = client.provider::<OpenAiClient>("openai")?;
+    let request = TranscriptionRequest::new(TranscriptionModel::GptTranscribe);
+    let result = provider.audio().transcribe(input, &request, options).await?;
+    let _ = result;
+    Ok(())
+}
+```
+
+Live provider 句柄在每次操作开始时捕获最新快照；从 `ClientSnapshot` 获得的句柄始终使用固定快照。原生引用保留明确的账号、workspace、区域和 endpoint scope。构造器不捕获密钥，每次调用通过 `RequestOptions` 传入凭证。原生路由来自显式 scope 或资源配置，不从 Chat URL 猜测。
+
+`protocol::NativeExtension` 保存格式标识和无损原生 JSON。provider 自有类型负责构造和校验类型化视图；原生托管工具转换为 `HostedTool::Native`。签名、工具身份和未知回放字段保持完整，provider 专属资源类型不再位于 `protocol`。
+
+共享执行保留 `prepare → seal → dispatch_once`、冻结价格、错误后的用量结算、取消和附件清理。Provider 不另建连接池或自动重试生成请求；故障切换由统一层负责，并要求每个备用 profile 单独提供凭证。参考实现记录见[固定版本的官方 SDK 参考](provider-sdk-references.md)。
 
 ## 服务与执行
 
@@ -74,7 +104,7 @@ allowlist 控制跟踪、持久化和展示，不改变显式路由规则。兼�
 
 ```toml
 [dependencies]
-lingxi-llm-client = { version = "0.1", features = ["tokenizer-openai", "tokenizer-qwen"] }
+lingxi-llm-client = { version = "0.3", features = ["tokenizer-openai", "tokenizer-qwen"] }
 ```
 
 可选 feature：`tokenizer-openai`、`tokenizer-deepseek`、`tokenizer-qwen`、`tokenizer-kimi`、`tokenizer-glm`，以及 `tokenizers-all`；`default = []`。已知模型未启用 feature 返回 `FeatureDisabled`，未知模型返回 `UnsupportedModel`。源码包保留资产与许可证，默认构建不包含对应后端和资产。验证结果与测量见[架构验收记录](architecture-validation.md)。

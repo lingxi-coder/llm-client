@@ -325,11 +325,15 @@ impl ResponsesStreamDecoder {
     pub(crate) fn configured(context: &crate::codecs::CodecContext) -> Self {
         Self {
             inference: crate::codecs::inference::StreamInference::new(context),
-            openai_approval_semantics: context.profile().provider_id.as_str() != "xai",
-            openai_tool_search_semantics: super::encode::is_official_openai_responses_profile(
-                context.profile(),
-            ),
-            qwen_code_interpreter: super::qwen_hosted::supports_code_interpreter(
+            openai_approval_semantics:
+                crate::providers::xai::responses_policy::uses_openai_approval_semantics(
+                    context.profile(),
+                ),
+            openai_tool_search_semantics:
+                crate::providers::openai::responses_policy::is_official_openai_responses_profile(
+                    context.profile(),
+                ),
+            qwen_code_interpreter: crate::providers::qwen::hosted::supports_code_interpreter(
                 context.profile(),
                 context.request_model(),
             ),

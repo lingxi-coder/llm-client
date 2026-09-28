@@ -12,10 +12,12 @@ Skill 的创建、列表、获取、删除及版本创建、列表、获取、�
 
 ```rust,no_run
 use lingxi_llm_client::{
-    anthropic_skills::{AnthropicSkillFile, AnthropicSkillsService},
-    protocol::{
-        AnthropicCodeExecutionConfig, AnthropicSkillScope, ChatRequest, HostedTool, Secret,
+    providers::anthropic::{
+        skills::{AnthropicSkillFile, AnthropicSkillsService},
+        types::{AnthropicCodeExecutionConfig, AnthropicSkillScope},
+        native::AnthropicHostedTool,
     },
+    protocol::{ChatRequest, Secret},
     Transport,
 };
 
@@ -30,7 +32,11 @@ let scope = AnthropicSkillScope::new(
     "account-workspace-a",
 )?
 .with_workspace_id("wrkspc_01Example")?;
-let service = AnthropicSkillsService::new(http, credential, scope)?;
+let request_options = lingxi_llm_client::RequestOptions {
+    credential: Some(credential),
+    ..Default::default()
+};
+let service = AnthropicSkillsService::new(http, scope)?;
 let skill = service
     .create(
         vec![AnthropicSkillFile::from_bytes(
@@ -38,17 +44,18 @@ let skill = service
             b"---\nname: review\ndescription: Review documents.\n---\nUse the review checklist.".to_vec(),
         )],
         Some("Review documents"),
+        &request_options,
     )
     .await?;
 let messages_ref = skill
     .messages_reference()
     .ok_or("this Skill source cannot be attached to Messages")?;
-request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
+request.hosted_tools.push(AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig {
         skills: vec![messages_ref],
         ..Default::default()
     },
-));
+).into());
 # Ok(())
 # }
 ```
@@ -71,12 +78,12 @@ request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
 
 Anthropic 文档允许在 Microsoft Foundry 上使用 Skills API 上传自定义 Skill，但 deployment 必须 **Hosted on Anthropic**。服务从 Foundry resource base 构造路径，因此 `/v1/skills` 会对应到 `https://{resource}.services.ai.azure.com/anthropic/v1/skills`。Foundry scope 绑定 resource 和 account，不捕获 chat deployment 或 model，也不会发送 `anthropic-workspace-id`。
 
-使用 Foundry `ProviderProfile`、显式的 `FoundryHosting::Anthropic`、稳定且非秘密的 `account_scope`、profile authenticator 和 credential 创建服务：
+使用 Foundry `ProviderProfile`、显式的 `FoundryHosting::Anthropic`、稳定且非秘密的 `account_scope`、profile authenticator 创建服务；每次操作通过 `RequestOptions` 传入 credential：
 
 ```rust,no_run
 use lingxi_llm_client::{
-    anthropic_skills::AnthropicSkillsService,
-    protocol::{FoundryHosting, ProviderProfile, Secret},
+    providers::anthropic::skills::AnthropicSkillsService,
+    protocol::{FoundryHosting, ProviderProfile},
     Authenticator, Transport,
 };
 
@@ -84,7 +91,6 @@ use lingxi_llm_client::{
 #     http: &'a dyn Transport,
 #     profile: &'a ProviderProfile,
 #     auth: &'a dyn Authenticator,
-#     credential: Secret<String>,
 # ) -> Result<AnthropicSkillsService<'a>, Box<dyn std::error::Error>> {
 let service = AnthropicSkillsService::new_foundry(
     http,
@@ -92,7 +98,6 @@ let service = AnthropicSkillsService::new_foundry(
     "foundry-resource-account-a",
     FoundryHosting::Anthropic,
     auth,
-    credential,
 )?;
 # Ok(service)
 # }

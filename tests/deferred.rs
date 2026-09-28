@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use lingxi_llm_client::{deferred::*, protocol::*, *};
+use lingxi_llm_client::{protocol::*, providers::xai::deferred::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -107,13 +107,17 @@ async fn submit_pending_then_consumed_result_preserves_scope_and_native() {
         ),
     ]);
     let job = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
-        .submit("grok", &request(), &options("acct-a"))
+        .submit(&request(), &options("acct-a"))
         .await
         .unwrap();
     assert_eq!(job.reference.account_scope, "acct-a");
     assert_eq!(job.native["request_id"], "req_1");
     let pending = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
         .fetch_once(job.reference, &options("acct-a"))
         .await
@@ -122,6 +126,8 @@ async fn submit_pending_then_consumed_result_preserves_scope_and_native() {
         panic!("expected 202 pending")
     };
     let completed = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
         .fetch_once(reference, &options("acct-a"))
         .await
@@ -155,14 +161,18 @@ async fn wrong_account_and_endpoint_fail_before_get() {
         json!({"request_id":"req_1"}),
     )]);
     let job = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
-        .submit("grok", &request(), &options("acct-a"))
+        .submit(&request(), &options("acct-a"))
         .await
         .unwrap();
     let encoded = serde_json::to_value(&job.reference).unwrap();
     let wrong_scope: DeferredJobRef = serde_json::from_value(encoded.clone()).unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
             .fetch_once(wrong_scope, &options("acct-b"))
             .await,
@@ -173,6 +183,8 @@ async fn wrong_account_and_endpoint_fail_before_get() {
     let wrong_endpoint: DeferredJobRef = serde_json::from_value(wrong_endpoint).unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
             .fetch_once(wrong_endpoint, &options("acct-a"))
             .await,
@@ -192,8 +204,10 @@ async fn transport_failure_never_resubmits_or_refetches_single_use_result() {
     }]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
-            .submit("grok", &request(), &options("acct-a"))
+            .submit(&request(), &options("acct-a"))
             .await,
         Err(DeferredError::SubmitOutcomeUnknown { .. })
     ));
@@ -215,12 +229,16 @@ async fn transport_failure_never_resubmits_or_refetches_single_use_result() {
         },
     ]);
     let job = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
-        .submit("grok", &request(), &options("acct-a"))
+        .submit(&request(), &options("acct-a"))
         .await
         .unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
             .fetch_once(job.reference, &options("acct-a"))
             .await,
@@ -246,12 +264,16 @@ async fn malformed_completed_result_is_reported_as_consumed() {
         ),
     ]);
     let job = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
-        .submit("grok", &request(), &options("acct-a"))
+        .submit(&request(), &options("acct-a"))
         .await
         .unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
             .fetch_once(job.reference, &options("acct-a"))
             .await,
@@ -270,8 +292,10 @@ async fn accepted_submission_without_request_id_is_not_safe_to_retry() {
     )]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
-            .submit("grok", &request(), &options("acct-a"))
+            .submit(&request(), &options("acct-a"))
             .await,
         Err(DeferredError::SubmitAcceptedUnknownId { .. })
     ));
@@ -287,8 +311,10 @@ async fn completed_ticket_remains_readable_after_catalog_model_changes() {
         json!({"request_id":"req_1"}),
     )]);
     let job = client
+        .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+        .unwrap()
         .deferred()
-        .submit("grok", &request(), &options("acct-a"))
+        .submit(&request(), &options("acct-a"))
         .await
         .unwrap();
     let mut updated = profile();
@@ -312,6 +338,8 @@ async fn completed_ticket_remains_readable_after_catalog_model_changes() {
         .unwrap();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::XaiClient>("grok")
+            .unwrap()
             .deferred()
             .fetch_once(job.reference, &options("acct-a"))
             .await

@@ -8,7 +8,7 @@ Consecutive system messages form one section. The section follows a user message
 use lingxi_llm_client::protocol::{ChatRequest, ContentBlock, ConversationMessage, MessageRole};
 # fn append(request: &mut ChatRequest) {
 request.messages.push(ConversationMessage {
-    anthropic: None,
+    native_options: Vec::new(),
     role: MessageRole::System,
     content: vec![ContentBlock::Text {
         text: "Use explicit units in subsequent answers.".into(),
@@ -24,7 +24,7 @@ Tool additions and removals use Anthropic `ProviderContent` blocks in a system m
 use lingxi_llm_client::protocol::{ContentBlock, ConversationMessage, MessageRole, ProtocolFamily};
 use serde_json::json;
 let message = ConversationMessage {
-    anthropic: None,
+    native_options: Vec::new(),
     role: MessageRole::System,
     content: vec![ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
@@ -58,12 +58,13 @@ Source: [Anthropic mid-conversation system messages and tool changes](https://pl
 Keep the server in `hosted_tools`, mark its toolset as inline, and append the generated system message at the moment its tools become available. The server URL remains in `mcp_servers`; the toolset is not duplicated in the top-level `tools` array. Authorization still uses `RequestOptions.mcp_authorizations` keyed by server name. The codec sends both required betas.
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicMcpConfig, ChatRequest, HostedTool};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig};
+use lingxi_llm_client::protocol::{ChatRequest, };
 # fn append(request: &mut ChatRequest) -> Result<(), Box<dyn std::error::Error>> {
 let server = AnthropicMcpConfig::new("calendar", "https://mcp.example.com/calendar")?
     .with_inline_toolset(true);
 request.messages.push(server.inline_tool_addition_message()?);
-request.hosted_tools.push(HostedTool::AnthropicMcp(server));
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(server).into());
 # Ok(())
 # }
 ```
@@ -74,10 +75,11 @@ Sources: [strict tool use](https://platform.claude.com/docs/en/agents-and-tools/
 
 ## Turn-scoped reminders and message effort
 
-Use `ConversationMessage.anthropic` for message-level controls. This metadata is translated into wire `clear_at` and `output_config.effort`, never a content block. Other built-in protocol routes reject these controls. Rust message literals now include `anthropic: None` unless they use these options; prefer the message constructors for ordinary messages.
+Use `ConversationMessage::with_anthropic_options()` for message-level controls. This metadata is translated into wire `clear_at` and `output_config.effort`, never a content block. Other built-in protocol routes reject these controls. Rust message literals now include `native_options: Vec::new()` unless they use these options; prefer the message constructors for ordinary messages.
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicClearAt, AnthropicMessageOptions, ConversationMessage};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicClearAt, AnthropicMessageOptions};
+use lingxi_llm_client::protocol::{ConversationMessage};
 let reminder = ConversationMessage::system_text("Request independent reads together.")
     .with_anthropic_options(AnthropicMessageOptions {
         clear_at: Some(AnthropicClearAt::NextUserMessage),
@@ -88,7 +90,8 @@ let reminder = ConversationMessage::system_text("Request independent reads toget
 `NextUserMessage` requires one or more text blocks, normal system-message placement, and no effort, tool changes, or cache breakpoint. A later user turn, including tool results, ends the reminder's rendering on the server. Keep the original message unchanged in history; the client never removes it. Explicit `Never` preserves lasting-message semantics. Both explicit values select the clear-at beta. Automatic caching is forwarded to Anthropic, which chooses its own eligible breakpoint.
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicMessageEffort, AnthropicMessageOptions, ConversationMessage};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMessageEffort, AnthropicMessageOptions};
+use lingxi_llm_client::protocol::{ConversationMessage};
 let mut change = ConversationMessage::system_text("")
     .with_anthropic_options(AnthropicMessageOptions {
         clear_at: None,

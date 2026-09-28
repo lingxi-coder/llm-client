@@ -20,7 +20,7 @@ Google 在完成的 Interaction `steps[].content[]` 中返回 base64 音频块�
 
 ```rust,ignore
 use lingxi_llm_client::{
-    gemini_speech::{
+    providers::google::speech::{
         GeminiSpeechFormat, GeminiSpeechModel, GeminiSpeechSampleRate,
         GeminiSpeechScope, GeminiSpeechService, GeminiSpeechRequest,
         GEMINI_SPEECH_ENDPOINT,
@@ -53,7 +53,7 @@ audio_sink.write_all(&result.audio).await?;
 双人对话可使用 `GeminiSpeechSpeaker` 为两个 speaker label 配置预置音色，并使用 `GeminiSpeechTurn` 分别提供每段文本。每段可以有自己的 style。请求会发送 `speech_config.mode: "conversational"`；每段都必须引用已配置的 speaker。该接口遵循 Google 单次多说话人请求最多两人的限制，并要求使用预置音色。设计或复刻的自定义音色需要按说话人分别调用合成。
 
 ```rust,ignore
-use lingxi_llm_client::gemini_speech::{
+use lingxi_llm_client::providers::google::speech::{
     GeminiSpeechModel, GeminiSpeechRequest, GeminiSpeechSpeaker, GeminiSpeechTurn,
 };
 
@@ -81,7 +81,7 @@ Interactions 流返回 SSE。TTS 的 `step.delta` 事件在 `delta.type == "audi
 
 ```rust,ignore
 use lingxi_llm_client::{
-    gemini_speech::{GeminiSpeechModel, GeminiSpeechRequest, GeminiSpeechScope, GeminiSpeechService, GEMINI_SPEECH_ENDPOINT},
+    providers::google::speech::{GeminiSpeechModel, GeminiSpeechRequest, GeminiSpeechScope, GeminiSpeechService, GEMINI_SPEECH_ENDPOINT},
     protocol::Secret,
     transport::HttpTransport,
 };

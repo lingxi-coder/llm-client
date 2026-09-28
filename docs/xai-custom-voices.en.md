@@ -4,8 +4,8 @@
 
 ```rust,no_run
 use lingxi_llm_client::{
-    audio::AudioInput,
-    xai_audio::{
+    providers::openai::audio::AudioInput,
+    providers::xai::audio::{
         XaiAudioCredentials, XaiAudioService, XaiCustomVoiceAge,
         XaiCustomVoiceCreateRequest, XaiCustomVoiceGender,
         XaiCustomVoiceListRequest, XaiCustomVoicePatch, XaiCustomVoiceTone,

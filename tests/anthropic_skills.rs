@@ -1,13 +1,14 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream, StreamExt};
+use lingxi_llm_client::providers::anthropic::types::AnthropicSkillScope;
 use lingxi_llm_client::{
-    anthropic_skills::{
+    protocol::{LlmError, Secret},
+    providers::anthropic::skills::{
         AnthropicSkillFile, AnthropicSkillListOptions, AnthropicSkillResourceRef,
         AnthropicSkillSourceFilter, AnthropicSkillVersionListOptions, AnthropicSkillsError,
         AnthropicSkillsService,
     },
-    protocol::{AnthropicSkillScope, LlmError, Secret},
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -190,7 +191,7 @@ fn scope() -> AnthropicSkillScope {
 }
 
 fn service(transport: &MockTransport) -> AnthropicSkillsService<'_> {
-    AnthropicSkillsService::new(transport, Secret::new("sk-test".to_owned()), scope()).unwrap()
+    AnthropicSkillsService::new(transport, scope()).unwrap()
 }
 
 fn skill(id: &str, source: &str) -> Value {
@@ -237,6 +238,7 @@ async fn create_streams_official_multipart_and_returns_scoped_custom_reference()
                 skill_file("quarterly-report/guide.md", b"Guide"),
             ],
             Some("Quarterly report"),
+            &request_options(),
         )
         .await
         .unwrap();
@@ -290,10 +292,13 @@ async fn list_preserves_plugin_sources_and_exposes_only_documented_messages_proj
     )]);
     let service = service(&transport);
     let page = service
-        .list(&AnthropicSkillListOptions {
-            source: Some(AnthropicSkillSourceFilter::Custom),
-            ..Default::default()
-        })
+        .list(
+            &AnthropicSkillListOptions {
+                source: Some(AnthropicSkillSourceFilter::Custom),
+                ..Default::default()
+            },
+            &request_options(),
+        )
         .await
         .unwrap();
 
@@ -327,10 +332,14 @@ async fn get_and_version_lifecycle_use_scoped_resources_and_preserve_native_fiel
     let service = service(&transport);
     let plugin = AnthropicSkillResourceRef::new("skill_plugin", "plugin", scope()).unwrap();
 
-    let fetched = service.get(&plugin).await.unwrap();
+    let fetched = service.get(&plugin, &request_options()).await.unwrap();
     assert!(fetched.messages_reference().is_none());
     let page = service
-        .list_versions(&plugin, &AnthropicSkillVersionListOptions::default())
+        .list_versions(
+            &plugin,
+            &AnthropicSkillVersionListOptions::default(),
+            &request_options(),
+        )
         .await
         .unwrap();
     assert_eq!(page.versions[0].id, "skver_one");
@@ -338,7 +347,10 @@ async fn get_and_version_lifecycle_use_scoped_resources_and_preserve_native_fiel
         .as_bool()
         .unwrap());
     assert!(page.versions[0].pinned_skill().is_none());
-    let got = service.get_version(&plugin, "skver_one").await.unwrap();
+    let got = service
+        .get_version(&plugin, "skver_one", &request_options())
+        .await
+        .unwrap();
     assert_eq!(got.skill_id, "skill_plugin");
     assert!(got.native["future_version_metadata"].as_bool().unwrap());
 
@@ -371,11 +383,15 @@ async fn create_and_delete_version_preserve_scoped_reference_and_check_response_
         .create_version(
             &custom,
             vec![skill_file("quarterly-report/SKILL.md", b"contents")],
+            &request_options(),
         )
         .await
         .unwrap();
     assert_eq!(created.pinned_skill().unwrap().version(), Some("skver_two"));
-    let deleted = service.delete_version(&custom, "skver_two").await.unwrap();
+    let deleted = service
+        .delete_version(&custom, "skver_two", &request_options())
+        .await
+        .unwrap();
     assert_eq!(deleted.id, "skver_two");
     let seen = transport.requests.lock().unwrap();
     assert_eq!(seen[0].method, "POST");
@@ -391,7 +407,7 @@ async fn delete_custom_skill_validates_provider_acknowledgement() {
     )]);
     let service = service(&transport);
     let custom = AnthropicSkillResourceRef::new("skill_alpha", "custom", scope()).unwrap();
-    let deleted = service.delete(&custom).await.unwrap();
+    let deleted = service.delete(&custom, &request_options()).await.unwrap();
     assert_eq!(deleted.id, "skill_alpha");
     assert_eq!(transport.requests.lock().unwrap()[0].method, "DELETE");
 }
@@ -413,13 +429,19 @@ async fn workspace_mismatch_and_non_custom_mutations_fail_before_dispatch() {
         .unwrap(),
     )
     .unwrap();
-    let mismatch = service.get(&other_workspace).await.unwrap_err();
+    let mismatch = service
+        .get(&other_workspace, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         mismatch,
         AnthropicSkillsError::Llm(LlmError::PermissionDenied { .. })
     ));
     let plugin = AnthropicSkillResourceRef::new("skill_plugin", "plugin", scope()).unwrap();
-    let readonly = service.delete(&plugin).await.unwrap_err();
+    let readonly = service
+        .delete(&plugin, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(readonly, AnthropicSkillsError::InvalidInput(_)));
     assert_eq!(transport.send_count.load(Ordering::SeqCst), 0);
 }
@@ -429,7 +451,7 @@ async fn malformed_upload_layout_and_page_options_fail_before_dispatch() {
     let transport = MockTransport::new([]);
     let service = service(&transport);
     assert!(service
-        .create(vec![skill_file("SKILL.md", b"x")], None)
+        .create(vec![skill_file("SKILL.md", b"x")], None, &request_options())
         .await
         .is_err());
     assert!(service
@@ -439,18 +461,26 @@ async fn malformed_upload_layout_and_page_options_fail_before_dispatch() {
                 skill_file("two/guide.md", b"y"),
             ],
             None,
+            &request_options()
         )
         .await
         .is_err());
     assert!(service
-        .create(vec![skill_file("one/SKILL.md", b"x")], Some("bad\nname"),)
+        .create(
+            vec![skill_file("one/SKILL.md", b"x")],
+            Some("bad\nname"),
+            &request_options()
+        )
         .await
         .is_err());
     assert!(service
-        .list(&AnthropicSkillListOptions {
-            limit: Some(1001),
-            ..Default::default()
-        })
+        .list(
+            &AnthropicSkillListOptions {
+                limit: Some(1001),
+                ..Default::default()
+            },
+            &request_options()
+        )
         .await
         .is_err());
     assert_eq!(transport.send_count.load(Ordering::SeqCst), 0);
@@ -479,6 +509,7 @@ async fn multipart_source_error_is_uncertain_and_fused_before_later_file_or_boun
                 AnthropicSkillFile::new("skill/later.md", 13, later),
             ],
             None,
+            &request_options(),
         )
         .await
         .unwrap_err();
@@ -512,14 +543,17 @@ async fn multipart_source_error_is_uncertain_and_fused_before_later_file_or_boun
 #[tokio::test]
 async fn mutation_deadline_returns_uncertain_outcome_and_never_retries() {
     let transport = MockTransport::hanging();
-    let service =
-        AnthropicSkillsService::new(&transport, Secret::new("sk-test".to_owned()), scope())
-            .unwrap()
-            .with_timeout(Duration::from_millis(2))
-            .unwrap();
+    let service = AnthropicSkillsService::new(&transport, scope())
+        .unwrap()
+        .with_timeout(Duration::from_millis(2))
+        .unwrap();
 
     let error = service
-        .create(vec![skill_file("skill/SKILL.md", b"contents")], None)
+        .create(
+            vec![skill_file("skill/SKILL.md", b"contents")],
+            None,
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, AnthropicSkillsError::OutcomeUnknown { .. }));
@@ -529,14 +563,17 @@ async fn mutation_deadline_returns_uncertain_outcome_and_never_retries() {
 #[tokio::test]
 async fn mutation_deadline_also_covers_response_body_reads() {
     let transport = MockTransport::pending_body();
-    let service =
-        AnthropicSkillsService::new(&transport, Secret::new("sk-test".to_owned()), scope())
-            .unwrap()
-            .with_timeout(Duration::from_millis(2))
-            .unwrap();
+    let service = AnthropicSkillsService::new(&transport, scope())
+        .unwrap()
+        .with_timeout(Duration::from_millis(2))
+        .unwrap();
 
     let error = service
-        .create(vec![skill_file("skill/SKILL.md", b"contents")], None)
+        .create(
+            vec![skill_file("skill/SKILL.md", b"contents")],
+            None,
+            &request_options(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, AnthropicSkillsError::OutcomeUnknown { .. }));
@@ -548,7 +585,7 @@ async fn mutation_deadline_also_covers_response_body_reads() {
 async fn malformed_empty_duplicate_and_stalled_pages_are_rejected() {
     let missing_data = MockTransport::new([reply_json(200, json!({"next_page":null}))]);
     assert!(service(&missing_data)
-        .list(&AnthropicSkillListOptions::default())
+        .list(&AnthropicSkillListOptions::default(), &request_options())
         .await
         .is_err());
 
@@ -557,7 +594,7 @@ async fn malformed_empty_duplicate_and_stalled_pages_are_rejected() {
         json!({"data":[skill("same", "custom"), skill("same", "plugin")], "next_page":null}),
     )]);
     assert!(service(&duplicate)
-        .list(&AnthropicSkillListOptions::default())
+        .list(&AnthropicSkillListOptions::default(), &request_options())
         .await
         .is_err());
 
@@ -566,10 +603,13 @@ async fn malformed_empty_duplicate_and_stalled_pages_are_rejected() {
         json!({"data":[], "next_page":"cursor-one"}),
     )]);
     assert!(service(&stalled)
-        .list(&AnthropicSkillListOptions {
-            page: Some("cursor-one".into()),
-            ..Default::default()
-        })
+        .list(
+            &AnthropicSkillListOptions {
+                page: Some("cursor-one".into()),
+                ..Default::default()
+            },
+            &request_options()
+        )
         .await
         .is_err());
 }
@@ -580,7 +620,7 @@ async fn version_retrieval_rejects_a_different_returned_id() {
     let service = service(&transport);
     let custom = AnthropicSkillResourceRef::new("skill_alpha", "custom", scope()).unwrap();
     let error = service
-        .get_version(&custom, "skver_requested")
+        .get_version(&custom, "skver_requested", &request_options())
         .await
         .unwrap_err();
     assert!(matches!(error, AnthropicSkillsError::InvalidResponse(_)));
@@ -595,7 +635,7 @@ async fn content_download_streams_zip_bytes_without_beta_header_or_local_file() 
     let service = service(&transport);
     let custom = AnthropicSkillResourceRef::new("skill_alpha", "custom", scope()).unwrap();
     let mut stream = service
-        .download_version_content(&custom, "skver_one")
+        .download_version_content(&custom, "skver_one", &request_options())
         .await
         .unwrap();
     let mut bytes = Vec::new();
@@ -622,7 +662,7 @@ async fn downloaded_content_deadline_ends_the_stream_after_successful_headers() 
         .unwrap();
     let reference = AnthropicSkillResourceRef::new("skill_alpha", "custom", scope()).unwrap();
     let mut content = service
-        .download_version_content(&reference, "skver_one")
+        .download_version_content(&reference, "skver_one", &request_options())
         .await
         .unwrap();
     assert!(matches!(
@@ -633,4 +673,48 @@ async fn downloaded_content_deadline_ends_the_stream_after_successful_headers() 
     ));
     assert!(content.next().await.is_none());
     assert_eq!(transport.send_count.load(Ordering::SeqCst), 1);
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("sk-test".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        reply_json(401, json!({"error":"rejected"})),
+        reply_json(401, json!({"error":"rejected"})),
+    ]);
+    let service = service(&mock);
+    let query = AnthropicSkillListOptions::default();
+    for credential in [
+        None,
+        Some(Secret::new(" ".into())),
+        Some(Secret::new("key\nvalue".into())),
+    ] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("x-api-key") && value == key));
+    }
 }

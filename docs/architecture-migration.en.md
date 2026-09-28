@@ -2,7 +2,37 @@
 
 [简体中文](architecture-migration.md)
 
-This update keeps one standalone Rust crate and changes the public extension APIs. Old configuration and response formats are not supported. Recreate a version 3 configuration with the public configuration APIs; loading version 1 or 2 returns `UnsupportedVersion` without modifying the file.
+Version 0.3.0 keeps one standalone Rust crate and introduces provider-owned clients and resource modules. Old entry points and module paths are deleted without aliases or forwarding shims. Old configuration and response formats are not supported. Recreate a version 3 configuration with the public configuration APIs; loading version 1 or 2 returns `UnsupportedVersion` without modifying the file.
+
+## Provider clients and shared execution
+
+The public path is **common service → provider client → shared codec and runtime**. `providers/<provider_id>` owns native resources, types, capability checks and wire differences. Shared `codecs` implement protocols, while `hosting` contains Azure, Bedrock, Vertex and Foundry adaptation. `runtime`, `transport` and `auth` share snapshots, deadlines, connections and request authentication.
+
+Common Chat, Images and Embeddings operations keep the unified service entry points. Native Audio, Batch, Background, Vector Stores, Interactions, File Search and knowledge services are reached through the matching typed client; resource methods no longer take a second profile argument. `provider::<T>(profile)` accepts an exact profile, rejects provider mismatches and routing groups, and does not require a Chat model row. Provider identity is separate from regional, Search, Coding and protocol profiles.
+
+Typed Chat failover uses only sibling profiles with the same provider ID; unified Chat continues to follow its explicit routing group policy. A buffered file upload returns `FileUploadOutcomeUnknown` for transport failure, a 5xx response, or an undecodable successful response after dispatch, preventing failover on an uncertain upload. Gemini upload and resumed polling return `ProviderFileProcessing` with a resumable reference when processing times out after a file ID is known. Bound Anthropic and Google Batch services use the authenticator registered for their profile.
+
+```rust,no_run
+use lingxi_llm_client::{LlmClient, RequestOptions};
+use lingxi_llm_client::providers::openai::OpenAiClient;
+use lingxi_llm_client::providers::openai::audio::{AudioInput, TranscriptionModel, TranscriptionRequest};
+
+async fn transcribe(client: &LlmClient, input: AudioInput, options: &RequestOptions)
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    let provider = client.provider::<OpenAiClient>("openai")?;
+    let request = TranscriptionRequest::new(TranscriptionModel::GptTranscribe);
+    let result = provider.audio().transcribe(input, &request, options).await?;
+    let _ = result;
+    Ok(())
+}
+```
+
+A live provider handle captures the current snapshot at the start of each operation; a handle bound from `ClientSnapshot` retains that snapshot. Native references keep their explicit account, workspace, region and endpoint scope. Constructors do not capture secrets: every call receives `RequestOptions`. Native routes come from explicit scope or configured resource routes, never a guessed Chat URL.
+
+`protocol::NativeExtension` stores a format tag and lossless native JSON. Provider-owned types construct and validate typed views; provider-native hosted tools convert into `HostedTool::Native`. This keeps signatures, tool identities and unknown replay fields intact without placing provider-specific resource types in `protocol`.
+
+Shared execution retains `prepare → seal → dispatch_once`, frozen pricing, usage settlement after errors, cancellation and attachment cleanup. Providers do not create their own connection pools or retry generated requests. The unified layer owns failover and requires independently supplied credentials for each fallback profile. See the [pinned official SDK reference versions](provider-sdk-references.md).
 
 ## Services and execution
 
@@ -74,7 +104,7 @@ Transactions lock and reread the latest state, validate the candidate, sync a te
 
 ```toml
 [dependencies]
-lingxi-llm-client = { version = "0.1", features = ["tokenizer-openai", "tokenizer-qwen"] }
+lingxi-llm-client = { version = "0.3", features = ["tokenizer-openai", "tokenizer-qwen"] }
 ```
 
 Features: `tokenizer-openai`, `tokenizer-deepseek`, `tokenizer-qwen`, `tokenizer-kimi`, `tokenizer-glm`, or `tokenizers-all`. `default = []`. Known models without their feature return `FeatureDisabled`; unknown models return `UnsupportedModel`. Assets and licenses remain in the source archive, while optional backends and assets are absent from default builds. See [verification and measurements](architecture-validation.md).

@@ -4,21 +4,21 @@
 //! useful as model input for a particular wire, but it is never a display URL
 //! and must not replace the app-owned attachment in conversation history.
 
-use crate::auth::Authenticator;
-use crate::protocol::{
+pub(crate) use crate::auth::Authenticator;
+pub(crate) use crate::protocol::{
     AuthStrategy, ChatRequest, ContentBlock, DocumentSource, ImageSource, LlmError, ModelProfile,
     ProtocolFamily, ProviderFileSource, ProviderId, ProviderProfile, Secret, VideoSource,
 };
-use crate::transport::{HttpRequest, HttpResponse, Transport};
-use bytes::{Bytes, BytesMut};
-use futures::{
+pub(crate) use crate::transport::{HttpRequest, HttpResponse, Transport};
+pub(crate) use bytes::{Bytes, BytesMut};
+pub(crate) use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
-use serde_json::Value;
-use std::future::Future;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+pub(crate) use serde_json::Value;
+pub(crate) use std::future::Future;
+pub(crate) use std::sync::{Arc, Mutex};
+pub(crate) use std::time::{Duration, Instant};
 
 mod adapters;
 mod http;
@@ -33,6 +33,9 @@ pub(crate) use lifecycle::*;
 pub(crate) use policy::*;
 pub use policy::{capabilities, capabilities_for_purpose};
 pub use service::FileService;
+pub(crate) use service::{
+    buffered_upload_error, unknown_buffered_upload_outcome, unknown_upload_outcome,
+};
 pub use types::{
     DownloadSupport, FileCapabilities, FileOperation, FilePurpose, FileUploadError,
     ModelFileReference, ProviderFileContent, ProviderFileMetadata, ProviderFilePage,
@@ -42,26 +45,20 @@ pub use types::{
 /// Maximum response body retained by [`FileService::download`].
 pub const MAX_PROVIDER_FILE_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
-const FILE_TIMEOUT: Duration = Duration::from_secs(120);
-const GEMINI_FILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_GEMINI_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-pub(crate) const GEMINI_VIDEO_FILE_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
-const GEMINI_FILE_RETENTION: Duration = Duration::from_secs(48 * 60 * 60);
-const QWEN_FILE_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const QWEN_FILE_PROCESSING_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const QWEN_CLEANUP_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
-const QWEN_UPLOAD_INTERVAL: Duration = Duration::from_millis(350);
-const QWEN_METADATA_INTERVAL: Duration = Duration::from_millis(110);
-const QWEN_IMAGE_MAX_UPLOAD_BYTES: u64 = 20_000_000;
-pub(crate) const QWEN_LONG_MAX_FILE_REFERENCES: usize = 100;
-const GEMINI_PDF_MAX_UPLOAD_BYTES: u64 = 50_000_000;
-const OPENAI_INPUT_FILE_MAX_UPLOAD_BYTES: u64 = 50_000_000;
+pub(crate) const FILE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Automatic uploads do not expose provider IDs to callers. Providers that
 /// support an upload TTL receive one, and cached references expire earlier.
 pub(crate) const AUTOMATIC_FILE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 pub(crate) const AUTOMATIC_FILE_CACHE_TTL: Duration = Duration::from_secs(23 * 60 * 60);
-/// The Anthropic request preflight reserves this many encoded bytes per
-/// automatic file ID before the upload happens.
-pub(crate) const MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES: usize = 512;
 
-pub mod gemini_wire;
+pub(crate) use crate::providers::anthropic::files::MAX_AUTOMATIC_ANTHROPIC_FILE_ID_JSON_BYTES;
+pub(crate) use crate::providers::google::files::{is_gemini_video_type, GEMINI_VIDEO_FILE_TIMEOUT};
+pub(crate) use crate::providers::minimax::files::{
+    check_minimax_base_response, minimax_base_response_code, minimax_delete_purpose,
+    minimax_list_purpose,
+};
+pub(crate) use crate::providers::qwen::files::{
+    is_qwen_long_model, qwen_long_region_supported, valid_qwen_file_id, validate_qwen_long_blocks,
+    validate_qwen_long_inputs, QwenFileRateLimiter, QWEN_CLEANUP_DEFAULT_TIMEOUT,
+    QWEN_LONG_MAX_FILE_REFERENCES,
+};

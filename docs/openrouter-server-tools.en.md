@@ -19,7 +19,7 @@ examples receive caller-prepared options and do not look up credentials.
 
 ## Tool search
 
-Add `HostedTool::OpenRouterToolSearch` and set `ToolSpec.defer_loading` on the
+Add `OpenRouterHostedTool::ToolSearch` and set `ToolSpec.defer_loading` on the
 function tools to hide until the model searches for them. A deferred function
 remains a caller-executed tool after discovery: its eventual `ToolUse` still
 belongs to the host. `max_results` defaults to OpenRouter's default and is
@@ -35,9 +35,8 @@ non-auto choice when deferred tools use OpenRouter search. Requests that use
 Anthropic-native search keep their existing Anthropic tool-choice behavior.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, ConversationMessage, HostedTool, OpenRouterToolSearchConfig, ToolChoice, ToolSpec,
-};
+use lingxi_llm_client::providers::openrouter::types::{OpenRouterToolSearchConfig};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ToolChoice, ToolSpec};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::LlmError;
 use serde_json::{json, Value};
@@ -51,12 +50,12 @@ pub async fn discover_a_client_tool(
         prompt_cache: Default::default(),
         output_format: Default::default(),
         model: "openai/gpt-5.2".into(),
-        anthropic_client_toolsets: Vec::new(),
-        hosted_tools: vec![HostedTool::OpenRouterToolSearch(
+        native_options: Vec::new(),
+        hosted_tools: vec![lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
             OpenRouterToolSearchConfig {
                 max_results: Some(10),
             },
-        )],
+        ).into()],
         continuation: None,
         system: vec![],
         messages: vec![ConversationMessage::user_text("Find the weather tool and check Tokyo.")],
@@ -72,7 +71,7 @@ pub async fn discover_a_client_tool(
             }),
             strict: false,
             defer_loading: true,
-            allowed_callers: vec![],
+            native_options: Vec::new(),
         }],
         tool_choice: ToolChoice::Auto,
         max_tokens: None,
@@ -92,7 +91,7 @@ pub async fn discover_a_client_tool(
 
 ## Hosted shell
 
-`HostedTool::OpenRouterShell` sends `type: "openrouter:shell"`. Omitted
+`OpenRouterHostedTool::Shell` sends `type: "openrouter:shell"`. Omitted
 parameters leave OpenRouter's defaults in effect: `engine: "auto"`, an
 ephemeral `container_auto` environment, a 120-second per-command timeout,
 16,384 output characters per stream, and networking disabled. Explicit
@@ -115,7 +114,7 @@ commands as host `ToolUse` calls. Stream callers should preserve the
 `ProviderContent` blocks and may inspect the accompanying raw `ProviderEvent`
 frames. Messages streaming reports a returned container envelope in the raw
 `message_start` event; the stream's terminal event does not reconstruct a
-`ChatResponse.openrouter_container` field.
+`ChatResponse::openrouter_container()` field.
 
 ### Reusing a container
 
@@ -126,15 +125,14 @@ requires a caller-imported `OpenRouterContainerRef` to carry a local
 that reuses the reference. The scope is local metadata: only the provider's
 container ID is sent over the wire.
 
-The Messages `ChatResponse.openrouter_container` value retains the provider's
+The Messages `ChatResponse::openrouter_container()` value retains the provider's
 raw envelope. It is not automatically trusted or attached to an account. The
 caller can explicitly associate that observed ID with the profile, endpoint,
 and account it just used:
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{
-    ChatRequest, HostedTool, OpenRouterContainerScope,
-};
+use lingxi_llm_client::providers::openrouter::types::{OpenRouterContainerScope};
+use lingxi_llm_client::protocol::{ChatRequest, };
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::LlmError;
 
@@ -150,8 +148,7 @@ pub async fn run_in_a_reused_container(
         account_scope,
     )?;
     let Some(container) = response
-        .openrouter_container
-        .as_ref()
+        .openrouter_container()
         .map(|metadata| metadata.reference_for(scope))
         .transpose()?
     else {

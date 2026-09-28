@@ -1,10 +1,12 @@
 # Gemini File Search
 
+Bind `client.provider::<GoogleClient>(profile)?` to an exact profile, then use `provider.file_search()`. Each operation takes `RequestOptions`; the client retains no credential.
+
 Gemini File Search provides a managed index for retrieval-augmented generation. This module manages File Search stores, supports direct byte uploads or imports existing Gemini Files API resources, reads both kinds of indexing operation, and lists, gets, or deletes documents. Callers provide the API key and a stable, non-secret `account_scope` on each request.
 
 ```rust,ignore
 use lingxi_llm_client::{
-    gemini_file_search::{GeminiFileSearchMetadata, GeminiFileSearchMetadataValue,
+    providers::google::file_search::{GeminiFileSearchMetadata, GeminiFileSearchMetadataValue,
         GeminiFileSearchOperationState, GeminiFileSearchWhiteSpaceChunking},
     LlmClient, ProviderFileRef, RequestOptions,
 };
@@ -14,10 +16,10 @@ async fn manage(
     options: &RequestOptions,
     file: &ProviderFileRef,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let service = client.gemini_file_search();
+    let provider = client.provider::<lingxi_llm_client::providers::google::GoogleClient>("gemini")?;
+    let service = provider.file_search();
     let store = service
         .create_store(
-            "gemini",
             Some("Product documents"),
             Some("models/gemini-embedding-2"),
             options,
@@ -64,7 +66,7 @@ Use `import_file()` when a file has already been uploaded through the Gemini Fil
 
 ```rust,ignore
 use bytes::Bytes;
-use lingxi_llm_client::gemini_file_search::GeminiFileSearchUploadRequest;
+use lingxi_llm_client::providers::google::file_search::GeminiFileSearchUploadRequest;
 
 let upload = GeminiFileSearchUploadRequest::new(
     Bytes::from_static(b"Product documentation"),

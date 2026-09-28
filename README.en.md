@@ -6,6 +6,8 @@
 
 Protocol types are defined by this crate and available through `lingxi_llm_client::protocol`. Applications own tool execution, permissions, conversation history, credential refresh, and context compaction; see the [API guide](docs/api.en.md#host-tool-execution-and-context-recovery).
 
+Version **0.3.0** organizes implementations under `providers/<provider_id>`. Use `client.chat()`, `client.images()`, and `client.embeddings()` for common operations; bind `client.provider::<OpenAiClient>("openai")?` for resources such as `provider.audio()`, `provider.batches()`, and `provider.retrieval()`. Provider-specific types live with their provider. This release removes old entry points and module paths without compatibility aliases. See [the 0.3.0 architecture](docs/architecture-migration.en.md) and [pinned official SDK references](docs/provider-sdk-references.md).
+
 ## Features
 
 - [Reasoning controls and fast pricing](docs/inference.en.md): discover model capabilities, configure budgets/effort/fast, and quote standard or fast rates. Effort changes consumption, not unit prices.
@@ -46,7 +48,7 @@ See the [File Attachments Guide](docs/file-attachments.md) for sharing images ac
 
 Select a usage region with `with_region(Region::ChinaMainland)` or `with_region(Region::International)` before building a client. Provider/model lists, resolution and failover honor this region while keeping the complete configuration. Custom profiles declare `regions`; missing declarations allow both regions. See [region filtering](docs/api.en.md#region-filtering).
 
-Default builds include no tokenizer backends or assets. See [local input token estimates](#6-estimate-input-tokens-offline) for opt-in features. Changes to public extension APIs, usage reports, and configuration v3 are covered in the [architecture and API migration guide](docs/architecture-migration.en.md).
+Default builds include no tokenizer backends or assets. See [local input token estimates](#6-estimate-input-tokens-offline) for opt-in features. Changes to public extension APIs, usage reports, and configuration v3 are covered in the [0.3.0 architecture and API guide](docs/architecture-migration.en.md).
 
 ### Capability support
 
@@ -169,7 +171,7 @@ cargo run
 
 The example reads the environment variable explicitly; the client does not load credentials automatically. `openai` is a built-in profile name, and `gpt-4.1-mini` is a model ID in the repository's catalog; your account must have access to it. Use `client.providers()` and `client.chat().models()` to inspect configured connections and models.
 
-Use `client.chat()` for conversations: `complete_in()` selects a connection, `complete()` routes by model, and `stream_in()` / `stream()` return streaming events. `client.chat().models()` filters out models whose metadata declares image output; `client.images().models()` lists the separate image catalog. Existing top-level completion and streaming methods remain available and use the same execution path. See [ChatService](docs/api.en.md#chatservice) and [Streaming Responses](docs/api.en.md#streaming-responses).
+Use `client.chat()` for conversations: `complete_in()` selects a connection, `complete()` routes by model, and `stream_in()` / `stream()` return streaming events. `client.chat().models()` filters out models whose metadata declares image output; `client.images().models()` lists the separate image catalog. Old top-level completion and streaming methods have been removed. See [ChatService](docs/api.en.md#chatservice) and [Streaming Responses](docs/api.en.md#streaming-responses).
 
 #### Stream a Chat Response
 
@@ -216,7 +218,7 @@ Build a long-lived client once and share `client.clone()` between concurrent tas
 | Task | API |
 | --- | --- |
 | Add or replace a connection | `config.add_provider(profile).await?`; supply a profile name, protocol, endpoint, and models |
-| Read connection configuration | `snapshot.provider("openai")` / `snapshot.profiles()` |
+| Read connection configuration | `snapshot.profile("openai")` / `snapshot.profiles()` |
 | List connections and visible models | `client.providers()` / `client.chat().models()` |
 | Refresh the model catalog from the service | `config.sync_provider("openai", options.credential.as_ref()).await?` |
 | Set a provider's model allowlist | `config.set_tracked_models(provider_id, model_ids).await?` |

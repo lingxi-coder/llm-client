@@ -39,9 +39,8 @@ impl ClientSnapshot {
             .state
             .config
             .resolve_request(&request.model, Some(profile))?;
-        if resolved.connections[0].profile.protocol
-            != crate::protocol::ProtocolFamily::AnthropicMessages
-        {
+        let selected = resolved.connections[0].profile;
+        if !crate::providers::dispatch::chat(selected).supports_exact_count(selected) {
             return Ok(None);
         }
         let collected = self
@@ -205,13 +204,10 @@ impl RequestDraft {
         &self.call.model
     }
     pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
-        if self.call.profile.protocol == crate::protocol::ProtocolFamily::AnthropicMessages
-            && self.call.prepared.http.body.len() > 32_000_000
-        {
-            return Err(LlmError::RequestTooLarge {
-                message: "final Anthropic body exceeds 32000000 bytes".into(),
-            });
-        }
+        self.call
+            .prepared
+            .backend
+            .validate_sealed_body(&self.call.profile, self.call.prepared.http.body.len())?;
         if self.call.profile.auth != crate::protocol::AuthStrategy::None {
             if let Some(auth) = &self.authenticator {
                 crate::runtime::Deadline::at(self.call.deadline)
@@ -482,12 +478,12 @@ impl ReceivedCall {
             return Err(Box::new(self));
         }
         let pricing = self.call.pricing_snapshot();
-        let observe_container =
-            crate::codecs::anthropic_code_execution::is_official_profile(&self.call.profile)
-                || crate::codecs::anthropic_code_execution::supports_execution(
-                    &self.call.prepared.context,
-                );
-        let response_cache = super::response_cache::openrouter_observation(
+        let observation = self
+            .call
+            .prepared
+            .backend
+            .stream_observation(&self.call.prepared.context);
+        let response_cache = self.call.prepared.backend.response_cache(
             &self.call.profile,
             &self.call.prepared.http.url,
             &self.response.headers,
@@ -507,7 +503,7 @@ impl ReceivedCall {
             self.call.prepared.inference,
             self.call.continuation,
         )
-        .with_anthropic_container_observation(observe_container);
+        .with_provider_observation(observation);
         stream.pricing = Some(pricing);
         Ok(stream)
     }
@@ -571,7 +567,7 @@ impl CollectedResponse {
             .codec
             .decode_response(&self.response, &self.call.prepared.context)?;
         response.executed_profile = Some(self.call.profile.profile_name.clone());
-        response.response_cache = super::response_cache::openrouter_observation(
+        response.response_cache = self.call.prepared.backend.response_cache(
             &self.call.profile,
             &self.call.prepared.http.url,
             &self.response.headers,

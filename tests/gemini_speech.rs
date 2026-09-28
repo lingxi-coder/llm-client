@@ -3,12 +3,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    gemini_speech::{
+    protocol::{LlmError, Secret},
+    providers::google::speech::{
         GeminiSpeechDispatch, GeminiSpeechError, GeminiSpeechFormat, GeminiSpeechModel,
         GeminiSpeechRequest, GeminiSpeechSampleRate, GeminiSpeechScope, GeminiSpeechService,
         GeminiSpeechSpeaker, GeminiSpeechStreamError, GeminiSpeechTurn, GEMINI_SPEECH_ENDPOINT,
     },
-    protocol::{LlmError, Secret},
     transport::{HttpRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use lingxi_llm_client::{
-    anthropic_batch::*,
     protocol::{LlmError, Secret},
+    providers::anthropic::batch::*,
     transport::{HttpRequest, HttpStreamRequest, StreamResponse, Transport},
 };
 use serde_json::{json, Value};
@@ -105,8 +105,7 @@ fn scope(account: &str) -> AnthropicBatchScope {
 }
 
 fn service<'a>(transport: &'a MockTransport, account: &str) -> AnthropicBatchService<'a> {
-    AnthropicBatchService::new(transport, Secret::new("sk-ant-test".into()), scope(account))
-        .unwrap()
+    AnthropicBatchService::new(transport, scope(account)).unwrap()
 }
 
 fn request(custom_id: &str) -> AnthropicBatchRequest {
@@ -205,24 +204,31 @@ async fn create_get_list_and_cancel_use_scoped_routes_and_documented_headers() {
     let mock = MockTransport::new(replies);
     let service = service(&mock, "account-a");
 
-    let created = service.create(&input()).await.unwrap();
+    let created = service.create(&input(), &request_options()).await.unwrap();
     assert_eq!(created.reference.batch_id(), "msgbatch_1");
     assert_eq!(created.request_counts.succeeded, 2);
     assert_eq!(created.native["future_field"], "preserved");
 
-    let fetched = service.get(&created.reference).await.unwrap();
+    let fetched = service
+        .get(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(fetched.status, AnthropicBatchStatus::InProgress);
     let page = service
         .list(
             &AnthropicBatchListOptions::new()
                 .limit(9)
                 .after_id("cursor/one"),
+            &request_options(),
         )
         .await
         .unwrap();
     assert!(page.has_more);
     assert_eq!(page.batches[0].reference.batch_id(), "msgbatch_1");
-    let canceled = service.cancel(&created.reference).await.unwrap();
+    let canceled = service
+        .cancel(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(canceled.status, AnthropicBatchStatus::Canceling);
 
     let requests = mock.requests();
@@ -273,9 +279,15 @@ async fn delete_uses_documented_route_and_validates_the_confirmation() {
         ),
     ]);
     let batch_service = service(&mock, "account-a");
-    let created = batch_service.create(&input()).await.unwrap();
+    let created = batch_service
+        .create(&input(), &request_options())
+        .await
+        .unwrap();
 
-    let deleted = batch_service.delete(&created.reference).await.unwrap();
+    let deleted = batch_service
+        .delete(&created.reference, &request_options())
+        .await
+        .unwrap();
     assert_eq!(deleted.id, "msgbatch_delete");
     assert_eq!(deleted.object_type, "message_batch_deleted");
 
@@ -299,9 +311,9 @@ async fn delete_uses_documented_route_and_validates_the_confirmation() {
         ),
     ]);
     let service = service(&malformed, "account-a");
-    let created = service.create(&input()).await.unwrap();
+    let created = service.create(&input(), &request_options()).await.unwrap();
     assert!(matches!(
-        service.delete(&created.reference).await,
+        service.delete(&created.reference, &request_options()).await,
         Err(AnthropicBatchError::OutcomeUnknownResponse {
             operation: "delete",
             ..
@@ -314,21 +326,25 @@ async fn delete_uses_documented_route_and_validates_the_confirmation() {
 async fn delete_checks_scope_before_io_and_preserves_known_provider_rejections() {
     let source = MockTransport::new([response(200, batch("msgbatch_delete", "ended"))]);
     let reference = service(&source, "account-a")
-        .create(&input())
+        .create(&input(), &request_options())
         .await
         .unwrap()
         .reference;
 
     let foreign = MockTransport::new(std::iter::empty::<Result<Reply, LlmError>>());
     assert!(matches!(
-        service(&foreign, "account-b").delete(&reference).await,
+        service(&foreign, "account-b")
+            .delete(&reference, &request_options())
+            .await,
         Err(AnthropicBatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
     assert!(foreign.requests().is_empty());
 
     let rejected = MockTransport::new([response(409, json!({"error":"batch still processing"}))]);
     assert!(matches!(
-        service(&rejected, "account-a").delete(&reference).await,
+        service(&rejected, "account-a")
+            .delete(&reference, &request_options())
+            .await,
         Err(AnthropicBatchError::Provider { status: 409, .. })
     ));
     assert_eq!(rejected.requests().len(), 1);
@@ -337,7 +353,9 @@ async fn delete_checks_scope_before_io_and_preserves_known_provider_rejections()
         message: "connection closed after delete dispatch".into(),
     })]);
     assert!(matches!(
-        service(&ambiguous, "account-a").delete(&reference).await,
+        service(&ambiguous, "account-a")
+            .delete(&reference, &request_options())
+            .await,
         Err(AnthropicBatchError::OutcomeUnknown {
             operation: "delete",
             ..
@@ -352,7 +370,7 @@ async fn create_marks_transport_and_unreadable_success_as_unknown_without_retry(
         message: "connection closed after dispatch".into(),
     })]);
     let error = service(&mock, "account-a")
-        .create(&input())
+        .create(&input(), &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -371,8 +389,11 @@ async fn create_marks_transport_and_unreadable_success_as_unknown_without_retry(
         }),
     ]);
     let batches = service(&mock, "account-a");
-    let job = batches.create(&input()).await.unwrap();
-    let error = batches.cancel(&job.reference).await.unwrap_err();
+    let job = batches.create(&input(), &request_options()).await.unwrap();
+    let error = batches
+        .cancel(&job.reference, &request_options())
+        .await
+        .unwrap_err();
     assert!(matches!(
         error,
         AnthropicBatchError::OutcomeUnknown {
@@ -388,7 +409,7 @@ async fn create_marks_transport_and_unreadable_success_as_unknown_without_retry(
         headers: vec![],
     })]);
     let error = service(&mock, "account-a")
-        .create(&input())
+        .create(&input(), &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -411,12 +432,12 @@ fn unknown_batch_statuses_serialize_as_their_provider_string() {
 async fn references_cannot_cross_account_or_endpoint_scope() {
     let mock_a = MockTransport::new([response(200, batch("msgbatch_1", "ended"))]);
     let job = service(&mock_a, "account-a")
-        .create(&input())
+        .create(&input(), &request_options())
         .await
         .unwrap();
     let mock_b = MockTransport::new(std::iter::empty::<Result<Reply, LlmError>>());
     let error = service(&mock_b, "account-b")
-        .get(&job.reference)
+        .get(&job.reference, &request_options())
         .await
         .unwrap_err();
     assert!(matches!(
@@ -427,7 +448,6 @@ async fn references_cannot_cross_account_or_endpoint_scope() {
 
     let other_endpoint = AnthropicBatchService::new(
         &mock_b,
-        Secret::new("sk-ant-test".into()),
         AnthropicBatchScope::new(
             "anthropic-prod",
             "account-a",
@@ -438,7 +458,7 @@ async fn references_cannot_cross_account_or_endpoint_scope() {
     )
     .unwrap();
     assert!(matches!(
-        other_endpoint.get(&job.reference).await,
+        other_endpoint.get(&job.reference, &request_options()).await,
         Err(AnthropicBatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
     assert!(mock_b.requests().is_empty());
@@ -457,9 +477,9 @@ async fn results_are_parsed_incrementally_and_keep_per_item_failures_as_values()
         ),
     ]);
     let service = service(&mock, "account-a");
-    let job = service.create(&input()).await.unwrap();
+    let job = service.create(&input(), &request_options()).await.unwrap();
     let items: Vec<_> = service
-        .stream_results(&job.reference)
+        .stream_results(&job.reference, &request_options())
         .await
         .unwrap()
         .collect()
@@ -519,8 +539,12 @@ async fn provider_http_errors_are_known_and_malformed_result_lines_end_only_the_
         }),
     ]);
     let batches = service(&mock, "account-a");
-    let job = batches.create(&input()).await.unwrap();
-    let error = batches.stream_results(&job.reference).await.err().unwrap();
+    let job = batches.create(&input(), &request_options()).await.unwrap();
+    let error = batches
+        .stream_results(&job.reference, &request_options())
+        .await
+        .err()
+        .unwrap();
     assert!(matches!(
         error,
         AnthropicBatchError::Provider {
@@ -538,11 +562,53 @@ async fn provider_http_errors_are_known_and_malformed_result_lines_end_only_the_
         ),
     ]);
     let batches = service(&mock, "account-a");
-    let job = batches.create(&input()).await.unwrap();
-    let mut stream = batches.stream_results(&job.reference).await.unwrap();
+    let job = batches.create(&input(), &request_options()).await.unwrap();
+    let mut stream = batches
+        .stream_results(&job.reference, &request_options())
+        .await
+        .unwrap();
     assert!(matches!(
         stream.next().await,
         Some(Err(AnthropicBatchError::InvalidResult(_)))
     ));
     assert!(stream.next().await.is_none());
+}
+
+fn request_options() -> lingxi_llm_client::RequestOptions {
+    lingxi_llm_client::RequestOptions {
+        credential: Some(Secret::new("sk-ant-test".into())),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn credentials_are_required_per_operation_and_can_rotate() {
+    let mock = MockTransport::new([
+        response(401, json!({"error": "rejected"})),
+        response(401, json!({"error": "rejected"})),
+    ]);
+    let service = service(&mock, "account-a");
+    let query = AnthropicBatchListOptions::default();
+    for credential in [None, Some(Secret::new(" ".into()))] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential,
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    assert!(mock.requests.lock().unwrap().is_empty());
+    for key in ["first-key", "rotated-key"] {
+        let options = lingxi_llm_client::RequestOptions {
+            credential: Some(Secret::new(key.into())),
+            ..Default::default()
+        };
+        assert!(service.list(&query, &options).await.is_err());
+    }
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (request, key) in requests.iter().zip(["first-key", "rotated-key"]) {
+        assert!(request.headers.iter().any(
+            |(name, value)| name.eq_ignore_ascii_case("X-Api-Key") && value == &key.to_owned()
+        ));
+    }
 }

@@ -5,10 +5,9 @@
 This is a pure encoding example: `auth: none` sends no request. Actual calls require Google credentials through the caller's authentication configuration/Authenticator.
 
 ```rust
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
 use lingxi_llm_client::{CodecContext, EncodeRequest, RequestMode, VertexClaudeCodec, WireCodec};
-use lingxi_llm_client::protocol::{
-    AnthropicToolSearchConfig, AnthropicToolSearchStrategy, ChatRequest, HostedTool, ProviderProfile,
-};
+use lingxi_llm_client::protocol::{ChatRequest, ProviderProfile};
 use serde_json::json;
 let profile: ProviderProfile = serde_json::from_value(json!({
     "provider_id": "google-vertex", "profile_name": "vertex",
@@ -20,9 +19,9 @@ let mut request: ChatRequest = serde_json::from_value(json!({
     "model":"claude-opus-5-5",
     "messages":[{"role":"user","content":[{"type":"text","text":"Find the right tool"}]}]
 })).unwrap();
-request.hosted_tools.push(HostedTool::AnthropicToolSearch(AnthropicToolSearchConfig {
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(AnthropicToolSearchConfig {
     strategy: AnthropicToolSearchStrategy::Regex,
-}));
+}).into());
 let context = CodecContext::new(&profile, "claude-opus-5-5", RequestMode::Complete);
 let wire = VertexClaudeCodec.encode_request(EncodeRequest::new(&request), &context).unwrap();
 assert!(wire.url.ends_with("/publishers/anthropic/models/claude-opus-5-5:rawPredict"));
@@ -39,14 +38,13 @@ System and clear_at support Fable 5/5.1, Mythos 5/5.1 and Opus 4.8/5/5.5. Per-me
 The lookup tool below must already be declared in request.tools, and the message must follow a permitted user/server-result position. Vertex reference additions/removals use `mid-conversation-tool-changes-2026-07-01`. The first-party inline-definition beta is not automatically applied to Vertex; inline definitions and MCP additions remain rejected.
 
 ```rust
-use lingxi_llm_client::protocol::{
-    AnthropicToolChange, AnthropicToolReference, ChatRequest, ConversationMessage, MessageRole,
-};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicToolChange, AnthropicToolReference};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, MessageRole};
 # fn withdraw_declared_tool(request: &mut ChatRequest) {
 request.messages.push(ConversationMessage {
     role: MessageRole::System,
     content: vec![AnthropicToolChange::remove(AnthropicToolReference::tool("lookup")).into_content_block()],
-    anthropic: None,
+    native_options: Vec::new(),
 });
 # }
 ```

@@ -7,13 +7,14 @@
 All calls use the API key, Beijing workspace endpoint, and profile/account scope already held by `QwenKnowledgeService`. A `QwenKnowledgeConnectorRef` binds the provider, profile, account scope, region, workspace, and endpoint. A reference from another connection is rejected before HTTP dispatch.
 
 ```rust,no_run
-use lingxi_llm_client::qwen_knowledge::{
+use lingxi_llm_client::providers::qwen::knowledge::{
     QwenKnowledgeConnectorCreateRequest, QwenKnowledgeConnectorLookup,
     QwenKnowledgeCategoryRef, QwenKnowledgeError, QwenKnowledgeOssImportFile,
     QwenKnowledgeOssImportRequest, QwenKnowledgeService,
 };
 
 async fn use_connectors(
+    request_options: &lingxi_llm_client::RequestOptions,
     service: &QwenKnowledgeService<'_>,
     category: &QwenKnowledgeCategoryRef,
 ) -> Result<(), QwenKnowledgeError> {
@@ -21,12 +22,12 @@ async fn use_connectors(
         .create_connector(&QwenKnowledgeConnectorCreateRequest::new(
             "product docs",
             "Connector for product documentation",
-        ))
+        ), request_options)
         .await?;
     let details = service
         .get_connector(&QwenKnowledgeConnectorLookup::by_id(
             created.reference.clone(),
-        ))
+        ), request_options)
         .await?;
 
     let request = QwenKnowledgeOssImportRequest::for_category(
@@ -41,7 +42,7 @@ async fn use_connectors(
             QwenKnowledgeOssImportFile::new("faq.docx", "docs/faq.docx"),
         ],
     );
-    let imported = service.import_files_from_oss(&request).await?;
+    let imported = service.import_files_from_oss(&request, request_options).await?;
     let _ = (details, imported);
     Ok(())
 }

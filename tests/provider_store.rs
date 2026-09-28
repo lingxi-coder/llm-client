@@ -180,7 +180,7 @@ async fn accounts_sync_independently_and_visibility_survives_restart() {
         .unwrap();
     let client_view = client.snapshot();
     let imported = client_view
-        .provider("primary")
+        .profile("primary")
         .unwrap()
         .models
         .iter()
@@ -311,7 +311,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
     );
     assert!(!client
         .snapshot()
-        .provider("gemini")
+        .profile("gemini")
         .unwrap()
         .models
         .iter()
@@ -329,7 +329,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
         .unwrap();
     assert!(!client
         .snapshot()
-        .provider("gemini")
+        .profile("gemini")
         .unwrap()
         .models
         .iter()
@@ -345,7 +345,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
     );
     assert!(!client
         .snapshot()
-        .provider("gemini")
+        .profile("gemini")
         .unwrap()
         .models
         .iter()
@@ -359,7 +359,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
     restored_config.set_config_dir(&dir).await.unwrap();
     assert!(!restored
         .snapshot()
-        .provider("gemini")
+        .profile("gemini")
         .unwrap()
         .models
         .iter()
@@ -372,7 +372,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
     );
     assert!(client
         .snapshot()
-        .provider("gemini")
+        .profile("gemini")
         .unwrap()
         .models
         .iter()
@@ -389,7 +389,7 @@ async fn incompatible_gemini_models_stay_excluded_across_whitelist_and_reload() 
         .unwrap();
     assert!(after_generation_support
         .snapshot()
-        .provider("gemini")
+        .profile("gemini")
         .unwrap()
         .models
         .iter()
@@ -433,7 +433,7 @@ async fn malformed_gemini_page_token_fails_sync_without_committing_partial_model
     assert_eq!(http.requests.load(Ordering::Relaxed), 1);
     assert!(!client
         .snapshot()
-        .provider("gemini-malformed-token")
+        .profile("gemini-malformed-token")
         .unwrap()
         .models
         .iter()
@@ -477,7 +477,7 @@ async fn replacing_a_gemini_profile_clears_saved_incompatible_model_ids() {
         .unwrap();
     assert!(client
         .snapshot()
-        .provider("gemini-replaced")
+        .profile("gemini-replaced")
         .unwrap()
         .models
         .iter()
@@ -500,13 +500,13 @@ async fn provider_crud_and_model_untracking_survive_restart() {
         .set_tracked_models("acme", ["shared".to_owned()])
         .await
         .unwrap();
-    assert!(client.snapshot().provider("primary").is_some());
+    assert!(client.snapshot().profile("primary").is_some());
 
     let mut updated = base.clone();
     updated.base_url = "https://new.example/v1".into();
     client_config.add_provider(updated).await.unwrap();
     assert_eq!(
-        client.snapshot().provider("primary").unwrap().base_url,
+        client.snapshot().profile("primary").unwrap().base_url,
         "https://new.example/v1"
     );
     client_config.untrack_model("acme", "shared").await.unwrap();
@@ -516,13 +516,13 @@ async fn provider_crud_and_model_untracking_survive_restart() {
         .contains("\"request_model\": \"shared\""));
 
     client_config.remove_provider("primary").await.unwrap();
-    assert!(client.snapshot().provider("primary").is_none());
+    assert!(client.snapshot().profile("primary").is_none());
     let (restored, restored_config) = LlmClientBuilder::with_transport(http, &[])
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build_managed()
         .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
-    assert!(restored.snapshot().provider("primary").is_none());
+    assert!(restored.snapshot().profile("primary").is_none());
     assert!(restored_config
         .tracked_models("acme")
         .await
@@ -534,7 +534,7 @@ async fn provider_crud_and_model_untracking_survive_restart() {
         .add_provider(profile("primary", 0, false))
         .await
         .unwrap();
-    assert!(restored.snapshot().provider("primary").is_some());
+    assert!(restored.snapshot().profile("primary").is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -549,7 +549,7 @@ async fn provider_add_and_update_cannot_persist_credential_bearing_extra_headers
     let original = profile("primary", 0, false);
     client_config.add_provider(original.clone()).await.unwrap();
     let client_view = client.snapshot();
-    let original = client_view.provider("primary").unwrap().clone();
+    let original = client_view.profile("primary").unwrap().clone();
     let saved_before = std::fs::read(dir.join("providers.json")).unwrap();
 
     let mut added = profile("secret-add", 1, false);
@@ -563,7 +563,7 @@ async fn provider_add_and_update_cannot_persist_credential_bearing_extra_headers
         std::fs::read(dir.join("providers.json")).unwrap(),
         saved_before
     );
-    assert!(client.snapshot().provider("secret-add").is_none());
+    assert!(client.snapshot().profile("secret-add").is_none());
 
     for header in [
         "authorization",
@@ -584,7 +584,7 @@ async fn provider_add_and_update_cannot_persist_credential_bearing_extra_headers
             std::fs::read(dir.join("providers.json")).unwrap(),
             saved_before
         );
-        assert_eq!(client.snapshot().provider("primary").unwrap(), &original);
+        assert_eq!(client.snapshot().profile("primary").unwrap(), &original);
     }
 
     let mut custom = original.clone();
@@ -601,7 +601,7 @@ async fn provider_add_and_update_cannot_persist_credential_bearing_extra_headers
         std::fs::read(dir.join("providers.json")).unwrap(),
         saved_before
     );
-    assert_eq!(client.snapshot().provider("primary").unwrap(), &original);
+    assert_eq!(client.snapshot().profile("primary").unwrap(), &original);
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -622,7 +622,7 @@ async fn built_in_profile_is_soft_deleted_and_can_be_restored() {
             .unwrap();
     client_config.set_config_dir(&dir).await.unwrap();
     client_config.remove_provider("openai").await.unwrap();
-    assert!(client.snapshot().provider("openai").is_none());
+    assert!(client.snapshot().profile("openai").is_none());
     assert!(client_config
         .deleted_builtin_profiles()
         .await
@@ -634,14 +634,14 @@ async fn built_in_profile_is_soft_deleted_and_can_be_restored() {
         .build_managed()
         .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
-    assert!(restored.snapshot().provider("openai").is_none());
+    assert!(restored.snapshot().profile("openai").is_none());
     assert!(restored_config
         .deleted_builtin_profiles()
         .await
         .unwrap()
         .contains("openai"));
     restored_config.restore_builtin("openai").await.unwrap();
-    assert!(restored.snapshot().provider("openai").is_some());
+    assert!(restored.snapshot().profile("openai").is_some());
     assert!(!restored_config
         .deleted_builtin_profiles()
         .await
@@ -688,7 +688,7 @@ async fn clients_sharing_a_directory_preserve_each_others_changes() {
         .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
     assert_eq!(restored.snapshot().profiles().len(), 2);
-    assert!(restored.snapshot().provider("primary").unwrap().models[0].hidden);
+    assert!(restored.snapshot().profile("primary").unwrap().models[0].hidden);
     assert!(restored_config
         .tracked_models("acme")
         .await
@@ -713,7 +713,7 @@ async fn changing_config_directory_discards_previous_directory_state() {
         .await
         .unwrap();
     client_config.set_config_dir(&second_dir).await.unwrap();
-    assert!(client.snapshot().provider("primary").is_none());
+    assert!(client.snapshot().profile("primary").is_none());
     client_config
         .add_provider(profile("spare", 1, true))
         .await
@@ -724,15 +724,15 @@ async fn changing_config_directory_discards_previous_directory_state() {
         .build_managed()
         .unwrap();
     first_config.set_config_dir(&first_dir).await.unwrap();
-    assert!(first.snapshot().provider("primary").is_some());
-    assert!(first.snapshot().provider("spare").is_none());
+    assert!(first.snapshot().profile("primary").is_some());
+    assert!(first.snapshot().profile("spare").is_none());
     let (second, second_config) = LlmClientBuilder::with_transport(http, &[])
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build_managed()
         .unwrap();
     second_config.set_config_dir(&second_dir).await.unwrap();
-    assert!(second.snapshot().provider("primary").is_none());
-    assert!(second.snapshot().provider("spare").is_some());
+    assert!(second.snapshot().profile("primary").is_none());
+    assert!(second.snapshot().profile("spare").is_some());
     std::fs::remove_dir_all(first_dir).unwrap();
     std::fs::remove_dir_all(second_dir).unwrap();
 }
@@ -792,7 +792,7 @@ async fn removing_builder_supplied_custom_profile_stays_removed_during_session()
         .set_tracked_models("acme", ["shared".to_owned()])
         .await
         .unwrap();
-    assert!(client.snapshot().provider("primary").is_none());
+    assert!(client.snapshot().profile("primary").is_none());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -832,8 +832,8 @@ async fn concurrent_clients_keep_both_accounts() {
             .build_managed()
             .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
-    assert!(restored.snapshot().provider("primary").is_some());
-    assert!(restored.snapshot().provider("spare").is_some());
+    assert!(restored.snapshot().profile("primary").is_some());
+    assert!(restored.snapshot().profile("spare").is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -868,7 +868,7 @@ async fn tracking_a_model_after_adding_a_profile_restores_its_model() {
             .build_managed()
             .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
-    assert!(restored.snapshot().provider("primary").unwrap().models[0].hidden);
+    assert!(restored.snapshot().profile("primary").unwrap().models[0].hidden);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -931,7 +931,7 @@ async fn restoring_a_builtin_without_builder_preset_survives_another_write() {
         .set_tracked_models("openai", ["gpt-4o".to_owned()])
         .await
         .unwrap();
-    assert!(client.snapshot().provider("openai").is_some());
+    assert!(client.snapshot().profile("openai").is_some());
 
     let (restored, restored_config) =
         LlmClientBuilder::with_transport(Arc::new(AccountDirectory), &[])
@@ -939,7 +939,7 @@ async fn restoring_a_builtin_without_builder_preset_survives_another_write() {
             .build_managed()
             .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
-    assert!(restored.snapshot().provider("openai").is_some());
+    assert!(restored.snapshot().profile("openai").is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1023,14 +1023,14 @@ async fn prepared_provider_syncs_fetch_concurrently_for_one_client() {
 
     assert!(client
         .snapshot()
-        .provider("primary")
+        .profile("primary")
         .unwrap()
         .models
         .iter()
         .any(|model| model.request_model == "primary-only"));
     assert!(client
         .snapshot()
-        .provider("spare")
+        .profile("spare")
         .unwrap()
         .models
         .iter()
@@ -1081,12 +1081,12 @@ async fn prepared_sync_rejects_a_profile_changed_during_fetch() {
         Err(ProviderStoreError::ProfileChanged(name)) if name == "primary"
     ));
     assert_eq!(
-        client.snapshot().provider("primary").unwrap().base_url,
+        client.snapshot().profile("primary").unwrap().base_url,
         "https://changed-during-fetch.example/v1"
     );
     assert!(client
         .snapshot()
-        .provider("primary")
+        .profile("primary")
         .unwrap()
         .models
         .iter()
@@ -1132,7 +1132,7 @@ async fn prepared_sync_cannot_write_into_a_new_config_directory() {
         client_config.apply_provider_sync(result).await,
         Err(ProviderStoreError::ProfileChanged(name)) if name == "primary"
     ));
-    assert!(client.snapshot().provider("primary").is_none());
+    assert!(client.snapshot().profile("primary").is_none());
     assert!(!second_dir.join("providers.json").exists());
     std::fs::remove_dir_all(first_dir).unwrap();
     std::fs::remove_dir_all(second_dir).unwrap();
@@ -1170,7 +1170,7 @@ async fn prepared_sync_rejects_a_config_directory_round_trip() {
     ));
     assert!(client
         .snapshot()
-        .provider("primary")
+        .profile("primary")
         .unwrap()
         .models
         .iter()
@@ -1230,12 +1230,12 @@ async fn sync_rejects_a_connection_changed_during_the_request() {
             .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
     assert_eq!(
-        restored.snapshot().provider("primary").unwrap().base_url,
+        restored.snapshot().profile("primary").unwrap().base_url,
         "https://another-account.example/v1"
     );
     assert!(restored
         .snapshot()
-        .provider("primary")
+        .profile("primary")
         .unwrap()
         .models
         .iter()
@@ -1346,7 +1346,7 @@ async fn whitelist_update_does_not_restore_another_clients_removed_model() {
     restored_config.set_config_dir(&dir).await.unwrap();
     assert!(restored
         .snapshot()
-        .provider("primary")
+        .profile("primary")
         .unwrap()
         .models
         .iter()
@@ -1375,7 +1375,7 @@ async fn restoring_builtin_overrides_a_same_named_builder_profile() {
     client_config.remove_provider("openai").await.unwrap();
     client_config.restore_builtin("openai").await.unwrap();
     assert_eq!(
-        client.snapshot().provider("openai").unwrap().base_url,
+        client.snapshot().profile("openai").unwrap().base_url,
         preset.base_url
     );
     client_config
@@ -1383,7 +1383,7 @@ async fn restoring_builtin_overrides_a_same_named_builder_profile() {
         .await
         .unwrap();
     assert_eq!(
-        client.snapshot().provider("openai").unwrap().base_url,
+        client.snapshot().profile("openai").unwrap().base_url,
         preset.base_url
     );
 
@@ -1393,7 +1393,7 @@ async fn restoring_builtin_overrides_a_same_named_builder_profile() {
         .unwrap();
     restored_config.set_config_dir(&dir).await.unwrap();
     assert_eq!(
-        restored.snapshot().provider("openai").unwrap().base_url,
+        restored.snapshot().profile("openai").unwrap().base_url,
         preset.base_url
     );
     std::fs::remove_dir_all(dir).unwrap();
@@ -1429,11 +1429,11 @@ async fn region_filtering_preserves_other_accounts_across_sync_updates_and_resta
             .unwrap();
     }
     assert_eq!(
-        cn.snapshot().provider("primary").unwrap().regions,
+        cn.snapshot().profile("primary").unwrap().regions,
         vec![Region::ChinaMainland]
     );
     assert_eq!(
-        cn.snapshot().provider("spare").unwrap().regions,
+        cn.snapshot().profile("spare").unwrap().regions,
         vec![Region::International]
     );
     assert_eq!(cn.providers().len(), 1);
@@ -1462,7 +1462,7 @@ async fn region_filtering_preserves_other_accounts_across_sync_updates_and_resta
         "hidden regional spare remains hidden"
     );
     let intl_view = intl.snapshot();
-    let mut spare = intl_view.provider("spare").unwrap().clone();
+    let mut spare = intl_view.profile("spare").unwrap().clone();
     spare.connection.hidden = false;
     intl_config.add_provider(spare).await.unwrap();
     assert!(intl
@@ -1524,7 +1524,7 @@ async fn regional_changes_in_another_client_invalidate_pending_sync() {
         .unwrap();
     other_config.set_config_dir(&dir).await.unwrap();
     let other_view = other.snapshot();
-    let mut p = other_view.provider("primary").unwrap().clone();
+    let mut p = other_view.profile("primary").unwrap().clone();
     p.regions = vec![Region::ChinaMainland];
     other_config.add_provider(p).await.unwrap();
     assert!(matches!(
@@ -1563,7 +1563,7 @@ async fn temporarily_incompatible_models_keep_metadata_through_reload_and_recove
         };
         let (mut client, mut client_config) = build(&[original]);
         let client_view = client.snapshot();
-        let expected = client_view.provider("gemini").unwrap().models[0].clone();
+        let expected = client_view.profile("gemini").unwrap().models[0].clone();
         client_config.set_config_dir(&dir).await.unwrap();
         client_config
             .set_tracked_models(
@@ -1611,7 +1611,7 @@ async fn temporarily_incompatible_models_keep_metadata_through_reload_and_recove
         client_config.sync_provider("gemini", None).await.unwrap();
         let client_view = client.snapshot();
         let restored = client_view
-            .provider("gemini")
+            .profile("gemini")
             .unwrap()
             .models
             .iter()

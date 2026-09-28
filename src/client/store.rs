@@ -652,8 +652,8 @@ mod publication_tests {
             .unwrap()
             .unwrap();
         assert!(rows[0].model.hidden);
-        assert!(client.snapshot().provider("p").unwrap().models[0].hidden);
+        assert!(client.snapshot().profile("p").unwrap().models[0].hidden);
         assert!(client.snapshot().revision() > previous.revision());
-        assert!(!previous.provider("p").unwrap().models[0].hidden);
+        assert!(!previous.profile("p").unwrap().models[0].hidden);
     }
 }

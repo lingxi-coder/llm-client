@@ -2,23 +2,27 @@
 
 [简体中文](background.md)
 
-`client.background()` implements OpenAI [Background mode](https://developers.openai.com/api/docs/guides/background). The built-in `openai` profile has an independent Responses background route, which configuration v3 can inherit or disable. Submission uses the selected model's Responses encoder and validation, then adds `background: true`. The API supports non-streaming submission, one-shot retrieval and cancellation, plus a resumable native event stream and a provider-neutral decoded stream. The host owns polling intervals, reference persistence, and tool execution.
+Bind `client.provider::<OpenAiClient>(profile)?` to an exact profile, then use `provider.background()`. Each operation takes `RequestOptions`; the client retains no credential.
+
+`provider.background()` implements OpenAI [Background mode](https://developers.openai.com/api/docs/guides/background). The built-in `openai` profile has an independent Responses background route, which configuration v3 can inherit or disable. Submission uses the selected model's Responses encoder and validation, then adds `background: true`. The API supports non-streaming submission, one-shot retrieval and cancellation, plus a resumable native event stream and a provider-neutral decoded stream. The host owns polling intervals, reference persistence, and tool execution.
 
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::ChatRequest;
-use lingxi_llm_client::background::{BackgroundError, BackgroundJob, BackgroundJobRef};
+use lingxi_llm_client::providers::openai::background::{BackgroundError, BackgroundJob, BackgroundJobRef};
 
 async fn submit(client: &LlmClient, request: &ChatRequest, options: &RequestOptions)
-    -> Result<BackgroundJob, BackgroundError>
+    -> Result<BackgroundJob, Box<dyn std::error::Error>>
 {
-    client.background().submit("openai", request, options).await
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    provider.background().submit(request, options).await.map_err(Into::into)
 }
 
 async fn check(client: &LlmClient, reference: &BackgroundJobRef, options: &RequestOptions)
-    -> Result<BackgroundJob, BackgroundError>
+    -> Result<BackgroundJob, Box<dyn std::error::Error>>
 {
-    client.background().get(reference, options).await
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&reference.profile_name)?;
+    provider.background().get(reference, options).await.map_err(Into::into)
 }
 ```
 
@@ -27,19 +31,20 @@ Streaming submission uses `background=true, stream=true`. Each `submit_stream().
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::ChatRequest;
-use lingxi_llm_client::background::{BackgroundError, BackgroundEventCursor, BackgroundStreamError};
+use lingxi_llm_client::providers::openai::background::{BackgroundError, BackgroundEventCursor, BackgroundStreamError};
 
 async fn stream_job(client: &LlmClient, request: &ChatRequest, options: &RequestOptions)
-    -> Result<Option<BackgroundEventCursor>, BackgroundError>
+    -> Result<Option<BackgroundEventCursor>, Box<dyn std::error::Error>>
 {
-    let mut stream = client.background().submit_stream("openai", request, options).await?;
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    let mut stream = provider.background().submit_stream(request, options).await?;
     let mut last = None;
     loop {
         match stream.next_event().await {
             Ok(Some(event)) => last = Some(event.cursor),
             Ok(None) => break,
             Err(BackgroundStreamError::Interrupted { cursor, .. }) => {
-                // Persist cursor, then reconnect with client.background().resume_stream(cursor, options).
+                // Persist cursor, then reconnect with provider.background().resume_stream(cursor, options).
                 last = cursor.map(|cursor| *cursor);
                 break;
             }
@@ -61,7 +66,8 @@ async fn read_response(
     request: &ChatRequest,
     options: &RequestOptions,
 ) -> Result<Option<ChatResponse>, Box<dyn std::error::Error>> {
-    let mut stream = client.background().submit_chat_stream("openai", request, options).await?;
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    let mut stream = provider.background().submit_chat_stream(request, options).await?;
     while let Some(event) = stream.next_event().await? {
         // Persist event.cursor after processing it. Preserve event.native when
         // the provider-specific event data is needed by the host.
@@ -82,13 +88,14 @@ A disconnected submission returns `SubmitOutcomeUnknown` and must not be blindly
 `background().delete(&reference, &options)` sends one `DELETE /responses/{id}` and returns `BackgroundDeletion` only after matching `id`, `object: "response"`, and `deleted: true`. The receipt preserves the scoped reference and native fields. Deletion is separate from cancelling inference; the host decides when to remove retained results. It checks the same provider/profile/endpoint/account scope as retrieval, and does not require the model to remain in the current catalog.
 
 ```rust,no_run
-use lingxi_llm_client::{LlmClient, RequestOptions, background::BackgroundJobRef};
+use lingxi_llm_client::{LlmClient, RequestOptions, providers::openai::background::BackgroundJobRef};
 async fn remove_saved_response(
     client: &LlmClient,
     reference: &BackgroundJobRef,
     options: &RequestOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let deleted = client.background().delete(reference, options).await?;
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&reference.profile_name)?;
+    let deleted = provider.background().delete(reference, options).await?;
     assert_eq!(deleted.reference.response_id, reference.response_id);
     Ok(())
 }

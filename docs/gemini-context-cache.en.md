@@ -10,7 +10,7 @@ The service never derives its cache URL from a chat profile's `base_url`. `Gemin
 
 ```rust,no_run
 use lingxi_llm_client::{
-    gemini_context_cache::{
+    providers::google::context_cache::{
         GeminiContextCacheCreateRequest, GeminiContextCacheExpiration,
         GeminiContextCacheScope, GeminiContextCacheService,
     },

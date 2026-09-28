@@ -8,14 +8,15 @@ xAI 将管理和搜索拆成两种凭据与两个 API 根地址。管理 collect
 use lingxi_llm_client::{
     files::UploadFileStream,
     protocol::Secret,
-    xai_collections::{
+    providers::xai::collections::{
         XaiCollectionListRequest, XaiCollectionsConfig, XaiCollectionsCredentials,
         XaiCreateCollectionRequest, XaiRetrievalMode, XaiSearchRequest,
         XaiUpdateCollectionRequest,
     },
 };
 
-let service = client.xai_collections(XaiCollectionsConfig::new(
+let provider = client.provider::<lingxi_llm_client::providers::xai::XaiClient>("xai-primary")?;
+let service = provider.collections(XaiCollectionsConfig::new(
     "xai-primary",
     "xai-team/account-42", // 调用方提供的稳定、非敏感账户范围
 ))?;
@@ -115,7 +116,7 @@ xAI 的 Collections 指南标注单文件上限为 100 MB；`upload_document_str
 通过 `upload_file` 上传的结果可以转换后交给普通 `FileService` 查询、下载或删除。转换会检查 provider、profile、API 根地址、协议与账户作用域，并保留已知文件元数据，包括到期信息；转换本身不请求网络，也不证明文件仍然可用。
 
 ```rust,no_run
-use lingxi_llm_client::{files::ProviderFileRef, protocol::{LlmError, ProviderProfile}, xai_collections::XaiUploadedFile};
+use lingxi_llm_client::{files::ProviderFileRef, protocol::{LlmError, ProviderProfile}, providers::xai::collections::XaiUploadedFile};
 fn file_reference(uploaded: &XaiUploadedFile, profile: &ProviderProfile, account: &str) -> Result<ProviderFileRef, LlmError> {
     uploaded.to_provider_file_ref(profile, account)
 }

@@ -2,7 +2,9 @@
 
 [简体中文](batches.md)
 
-`client.batches()` manages the OpenAI Batch lifecycle independently of Chat. The built-in `openai` profile has separate Batch and result-file routes; v3 configuration can inherit, replace or disable them. This adapter follows the [OpenAI Batch guide](https://developers.openai.com/api/docs/guides/batch) and [Batch API](https://developers.openai.com/api/reference/resources/batches/methods/create). Other providers and Background/deferred jobs remain unimplemented.
+Bind `client.provider::<OpenAiClient>(profile)?` to an exact profile, then use `provider.batches()`. Each operation takes `RequestOptions`; the client retains no credential.
+
+`provider.batches()` manages the OpenAI Batch lifecycle independently of Chat. The built-in `openai` profile has separate Batch and result-file routes; v3 configuration can inherit, replace or disable them. This adapter follows the [OpenAI Batch guide](https://developers.openai.com/api/docs/guides/batch) and [Batch API](https://developers.openai.com/api/reference/resources/batches/methods/create). Other providers expose their own Batch services; Background and deferred jobs have separate resource APIs.
 
 Use `encode_jsonl()` to encode up to 50,000 requests, or `write_jsonl()` to write a caller-owned file and obtain its exact byte count. Every request needs a unique `custom_id`; an input cannot mix models or enable `stream`. `write_jsonl()` validates every request before its first write; discard a partial file if an I/O write fails. Upload the JSONL as a `.jsonl` file with media type `application/x-ndjson` through the same profile's `FileService::upload(..., FilePurpose::Batch)`. This convenience method still constructs multipart in memory.
 
@@ -15,7 +17,7 @@ Batch request JSONL can reference files uploaded in advance: Responses `input_fi
 Use `encode_jsonl_with_attachments()` or `write_jsonl_with_attachments()` to bind every file ID in the JSONL to an explicit account-scoped reference. The ordinary encoders reject file IDs without this manifest, and the manifest must match the JSONL exactly. Pass the same references to `submit_with_attachments()`: it checks their provider, profile, endpoint and account scope, then retrieves each file's metadata before making the one Batch creation request. It verifies the remote ID and purpose and rejects a scheduled expiry earlier than the 24-hour Batch completion window, the documented cancellation reconciliation period, and a five-minute clock/request margin. This is a preflight check, not a lock: keep these files undeleted until the Batch is terminal and any needed output has been retrieved. The [Files API](https://developers.openai.com/api/reference/typescript/resources/files/methods/create) says files without an explicit expiry remain available until someone deletes them. The client never uploads, extends, retries, or deletes these attachment files. A transport failure during Batch creation has an unknown outcome and must be reconciled through `list()`/`get()` rather than retried blindly.
 
 ```rust,no_run
-use lingxi_llm_client::batches::{
+use lingxi_llm_client::providers::openai::batches::{
     BatchAttachmentRef, BatchEndpoint, BatchError, BatchJob, BatchLine,
     encode_jsonl_with_attachments,
 };
@@ -43,11 +45,12 @@ async fn submit_with_pdf(
     jsonl_file: &ProviderFileRef,
     pdf: &ProviderFileRef,
     options: &RequestOptions,
-) -> Result<BatchJob, BatchError> {
+) -> Result<BatchJob, Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
     let attachments = [BatchAttachmentRef::chat_completions_pdf(pdf.clone())];
-    client.batches().submit_with_attachments(
-        "openai", jsonl_file, BatchEndpoint::ChatCompletions, None, &attachments, options,
-    ).await
+    provider.batches().submit_with_attachments(
+        jsonl_file, BatchEndpoint::ChatCompletions, None, &attachments, options,
+    ).await.map_err(Into::into)
 }
 ```
 
@@ -56,7 +59,7 @@ The same manifest pattern applies to Responses files and images with `BatchAttac
 ```rust,no_run
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::files::ProviderFileRef;
-use lingxi_llm_client::batches::{BatchEndpoint, BatchError, BatchJob, BatchLine, encode_jsonl, write_jsonl};
+use lingxi_llm_client::providers::openai::batches::{BatchEndpoint, BatchError, BatchJob, BatchLine, encode_jsonl, write_jsonl};
 use serde_json::json;
 
 fn input_jsonl() -> Result<Vec<u8>, BatchError> {
@@ -72,14 +75,16 @@ fn write_input_jsonl(output: &mut impl std::io::Write) -> Result<u64, BatchError
     ], output)
 }
 
-async fn submit_uploaded(client: &LlmClient, input: &ProviderFileRef, options: &RequestOptions) -> Result<BatchJob, BatchError> {
-    client.batches().submit("openai", input, BatchEndpoint::Responses, None, options).await
+async fn submit_uploaded(client: &LlmClient, input: &ProviderFileRef, options: &RequestOptions) -> Result<BatchJob, Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>("openai")?;
+    provider.batches().submit(input, BatchEndpoint::Responses, None, options).await.map_err(Into::into)
 }
 
-async fn consume_result(client: &LlmClient, job: &BatchJob, options: &RequestOptions) -> Result<(), BatchError> {
+async fn consume_result(client: &LlmClient, job: &BatchJob, options: &RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::openai::OpenAiClient>(&job.reference.profile_name)?;
     use futures::StreamExt;
     if let Some(reference) = job.output_ref() {
-        let mut rows = client.batches().stream_result(&reference, options).await?;
+        let mut rows = provider.batches().stream_result(&reference, options).await?;
         while let Some(row) = rows.next().await {
             let row = row?;
             // Match row.custom_id to the original request and persist what you need.

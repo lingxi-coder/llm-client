@@ -1,6 +1,6 @@
 # xAI Remote MCP (Responses)
 
-This adapter configures an MCP server that xAI calls on the OpenAI-compatible xAI Responses route. Its xAI-specific configuration is `HostedTool::XaiRemoteMcp(XaiRemoteMcpConfig)` and contains only public connection settings: `server_label`, an HTTPS `server_url`, optional `server_description`, and optional `allowed_tools`. An empty `allowed_tools` list leaves all server-published tools available; a nonempty list restricts the available names.
+This adapter configures an MCP server that xAI calls on the OpenAI-compatible xAI Responses route. Its xAI-specific configuration is `XaiHostedTool::RemoteMcp(XaiRemoteMcpConfig)` and contains only public connection settings: `server_label`, an HTTPS `server_url`, optional `server_description`, and optional `allowed_tools`. An empty `allowed_tools` list leaves all server-published tools available; a nonempty list restricts the available names.
 
 The configuration is accepted only on an explicitly enabled xAI Responses profile: `provider_id = "xai"`, `protocol = "open_ai_responses"`, `base_url = "https://api.x.ai/v1"`, and `extra.xai_remote_mcp = "xai_responses"`. It does not switch the existing Grok Chat route to Responses. The encoded MCP tool uses the fields confirmed by xAI's example: `type: "mcp"`, `server_url`, and `server_label`, with `server_description` and `allowed_tools` included only when configured.
 

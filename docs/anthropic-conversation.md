@@ -8,7 +8,7 @@
 use lingxi_llm_client::protocol::{ChatRequest, ContentBlock, ConversationMessage, MessageRole};
 # fn append(request: &mut ChatRequest) {
 request.messages.push(ConversationMessage {
-    anthropic: None,
+    native_options: Vec::new(),
     role: MessageRole::System,
     content: vec![ContentBlock::Text {
         text: "后续回答请明确注明单位。".into(),
@@ -24,7 +24,7 @@ request.messages.push(ConversationMessage {
 use lingxi_llm_client::protocol::{ContentBlock, ConversationMessage, MessageRole, ProtocolFamily};
 use serde_json::json;
 let message = ConversationMessage {
-    anthropic: None,
+    native_options: Vec::new(),
     role: MessageRole::System,
     content: vec![ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
@@ -58,12 +58,13 @@ let message = ConversationMessage {
 在 `hosted_tools` 中保留服务器配置，标记工具集使用内联位置，并在工具开始可用时追加生成的 system 消息。服务器 URL 仍在 `mcp_servers`，工具集不会重复加入顶层 `tools`。授权继续使用以服务器名为键的 `RequestOptions.mcp_authorizations`。codec 自动发送两个必需 beta。
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicMcpConfig, ChatRequest, HostedTool};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig};
+use lingxi_llm_client::protocol::{ChatRequest, };
 # fn append(request: &mut ChatRequest) -> Result<(), Box<dyn std::error::Error>> {
 let server = AnthropicMcpConfig::new("calendar", "https://mcp.example.com/calendar")?
     .with_inline_toolset(true);
 request.messages.push(server.inline_tool_addition_message()?);
-request.hosted_tools.push(HostedTool::AnthropicMcp(server));
+request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(server).into());
 # Ok(())
 # }
 ```
@@ -74,10 +75,11 @@ request.hosted_tools.push(HostedTool::AnthropicMcp(server));
 
 ## 单轮提醒与逐消息 effort
 
-使用 `ConversationMessage.anthropic` 设置消息级控制。它被编码为消息上的 `clear_at` 与 `output_config.effort`，不是 content block。其他内置协议路由会拒绝这些控制。Rust 消息结构体字面量现在需包含 `anthropic: None`；普通消息优先使用构造方法。
+使用 `ConversationMessage::with_anthropic_options()` 设置消息级控制。它被编码为消息上的 `clear_at` 与 `output_config.effort`，不是 content block。其他内置协议路由会拒绝这些控制。Rust 消息结构体字面量现在需包含 `native_options: Vec::new()`；普通消息优先使用构造方法。
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicClearAt, AnthropicMessageOptions, ConversationMessage};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicClearAt, AnthropicMessageOptions};
+use lingxi_llm_client::protocol::{ConversationMessage};
 let reminder = ConversationMessage::system_text("请一起发起相互独立的读取操作。")
     .with_anthropic_options(AnthropicMessageOptions {
         clear_at: Some(AnthropicClearAt::NextUserMessage),
@@ -88,7 +90,8 @@ let reminder = ConversationMessage::system_text("请一起发起相互独立的�
 `NextUserMessage` 只允许一个或多个文本块，遵循普通 system 位置规则，不能同时设置 effort、工具变更或缓存断点。后续 user 消息（包括工具结果）使服务端停止渲染该提醒；历史中的原始消息仍须原样保留，客户端不会删除它。显式 `Never` 保持长期消息语义。显式设置任一值都会加入 clear-at beta；自动缓存仍交给 Anthropic 选择可用断点。
 
 ```rust
-use lingxi_llm_client::protocol::{AnthropicMessageEffort, AnthropicMessageOptions, ConversationMessage};
+use lingxi_llm_client::providers::anthropic::types::{AnthropicMessageEffort, AnthropicMessageOptions};
+use lingxi_llm_client::protocol::{ConversationMessage};
 let mut change = ConversationMessage::system_text("")
     .with_anthropic_options(AnthropicMessageOptions {
         clear_at: None,

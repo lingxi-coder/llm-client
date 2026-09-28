@@ -351,25 +351,31 @@ pub(super) fn validate_profiles(
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.retrieval {
-            crate::retrieval::validate_route(route).map_err(|e| BuildError::InvalidService {
-                profile_name: p.profile_name.clone(),
-                reason: e.to_string(),
+            crate::providers::openai::retrieval::validate_route(route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.batches {
-            crate::batches::validate_route(route).map_err(|e| BuildError::InvalidService {
-                profile_name: p.profile_name.clone(),
-                reason: e.to_string(),
+            crate::providers::openai::batches::validate_route(route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.deferred {
-            crate::deferred::validate_route(p, route).map_err(|e| BuildError::InvalidService {
-                profile_name: p.profile_name.clone(),
-                reason: e.to_string(),
+            crate::providers::xai::deferred::validate_route(p, route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.background {
-            crate::background::validate_route(p, route).map_err(|e| {
+            crate::providers::openai::background::validate_route(p, route).map_err(|e| {
                 BuildError::InvalidService {
                     profile_name: p.profile_name.clone(),
                     reason: e.to_string(),
@@ -377,13 +383,15 @@ pub(super) fn validate_profiles(
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.audio {
-            crate::audio::validate_route(p, route).map_err(|e| BuildError::InvalidService {
-                profile_name: p.profile_name.clone(),
-                reason: e.to_string(),
+            crate::providers::openai::audio::validate_route(p, route).map_err(|e| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason: e.to_string(),
+                }
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.interactions {
-            crate::interactions::validate_route(p, route).map_err(|e| {
+            crate::providers::google::interactions::validate_route(p, route).map_err(|e| {
                 BuildError::InvalidService {
                     profile_name: p.profile_name.clone(),
                     reason: e.to_string(),
@@ -391,7 +399,7 @@ pub(super) fn validate_profiles(
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.gemini_file_search {
-            crate::gemini_file_search::validate_route(p, route).map_err(|e| {
+            crate::providers::google::file_search::validate_route(p, route).map_err(|e| {
                 BuildError::InvalidService {
                     profile_name: p.profile_name.clone(),
                     reason: e.to_string(),
@@ -399,7 +407,7 @@ pub(super) fn validate_profiles(
             })?;
         }
         if let crate::protocol::ServiceSetting::Enabled(route) = &p.glm_knowledge {
-            crate::glm_knowledge::validate_route(p, route).map_err(|e| {
+            crate::providers::zhipu::knowledge::validate_route(p, route).map_err(|e| {
                 BuildError::InvalidService {
                     profile_name: p.profile_name.clone(),
                     reason: e.to_string(),

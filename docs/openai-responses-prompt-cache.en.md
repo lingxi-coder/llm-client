@@ -9,10 +9,8 @@ Native OpenAI Responses cache fields live in `ChatRequest.prompt_cache` and are 
 #     "system":[{"text":"Stable system policy"}],
 #     "messages":[{"role":"user","content":[{"type":"text","text":"Question"}]}]
 # })).unwrap();
-use lingxi_llm_client::protocol::{
-    CacheBreakpoint, CachePosition, CacheTtl, OpenAiPromptCacheMode,
-    OpenAiPromptCacheOptions, OpenAiPromptCacheTtl,
-};
+use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, OpenAiPromptCacheMode,
+    OpenAiPromptCacheOptions, OpenAiPromptCacheTtl};
 
 request.prompt_cache.prompt_cache_key = Some("support:customer-17".into());
 request.prompt_cache.prompt_cache_options = Some(OpenAiPromptCacheOptions {

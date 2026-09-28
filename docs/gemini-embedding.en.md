@@ -1,19 +1,17 @@
 # Gemini Embeddings
 
-The regular `EmbeddingRequest` supports Gemini's text embedding batch route. For one mixed text-and-media content item, use `GeminiMultimodalEmbeddingRequest` with `embed_gemini_multimodal`; Gemini Embedding 2 combines all supplied parts into one vector.
+The regular `EmbeddingRequest` supports Gemini's text embedding batch route. For one mixed text-and-media content item, use `GeminiMultimodalEmbeddingRequest` with `GoogleClient::embeddings().embed_multimodal`; Gemini Embedding 2 combines all supplied parts into one vector.
 
 ```rust,no_run
+use lingxi_llm_client::providers::google::embeddings::{GeminiEmbeddingMedia, GeminiEmbeddingPart, GeminiEmbeddingSource, GeminiMultimodalEmbeddingRequest};
 use lingxi_llm_client::{LlmClient, RequestOptions};
-use lingxi_llm_client::embeddings::{
-    GeminiEmbeddingMedia, GeminiEmbeddingPart, GeminiEmbeddingSource,
-    GeminiMultimodalEmbeddingRequest,
-};
 
 async fn embed_image(
     client: &LlmClient,
     options: &RequestOptions,
     image_bytes: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::google::GoogleClient>("gemini")?;
 let input = GeminiMultimodalEmbeddingRequest {
     model: "gemini-embedding-2".into(),
     parts: vec![
@@ -28,9 +26,9 @@ let input = GeminiMultimodalEmbeddingRequest {
     dimensions: Some(768),
 };
 
-let result = client
+let result = provider
     .embeddings()
-    .embed_gemini_multimodal("gemini", &input, &options)
+    .embed_multimodal(&input, &options)
     .await?;
 assert_eq!(result.vectors.len(), 1);
 Ok(())
@@ -45,37 +43,38 @@ Google documents `gemini-embedding-2` inputs as text, PNG/JPEG images, MP3/WAV a
 
 ## Discovering embedding models
 
-The Gemini profile configures its own `models_endpoint`; discovery does not derive a URL from Chat configuration. `list_gemini_models` calls Google's `models.list` route and returns only rows whose provider-reported `supportedGenerationMethods` contains the exact `embedContent` method. Each `GeminiEmbeddingModel` retains the official `resource_name`, its bare resource-name suffix as `id` (ready for `EmbeddingRequest.model`), the separate provider-reported `base_model_id`, version, reported token limits and method list, and the full native object. Fields not published by this directory, including embedding dimensions and input modalities, are not inferred from model names.
+The Gemini profile configures its own `models_endpoint`; discovery does not derive a URL from Chat configuration. `GoogleClient::embeddings().list_models` calls Google's `models.list` route and returns only rows whose provider-reported `supportedGenerationMethods` contains the exact `embedContent` method. Each `GeminiEmbeddingModel` retains the official `resource_name`, its bare resource-name suffix as `id` (ready for `EmbeddingRequest.model`), the separate provider-reported `base_model_id`, version, reported token limits and method list, and the full native object. Fields not published by this directory, including embedding dimensions and input modalities, are not inferred from model names.
 
 `GeminiEmbeddingModelListQuery.page_size` is optional: `None` leaves `pageSize` off the URL and uses Google's default of 50. Positive values are sent as given; Google may return at most 1000 rows even for a larger request. A page's `next_page_token` is an opaque, serializable cursor rather than an offset. It preserves the original `pageSize` parameter shape, route, provider, profile, region and optional `RequestOptions.account_scope`; reusing it against another scope or explicitly changing the page size is rejected before authentication or HTTP. An omitted account scope remains unbound to a declared account identity, and the client does not claim that the label verifies which API key is in use. Empty or missing `nextPageToken` ends pagination. Filtering does not fetch extra pages: a page with no embedding models can still have a continuation.
 
-`get_gemini_model` accepts the official resource name such as `models/gemini-embedding-2`, verifies the returned resource name, and rejects a resource unless its methods explicitly include `embedContent`. Listing and lookup preserve the enabled/disabled profile, region, per-call credential and total-timeout rules of other embedding operations.
+`GoogleClient::embeddings().get_model` accepts the official resource name such as `models/gemini-embedding-2`, verifies the returned resource name, and rejects a resource unless its methods explicitly include `embedContent`. Listing and lookup preserve the enabled/disabled profile, region, per-call credential and total-timeout rules of other embedding operations.
 
 ```rust,no_run
-use lingxi_llm_client::{embeddings::{EmbeddingError, GeminiEmbeddingModelListQuery}, LlmClient, RequestOptions};
+use lingxi_llm_client::providers::google::embeddings::{GeminiEmbeddingModelListQuery};
+use lingxi_llm_client::{embeddings::{EmbeddingError}, LlmClient, RequestOptions};
 
 async fn discover_gemini_models(
     client: &LlmClient,
     options: &RequestOptions,
-) -> Result<(), EmbeddingError> {
-    let first = client
+) -> Result<(), Box<dyn std::error::Error>> {
+    let provider = client.provider::<lingxi_llm_client::providers::google::GoogleClient>("gemini")?;
+    let first = provider
         .embeddings()
-        .list_gemini_models("gemini", &GeminiEmbeddingModelListQuery::default(), options)
+        .list_models(&GeminiEmbeddingModelListQuery::default(), options)
         .await?;
 
     if let Some(resource) = first.models.first() {
-        let detail = client
+        let detail = provider
             .embeddings()
-            .get_gemini_model("gemini", &resource.resource_name, options)
+            .get_model(&resource.resource_name, options)
             .await?;
         assert_eq!(detail.id, resource.id);
     }
 
     if let Some(token) = first.next_page_token {
-        let next = client
+        let next = provider
             .embeddings()
-            .list_gemini_models(
-                "gemini",
+            .list_models(
                 &GeminiEmbeddingModelListQuery {
                     page_token: Some(token),
                     ..Default::default()

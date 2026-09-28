@@ -6,27 +6,16 @@
 //! a profile naming an OpenAI-compatible provider needs no capability entry —
 //! only a `ProviderProfile` (gate 30).
 
-pub(crate) mod code_interpreter;
 pub(crate) mod inference;
-mod input;
-mod json;
-pub(crate) mod openrouter_server_tools;
+pub(crate) mod input;
+pub(crate) mod json;
 pub(crate) mod request_controls;
 pub use input::{CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode};
 pub mod anthropic;
-pub(crate) mod anthropic_client_toolset_history;
-pub(crate) mod anthropic_client_toolsets;
-pub(crate) mod anthropic_code_execution;
-pub(crate) mod anthropic_conversation;
-pub(crate) mod anthropic_mcp;
-pub(crate) mod anthropic_tool_search;
-pub(crate) mod anthropic_web_fetch;
 pub(crate) mod file_search_decode;
-pub(crate) mod foundry;
 pub mod gemini;
-pub mod hosted;
 pub mod openai;
-mod stream;
+pub(crate) mod stream;
 pub(crate) mod usage;
 pub(crate) mod web_search;
 pub(crate) mod web_search_decode;
@@ -198,11 +187,11 @@ pub(crate) fn builtin() -> Vec<Arc<dyn WireCodec>> {
     vec![
         Arc::new(crate::codecs::anthropic::AnthropicMessagesCodec),
         Arc::new(crate::codecs::gemini::GeminiCodec),
-        Arc::new(crate::codecs::hosted::AzureOpenAiCodec),
-        Arc::new(crate::codecs::hosted::BedrockClaudeCodec),
-        Arc::new(crate::codecs::hosted::FoundryClaudeCodec),
-        Arc::new(crate::codecs::hosted::VertexClaudeCodec),
-        Arc::new(crate::codecs::hosted::VertexGeminiCodec),
+        Arc::new(crate::hosting::AzureOpenAiCodec),
+        Arc::new(crate::hosting::BedrockClaudeCodec),
+        Arc::new(crate::hosting::FoundryClaudeCodec),
+        Arc::new(crate::hosting::VertexClaudeCodec),
+        Arc::new(crate::hosting::VertexGeminiCodec),
         Arc::new(crate::codecs::openai::chat::OpenAiChatCodec),
         Arc::new(crate::codecs::openai::responses::OpenAiResponsesCodec),
     ]
@@ -211,4 +200,3 @@ pub(crate) fn builtin() -> Vec<Arc<dyn WireCodec>> {
 pub(crate) mod structured;
 
 pub(crate) mod cache;
-pub(crate) mod qwen_cache;

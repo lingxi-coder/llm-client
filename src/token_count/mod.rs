@@ -5,8 +5,8 @@
     feature = "tokenizer-kimi",
     feature = "tokenizer-glm"
 ))]
-mod assets;
-mod backends;
+pub(crate) mod assets;
+pub(crate) mod backends;
 mod model;
 mod request;
 mod types;

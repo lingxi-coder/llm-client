@@ -9,11 +9,9 @@
 每次连接都显式提供区域路由、非密钥账户范围和当前凭证。凭证只作为本次 WebSocket 握手的 `Authorization: Bearer …` header 传入；API Key 与宿主签发的 JWT 均由宿主管理。`GlmRealtimeScope` 保存 profile 名、账户身份、区域和 endpoint fingerprint，不保存凭证。
 
 ```rust,no_run
+use lingxi_llm_client::providers::zhipu::realtime::{GlmRealtimeRoute, GlmRealtimeScope, GlmRealtimeSession, GlmRealtimeConfig};
 use std::sync::Arc;
-use lingxi_llm_client::{protocol::Secret, realtime::{
-    GlmRealtimeRoute, GlmRealtimeScope, GlmRealtimeSession, GlmRealtimeConfig,
-    RealtimeLimits, RealtimeTransport,
-}};
+use lingxi_llm_client::{protocol::Secret, realtime::{RealtimeLimits, RealtimeTransport}};
 async fn connect(
     transport: Arc<dyn RealtimeTransport>,
     credential: Secret<String>,

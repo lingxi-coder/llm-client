@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use lingxi_llm_client::{batches::*, files::*, protocol::*, *};
+use lingxi_llm_client::{files::*, protocol::*, providers::openai::batches::*, *};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -153,6 +153,8 @@ async fn result_stream_decodes_across_chunks_and_stops_on_duplicate_id() {
         "{\"custom_id\":\"first\",\"response\":{\"status_code\":200}}\r\n{\"custom_id\":\"second\",\"error\":{\"code\":\"bad\"}}\n{\"custom_id\":\"first\",\"error\":{\"code\":\"duplicate\"}}",
     )]);
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .stream_result(&result_ref(), &options("acct-a"))
         .await
@@ -189,6 +191,8 @@ async fn result_stream_reads_more_than_64_mib_without_collecting_the_file() {
         body: Ok(body),
     }]);
     let mut stream = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .stream_result(&result_ref(), &options("acct-a"))
         .await
@@ -205,6 +209,8 @@ async fn result_stream_checks_scope_before_http() {
     let (client, mock) = setup(vec![]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .stream_result(&result_ref(), &options("acct-b"))
             .await,
@@ -393,9 +399,10 @@ async fn submit_get_list_cancel_preserve_scope_counts_and_output_ids() {
     ]);
     let opts = options("acct-a");
     let submitted = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .submit(
-            "openai",
             &file(),
             BatchEndpoint::Responses,
             Some(&BTreeMap::from([("tag".into(), "nightly".into())])),
@@ -406,6 +413,8 @@ async fn submit_get_list_cancel_preserve_scope_counts_and_output_ids() {
     assert_eq!(submitted.status, BatchStatus::Validating);
     assert_eq!(submitted.reference.account_scope, "acct-a");
     let current = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .get(&submitted.reference, &opts)
         .await
@@ -415,13 +424,17 @@ async fn submit_get_list_cancel_preserve_scope_counts_and_output_ids() {
     assert_eq!(current.error_file_id.as_deref(), Some("file_errors"));
     assert_eq!(current.request_counts.as_ref().unwrap()["failed"], 1);
     let page = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
-        .list("openai", 1, Some("batch_old"), &opts)
+        .list(1, Some("batch_old"), &opts)
         .await
         .unwrap();
     assert!(page.has_more);
     assert_eq!(page.last_id.as_deref(), Some("batch_1"));
     let cancelled = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .cancel(&submitted.reference, &opts)
         .await
@@ -429,6 +442,8 @@ async fn submit_get_list_cancel_preserve_scope_counts_and_output_ids() {
     assert_eq!(cancelled.status, BatchStatus::Cancelling);
     assert!(!cancelled.status.is_terminal());
     let rows = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .read_result(&current.output_ref().unwrap(), &opts)
         .await
@@ -468,9 +483,10 @@ async fn submit_with_attachments_reconciles_files_before_batch_creation() {
         "application/pdf",
     ));
     let submitted = client
+        .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+        .unwrap()
         .batches()
         .submit_with_attachments(
-            "openai",
             &file(),
             BatchEndpoint::Responses,
             None,
@@ -507,9 +523,10 @@ async fn attachment_must_survive_completion_and_cancel_window() {
     ));
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .submit_with_attachments(
-                "openai",
                 &file(),
                 BatchEndpoint::Responses,
                 None,
@@ -530,9 +547,10 @@ async fn wrong_attachment_scope_or_remote_purpose_fails_before_batch_write() {
     let wrong_scope = BatchAttachmentRef::responses_file(wrong_scope);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .submit_with_attachments(
-                "openai",
                 &file(),
                 BatchEndpoint::Responses,
                 None,
@@ -556,9 +574,10 @@ async fn wrong_attachment_scope_or_remote_purpose_fails_before_batch_write() {
     ));
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .submit_with_attachments(
-                "openai",
                 &file(),
                 BatchEndpoint::Responses,
                 None,
@@ -576,14 +595,10 @@ async fn wrong_scope_and_wrong_purpose_fail_before_http() {
     let (client, mock) = setup(vec![]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
-            .submit(
-                "openai",
-                &file(),
-                BatchEndpoint::Responses,
-                None,
-                &options("acct-b")
-            )
+            .submit(&file(), BatchEndpoint::Responses, None, &options("acct-b"))
             .await,
         Err(BatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
@@ -591,14 +606,10 @@ async fn wrong_scope_and_wrong_purpose_fail_before_http() {
     wrong.purpose = Some("user_data".into());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
-            .submit(
-                "openai",
-                &wrong,
-                BatchEndpoint::Responses,
-                None,
-                &options("acct-a")
-            )
+            .submit(&wrong, BatchEndpoint::Responses, None, &options("acct-a"))
             .await,
         Err(BatchError::Llm(LlmError::PermissionDenied { .. }))
     ));
@@ -629,6 +640,8 @@ async fn result_reference_scope_and_jsonl_shape_are_checked() {
     };
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .read_result(&reference, &options("acct-b"))
             .await,
@@ -638,6 +651,8 @@ async fn result_reference_scope_and_jsonl_shape_are_checked() {
     wrong_endpoint.result_endpoint_fingerprint = "other".into();
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .read_result(&wrong_endpoint, &options("acct-a"))
             .await,
@@ -646,6 +661,8 @@ async fn result_reference_scope_and_jsonl_shape_are_checked() {
     assert!(mock.requests.lock().unwrap().is_empty());
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
             .read_result(&reference, &options("acct-a"))
             .await,
@@ -665,14 +682,10 @@ async fn uncertain_submission_never_retries() {
     }]);
     assert!(matches!(
         client
+            .provider::<lingxi_llm_client::providers::OpenAiClient>("openai")
+            .unwrap()
             .batches()
-            .submit(
-                "openai",
-                &file(),
-                BatchEndpoint::Responses,
-                None,
-                &options("acct-a")
-            )
+            .submit(&file(), BatchEndpoint::Responses, None, &options("acct-a"))
             .await,
         Err(BatchError::OutcomeUnknown {
             operation: "submit",

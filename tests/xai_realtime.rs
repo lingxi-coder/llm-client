@@ -6,12 +6,20 @@ use futures::{
     stream::{self, BoxStream},
     StreamExt,
 };
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeAudioTransport;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeCommand;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeConfig;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeEvent;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeFunctionTool;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeReasoningEffort;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeResumeRef;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeSession;
+use lingxi_llm_client::providers::xai::realtime::XaiRealtimeVadOptions;
+use lingxi_llm_client::providers::xai::realtime::XaiTurnDetection;
 use lingxi_llm_client::realtime::{
     RealtimeAudioFormat, RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError,
     RealtimeEvent, RealtimeFrame, RealtimeInput, RealtimeLimits, RealtimeSink, RealtimeToolResult,
-    RealtimeTransport, XaiRealtimeAudioTransport, XaiRealtimeCommand, XaiRealtimeConfig,
-    XaiRealtimeEvent, XaiRealtimeFunctionTool, XaiRealtimeReasoningEffort, XaiRealtimeResumeRef,
-    XaiRealtimeSession, XaiRealtimeVadOptions, XaiTurnDetection, MAX_REALTIME_TOOL_RESULTS,
+    RealtimeTransport, MAX_REALTIME_TOOL_RESULTS,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};

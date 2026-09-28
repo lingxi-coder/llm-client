@@ -25,9 +25,8 @@ pub mod options;
 mod price_query;
 pub mod pricing;
 mod resolve;
-mod response_cache;
 pub mod route;
-mod snapshot;
+pub(crate) mod snapshot;
 mod store;
 mod stream;
 pub use crate::token_count;
@@ -37,13 +36,11 @@ pub use account::{
     AccountFetchContext, AccountIdentity, AccountMetric, AccountQuery, AccountQuotaWindow,
     AccountReport, AccountScope, AccountScopeKind, AccountSelector, AccountSnapshot,
     AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
-    AccountUsageSource, AlibabaAccessKey, SubscriptionStatus,
+    AccountUsageSource, SubscriptionStatus,
 };
 pub use chat::ChatService;
-pub(crate) use options::apply_openrouter_response_cache;
-pub use options::{OpenRouterResponseCache, RequestOptions};
+pub use options::RequestOptions;
 pub use resolve::{ResolveError, RoutingCatalog};
-pub(crate) use response_cache::openrouter_observation;
 pub use store::{
     ClientConfigManager, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,
 };
@@ -100,330 +97,21 @@ pub struct LlmClient {
     pub(crate) published: Arc<RwLock<Arc<PublishedState>>>,
 }
 
-/// An owned, immutable view of one configuration revision.
-/// Keep this view for related routing, estimation, execution and pricing operations.
-#[derive(Clone)]
-pub struct ClientSnapshot {
-    pub(crate) runtime: Arc<RuntimeResources>,
-    pub(crate) state: Arc<PublishedState>,
-}
-
-pub(crate) struct RuntimeResources {
-    pub(crate) region: Region,
-    pub(crate) http: Arc<dyn Transport>,
-    pub(crate) clock: Arc<dyn Clock>,
-    pub(crate) codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
-    pub(crate) image_adapters:
-        BTreeMap<crate::protocol::ImageApi, Arc<dyn crate::images::ImageAdapter>>,
-    pub(crate) image_authenticators: BTreeMap<String, Arc<dyn crate::images::ImageAuthenticator>>,
-    pub(crate) directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
-    pub(crate) authenticators: BTreeMap<AuthStrategy, Arc<dyn Authenticator>>,
-    pub(crate) accounts: account::Service,
-    pub(crate) attachments: AttachmentManager,
-}
-
-pub(crate) struct PublishedState {
-    pub(crate) revision: u64,
-    pub(crate) config: Arc<snapshot::RuntimeSnapshot>,
-    pub(crate) account_registry: Arc<account::Registry>,
-    pub(crate) cache_namespace: u64,
-    pub(crate) cache_generations: BTreeMap<String, u64>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum ClientSource<'a> {
-    Live(&'a LlmClient),
-    Snapshot(&'a ClientSnapshot),
-}
-impl ClientSource<'_> {
-    pub(crate) fn snapshot(self) -> ClientSnapshot {
-        match self {
-            Self::Live(client) => client.snapshot(),
-            Self::Snapshot(snapshot) => snapshot.clone(),
-        }
-    }
-}
+pub use crate::runtime::ClientSnapshot;
+pub(crate) use crate::runtime::{ClientSource, PublishedState, RuntimeResources};
 
 impl ClientSnapshot {
     /// The conversation service. All chat requests enter through this facade.
     pub fn chat(&self) -> ChatService<'_> {
-        ChatService::new(ClientSource::Snapshot(self))
+        ChatService::new(ClientSource::fixed(self))
     }
 
     pub fn embeddings(&self) -> crate::embeddings::EmbeddingService<'_> {
-        crate::embeddings::EmbeddingService::new(ClientSource::Snapshot(self))
+        crate::embeddings::EmbeddingService::new(ClientSource::fixed(self))
     }
 
-    pub fn retrieval(&self) -> crate::retrieval::RetrievalService<'_> {
-        crate::retrieval::RetrievalService::new(ClientSource::Snapshot(self))
-    }
-
-    pub fn batches(&self) -> crate::batches::BatchService<'_> {
-        crate::batches::BatchService::new(ClientSource::Snapshot(self))
-    }
-
-    pub fn deferred(&self) -> crate::deferred::DeferredService<'_> {
-        crate::deferred::DeferredService::new(ClientSource::Snapshot(self))
-    }
-    pub fn background(&self) -> crate::background::BackgroundService<'_> {
-        crate::background::BackgroundService::new(ClientSource::Snapshot(self))
-    }
-    pub fn audio(&self) -> crate::audio::AudioService<'_> {
-        crate::audio::AudioService::new(ClientSource::Snapshot(self))
-    }
-    pub fn interactions(&self) -> crate::interactions::InteractionService<'_> {
-        crate::interactions::InteractionService::new(ClientSource::Snapshot(self))
-    }
-    /// Gemini File Search store and document lifecycle.
-    pub fn gemini_file_search(&self) -> crate::gemini_file_search::GeminiFileSearchService<'_> {
-        crate::gemini_file_search::GeminiFileSearchService::new(ClientSource::Snapshot(self))
-    }
-    /// Gemini Developer API inline Batch lifecycle on an explicit account route.
-    pub fn gemini_batch(
-        &self,
-        scope: crate::gemini_batch::GeminiBatchScope,
-    ) -> Result<crate::gemini_batch::GeminiBatchService<'_>, crate::gemini_batch::GeminiBatchError>
-    {
-        crate::gemini_batch::GeminiBatchService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// Gemini Developer API explicit cached-content resources on a selected route.
-    pub fn gemini_context_cache(
-        &self,
-        scope: crate::gemini_context_cache::GeminiContextCacheScope,
-    ) -> Result<
-        crate::gemini_context_cache::GeminiContextCacheService<'_>,
-        crate::gemini_context_cache::GeminiContextCacheError,
-    > {
-        crate::gemini_context_cache::GeminiContextCacheService::new(
-            self.runtime.http.as_ref(),
-            scope,
-        )
-    }
-    /// Gemini Interactions unary speech synthesis on an explicit account route.
-    pub fn gemini_speech(
-        &self,
-        scope: crate::gemini_speech::GeminiSpeechScope,
-    ) -> Result<
-        crate::gemini_speech::GeminiSpeechService<'_>,
-        crate::gemini_speech::GeminiSpeechError,
-    > {
-        crate::gemini_speech::GeminiSpeechService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// OpenAI explicit Containers and files on an account-bound route.
-    pub fn openai_containers(
-        &self,
-        scope: crate::openai_containers::OpenAiContainerScope,
-    ) -> Result<
-        crate::openai_containers::OpenAiContainersService<'_>,
-        crate::openai_containers::OpenAiContainersError,
-    > {
-        crate::openai_containers::OpenAiContainersService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// GLM Knowledge Base managed retrieval and ingestion.
-    pub fn glm_knowledge(&self) -> crate::glm_knowledge::GlmKnowledgeService<'_> {
-        crate::glm_knowledge::GlmKnowledgeService::new(ClientSource::Snapshot(self))
-    }
-    /// Hosted GLM speech transcription and mainland synthesis on an explicit account route.
-    pub fn glm_cloud_audio(
-        &self,
-        scope: crate::glm_cloud_audio::GlmCloudAudioScope,
-    ) -> Result<
-        crate::glm_cloud_audio::GlmCloudAudioService<'_>,
-        crate::glm_cloud_audio::GlmCloudAudioError,
-    > {
-        crate::glm_cloud_audio::GlmCloudAudioService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// MiniMax file transcription at one explicit official regional endpoint.
-    pub fn minimax_audio(
-        &self,
-        endpoint: impl Into<String>,
-    ) -> Result<
-        crate::minimax_audio::MiniMaxAudioService<'_>,
-        crate::minimax_audio::MiniMaxAudioError,
-    > {
-        crate::minimax_audio::MiniMaxAudioService::new(self.runtime.http.as_ref(), endpoint)
-    }
-    /// MiniMax native synchronous text-to-speech on a selected region.
-    pub fn minimax_tts(
-        &self,
-        config: crate::minimax_tts::MiniMaxTtsConfig,
-    ) -> Result<crate::minimax_tts::MiniMaxTtsService<'_>, crate::minimax_tts::MiniMaxTtsError>
-    {
-        crate::minimax_tts::MiniMaxTtsService::new(self.runtime.http.as_ref(), config)
-    }
-    /// MiniMax native asynchronous long-text speech jobs on a selected region.
-    pub fn minimax_async_tts(
-        &self,
-        config: crate::minimax_async_tts::MiniMaxAsyncTtsConfig,
-    ) -> Result<
-        crate::minimax_async_tts::MiniMaxAsyncTtsService<'_>,
-        crate::minimax_async_tts::MiniMaxAsyncTtsError,
-    > {
-        crate::minimax_async_tts::MiniMaxAsyncTtsService::new(self.runtime.http.as_ref(), config)
-    }
-    /// OpenRouter speech transcription and synthesis with request-scoped credentials.
-    pub fn openrouter_audio(&self) -> crate::openrouter_audio::OpenRouterAudioService<'_> {
-        crate::openrouter_audio::OpenRouterAudioService::new(self.runtime.http.as_ref())
-    }
-    /// GLM's provider-native asynchronous Chat task lifecycle.
-    pub fn glm_async(
-        &self,
-        config: crate::glm_async::GlmAsyncConfig,
-    ) -> Result<crate::glm_async::GlmAsyncService<'_>, crate::glm_async::GlmAsyncError> {
-        crate::glm_async::GlmAsyncService::new(self.runtime.http.as_ref(), config)
-    }
-    /// Self-hosted GLM-ASR on an explicit SGLang route and account scope.
-    pub fn glm_asr(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        route: crate::glm_audio::GlmAsrRoute,
-        scope: crate::glm_audio::GlmAsrScope,
-    ) -> Result<crate::glm_audio::GlmAsrService<'_>, crate::glm_audio::GlmAsrError> {
-        crate::glm_audio::GlmAsrService::new(self.runtime.http.as_ref(), credential, route, scope)
-    }
-    /// GLM native Batch upload and task lifecycle in a documented region.
-    pub fn glm_batch(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::glm_batch::GlmBatchScope,
-    ) -> Result<crate::glm_batch::GlmBatchService<'_>, crate::glm_batch::GlmBatchError> {
-        crate::glm_batch::GlmBatchService::new(self.runtime.http.as_ref(), credential, scope)
-    }
-    /// Qwen Batch at an explicitly selected account, region, and workspace scope.
-    pub fn qwen_batch(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::qwen_batch::QwenBatchScope,
-    ) -> Result<crate::qwen_batch::QwenBatchService<'_>, crate::qwen_batch::QwenBatchError> {
-        crate::qwen_batch::QwenBatchService::new(self.runtime.http.as_ref(), credential, scope)
-    }
-    /// Qwen asynchronous file transcription with an explicit regional scope.
-    pub fn qwen_asr(
-        &self,
-        scope: crate::qwen_asr::QwenAsrScope,
-    ) -> Result<crate::qwen_asr::QwenAsrService<'_>, crate::qwen_asr::QwenAsrError> {
-        crate::qwen_asr::QwenAsrService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// Qwen's native knowledge retrieval with an explicit regional workspace.
-    pub fn qwen_knowledge(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::qwen_knowledge::QwenKnowledgeScope,
-    ) -> Result<
-        crate::qwen_knowledge::QwenKnowledgeService<'_>,
-        crate::qwen_knowledge::QwenKnowledgeError,
-    > {
-        crate::qwen_knowledge::QwenKnowledgeService::new(
-            self.runtime.http.as_ref(),
-            credential,
-            scope,
-        )
-    }
-    /// Qwen non-realtime text-to-speech on an explicit regional account scope.
-    pub fn qwen_tts(
-        &self,
-        scope: crate::qwen_tts::QwenTtsScope,
-    ) -> Result<crate::qwen_tts::QwenTtsService<'_>, crate::qwen_tts::QwenTtsError> {
-        crate::qwen_tts::QwenTtsService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// Qwen Audio Generation on an explicit Beijing workspace scope.
-    pub fn qwen_audio_generation(
-        &self,
-        scope: crate::qwen_audio_generation::QwenAudioGenerationScope,
-    ) -> Result<
-        crate::qwen_audio_generation::QwenAudioGenerationService<'_>,
-        crate::qwen_audio_generation::QwenAudioGenerationError,
-    > {
-        crate::qwen_audio_generation::QwenAudioGenerationService::new(
-            self.runtime.http.as_ref(),
-            scope,
-        )
-    }
-    /// Qwen native text reranking in a documented regional workspace.
-    pub fn qwen_rerank(
-        &self,
-        scope: crate::qwen_rerank::QwenRerankScope,
-    ) -> Result<crate::qwen_rerank::QwenRerankService<'_>, crate::qwen_rerank::QwenRerankError>
-    {
-        crate::qwen_rerank::QwenRerankService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// Anthropic Messages Batch with an explicit account and route scope.
-    pub fn anthropic_batch(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::anthropic_batch::AnthropicBatchScope,
-    ) -> Result<
-        crate::anthropic_batch::AnthropicBatchService<'_>,
-        crate::anthropic_batch::AnthropicBatchError,
-    > {
-        crate::anthropic_batch::AnthropicBatchService::new(
-            self.runtime.http.as_ref(),
-            credential,
-            scope,
-        )
-    }
-    /// Kimi Batch at an explicitly bound account and region.
-    pub fn kimi_batch(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::kimi_batch::KimiBatchScope,
-    ) -> Result<crate::kimi_batch::KimiBatchService<'_>, crate::kimi_batch::KimiBatchError> {
-        crate::kimi_batch::KimiBatchService::new(self.runtime.http.as_ref(), credential, scope)
-    }
-    /// OpenRouter inline Batch on an explicitly bound account and route.
-    pub fn openrouter_batch(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::openrouter_batch::OpenRouterBatchScope,
-    ) -> Result<
-        crate::openrouter_batch::OpenRouterBatchService<'_>,
-        crate::openrouter_batch::OpenRouterBatchError,
-    > {
-        crate::openrouter_batch::OpenRouterBatchService::new(
-            self.runtime.http.as_ref(),
-            credential,
-            scope,
-        )
-    }
-    /// OpenRouter native text reranking with an explicit account scope.
-    pub fn openrouter_rerank(
-        &self,
-        scope: crate::openrouter_rerank::OpenRouterRerankScope,
-    ) -> Result<
-        crate::openrouter_rerank::OpenRouterRerankService<'_>,
-        crate::openrouter_rerank::OpenRouterRerankError,
-    > {
-        crate::openrouter_rerank::OpenRouterRerankService::new(self.runtime.http.as_ref(), scope)
-    }
-    /// xAI Collections with separate per-operation API and management keys.
-    pub fn xai_collections(
-        &self,
-        config: crate::xai_collections::XaiCollectionsConfig,
-    ) -> Result<
-        crate::xai_collections::XaiCollectionsClient<'_>,
-        crate::xai_collections::XaiCollectionsError,
-    > {
-        crate::xai_collections::XaiCollectionsClient::new(self.runtime.http.as_ref(), config)
-    }
-    /// xAI speech transcription and synthesis over an explicit account route.
-    pub fn xai_audio(
-        &self,
-        config: crate::xai_audio::XaiAudioConfig,
-    ) -> Result<crate::xai_audio::XaiAudioService<'_>, crate::xai_audio::XaiAudioError> {
-        crate::xai_audio::XaiAudioService::new(self.runtime.http.as_ref(), config)
-    }
-    /// xAI's native create-and-add Batch lifecycle on an explicit API route.
-    pub fn xai_batch(
-        &self,
-        credential: crate::protocol::Secret<String>,
-        scope: crate::xai_batch::XaiBatchScope,
-    ) -> Result<crate::xai_batch::XaiBatchService<'_>, crate::xai_batch::XaiBatchError> {
-        crate::xai_batch::XaiBatchService::new(self.runtime.http.as_ref(), credential, scope)
-    }
-
-    /// The independent image generation service.
     pub fn images(&self) -> crate::images::ImageService<'_> {
-        crate::images::ImageService::new(ClientSource::Snapshot(self))
+        crate::images::ImageService::new(ClientSource::fixed(self))
     }
     /// Query one account with its configured execution budgets.
     pub async fn account_usage(
@@ -580,12 +268,32 @@ impl ClientSnapshot {
     }
 
     /// One provider from this fixed configuration view.
-    pub fn provider(&self, name: &str) -> Option<&ProviderProfile> {
+    pub fn profile(&self, name: &str) -> Option<&ProviderProfile> {
         self.state.config.profile(name)
     }
 
-    pub(super) fn profile(&self, name: &str) -> Option<&ProviderProfile> {
-        self.provider(name)
+    /// Resource references must stay on their typed client binding. General
+    /// routing and pricing retain the complete immutable configuration view.
+    pub(crate) fn native_profile(&self, name: &str) -> Option<&ProviderProfile> {
+        if self
+            .bound_profile
+            .as_deref()
+            .is_some_and(|bound| bound != name)
+        {
+            return None;
+        }
+        self.profile(name)
+    }
+
+    /// Bind one exact profile to its provider-specific client.
+    pub fn provider<T: crate::providers::ProviderClient>(
+        &self,
+        profile_name: &str,
+    ) -> Result<T, crate::providers::ProviderBindingError> {
+        crate::providers::binding::bind(
+            crate::runtime::OwnedClientSource::fixed(self),
+            profile_name,
+        )
     }
 
     /// Monotonically increasing within this client's publication history.
@@ -950,7 +658,7 @@ mod tests {
         manager.set_config_dir(&path).await.unwrap();
         assert!(client.snapshot().revision() > snapshot.revision());
         assert!(previous.upgrade().is_some());
-        assert_eq!(snapshot.provider("p1").unwrap().profile_name, "p1");
+        assert_eq!(snapshot.profile("p1").unwrap().profile_name, "p1");
         drop(snapshot);
         assert!(previous.upgrade().is_none());
         std::fs::remove_dir_all(path).unwrap();

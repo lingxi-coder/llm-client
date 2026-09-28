@@ -16,63 +16,6 @@ pub(crate) fn needs_automatic_cleanup(profile: &ProviderProfile) -> bool {
     adapter(profile) == Some(Adapter::Qwen)
 }
 
-pub(crate) fn valid_qwen_file_id(file_id: &str) -> bool {
-    !file_id.is_empty()
-        && file_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-const MINIMAX_VOICE_AUDIO_MAX_UPLOAD_BYTES: u64 = 20_000_000;
-
-pub(crate) fn is_qwen_long_model(model: &str) -> bool {
-    model.eq_ignore_ascii_case("qwen-long") || model.to_ascii_lowercase().starts_with("qwen-long-")
-}
-
-pub(crate) fn validate_qwen_long_inputs(
-    request: &ChatRequest,
-    resolved: &[(usize, usize)],
-) -> Result<(), LlmError> {
-    validate_qwen_long_blocks(request.messages.iter().enumerate().flat_map(|(mi, m)| {
-        m.content
-            .iter()
-            .enumerate()
-            .filter_map(move |(bi, b)| (!resolved.contains(&(mi, bi))).then_some(b))
-    }))
-}
-pub(crate) fn validate_qwen_long_blocks<'a>(
-    blocks: impl IntoIterator<Item = &'a ContentBlock>,
-) -> Result<(), LlmError> {
-    for block in blocks {
-        if matches!(
-            block,
-            ContentBlock::Image {
-                source: ImageSource::Base64 { .. } | ImageSource::Url { .. }
-            } | ContentBlock::Document {
-                source: DocumentSource::Base64 { .. }
-                    | DocumentSource::Text { .. }
-                    | DocumentSource::Url { .. },
-                ..
-            }
-        ) {
-            return Err(LlmError::UnsupportedCapability{message:"Qwen-Long image and document inputs require an app attachment or a Qwen provider file reference; inline data and URLs are unsupported".into()});
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn qwen_long_region_supported(profile: &ProviderProfile) -> bool {
-    url::Url::parse(&profile.base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            host == "dashscope.aliyuncs.com"
-                || host
-                    .strip_suffix(".cn-beijing.maas.aliyuncs.com")
-                    .is_some_and(valid_workspace_id)
-        })
-}
-
 /// Capability matrix keyed by provider identity and the concrete protocol.
 /// OpenAI-compatible protocols do not opt providers into Files APIs by themselves.
 #[must_use]
@@ -120,280 +63,66 @@ pub(crate) fn model_reference_for(
     media_type: &str,
     adapter: Adapter,
 ) -> ModelFileReference {
-    let model_profile = profile
+    let Some(model_profile) = profile
         .models
         .iter()
-        .find(|candidate| candidate.request_model == model);
-    let Some(model_profile) = model_profile else {
+        .find(|candidate| candidate.request_model == model)
+    else {
         return ModelFileReference::Unsupported;
     };
     let media_type = media_type.to_ascii_lowercase();
-    // OpenAI accepts non-animated GIF input; this MIME-only capability check
-    // cannot inspect file bytes to distinguish animated GIFs.
-    let is_openai_image = is_openai_image_type(&media_type);
-    let is_anthropic_image = matches!(
-        media_type.as_str(),
-        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
-    );
-    // Gemini's image-input guide documents these five MIME types.
-    let is_gemini_image = matches!(
-        media_type.as_str(),
-        "image/jpeg" | "image/png" | "image/webp" | "image/heic" | "image/heif"
-    );
-    let is_pdf = media_type == "application/pdf";
-    let has_file_modality = model_declares_file_input(model_profile);
     match adapter {
-        Adapter::Qwen
-            if qwen_long_region_supported(profile)
-                && profile.protocol == ProtocolFamily::OpenAiChat
-                && is_qwen_long_model(model)
-                && is_qwen_file_type(&media_type) =>
-        {
-            ModelFileReference::FileUri
-        }
-        Adapter::MiniMax
-            if profile.protocol == ProtocolFamily::AnthropicMessages
-                && model.eq_ignore_ascii_case("minimax-m3")
-                && media_type.starts_with("video/") =>
-        {
-            ModelFileReference::FileUri
-        }
-        Adapter::OpenAi => match profile.protocol {
-            ProtocolFamily::OpenAiResponses
-                if (is_openai_image && model_declares_image_input(model_profile))
-                    || (is_openai_responses_file_type(&media_type) && has_file_modality) =>
-            {
-                ModelFileReference::FileId
-            }
-            ProtocolFamily::OpenAiChat if is_pdf && has_file_modality => ModelFileReference::FileId,
-            _ => ModelFileReference::Unsupported,
-        },
-        Adapter::Anthropic if profile.protocol == ProtocolFamily::AnthropicMessages => {
-            if (is_anthropic_image && model_declares_image_input(model_profile))
-                || ((is_pdf || media_type == "text/plain") && has_file_modality)
-            {
-                ModelFileReference::FileId
-            } else {
-                ModelFileReference::Unsupported
-            }
-        }
-        Adapter::Gemini if profile.protocol == ProtocolFamily::GeminiGenerateContent => {
-            if (is_gemini_image && model_declares_image_input(model_profile))
-                || (is_gemini_video_type(&media_type)
-                    && model_profile
-                        .metadata
-                        .input_modalities
-                        .iter()
-                        .any(|modality| modality.eq_ignore_ascii_case("video")))
-                || (is_gemini_audio_type(&media_type)
-                    && model_profile
-                        .metadata
-                        .input_modalities
-                        .iter()
-                        .any(|modality| modality.eq_ignore_ascii_case("audio")))
-                || (is_gemini_document_type(&media_type)
-                    && model_declares_gemini_document_input(model_profile))
-            {
-                ModelFileReference::FileUri
-            } else {
-                ModelFileReference::Unsupported
-            }
-        }
-        Adapter::Xai if profile.protocol == ProtocolFamily::OpenAiResponses => {
-            if is_xai_document_type(&media_type) && has_file_modality {
-                ModelFileReference::FileId
-            } else {
-                ModelFileReference::Unsupported
-            }
-        }
-        // OpenRouter Files are workspace/shell storage, not a confirmed
-        // ordinary-chat attachment reference. Moonshot file_id context is
-        // explicitly unsupported. Z.AI uploads are auxiliary Agent API files.
+        Adapter::OpenAi => crate::providers::openai::files::model_reference(
+            profile,
+            model_profile,
+            model,
+            &media_type,
+        ),
+        Adapter::Anthropic => crate::providers::anthropic::files::model_reference(
+            profile,
+            model_profile,
+            model,
+            &media_type,
+        ),
+        Adapter::Gemini => crate::providers::google::files::model_reference(
+            profile,
+            model_profile,
+            model,
+            &media_type,
+        ),
+        Adapter::Xai => crate::providers::xai::files::model_reference(
+            profile,
+            model_profile,
+            model,
+            &media_type,
+        ),
+        Adapter::Qwen => crate::providers::qwen::files::model_reference(
+            profile,
+            model_profile,
+            model,
+            &media_type,
+        ),
+        Adapter::MiniMax => crate::providers::minimax::files::model_reference(
+            profile,
+            model_profile,
+            model,
+            &media_type,
+        ),
         _ => ModelFileReference::Unsupported,
     }
 }
 
-pub(crate) fn is_qwen_files_host(host: &str) -> bool {
-    if matches!(
-        host,
-        "dashscope.aliyuncs.com" | "dashscope-intl.aliyuncs.com"
-    ) {
-        return true;
-    }
-    [
-        ".cn-beijing.maas.aliyuncs.com",
-        ".ap-southeast-1.maas.aliyuncs.com",
-    ]
-    .iter()
-    .find_map(|suffix| host.strip_suffix(suffix))
-    .is_some_and(valid_workspace_id)
-}
-
-pub(crate) fn valid_workspace_id(workspace: &str) -> bool {
-    !workspace.is_empty()
-        && workspace
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-}
-
-pub(crate) fn is_qwen_file_type(media_type: &str) -> bool {
-    media_type.starts_with("text/")
-        || matches!(
-            media_type,
-            "application/pdf"
-                | "application/json"
-                | "application/epub+zip"
-                | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                | "application/vnd.oasis.opendocument.text"
-                | "application/msword"
-                | "application/vnd.ms-excel"
-                | "image/bmp"
-                | "image/png"
-                | "image/jpeg"
-                | "image/gif"
-        )
-}
-
 pub(crate) fn purpose_name(adapter: Adapter, purpose: FilePurpose) -> Option<&'static str> {
-    match (adapter, purpose) {
-        (Adapter::OpenAi, FilePurpose::Batch) => Some("batch"),
-        // xAI treats `purpose` as an optional OpenAI-compatibility echo; its
-        // documented Batch upload sends only the file field.
-        (Adapter::Xai, FilePurpose::Batch) => None,
-        (Adapter::OpenAi, FilePurpose::ModelInput) => Some("user_data"),
-        (Adapter::Xai, FilePurpose::ModelInput) => Some("assistants"),
-        (Adapter::Moonshot | Adapter::Qwen, FilePurpose::Extraction | FilePurpose::ModelInput) => {
-            Some("file-extract")
-        }
-        (Adapter::Zai | Adapter::Zhipu, FilePurpose::Auxiliary) => Some("agent"),
-        (Adapter::MiniMax, FilePurpose::VoiceClone) => Some("voice_clone"),
-        (Adapter::MiniMax, FilePurpose::PromptAudio) => Some("prompt_audio"),
-        (Adapter::MiniMax, FilePurpose::AsyncTtsInput) => Some("t2a_async_input"),
-        (Adapter::MiniMax, FilePurpose::VideoUnderstanding) => Some("video_understanding"),
-        (Adapter::MiniMax, FilePurpose::VideoGenerationInput) => Some("video_generation_input"),
+    match adapter {
+        Adapter::OpenAi => crate::providers::openai::files::purpose_name(purpose),
+        Adapter::Xai => crate::providers::xai::files::purpose_name(purpose),
+        Adapter::Moonshot => crate::providers::kimi::files::purpose_name(purpose),
+        Adapter::Zai => crate::providers::zhipu::files::purpose_name(purpose),
+        Adapter::Zhipu => crate::providers::zhipu::files::purpose_name(purpose),
+        Adapter::Qwen => crate::providers::qwen::files::purpose_name(purpose),
+        Adapter::MiniMax => crate::providers::minimax::files::purpose_name(purpose),
         _ => None,
     }
-}
-
-pub(crate) fn is_xai_document_type(media_type: &str) -> bool {
-    media_type.starts_with("text/")
-        || matches!(
-            media_type,
-            "application/pdf" | "application/json" | "application/x-ndjson"
-        )
-}
-
-pub(crate) fn is_gemini_video_type(media_type: &str) -> bool {
-    let media_type = media_type.to_ascii_lowercase();
-    matches!(
-        media_type.as_str(),
-        "video/mp4"
-            | "video/mpeg"
-            | "video/mov"
-            | "video/quicktime"
-            | "video/avi"
-            | "video/x-flv"
-            | "video/mpg"
-            | "video/webm"
-            | "video/wmv"
-            | "video/3gpp"
-    )
-}
-
-pub(crate) fn is_gemini_audio_type(media_type: &str) -> bool {
-    matches!(
-        media_type,
-        "audio/wav"
-            | "audio/mp3"
-            | "audio/aiff"
-            | "audio/aac"
-            | "audio/ogg"
-            | "audio/flac"
-            | "audio/mpeg"
-            | "audio/m4a"
-            | "audio/l16"
-            | "audio/opus"
-            | "audio/alaw"
-            | "audio/mulaw"
-            | "audio/webm"
-    )
-}
-
-pub(crate) fn is_gemini_document_type(media_type: &str) -> bool {
-    media_type.starts_with("text/")
-        || matches!(
-            media_type,
-            "application/pdf" | "application/json" | "application/rtf"
-        )
-}
-
-pub(crate) fn model_declares_gemini_document_input(model: &ModelProfile) -> bool {
-    if model.metadata.input_modalities.is_empty() {
-        return model_declares_file_input(model);
-    }
-    model.metadata.input_modalities.iter().any(|modality| {
-        matches!(
-            modality.to_ascii_lowercase().as_str(),
-            "file" | "files" | "document" | "pdf"
-        )
-    })
-}
-
-pub(crate) fn is_openai_image_type(media_type: &str) -> bool {
-    ["image/jpeg", "image/png", "image/webp", "image/gif"]
-        .iter()
-        .any(|supported| media_type.eq_ignore_ascii_case(supported))
-}
-
-pub(crate) fn is_openai_responses_file_type(media_type: &str) -> bool {
-    media_type.starts_with("text/")
-        || matches!(
-            media_type,
-            "application/pdf"
-                | "application/json"
-                | "application/graphql"
-                | "application/javascript"
-                | "application/typescript"
-                | "application/csv"
-                | "application/x-iif"
-                | "application/x-sql"
-                | "application/x-scala"
-                | "application/x-rust"
-                | "application/x-powershell"
-                | "application/x-patch"
-                | "application/x-php"
-                | "application/x-httpd-php"
-                | "application/x-httpd-php-source"
-                | "application/x-bash"
-                | "application/x-awk"
-                | "application/x-protobuf"
-                | "application/x-terraform"
-                | "application/x-graphql"
-                | "application/x-ndjson"
-                | "application/json5"
-                | "application/x-json5"
-                | "application/x-toml"
-                | "application/toml"
-                | "application/x-yaml"
-                | "application/yaml"
-                | "application/x-subrip"
-                | "application/msword"
-                | "application/rtf"
-                | "application/vnd.ms-excel"
-                | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                | "application/vnd.google-apps.spreadsheet"
-                | "application/vnd.apple.pages"
-                | "application/vnd.apple.iwork"
-                | "application/vnd.oasis.opendocument.text"
-                | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                | "application/vnd.google-apps.document"
-                | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                | "application/vnd.ms-powerpoint"
-                | "application/vnd.apple.keynote"
-                | "application/vnd.google-apps.presentation"
-                | "message/rfc822"
-        )
 }
 
 pub(crate) fn model_declares_file_input(model: &ModelProfile) -> bool {
@@ -435,23 +164,16 @@ pub(crate) fn adapter(profile: &ProviderProfile) -> Option<Adapter> {
     let host = url::Url::parse(&profile.base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))?;
-    match (profile.provider_id.as_str(), host.as_str()) {
-        ("openai", "api.openai.com") => Some(Adapter::OpenAi),
-        ("anthropic", "api.anthropic.com") => Some(Adapter::Anthropic),
-        ("google", "generativelanguage.googleapis.com")
-            if profile.protocol == ProtocolFamily::GeminiGenerateContent =>
-        {
-            Some(Adapter::Gemini)
-        }
-        ("xai", "api.x.ai") => Some(Adapter::Xai),
-        ("openrouter", "openrouter.ai") => Some(Adapter::OpenRouter),
-        ("kimi" | "moonshot", "api.moonshot.cn" | "api.moonshot.ai") => Some(Adapter::Moonshot),
-        ("zhipu", "api.z.ai") => Some(Adapter::Zai),
-        ("zhipu", "open.bigmodel.cn") => Some(Adapter::Zhipu),
-        ("qwen", host) if is_qwen_files_host(host) => Some(Adapter::Qwen),
-        ("minimax", "api.minimaxi.com" | "api.minimax.cn" | "api.minimax.io") => {
-            Some(Adapter::MiniMax)
-        }
+    match profile.provider_id.as_str() {
+        "openai" => crate::providers::openai::files::adapter(profile, &host),
+        "anthropic" => crate::providers::anthropic::files::adapter(profile, &host),
+        "google" => crate::providers::google::files::adapter(profile, &host),
+        "xai" => crate::providers::xai::files::adapter(profile, &host),
+        "openrouter" => crate::providers::openrouter::files::adapter(profile, &host),
+        "kimi" | "moonshot" => crate::providers::kimi::files::adapter(profile, &host),
+        "qwen" => crate::providers::qwen::files::adapter(profile, &host),
+        "minimax" => crate::providers::minimax::files::adapter(profile, &host),
+        "zhipu" => crate::providers::zhipu::files::adapter(profile, &host),
         _ => None,
     }
 }
@@ -461,7 +183,9 @@ pub(crate) fn adapter(profile: &ProviderProfile) -> Option<Adapter> {
 /// ordinary service discovery still does not infer that route from a URL.
 pub(crate) fn provider_file_endpoint_identity(profile: &ProviderProfile) -> Option<String> {
     if profile.protocol == ProtocolFamily::FoundryClaude {
-        crate::protocol::AnthropicContainerScope::normalize_foundry_endpoint(&profile.base_url)
+        crate::providers::anthropic::types::AnthropicContainerScope::normalize_foundry_endpoint(
+            &profile.base_url,
+        )
     } else {
         Some(profile.base_url.clone())
     }
@@ -469,118 +193,16 @@ pub(crate) fn provider_file_endpoint_identity(profile: &ProviderProfile) -> Opti
 
 pub(crate) fn capabilities_for_adapter(adapter: Adapter) -> FileCapabilities {
     match adapter {
-        Adapter::OpenAi => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::UploadedFiles,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(512 * 1024 * 1024),
-            retention: None,
-        },
-        Adapter::Anthropic => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::GeneratedFilesOnly,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(500 * 1024 * 1024),
-            retention: None,
-        },
-        Adapter::Gemini => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::GeneratedFilesOnly,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(2 * 1024 * 1024 * 1024),
-            retention: Some(Duration::from_secs(48 * 60 * 60)),
-        },
-        Adapter::Xai => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::UploadedFiles,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(50_000_000),
-            retention: None,
-        },
-        Adapter::OpenRouter => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::GeneratedFilesOnly,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(100 * 1024 * 1024),
-            retention: None,
-        },
-        Adapter::Moonshot => FileCapabilities {
-            upload: false,
-            retrieve_metadata: false,
-            list: false,
-            delete: true,
-            download: DownloadSupport::Unsupported,
-            extract_text: true,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(100 * 1024 * 1024),
-            retention: None,
-        },
-        // Z.AI's documented /files API is limited to Agent API auxiliary files;
-        // it is not a reference format for ordinary chat completions.
-        Adapter::Zai => FileCapabilities {
-            upload: false,
-            retrieve_metadata: false,
-            list: false,
-            delete: false,
-            download: DownloadSupport::Unsupported,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(100 * 1024 * 1024),
-            retention: Some(Duration::from_secs(180 * 24 * 60 * 60)),
-        },
-        Adapter::Zhipu => FileCapabilities {
-            upload: false,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::Unsupported,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(20 * 1024 * 1024),
-            retention: None,
-        },
-        Adapter::Qwen => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::Unsupported,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: Some(150_000_000),
-            retention: None,
-        },
-        Adapter::MiniMax => FileCapabilities {
-            upload: true,
-            retrieve_metadata: true,
-            list: true,
-            delete: true,
-            download: DownloadSupport::GeneratedFilesOnly,
-            extract_text: false,
-            model_input: ModelFileReference::Unsupported,
-            max_upload_bytes: None,
-            retention: None,
-        },
+        Adapter::OpenAi => crate::providers::openai::files::capabilities(),
+        Adapter::Anthropic => crate::providers::anthropic::files::capabilities(),
+        Adapter::Gemini => crate::providers::google::files::capabilities(),
+        Adapter::Xai => crate::providers::xai::files::capabilities(),
+        Adapter::OpenRouter => crate::providers::openrouter::files::capabilities(),
+        Adapter::Moonshot => crate::providers::kimi::files::capabilities(),
+        Adapter::Zai => crate::providers::zhipu::files::capabilities_global(),
+        Adapter::Zhipu => crate::providers::zhipu::files::capabilities(),
+        Adapter::Qwen => crate::providers::qwen::files::capabilities(),
+        Adapter::MiniMax => crate::providers::minimax::files::capabilities(),
     }
 }
 
@@ -589,103 +211,50 @@ pub(crate) fn purpose_capabilities(
     purpose: FilePurpose,
     media_type: &str,
 ) -> FileCapabilities {
-    match (adapter, purpose) {
-        (Adapter::OpenAi, FilePurpose::Batch) => {
-            let mut capabilities = capabilities_for_adapter(adapter);
-            capabilities.max_upload_bytes = Some(200_000_000);
-            capabilities
+    match adapter {
+        Adapter::OpenAi => {
+            crate::providers::openai::files::purpose_capabilities(purpose, media_type)
         }
-        (Adapter::Xai, FilePurpose::Batch) => {
-            // The Files REST reference currently caps /v1/files at 50 MB,
-            // despite the Batch guide's separate 200 MB file-batch limit.
-            let mut capabilities = capabilities_for_adapter(adapter);
-            capabilities.max_upload_bytes = Some(50_000_000);
-            capabilities
+        Adapter::Anthropic => {
+            crate::providers::anthropic::files::purpose_capabilities(purpose, media_type)
         }
-        (Adapter::Moonshot, FilePurpose::Extraction) => FileCapabilities {
-            upload: true,
-            ..capabilities_for_adapter(adapter)
-        },
-        (Adapter::Zai, FilePurpose::Auxiliary) => FileCapabilities {
-            upload: true,
-            ..capabilities_for_adapter(adapter)
-        },
-        (Adapter::Zhipu, FilePurpose::Auxiliary) => FileCapabilities {
-            upload: true,
-            ..capabilities_for_adapter(adapter)
-        },
-        (Adapter::Qwen, FilePurpose::ModelInput | FilePurpose::Extraction) => FileCapabilities {
-            upload: true,
-            ..capabilities_for_adapter(adapter)
-        },
-        (Adapter::MiniMax, purpose)
-            if matches!(
-                purpose,
-                FilePurpose::VoiceClone
-                    | FilePurpose::PromptAudio
-                    | FilePurpose::AsyncTtsInput
-                    | FilePurpose::VideoUnderstanding
-                    | FilePurpose::VideoGenerationInput
-            ) =>
-        {
-            let mut capabilities = capabilities_for_adapter(adapter);
-            capabilities.upload = true;
-            capabilities.max_upload_bytes = None;
-            if matches!(purpose, FilePurpose::VoiceClone | FilePurpose::PromptAudio) {
-                capabilities.max_upload_bytes = Some(MINIMAX_VOICE_AUDIO_MAX_UPLOAD_BYTES);
-            }
-            if matches!(
-                purpose,
-                FilePurpose::VideoUnderstanding | FilePurpose::VideoGenerationInput
-            ) {
-                capabilities.retention = Some(Duration::from_secs(7 * 24 * 60 * 60));
-            }
-            if purpose == FilePurpose::VideoUnderstanding {
-                capabilities.list = false;
-                capabilities.delete = false;
-                capabilities.download = DownloadSupport::Unsupported;
-            }
-            capabilities
+        Adapter::Gemini => {
+            crate::providers::google::files::purpose_capabilities(purpose, media_type)
         }
-        (Adapter::OpenRouter, FilePurpose::Workspace) => capabilities_for_adapter(adapter),
-        (Adapter::OpenAi, FilePurpose::ModelInput) => {
-            let mut capabilities = capabilities_for_adapter(adapter);
-            if !is_openai_image_type(media_type) {
-                capabilities.max_upload_bytes = Some(OPENAI_INPUT_FILE_MAX_UPLOAD_BYTES);
-            }
-            capabilities
+        Adapter::Xai => crate::providers::xai::files::purpose_capabilities(purpose, media_type),
+        Adapter::OpenRouter => {
+            crate::providers::openrouter::files::purpose_capabilities(purpose, media_type)
         }
-        (Adapter::Anthropic | Adapter::Gemini | Adapter::Xai, FilePurpose::ModelInput) => {
-            capabilities_for_adapter(adapter)
+        Adapter::Moonshot => {
+            crate::providers::kimi::files::purpose_capabilities(purpose, media_type)
         }
-        _ => FileCapabilities::unsupported(),
+        Adapter::Zai => {
+            crate::providers::zhipu::files::purpose_capabilities(adapter, purpose, media_type)
+        }
+        Adapter::Zhipu => {
+            crate::providers::zhipu::files::purpose_capabilities(adapter, purpose, media_type)
+        }
+        Adapter::Qwen => crate::providers::qwen::files::purpose_capabilities(purpose, media_type),
+        Adapter::MiniMax => {
+            crate::providers::minimax::files::purpose_capabilities(purpose, media_type)
+        }
     }
 }
 
 pub(crate) fn capabilities_for_media_type(
-    mut capabilities: FileCapabilities,
+    capabilities: FileCapabilities,
     adapter: Adapter,
     media_type: &str,
 ) -> FileCapabilities {
-    if adapter == Adapter::Gemini
-        && capabilities.upload
-        && media_type.eq_ignore_ascii_case("application/pdf")
-    {
-        capabilities.max_upload_bytes = Some(
-            capabilities
-                .max_upload_bytes
-                .map_or(GEMINI_PDF_MAX_UPLOAD_BYTES, |limit| {
-                    limit.min(GEMINI_PDF_MAX_UPLOAD_BYTES)
-                }),
-        );
+    match adapter {
+        Adapter::Gemini => {
+            crate::providers::google::files::capabilities_for_media_type(capabilities, media_type)
+        }
+        Adapter::Qwen => {
+            crate::providers::qwen::files::capabilities_for_media_type(capabilities, media_type)
+        }
+        _ => capabilities,
     }
-    if adapter == Adapter::Qwen
-        && capabilities.upload
-        && media_type.to_ascii_lowercase().starts_with("image/")
-    {
-        capabilities.max_upload_bytes = Some(QWEN_IMAGE_MAX_UPLOAD_BYTES);
-    }
-    capabilities
 }
 
 pub(crate) fn validate_direct_provider_file_inputs_at<'a>(

@@ -66,11 +66,9 @@ pub(crate) fn response_with_approval_support(
             body.get("usage"),
         ),
         file_search: crate::codecs::file_search_decode::responses(&body),
-        openrouter_container: None,
-        anthropic_container: None,
-        anthropic_usage: None,
+        native_metadata: Vec::new(),
         message: ConversationMessage {
-            anthropic: None,
+            native_options: Vec::new(),
             role: MessageRole::Assistant,
             content,
         },
