@@ -50,6 +50,7 @@ fn request() -> ChatRequest {
     ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         anthropic_client_toolsets: Vec::new(),
@@ -597,6 +598,8 @@ fn with_tools(choice: ToolChoice) -> ChatRequest {
     let mut req = request();
     req.tool_choice = choice;
     req.tools.push(ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: "read".to_owned(),
         description: "read a file".to_owned(),
         input_schema: json!({"type": "object"}),
@@ -939,6 +942,8 @@ fn chat_preserves_explicit_tool_strictness() {
     for strict in [true, false] {
         let mut req = request();
         req.tools.push(ToolSpec {
+            tool_type: None,
+            extra: serde_json::Value::Null,
             name: "lookup".into(),
             description: "Lookup".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),

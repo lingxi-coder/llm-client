@@ -58,6 +58,7 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
     ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         anthropic_client_toolsets: Vec::new(),
@@ -854,6 +855,8 @@ fn strict_tools_are_enabled_only_when_requested() {
     for strict in [true, false] {
         let mut req = request(vec![]);
         req.tools.push(lingxi_llm_client::protocol::ToolSpec {
+            tool_type: None,
+            extra: serde_json::Value::Null,
             name: "lookup".into(),
             description: "Lookup".into(),
             input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),

@@ -8,6 +8,7 @@
 
 mod api_key;
 mod bearer;
+pub mod sigv4;
 
 pub use api_key::ApiKeyAuthenticator;
 pub use bearer::BearerAuthenticator;

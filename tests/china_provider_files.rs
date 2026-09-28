@@ -340,6 +340,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
     let request = ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "MiniMax-M3".into(),
         anthropic_client_toolsets: Vec::new(),

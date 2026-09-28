@@ -15,7 +15,7 @@
 //!   compatible gateways may append one anyway.
 
 pub(crate) mod cache;
-mod decode;
+pub(crate) mod decode;
 pub(crate) mod encode;
 #[path = "../../qwen_hosted.rs"]
 mod qwen_hosted;

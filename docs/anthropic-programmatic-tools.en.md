@@ -22,6 +22,8 @@ request.hosted_tools.push(HostedTool::AnthropicCodeExecution(
     AnthropicCodeExecutionConfig::default(),
 ));
 request.tools.push(ToolSpec {
+    tool_type: None,
+    extra: serde_json::Value::Null,
     name: "lookup".into(),
     description: "Look up records".into(),
     input_schema: json!({

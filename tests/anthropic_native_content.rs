@@ -27,6 +27,7 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
     ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "claude-sonnet-4-5".into(),
         anthropic_client_toolsets: Vec::new(),

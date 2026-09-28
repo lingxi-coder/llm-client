@@ -34,6 +34,7 @@ pub mod client;
 pub mod codecs;
 pub mod configuration;
 pub mod directory;
+pub mod exact_json;
 pub mod files;
 pub mod framing;
 pub mod gemini_batch;
@@ -74,6 +75,7 @@ mod runtime;
 pub mod token_count;
 pub mod transport;
 pub mod vertex_speech;
+pub mod websocket;
 mod wire_options;
 pub mod xai_audio;
 pub mod xai_batch;
@@ -92,10 +94,12 @@ pub use client::{
     AccountReport, AccountScope, AccountScopeKind, AccountSelector, AccountSnapshot,
     AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
     AccountUsageSource, AlibabaAccessKey, AttachmentResolver, BuildError, ChatService,
-    ClientConfigManager, ClientSnapshot, LlmClient, LlmClientBuilder, LocalTokenCountError,
-    LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream, OpenRouterResponseCache,
-    ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, RequestOptions, ResolveError,
-    StructuredStreamError, StructuredStreamResult, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
+    ClientConfigManager, ClientSnapshot, CollectedResponse, FrozenPricing, LlmClient,
+    LlmClientBuilder, LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission,
+    ModelStream, OpenRouterResponseCache, PreparedCall, ProviderStoreError, ProviderSyncOperation,
+    ProviderSyncResult, ReceivedCall, RequestDraft, RequestOptions, ResolveError, ResponsesSession,
+    RoutingCatalog, StreamBatch, StructuredStreamError, StructuredStreamResult, SubscriptionStatus,
+    MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;

@@ -124,6 +124,8 @@ fn programmatic_tool_call(caller: Value) -> Value {
 
 fn programmatic_tool() -> ToolSpec {
     ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: "lookup".into(),
         description: "Look up records".into(),
         input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
@@ -533,6 +535,8 @@ fn ambiguous_raw_controls_duplicate_tools_and_function_name_collisions_fail() {
     ));
     request.hosted_tools.pop();
     request.tools.push(ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: "code_execution".into(),
         description: "collision".into(),
         input_schema: json!({"type":"object"}),

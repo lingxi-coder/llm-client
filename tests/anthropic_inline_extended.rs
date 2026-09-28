@@ -140,6 +140,8 @@ fn inline_tool(name: &str, input_schema: Value, strict: bool) -> ContentBlock {
 
 fn spec(name: String, input_schema: Value, strict: bool) -> ToolSpec {
     ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name,
         description: "Tool".into(),
         input_schema,

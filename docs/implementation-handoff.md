@@ -1,5 +1,24 @@
 # LLM client implementation handoff
 
+## Host runtime integration merge (2026-09-27)
+
+The user authorized merging `codex/lingxi-runtime-integration` (`9b0323f10f76c5834acafedaa04470c4e96346f2`, including `ec8876c`) into main after the provider-capability and review-fix commits (`85946bf`, `95aee15`). This section supersedes the historical no-commit/dirty-tree status below.
+
+The host execution API now uses the current `ClientSnapshot` architecture: `prepare_draft_on`, `prepare_on`, exact token counting, single-dispatch calls, immutable pricing observations, chunk-level usage observations, Responses WebSocket sessions, native request controls, exact UTF-16 serialization, and AWS SigV4. Main's ChatRequest/ChatResponse names, scoped continuation, unified prompt-cache policy, provider capabilities and file lifecycle validations remain authoritative. Prepared dispatch rechecks provider file expiry before the host dispatch marker; batch stream observation retains continuation and Anthropic container metadata.
+
+This merges library functionality, not a downstream dependency upgrade. LingXi's external harness-runtime still pins the older integration revision and uses the older request API; adopting the new main commit requires a separate host API migration and pin update. No changes to that repository, no push and no live provider calls were performed.
+
+Verification (all Cargo runs offline; no live provider calls):
+
+- All-feature tests: `/private/tmp/llm-merge-all3.log` covered the full suite. Final outcomes total 1,906 passed / 8 ignored after targeted reruns: `/private/tmp/llm-merge-retest.log` passes all 14 HTTP loopback tests, 18 prepared-call tests and 6 streaming-upload tests; `/private/tmp/llm-merge-docfinal.log` passes 39 library doctests / 8 ignored. Initial failures were sandbox-denied loopback binds, an incomplete new test fixture, and missing doctest build artifacts during overlapping Cargo commands; final reruns were serialized.
+- Independent downstream docs: `/private/tmp/llm-merge-downstream-final.log`, 273 doctests plus 1 unit test passed; 62 ignored.
+- Strict all-target/all-feature Clippy: `/private/tmp/llm-merge-clippy-final.log`, passed.
+- Warnings-as-errors all-feature Rustdoc: `/private/tmp/llm-merge-rustdoc.log`, passed.
+- Formatting, diff whitespace and default dependency isolation passed; tokenizer backends remain absent from default normal dependencies.
+- Offline packaged-source verification: `/private/tmp/llm-merge-package.log` (677 files). This handoff is the only status-only edit following packaging.
+
+The historical round-26 results below describe the earlier provider feature inventory, not the separate integration branch's delivery status.
+
 ## Round 26 unified verification complete (2026-09-27)
 
 Latest user instruction: finish the remaining work, with functionality first and unified tests afterwards. Both phases are now complete for the finite confirmed feature inventory. GPT-6 Luna max workers added bounded regressions in parallel; all lanes are frozen/completed. No persistent goal, commit, push, publication, or live provider call. Preserve the shared dirty main tree (baseline a419da374ff51448c42f9039eeeefeb066bb706a). Snapshot/cache architecture remains outside this session's ownership.

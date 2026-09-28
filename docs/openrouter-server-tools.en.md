@@ -47,6 +47,7 @@ pub async fn discover_a_client_tool(
     options: &RequestOptions,
 ) -> Result<(), LlmError> {
     let request = ChatRequest {
+        controls: Default::default(),
         prompt_cache: Default::default(),
         output_format: Default::default(),
         model: "openai/gpt-5.2".into(),
@@ -60,6 +61,8 @@ pub async fn discover_a_client_tool(
         system: vec![],
         messages: vec![ConversationMessage::user_text("Find the weather tool and check Tokyo.")],
         tools: vec![ToolSpec {
+    tool_type: None,
+    extra: serde_json::Value::Null,
             name: "get_weather".into(),
             description: "Get the current weather for a city.".into(),
             input_schema: json!({

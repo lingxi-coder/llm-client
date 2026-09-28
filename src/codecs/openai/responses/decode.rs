@@ -35,6 +35,27 @@ pub(crate) fn response_with_approval_support(
         .unwrap_or(&Vec::new())
     {
         saw_refusal |= has_refusal(item);
+        if item["type"].as_str() == Some("function_call") {
+            for key in ["call_id", "name", "arguments"] {
+                if item.get(key).and_then(Value::as_str).is_none() {
+                    return Err(LlmError::InvalidRequest {
+                        message: format!("provider function call has no {key} string"),
+                    });
+                }
+            }
+            if serde_json::from_str::<Value>(item["arguments"].as_str().unwrap()).is_err() {
+                if body["status"].as_str() == Some("incomplete") {
+                    content.push(ContentBlock::ProviderContent {
+                        protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                        value: item.clone(),
+                    });
+                    continue;
+                }
+                return Err(LlmError::InvalidRequest {
+                    message: "provider returned malformed tool arguments".into(),
+                });
+            }
+        }
         decode_item(item, &mut content, &mut saw_tool_call);
     }
     Ok(ChatResponse {

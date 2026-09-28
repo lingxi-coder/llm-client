@@ -11,6 +11,7 @@ pub(crate) mod inference;
 mod input;
 mod json;
 pub(crate) mod openrouter_server_tools;
+pub(crate) mod request_controls;
 pub use input::{CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode};
 pub mod anthropic;
 pub(crate) mod anthropic_client_toolset_history;
@@ -126,6 +127,23 @@ pub trait WireCodec: Send + Sync + 'static {
         })
     }
     fn family(&self) -> ProtocolFamily;
+    /// Extract accounting facts independently of content or HTTP-status errors.
+    fn response_usage(
+        &self,
+        response: &HttpResponse,
+        context: &CodecContext,
+    ) -> crate::protocol::UsageReport {
+        usage::response_report(response, context)
+    }
+    /// Infer actual execution tier even when semantic decoding fails.
+    fn response_inference(
+        &self,
+        response: &HttpResponse,
+        context: &CodecContext,
+    ) -> crate::protocol::InferenceReport {
+        inference::response(response, context.profile())
+    }
+
     fn encode_request(
         &self,
         req: EncodeRequest<'_>,

@@ -33,6 +33,7 @@ fn request() -> ChatRequest {
     ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         model: "GPT Audio".into(),
         anthropic_client_toolsets: Vec::new(),
         hosted_tools: vec![],

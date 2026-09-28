@@ -978,6 +978,8 @@ mod tests {
         let mut req: ChatRequest =
             serde_json::from_value(json!({"model":"claude-opus-5-5","messages":[]})).unwrap();
         let tool = |index, strict, schema| ToolSpec {
+            tool_type: None,
+            extra: Value::Null,
             name: format!("tool_{index}"),
             description: String::new(),
             input_schema: schema,
@@ -1213,6 +1215,8 @@ mod tests {
         ])];
         req.tools = (0..21)
             .map(|index| ToolSpec {
+                tool_type: None,
+                extra: Value::Null,
                 name: format!("tool_{index}"),
                 description: String::new(),
                 input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),

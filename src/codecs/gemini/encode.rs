@@ -445,6 +445,7 @@ pub(crate) fn request_to<'a>(
     apply_gemini_hosted_tools(req, &opts.request_model, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::codecs::structured::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     // The inference adapter has validated both protobuf JSON spellings and
@@ -621,6 +622,7 @@ fn encode_part<'a>(
         ContentBlock::ToolResult {
             tool_use_id,
             content,
+            is_error,
             ..
         } => {
             let (name, provider_id) =
@@ -634,7 +636,10 @@ fn encode_part<'a>(
                     })?;
             let mut response = WireValue::from(json!({"name": name})).with(
                 "response",
-                WireValue::from(json!({})).with("result", WireValue::text(content)),
+                WireValue::from(json!({})).with(
+                    if *is_error { "error" } else { "result" },
+                    WireValue::text(content),
+                ),
             );
             if let Some(id) = provider_id {
                 response["id"] = Value::String(id.clone());

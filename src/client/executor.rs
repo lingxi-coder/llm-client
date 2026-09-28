@@ -24,10 +24,9 @@ const ANTHROPIC_MAX_REQUEST_BODY_BYTES: usize = 32_000_000;
 
 /// Check caller-supplied file lifetimes independently of route preparation so
 /// an already-expired reference cannot trigger attachment reads or uploads.
-fn validate_request_file_expirations(req: &ChatRequest, now: SystemTime) -> Result<(), LlmError> {
+pub(super) fn request_file_expirations(req: &ChatRequest) -> Vec<String> {
     use crate::protocol::{DocumentSource, ImageSource, VideoSource};
-    for file in req
-        .messages
+    req.messages
         .iter()
         .flat_map(|message| &message.content)
         .filter_map(|block| match block {
@@ -48,8 +47,13 @@ fn validate_request_file_expirations(req: &ChatRequest, now: SystemTime) -> Resu
                 .into_iter()
                 .flat_map(|config| &config.files),
         )
-    {
-        files::validate_file_expiration_at(file.expires_at.as_deref(), now)?;
+        .filter_map(|file| file.expires_at.clone())
+        .collect()
+}
+
+fn validate_request_file_expirations(req: &ChatRequest, now: SystemTime) -> Result<(), LlmError> {
+    for expiry in request_file_expirations(req) {
+        files::validate_file_expiration_at(Some(&expiry), now)?;
     }
     Ok(())
 }
@@ -112,13 +116,13 @@ fn projected_anthropic_file_request<'a>(
 /// One connection to try: the head of the route, then each sibling in order.
 /// The chain holds only the siblings, so the head is prepended here rather than
 /// special-cased inside the walk.
-struct PreparedAttempt {
-    inference: crate::protocol::InferenceReport,
-    http: HttpRequest,
-    context: CodecContext,
-    codec: Arc<dyn WireCodec>,
-    files: Vec<PreparedProviderFileUse>,
-    cleanup: Option<Arc<files::AutomaticFileCleanup>>,
+pub(super) struct PreparedAttempt {
+    pub(super) inference: crate::protocol::InferenceReport,
+    pub(super) http: HttpRequest,
+    pub(super) context: CodecContext,
+    pub(super) codec: Arc<dyn WireCodec>,
+    pub(super) files: Vec<PreparedProviderFileUse>,
+    pub(super) cleanup: Option<Arc<files::AutomaticFileCleanup>>,
 }
 
 fn deadline_elapsed() -> LlmError {
@@ -152,7 +156,7 @@ fn ephemeral_file_scope() -> String {
     )
 }
 
-fn missing_provider_file_uses(
+pub(super) fn missing_provider_file_uses(
     resp: &HttpResponse,
     prepared_file_uses: &[PreparedProviderFileUse],
 ) -> Vec<PreparedProviderFileUse> {
@@ -215,7 +219,7 @@ fn supports_continuation(profile: &ProviderProfile) -> bool {
             == Some(true)
 }
 
-fn continuation_template(
+pub(super) fn continuation_template(
     req: &ChatRequest,
     attempt: &Attempt<'_>,
     opts: &RequestOptions,
@@ -236,7 +240,7 @@ fn continuation_template(
 }
 
 pub(super) struct RequestExecutor<'a> {
-    clock: &'a dyn crate::transport::Clock,
+    clock: &'a Arc<dyn crate::transport::Clock>,
     http: &'a Arc<dyn Transport>,
     codecs: &'a std::collections::BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
     authenticators:
@@ -251,7 +255,7 @@ pub(super) enum RequestOutput {
 impl<'client> RequestExecutor<'client> {
     pub(super) fn new(client: &'client ClientSnapshot) -> Self {
         Self {
-            clock: client.runtime.clock.as_ref(),
+            clock: &client.runtime.clock,
             http: &client.runtime.http,
             codecs: &client.runtime.codecs,
             authenticators: &client.runtime.authenticators,
@@ -260,15 +264,16 @@ impl<'client> RequestExecutor<'client> {
         }
     }
 
-    async fn prepare_before_deadline(
+    pub(super) async fn prepare_before_deadline(
         &self,
         route: &ResolvedRoute,
         attempt: &Attempt<'_>,
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         started: Instant,
-        mode: RequestMode,
+        preparation: (RequestMode, bool),
     ) -> Result<PreparedAttempt, LlmError> {
+        let (mode, authenticate) = preparation;
         let remaining = remaining_timeout(started, opts.total_timeout)?;
         let mut attempt_opts = opts.clone();
         attempt_opts.total_timeout = remaining;
@@ -281,7 +286,14 @@ impl<'client> RequestExecutor<'client> {
                 deadline.checked_sub(reserve).unwrap_or(deadline)
             })
         });
-        let preparation = self.prepare(route, attempt, req, &attempt_opts, request_deadline, mode);
+        let preparation = self.prepare(
+            route,
+            attempt,
+            req,
+            &attempt_opts,
+            request_deadline,
+            (mode, authenticate),
+        );
         let mut prepared = within_deadline(preparation, remaining).await??;
         // Authentication may have awaited a token refresh. The transport
         // receives only the time still available after that work.
@@ -289,7 +301,7 @@ impl<'client> RequestExecutor<'client> {
         Ok(prepared)
     }
 
-    async fn resolve_before_deadline<'a>(
+    pub(super) async fn resolve_before_deadline<'a>(
         &self,
         req: &'a ChatRequest,
         opts: &RequestOptions,
@@ -306,9 +318,16 @@ impl<'client> RequestExecutor<'client> {
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         request_deadline: Option<Instant>,
-        mode: RequestMode,
+        preparation: (RequestMode, bool),
     ) -> Result<PreparedAttempt, LlmError> {
+        let (mode, authenticate) = preparation;
         let profile = attempt.profile;
+        if mode == RequestMode::CountTokens && profile.protocol != ProtocolFamily::AnthropicMessages
+        {
+            return Err(LlmError::UnsupportedCapability {
+                message: "exact token counting is unavailable for this protocol".into(),
+            });
+        }
         validate_request_file_expirations(req.request, self.clock.now())?;
         super::options::validate_openrouter_response_cache(
             opts.openrouter_response_cache,
@@ -500,7 +519,7 @@ impl<'client> RequestExecutor<'client> {
                 &req.attachments,
                 ProviderFilePreparation {
                     file_validation_time: self.clock.now(),
-                    clock: self.clock,
+                    clock: self.clock.as_ref(),
                     endpoint,
                     cache_namespace: self.state.cache_namespace,
                     cache_generation: self.state.cache_generations[&profile.profile_name],
@@ -553,6 +572,9 @@ impl<'client> RequestExecutor<'client> {
             &mut http,
         )?;
         super::options::apply_mcp_authorizations(&opts.mcp_authorizations, profile, &mut http)?;
+        if let Some(finalizer) = &opts.finalizer {
+            finalizer.finalize(&mut http, profile)?;
+        }
         if anthropic_request_limit && http.body.len() > ANTHROPIC_MAX_REQUEST_BODY_BYTES {
             return Err(LlmError::RequestTooLarge {
                 message: format!(
@@ -564,8 +586,12 @@ impl<'client> RequestExecutor<'client> {
         }
 
         validate_prepared_file_expirations(req.request, &prepared.uses, self.clock.now())?;
-        if let Some(auth) = authenticator {
-            auth.apply(&mut http, profile, credential).await?;
+        http.timeout = opts.total_timeout;
+
+        if authenticate {
+            if let Some(auth) = authenticator {
+                auth.apply(&mut http, profile, credential).await?;
+            }
         }
         Ok(PreparedAttempt {
             inference,
@@ -585,6 +611,10 @@ impl<'client> RequestExecutor<'client> {
         started: Instant,
         mode: RequestMode,
     ) -> Result<RequestOutput, (LlmError, Option<HttpResponse>, Vec<PreparedProviderFileUse>)> {
+        let prepared = self
+            .prepare_before_deadline(route, attempt, req, opts, started, (mode, true))
+            .await
+            .map_err(|e| (e, None, Vec::new()))?;
         let PreparedAttempt {
             inference: mut requested,
             http,
@@ -592,10 +622,7 @@ impl<'client> RequestExecutor<'client> {
             codec,
             files,
             cleanup,
-        } = self
-            .prepare_before_deadline(route, attempt, req, opts, started, mode)
-            .await
-            .map_err(|e| (e, None, Vec::new()))?;
+        } = prepared;
         let deadline = opts
             .total_timeout
             .and_then(|timeout| started.checked_add(timeout));
@@ -646,6 +673,10 @@ impl<'client> RequestExecutor<'client> {
                     requested,
                     continuation,
                 )
+                .with_pricing(super::FrozenPricing {
+                    profile: attempt.profile.clone(),
+                    model: attempt.model.clone(),
+                })
                 .with_anthropic_container_observation(
                     crate::codecs::anthropic_code_execution::is_official_profile(attempt.profile)
                         || crate::codecs::anthropic_code_execution::supports_execution(&context),
@@ -681,33 +712,13 @@ impl<'client> RequestExecutor<'client> {
         }
         Ok(RequestOutput::Complete(Box::new(decoded)))
     }
-    pub(super) async fn run(
+    pub(super) fn validate_host_request(
         &self,
-        resolved: RequestRoute<'_>,
+        connections: &[Attempt<'_>],
         req: &ChatRequest,
         opts: &RequestOptions,
         mode: RequestMode,
-    ) -> Result<RequestOutput, LlmError> {
-        let RequestRoute { route, connections } = resolved;
-        let default_timeout = if req
-            .messages
-            .iter()
-            .flat_map(|m| &m.content)
-            .any(|b| matches!(b, ContentBlock::Video { .. }))
-        {
-            files::GEMINI_VIDEO_FILE_TIMEOUT
-        } else {
-            DEFAULT_REQUEST_TIMEOUT
-        };
-        let opts = RequestOptions {
-            total_timeout: if mode == RequestMode::Complete {
-                Some(opts.total_timeout.unwrap_or(default_timeout))
-            } else {
-                opts.total_timeout
-            },
-            ..opts.clone()
-        };
-        let started = Instant::now();
+    ) -> Result<bool, LlmError> {
         req.validate_hosted_tools()?;
         validate_request_file_expirations(req, self.clock.now())?;
         if crate::codecs::gemini::encode::has_gemini_hosted_tools(req) {
@@ -868,6 +879,21 @@ impl<'client> RequestExecutor<'client> {
                 .with_file_scope(opts.file_account_scope.as_deref());
             codec.validate_request(req, &context)?;
         }
+        Ok(has_openrouter_server_tools)
+    }
+
+    pub(super) async fn run(
+        &self,
+        resolved: RequestRoute<'_>,
+        req: &ChatRequest,
+        opts: &RequestOptions,
+        mode: RequestMode,
+    ) -> Result<RequestOutput, LlmError> {
+        let RequestRoute { route, connections } = resolved;
+        let opts = execution_options(req, opts, mode);
+        let started = Instant::now();
+        let has_openrouter_server_tools =
+            self.validate_host_request(&connections, req, &opts, mode)?;
         let has_remote_mcp = req.hosted_tools.iter().any(|tool| {
             matches!(
                 tool,
@@ -956,6 +982,31 @@ impl<'client> RequestExecutor<'client> {
         Err(last.unwrap_or_else(|| LlmError::ModelUnavailable {
             message: format!("no connection served {:?}", req.model),
         }))
+    }
+}
+
+pub(super) fn execution_options(
+    req: &ChatRequest,
+    opts: &RequestOptions,
+    mode: RequestMode,
+) -> RequestOptions {
+    let default_timeout = if req
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, ContentBlock::Video { .. }))
+    {
+        files::GEMINI_VIDEO_FILE_TIMEOUT
+    } else {
+        DEFAULT_REQUEST_TIMEOUT
+    };
+    RequestOptions {
+        total_timeout: if mode != RequestMode::Stream {
+            Some(opts.total_timeout.unwrap_or(default_timeout))
+        } else {
+            opts.total_timeout
+        },
+        ..opts.clone()
     }
 }
 

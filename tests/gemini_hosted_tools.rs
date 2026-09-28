@@ -130,6 +130,8 @@ fn gemini_3_functions_and_google_search_use_tool_context_circulation() {
         HostedTool::GeminiCodeExecution,
     ];
     request.tools.push(ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: "get_weather".into(),
         description: "Get the weather for a city".into(),
         input_schema: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
@@ -159,6 +161,8 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
     let mut request = new_request(model);
     request.hosted_tools.push(HostedTool::GeminiCodeExecution);
     request.tools.push(ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: "f".into(),
         description: "f".into(),
         input_schema: json!({"type": "object"}),

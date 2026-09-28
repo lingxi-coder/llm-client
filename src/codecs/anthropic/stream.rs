@@ -124,12 +124,20 @@ impl EventDecoder for AnthropicStreamDecoder {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
-                    response_id: None,
+                    response_id: message
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(crate::protocol::ResponseId::new),
                 });
             }
             Some("content_block_start") => self.block_start(&root, data.as_bytes(), &mut out)?,
             Some("content_block_delta") => self.block_delta(&root, data.as_bytes(), &mut out)?,
-            Some("content_block_stop") => self.block_stop(&root, data.as_bytes(), &mut out)?,
+            Some("content_block_stop") => {
+                self.block_stop(&root, data.as_bytes(), &mut out)?;
+                out.push(StreamEvent::BlockEnd {
+                    block: root["index"].as_u64().unwrap_or_default() as usize,
+                });
+            }
             Some("message_delta") => {
                 if self.retain_anthropic_container
                     && (crate::codecs::anthropic_code_execution::stream_container(&root).is_some()
@@ -420,6 +428,17 @@ impl AnthropicStreamDecoder {
             .and_then(Value::as_u64)
             .unwrap_or_default() as usize;
         let delta = root.get("delta").unwrap_or(&Value::Null);
+        if matches!(
+            delta["type"].as_str(),
+            Some("citations_delta" | "connector_text_delta")
+        ) {
+            out.push(StreamEvent::NativeDelta {
+                block: index,
+                protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+                delta: delta.clone(),
+            });
+        }
+
         if self.search_blocks.contains(&index)
             || (delta["type"].as_str() == Some("citations_delta")
                 && delta["citation"]["type"].as_str() == Some("web_search_result_location"))

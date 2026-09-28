@@ -46,6 +46,8 @@ fn tool_search(strategy: AnthropicToolSearchStrategy) -> HostedTool {
 
 fn tool(name: &str, defer_loading: bool) -> ToolSpec {
     ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: name.into(),
         description: format!("Use {name} to find or change matching records"),
         input_schema: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),

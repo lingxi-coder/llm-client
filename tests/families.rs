@@ -68,6 +68,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
     ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
         anthropic_client_toolsets: Vec::new(),
@@ -446,7 +447,7 @@ fn an_incomplete_function_call_retains_its_truncation_reason() {
     assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
     assert!(matches!(
         decoded.message.content.as_slice(),
-        [ContentBlock::ToolUse { .. }]
+        [ContentBlock::ProviderContent { .. }]
     ));
 
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());

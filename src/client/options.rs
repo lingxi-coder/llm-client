@@ -446,6 +446,8 @@ pub(crate) fn anthropic_mcp_authorization_body_overhead(
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Optional host policy applied before signing the final wire bytes.
+    pub finalizer: Option<std::sync::Arc<dyn RequestFinalizer>>,
     /// The secret this request authenticates with, if the profile needs one.
     ///
     /// Passed in rather than looked up: this crate does not hold, fetch or
@@ -480,6 +482,17 @@ pub struct RequestOptions {
     /// OpenAI/xAI `server_label` or Anthropic server `name`. Never serialized
     /// into ChatRequest/history.
     pub mcp_authorizations: BTreeMap<String, Secret<String>>,
+}
+
+/// Per-request transformation of the encoded request, before authentication.
+/// Implementations must not dispatch requests or fetch credentials. The final
+/// bytes are authenticated once and immutable after preparation.
+pub trait RequestFinalizer: std::fmt::Debug + Send + Sync {
+    fn finalize(
+        &self,
+        request: &mut crate::HttpRequest,
+        profile: &crate::protocol::ProviderProfile,
+    ) -> Result<(), crate::protocol::LlmError>;
 }
 
 #[cfg(test)]

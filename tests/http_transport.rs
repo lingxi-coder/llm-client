@@ -521,6 +521,7 @@ fn completion() -> ChatRequest {
     ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "test-model".into(),
         anthropic_client_toolsets: Vec::new(),

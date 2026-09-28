@@ -8,7 +8,11 @@
 
 pub use crate::account;
 mod executor;
+mod frozen_pricing;
 mod live;
+pub use frozen_pricing::FrozenPricing;
+mod prepared;
+pub use prepared::{CollectedResponse, PreparedCall, ReceivedCall, RequestDraft};
 mod requests;
 pub use crate::files;
 mod attachments;
@@ -38,12 +42,12 @@ pub use account::{
 pub use chat::ChatService;
 pub(crate) use options::apply_openrouter_response_cache;
 pub use options::{OpenRouterResponseCache, RequestOptions};
-pub use resolve::ResolveError;
+pub use resolve::{ResolveError, RoutingCatalog};
 pub(crate) use response_cache::openrouter_observation;
 pub use store::{
     ClientConfigManager, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,
 };
-pub use stream::{ModelStream, StructuredStreamError, StructuredStreamResult};
+pub use stream::{ModelStream, StreamBatch, StructuredStreamError, StructuredStreamResult};
 pub use token_count::{LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission};
 
 use crate::auth::Authenticator;
@@ -1236,3 +1240,6 @@ mod tests {
         ));
     }
 }
+
+mod session;
+pub use session::ResponsesSession;

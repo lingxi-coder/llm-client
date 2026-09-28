@@ -346,6 +346,7 @@ pub fn request<'a>(
     super::cache::apply(req, opts, &mut body)?;
     let mut headers = vec![("content-type".to_owned(), "application/json".to_owned())];
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::codecs::structured::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     crate::wire_options::merge_headers(profile, &mut headers);
@@ -358,10 +359,13 @@ pub fn request<'a>(
     let mut body = WireValue::from(Value::Object(body)).with("input", WireValue::array(input));
     if !req.tools.is_empty() {
         body = body.map_array_field("tools", |index, tool| {
+            let has_schema = tool.get("parameters").is_some();
             let tool = WireValue::from(tool);
             match req.tools.get(index) {
-                Some(spec) => tool.with("parameters", WireValue::borrowed(&spec.input_schema)),
-                None => tool,
+                Some(spec) if has_schema => {
+                    tool.with("parameters", WireValue::borrowed(&spec.input_schema))
+                }
+                _ => tool,
             }
         });
     }
@@ -775,7 +779,7 @@ fn encode_tool(t: &ToolSpec, include_defer_loading: bool) -> Value {
     if include_defer_loading && t.defer_loading {
         tool["defer_loading"] = Value::Bool(true);
     }
-    tool
+    crate::codecs::request_controls::tool_extensions(t, tool)
 }
 
 fn encode_openai_tool_search(config: &crate::protocol::OpenAiToolSearchConfig) -> Value {

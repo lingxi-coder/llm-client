@@ -15,7 +15,7 @@
 //!   they are not request content. Native blocks become replayable only when
 //!   their complete contents can be reconstructed at the block boundary.
 
-mod decode;
+pub(crate) mod decode;
 pub(crate) mod encode;
 pub(crate) mod stream;
 

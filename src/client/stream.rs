@@ -67,6 +67,15 @@ pub enum StructuredStreamError {
     },
 }
 
+/// One synchronous decoder observation. Events may be empty while usage changed.
+/// A terminal error is retained beside the last usage rather than replacing it.
+pub struct StreamBatch {
+    pub events: Vec<Result<StreamEvent, LlmError>>,
+    pub usage: crate::protocol::UsageReport,
+    pub inference: crate::protocol::InferenceReport,
+    pub finished: bool,
+}
+
 /// A provider-neutral event stream: the transport's frames run through the
 /// codec's decoder. Dropping it drops the underlying byte stream, which is how
 /// a cancelled turn disconnects (§15).
@@ -86,6 +95,7 @@ pub struct ModelStream {
     continuation: Option<ContinuationRef>,
     continuation_completed: bool,
     automatic_file_cleanup: Option<(Arc<AutomaticFileCleanup>, Option<Instant>)>,
+    pub(super) pricing: Option<super::FrozenPricing>,
 }
 
 impl ModelStream {
@@ -105,6 +115,7 @@ impl ModelStream {
             ready.push_back(Ok(StreamEvent::Inference { report: initial }));
         }
         Self {
+            pricing: None,
             requested_inference,
             frames: resp.body,
             decoder,
@@ -121,6 +132,11 @@ impl ModelStream {
             continuation_completed: false,
             automatic_file_cleanup,
         }
+    }
+
+    pub(super) fn with_pricing(mut self, pricing: super::FrozenPricing) -> Self {
+        self.pricing = Some(pricing);
+        self
     }
 
     pub(super) fn with_anthropic_container_observation(mut self, enabled: bool) -> Self {
@@ -187,6 +203,46 @@ impl ModelStream {
         self.response_cache.as_ref()
     }
 
+    /// Frozen selected prices; ordinary client streams and prepared calls set this.
+    pub fn pricing_snapshot(&self) -> Option<&super::FrozenPricing> {
+        self.pricing.as_ref()
+    }
+
+    /// Read at most one transport chunk and immediately return its observation.
+    /// No await occurs after decoding and before returning accounting facts.
+    pub async fn next_batch(&mut self) -> Option<StreamBatch> {
+        let mut events: Vec<_> = self.ready.drain(..).collect();
+        if events.is_empty() {
+            if self.finished {
+                if let Some((cleanup, deadline)) = self.automatic_file_cleanup.take() {
+                    cleanup.finish(deadline).await;
+                }
+                return None;
+            }
+            events = match self.frames.next().await {
+                Some(Ok(chunk)) => self.decoder.push_bytes(&chunk),
+                Some(Err(error)) => {
+                    self.finish_transport();
+                    vec![Err(error)]
+                }
+                None => {
+                    let events = self.decoder.finish();
+                    self.finish_transport();
+                    events
+                }
+            };
+        }
+        for event in &mut events {
+            self.observe_event(event);
+        }
+        Some(StreamBatch {
+            events,
+            usage: self.usage_report(),
+            inference: self.inference_report(),
+            finished: self.finished,
+        })
+    }
+
     /// The next event, or `None` at the end. One frame can decode to several
     /// events, so decoded events are buffered and drained before the next
     /// frame is pulled. After a terminal event or EOF, automatic Qwen file deletion may use the
@@ -194,51 +250,7 @@ impl ModelStream {
     pub async fn next(&mut self) -> Option<Result<StreamEvent, LlmError>> {
         loop {
             if let Some(mut event) = self.ready.pop_front() {
-                match &mut event {
-                    Ok(StreamEvent::Inference { report })
-                    | Ok(StreamEvent::End {
-                        inference: report, ..
-                    }) => self.add_requested(report),
-                    _ => {}
-                }
-                match &event {
-                    Ok(StreamEvent::ProviderEvent {
-                        protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-                        payload,
-                    }) if self.observe_anthropic_container => {
-                        if let Some(usage) =
-                            crate::codecs::anthropic_code_execution::stream_usage(payload)
-                        {
-                            if let Some(current) = &mut self.anthropic_usage {
-                                crate::codecs::usage::fold(current, usage);
-                            } else {
-                                self.anthropic_usage = Some(usage.clone());
-                            }
-                        }
-                        if let Some(container) =
-                            crate::codecs::anthropic_code_execution::stream_container(payload)
-                        {
-                            self.anthropic_container = (!container.is_null()).then(|| {
-                                crate::protocol::AnthropicContainerMetadata {
-                                    envelope: container.clone(),
-                                }
-                            });
-                        }
-                    }
-                    Ok(StreamEvent::Start {
-                        response_id: Some(id),
-                        ..
-                    }) => {
-                        if let Some(reference) = &mut self.continuation {
-                            reference.response_id = id.clone();
-                        }
-                    }
-                    Ok(StreamEvent::End { .. }) => self.continuation_completed = true,
-                    _ => {}
-                }
-                if matches!(&event, Ok(StreamEvent::End { .. }) | Err(_)) {
-                    self.finish_transport();
-                }
+                self.observe_event(&mut event);
                 return Some(event);
             }
             if self.finished {
@@ -272,6 +284,53 @@ impl ModelStream {
 
     /// A terminal outcome releases network resources even when the caller
     /// retains this handle to inspect usage and response headers.
+    fn observe_event(&mut self, event: &mut Result<StreamEvent, LlmError>) {
+        match &mut *event {
+            Ok(StreamEvent::Inference { report })
+            | Ok(StreamEvent::End {
+                inference: report, ..
+            }) => self.add_requested(report),
+            _ => {}
+        }
+        match &*event {
+            Ok(StreamEvent::ProviderEvent {
+                protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
+                payload,
+            }) if self.observe_anthropic_container => {
+                if let Some(usage) = crate::codecs::anthropic_code_execution::stream_usage(payload)
+                {
+                    if let Some(current) = &mut self.anthropic_usage {
+                        crate::codecs::usage::fold(current, usage);
+                    } else {
+                        self.anthropic_usage = Some(usage.clone());
+                    }
+                }
+                if let Some(container) =
+                    crate::codecs::anthropic_code_execution::stream_container(payload)
+                {
+                    self.anthropic_container = (!container.is_null()).then(|| {
+                        crate::protocol::AnthropicContainerMetadata {
+                            envelope: container.clone(),
+                        }
+                    });
+                }
+            }
+            Ok(StreamEvent::Start {
+                response_id: Some(id),
+                ..
+            }) => {
+                if let Some(reference) = &mut self.continuation {
+                    reference.response_id = id.clone();
+                }
+            }
+            Ok(StreamEvent::End { .. }) => self.continuation_completed = true,
+            _ => {}
+        }
+        if matches!(&*event, Ok(StreamEvent::End { .. }) | Err(_)) {
+            self.finish_transport();
+        }
+    }
+
     fn finish_transport(&mut self) {
         self.finished = true;
         self.frames = futures::stream::empty().boxed();

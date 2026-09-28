@@ -483,6 +483,8 @@ fn inline_tool_spec(definition: &Value) -> Result<ToolSpec, LlmError> {
         None => false,
     };
     Ok(ToolSpec {
+        tool_type: None,
+        extra: Value::Null,
         name,
         description: definition
             .get("description")

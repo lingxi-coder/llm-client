@@ -73,6 +73,14 @@ impl EventDecoder for OpenAiStreamDecoder {
             message: "OpenAI stream frame is not valid JSON".to_owned(),
         })?;
 
+        if let Some(u) = root.get("usage").filter(|v| !v.is_null()) {
+            self.usage_raw = Some(decode::normalize_usage(
+                u,
+                self.separate_reasoning,
+                self.qwen_cache,
+            ));
+        }
+
         if root.get("error").is_some_and(|error| !error.is_null()) {
             return Err(decode::classify_error(500, &root, None));
         }

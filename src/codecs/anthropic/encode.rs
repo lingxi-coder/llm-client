@@ -190,7 +190,7 @@ pub fn request<'a>(
     ];
     // Beta headers accumulate, comma-joined. Overwriting would silently drop
     // one when a request needs two.
-    let betas: Vec<String> = profile
+    let mut betas: Vec<String> = profile
         .extra
         .get("betas")
         .and_then(Value::as_array)
@@ -201,6 +201,18 @@ pub fn request<'a>(
                 .collect()
         })
         .unwrap_or_default();
+    for tool in &req.tools {
+        let beta = match tool.tool_type.as_deref() {
+            Some("computer_use_20250124" | "computer_20250124") => Some("computer-use-2025-01-24"),
+            Some("computer_20241022") => Some("computer-use-2024-10-22"),
+            _ => None,
+        };
+        if let Some(beta) = beta {
+            if !betas.iter().any(|b| b == beta) {
+                betas.push(beta.into());
+            }
+        }
+    }
     if !betas.is_empty() {
         headers.push(("anthropic-beta".to_owned(), betas.join(",")));
     }
@@ -220,6 +232,7 @@ pub fn request<'a>(
     }
     crate::codecs::web_search::apply(req, profile, &mut body)?;
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
+    crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::codecs::structured::apply(req, opts, &mut body)?;
     crate::codecs::cache::apply(req, opts, &mut body, &mut messages)?;
     crate::wire_options::merge_body(profile, &mut body);
@@ -233,10 +246,13 @@ pub fn request<'a>(
         WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages));
     if !req.tools.is_empty() {
         body = body.map_array_field("tools", |index, tool| {
+            let has_schema = tool.get("input_schema").is_some();
             let tool = WireValue::from(tool);
             match req.tools.get(index) {
-                Some(spec) => tool.with("input_schema", WireValue::borrowed(&spec.input_schema)),
-                None => tool,
+                Some(spec) if has_schema => {
+                    tool.with("input_schema", WireValue::borrowed(&spec.input_schema))
+                }
+                _ => tool,
             }
         });
     }
@@ -252,7 +268,22 @@ pub fn request<'a>(
     } else {
         format!("{}/v1/messages", profile.base_url.trim_end_matches('/'))
     };
-    Ok(WireRequest::new(endpoint, headers, body))
+    let mut encoded = WireRequest::new(endpoint, headers, body);
+    if opts.mode() == crate::RequestMode::CountTokens {
+        encoded.http.url.push_str("/count_tokens");
+        for key in [
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "stream",
+            "stop_sequences",
+            "output_config",
+            "context_hint",
+        ] {
+            encoded.body.remove(key);
+        }
+    }
+    Ok(encoded)
 }
 
 fn encode_message<'a>(
@@ -513,7 +544,7 @@ fn encode_tool(t: &ToolSpec) -> Value {
                 .collect(),
         );
     }
-    tool
+    crate::codecs::request_controls::tool_extensions(t, tool)
 }
 
 fn encode_tool_search(config: &AnthropicToolSearchConfig) -> Value {

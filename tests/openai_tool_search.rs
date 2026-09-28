@@ -41,6 +41,8 @@ fn request() -> ChatRequest {
 
 fn deferred_tool(name: &str) -> ToolSpec {
     ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: name.into(),
         description: format!("Look up {name}"),
         input_schema: json!({

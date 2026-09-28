@@ -52,6 +52,8 @@ fn encode(codec: &dyn WireCodec, req: &ChatRequest, profile: &ProviderProfile) -
 
 fn deferred_tool(name: &str) -> ToolSpec {
     ToolSpec {
+        tool_type: None,
+        extra: serde_json::Value::Null,
         name: name.into(),
         description: format!("Find or update {name}"),
         input_schema: json!({

@@ -252,6 +252,7 @@ fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
     let req = ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "m".into(),
         anthropic_client_toolsets: Vec::new(),

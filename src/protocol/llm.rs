@@ -272,6 +272,16 @@ impl Usage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// The provider completed this output block.
+    BlockEnd {
+        block: usize,
+    },
+    /// Provider-owned annotation or extension delta, preserved for host rendering.
+    NativeDelta {
+        block: usize,
+        protocol: ProtocolFamily,
+        delta: serde_json::Value,
+    },
     /// Provider-reported inference settings; may arrive before final usage.
     Inference {
         report: super::InferenceReport,
@@ -390,6 +400,14 @@ pub struct ToolSpec {
     /// this tool. Programmatic callers require Code Execution on the same request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_callers: Vec<AnthropicToolCaller>,
+    /// Native tool type for protocols that distinguish function, custom, or
+    /// provider-specific tools. Ordinary function tools leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_type: Option<String>,
+    /// Provider-specific tool fields preserved for codecs that explicitly
+    /// support them. Unsupported codecs must reject rather than drop these.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub extra: Value,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -2194,6 +2212,10 @@ pub struct ChatRequest {
     #[serde(default)]
     pub output_format: super::OutputFormat,
     pub model: String,
+    /// Explicit wire-level controls. These are validated against the selected
+    /// protocol and never change shared profile defaults.
+    #[serde(default)]
+    pub controls: super::RequestControls,
     /// Provider-executed tools. These do not create host tool calls.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosted_tools: Vec<HostedTool>,
@@ -2882,6 +2904,7 @@ mod tests {
         let req = ChatRequest {
             prompt_cache: Default::default(),
             output_format: Default::default(),
+            controls: Default::default(),
             service_tier: None,
             model: "m".to_owned(),
             anthropic_client_toolsets: Vec::new(),

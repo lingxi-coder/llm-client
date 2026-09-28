@@ -73,7 +73,10 @@ pub fn response(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        response_id: None,
+        response_id: body
+            .get("id")
+            .and_then(Value::as_str)
+            .map(crate::protocol::ResponseId::new),
         continuation: None,
         executed_profile: None,
     })
@@ -330,7 +333,12 @@ pub fn usage(u: &Value) -> Usage {
 }
 
 fn retry_after(resp: &HttpResponse) -> Option<Duration> {
-    resp.header("retry-after")
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
+    resp.header("retry-after-ms")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .and_then(|v| Duration::try_from_secs_f64(v / 1000.0).ok())
+        .or_else(|| {
+            resp.header("retry-after")
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .and_then(|v| Duration::try_from_secs_f64(v).ok())
+        })
 }

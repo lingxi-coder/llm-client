@@ -369,6 +369,7 @@ mod tests {
     fn estimates_visible_conversation_tools_and_reports_omissions() {
         let client = client("deepseek", crate::protocol::Region::ChinaMainland);
         let request = ChatRequest {
+            controls: Default::default(),
             prompt_cache: Default::default(),
             output_format: Default::default(),
             service_tier: None,
@@ -459,6 +460,8 @@ mod tests {
                 },
             ],
             tools: vec![ToolSpec {
+                tool_type: None,
+                extra: serde_json::Value::Null,
                 name: "lookup".to_owned(),
                 description: "search local records".to_owned(),
                 input_schema: json!({
@@ -531,6 +534,7 @@ mod tests {
     fn unsupported_openai_model_does_not_fall_back_to_another_tokenizer() {
         let openai = client("openai", crate::protocol::Region::International);
         let request = ChatRequest {
+            controls: Default::default(),
             prompt_cache: Default::default(),
             output_format: Default::default(),
             service_tier: None,

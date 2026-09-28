@@ -79,6 +79,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
     let request = ChatRequest {
         prompt_cache: Default::default(),
         output_format: Default::default(),
+        controls: Default::default(),
         service_tier: None,
         model: "my-model".into(),
         anthropic_client_toolsets: Vec::new(),
@@ -881,6 +882,61 @@ cargo doc --no-deps --open
 
 
 详见[推理控制与服务档位价格](inference.md)：`info.features`、`info.pricing`、`price_quote`、`estimate_cost` 和 `estimate_stream_cost`。
+
+## 宿主管理重试与账务
+
+需要自行管理准入、取消和持久化账务的应用，可以调用
+`prepare_on(profile, request, options, mode)`。profile 必须是具体连接名，不能是连接组。
+准备阶段固定所选模型行、编码并认证请求，可能上传附件，但不会发送生成请求。
+`PreparedCall` 不可克隆；宿主可先检查 `request()`、保存 `pricing_snapshot()`，
+再通过 `dispatch_once()` 消耗该调用。每次重试或故障转移都需要新的 prepared call。
+
+先检查 `ReceivedCall::status()`，再选择 `into_stream()` 或 `collect()`。
+即使 HTTP 失败或回答内容损坏，收集结果的 usage、inference 仍可在 `decode()` 前读取。
+调用 `finish()` 完成附件清理。`ModelStream::next_batch()` 按已收到的传输块返回观察值，
+包括只有 usage 的块；解码后不会为了等待下一个块再次挂起。宿主应先保存这些观察值，
+再让出执行权或验证应用自己的输出 schema。
+
+`count_tokens_exact_in` 使用 Anthropic 精确计数接口。不支持的协议返回 `None`，
+错误仍作为错误返回，计数不会生成回答。`FrozenPricing::estimate` 使用固定价格和已确认
+的执行事实，保留币种，并拒绝不完整 usage 或未知 Fast 档位；它不负责应用账本。
+
+Responses WebSocket 需要注入实现 `connect_websocket` 的 `Transport`。
+通过 `PreparedCall::connect_websocket` 在准入前建立连接，再用
+`dispatch_websocket_once` 发送一次 `response.create`。客户端不会自动重连或回退 HTTP。
+`websocket` 模块提供续接状态辅助函数，连接生命周期属于宿主；已经尝试发送的调用必须
+结算后才能发起回退调用。默认 HTTP transport 不提供 WebSocket 连接。
+
+`ChatRequest::controls` 提供采样、结构化输出、Anthropic context hint，以及
+Responses 存储和元数据选项。带作用域的续接仍使用 `ChatRequest::continuation`，
+缓存断点与 TTL 仍使用 `ChatRequest::prompt_cache`。原生内容携带协议
+标识，不能跨协议重放。流式接口也提供原生注解 delta 和块结束事件；它们不是应用工具调用。
+
+### 宿主请求定稿与会话
+
+需要在签名前追加请求策略时，使用 `prepare_draft_on`。返回的 `RequestDraft`
+不能发送请求；通过 `request_mut()` 完成修改后，`seal()` 才执行最终鉴权，返回
+不可修改、不可克隆的 `PreparedCall`。草稿使用显式的 `total_timeout`；没有配置时
+不额外增加默认总超时。`prepare_on` 和普通完成接口仍保留各自的默认超时。
+`RequestOptions::finalizer` 可统一执行编码后、签名前的同步转换。
+`exact_json::serialize` 能保留指定 JSON 字符串的完整 UTF-16 码元，包括孤立代理项。
+AWS SigV4 的纯签名算法位于 `auth::sigv4`；凭据来源和刷新仍由宿主负责。
+
+`dispatch_once_with` 和 `dispatch_websocket_once_with` 在物理发送前调用同步钩子。
+钩子拒绝时不发送请求；客户端不在钩子之后刷新凭据或重试。借用平台传输栈的应用
+可使用 `dispatch_once_using`，响应流仍独立拥有其读取资源。
+
+`ResponsesSession` 管理连接复用、预热、续接和响应观察。先调用 `prepare` 完成连接
+及增量请求计算，再 `seal`、执行宿主准入，最后 `dispatch`。握手 426 可以在没有
+生成请求的前提下选择 HTTP；发送后的失败只影响下一次尝试，不能再次发送当前调用。
+取消未完成的响应会清除续接状态，使下一次尝试重新建立连接。
+
+`FileService::upload_gemini_unpolled` 与 `poll_gemini_active` 支持显式上传/轮询分离。
+上传仍校验返回地址的同源性；临时上传 URL 使用自身能力，不重复附加 API key。
+`RoutingCatalog` 提供不依赖网络的模型解析；`resolve_in_prefer_native` 可显式保留
+应用已有的“原生模型 ID 优先于 UI 限定引用”规则。
+`FrozenPricing::capture`、`with_token_pricing` 和 `quote` 支持派发前冻结价格及预算
+报价；实际账单估算仍应使用带完整 usage 和实际执行信息的 `estimate`。
 
 Qwen Audio Generation 使用 `LlmClient` 与 `ClientSnapshot` 上独立的 `qwen_audio_generation(scope)` 入口，显式绑定北京工作空间并逐次提供凭证。见 [Qwen Audio Generation](qwen-audio-generation.md)。
 

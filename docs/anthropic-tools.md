@@ -13,6 +13,8 @@ request.hosted_tools.push(HostedTool::AnthropicToolSearch(
     AnthropicToolSearchConfig { strategy: AnthropicToolSearchStrategy::Bm25 },
 ));
 request.tools.push(ToolSpec {
+    tool_type: None,
+    extra: serde_json::Value::Null,
     name: "find_calendar_events".into(),
     description: "Find calendar events by date, person, or topic".into(),
     input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
