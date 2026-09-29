@@ -664,6 +664,10 @@ OpenAI Chat 连接可通过 `extra.max_tokens_field` 选择输出上限字段：
 授权码交换、refresh token 请求、设备授权的单次申请/查询，以及账户身份查询。
 `auth::oauth::pkce` 提供共用的 PKCE 与 CSRF state 生成。
 
+`auth::aws::parse_sts_output` 解析导出的 AWS 凭据并隐藏调试输出中的密钥。
+Anthropic 模块还提供类型化订阅信息、scope 判断和配额响应头解析；
+账号状态缓存、产品权限和外部凭据脚本的执行仍由宿主负责。
+
 这些操作使用调用方注入的 SDK `Transport` 和 `HttpExecutor`，与模型请求共用网络
 配置；请求及响应读取有期限和响应体大小限制。SDK 不自动刷新、重发、轮询或持久化
 凭据。设备流程的等待、`slow_down` 后的调度、浏览器/回调、并发刷新协调、账号选择
@@ -990,3 +994,15 @@ Reasoning controls and validation are exposed by `reasoning`; opt-in conservativ
 Anthropic tool-schema conversion is available at
 `providers::anthropic::strict_schema`. Schema transformation and the choice to
 fall back to non-strict tools remain separate decisions.
+
+
+### 冻结价格上界
+
+`FrozenPricing::interactive_price_bounds()` 返回交互请求在已发布价格规则下的
+standard/fast token 单价上界。SDK 统一处理 token 区间、价格生效时间和峰谷倍率；
+未知计费桶保持 `None`。返回 `None` 表示该模型不需要动态上界，不能解释成免费。
+宿主自行实施预算准入、币种限制和费用落账；该查询不会发送请求或自动重试。
+
+`UsageReport` 保留用量的 Missing/Partial/Complete/Invalid 状态；
+`Usage.output_tokens` 包含 reasoning，`reasoning_tokens` 是其中的子集。
+展示独立输出桶时才相减，累计总量和 SDK 计价时不要重复添加 reasoning。

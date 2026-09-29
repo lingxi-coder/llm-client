@@ -2,7 +2,9 @@
 //! through the client price query before reaching this module.
 
 use super::route::PricingModelRef;
-use crate::protocol::{LlmError, PriceQuote, Submission, Usage};
+use crate::protocol::{
+    BillingMode, LlmError, PriceQuote, PricingContext, ServiceTier, Submission, TokenPricing, Usage,
+};
 
 /// Catalog estimate of token charges in the stated currency; no FX conversion.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +22,34 @@ pub struct CostEstimate {
     pub total_cost: f64,
     /// The catalog's provenance for the rates, when it records one.
     pub source: Option<String>,
+}
+
+/// Estimate from a fixed catalog row when no captured model is available.
+/// Context-dependent rules require `FrozenPricing` and confirmed execution
+/// facts, so this compatibility path rejects them explicitly.
+pub fn estimate_fixed(
+    prices: &TokenPricing,
+    usage: &Usage,
+    pricing_model: &PricingModelRef,
+    source: &str,
+) -> Result<CostEstimate, LlmError> {
+    if !prices.rules.is_empty() || !prices.quota.is_empty() {
+        return Err(LlmError::CostUnavailable {
+            message: "context-dependent prices require a frozen pricing snapshot".into(),
+        });
+    }
+    let mut quote = super::price_query::quote(
+        prices,
+        BillingMode::PerToken,
+        None,
+        &PricingContext {
+            service_tier: Some(ServiceTier::Standard),
+            submission: Submission::Interactive,
+            ..Default::default()
+        },
+    );
+    quote.source = Some(source.into());
+    estimate(&quote, usage, pricing_model)
 }
 
 /// Compute token charges only after the pricing engine selects a quote.

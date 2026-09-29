@@ -4,6 +4,7 @@
 //! transports; secure storage, browser interaction, refresh scheduling and model
 //! retry decisions stay in the host. OAuth operations perform one request only.
 
+pub mod aws;
 pub mod oauth;
 
 mod api_key;

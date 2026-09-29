@@ -985,3 +985,22 @@ Qwen Audio Generation uses the independent `qwen_audio_generation(scope)` entry 
 
 
 `realtime::OpenAiLiveSession` provides a standalone GPT-Live primary WebSocket session with explicit tool delegation and session closure. See [OpenAI GPT-Live](openai-live.en.md).
+
+
+### Frozen price bounds and canonical observations
+
+`FrozenPricing::interactive_price_bounds()` returns published standard/fast token
+rate ceilings for interactive calls. The SDK handles input bands, dated rules and
+peak multipliers; unknown buckets remain `None`. A `None` result means a dynamic
+bound is unnecessary, not that execution is free. Hosts retain budget admission,
+currency policy and durable settlement. The query sends no requests or retries.
+
+`UsageReport` preserves Missing/Partial/Complete/Invalid validity states.
+`Usage.output_tokens` includes the `reasoning_tokens` subset. Subtract reasoning
+only when displaying a separate visible-output bucket; do not add it again when
+accumulating total output or using SDK pricing.
+
+`auth::aws::parse_sts_output` interprets exported AWS credentials with redacted
+Debug output. Anthropic auth exposes typed subscription information, scope
+capabilities and quota-header decoding. Hosts retain account caches, product
+permissions and execution of external credential commands.

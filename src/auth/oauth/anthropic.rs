@@ -335,6 +335,78 @@ pub struct UserRolesResponse {
     pub organization_name: Option<String>,
 }
 
+/// Subscription tier reported by a Claude.ai organization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub enum SubscriptionType {
+    Free,
+    Pro,
+    Max,
+    Team,
+    Enterprise,
+    Unknown,
+}
+
+/// Interpret the organization discriminant returned by the profile endpoint.
+pub fn subscription_type(profile: &OAuthProfileResponse) -> Option<SubscriptionType> {
+    match profile
+        .organization
+        .as_ref()?
+        .organization_type
+        .as_deref()?
+    {
+        "claude_max" => Some(SubscriptionType::Max),
+        "claude_pro" => Some(SubscriptionType::Pro),
+        "claude_enterprise" => Some(SubscriptionType::Enterprise),
+        "claude_team" => Some(SubscriptionType::Team),
+        _ => None,
+    }
+}
+
+/// The paid tier spelling consumed by host subscription snapshots.
+pub fn paid_subscription_type(tier: SubscriptionType) -> Option<&'static str> {
+    match tier {
+        SubscriptionType::Pro => Some("pro"),
+        SubscriptionType::Max => Some("max"),
+        SubscriptionType::Team => Some("team"),
+        SubscriptionType::Enterprise => Some("enterprise"),
+        SubscriptionType::Free | SubscriptionType::Unknown => None,
+    }
+}
+
+pub const CLAUDE_AI_INFERENCE_SCOPE: &str = "user:inference";
+pub const CLAUDE_AI_PROFILE_SCOPE: &str = "user:profile";
+
+pub fn subscription_from_scopes(scopes: &[String]) -> bool {
+    scopes
+        .iter()
+        .any(|scope| scope == CLAUDE_AI_INFERENCE_SCOPE)
+}
+
+pub fn has_profile_scope(scopes: &[String]) -> bool {
+    scopes.iter().any(|scope| scope == CLAUDE_AI_PROFILE_SCOPE)
+}
+
+/// Provider quota fields present in a Claude.ai response. Missing or malformed
+/// values are absent, allowing the host to retain its previous snapshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClaudeAiQuotaHeaders {
+    pub message_count_window: Option<u32>,
+    pub message_limit_window: Option<u32>,
+}
+
+pub fn parse_claudeai_quota_headers(
+    headers: &std::collections::HashMap<String, String>,
+) -> ClaudeAiQuotaHeaders {
+    ClaudeAiQuotaHeaders {
+        message_count_window: headers
+            .get("x-claudeai-window-count")
+            .and_then(|value| value.parse().ok()),
+        message_limit_window: headers
+            .get("x-claudeai-window-limit")
+            .and_then(|value| value.parse().ok()),
+    }
+}
+
 async fn get<T: for<'de> Deserialize<'de>>(
     transport: &dyn Transport,
     url: String,
@@ -551,5 +623,75 @@ mod tests {
         );
         assert!(url.contains("scope=org%3Acreate_api_key+user%3Aprofile"));
         assert!(parse_scope_upgrade(r#"{"required_scopes":["user:file_upload"]}"#).is_some());
+    }
+
+    #[test]
+    fn profile_tier_scopes_and_quota_are_provider_data() {
+        let profile: OAuthProfileResponse =
+            serde_json::from_str(r#"{"organization":{"organization_type":"claude_team"}}"#)
+                .unwrap();
+        let tier = subscription_type(&profile).unwrap();
+        assert_eq!(tier, SubscriptionType::Team);
+        assert_eq!(paid_subscription_type(tier), Some("team"));
+        assert_eq!(subscription_type(&OAuthProfileResponse::default()), None);
+        let scopes = vec!["user:profile".into(), "user:inference".into()];
+        assert!(has_profile_scope(&scopes));
+        assert!(subscription_from_scopes(&scopes));
+        let headers = std::collections::HashMap::from([
+            ("x-claudeai-window-count".into(), "3".into()),
+            ("x-claudeai-window-limit".into(), "bad".into()),
+        ]);
+        assert_eq!(
+            parse_claudeai_quota_headers(&headers).message_count_window,
+            Some(3)
+        );
+        assert_eq!(
+            parse_claudeai_quota_headers(&headers).message_limit_window,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_and_roles_requests_use_oauth_bearer() {
+        let profile = mock(
+            200,
+            r#"{"organization":{"organization_type":"claude_max"}}"#,
+        );
+        let data = fetch_profile_from_oauth_token("tok", &profile)
+            .await
+            .unwrap();
+        assert_eq!(subscription_type(&data), Some(SubscriptionType::Max));
+        let request = profile.requests.lock().unwrap().pop().unwrap();
+        assert!(request.headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && value == "Bearer tok"
+        }));
+
+        let roles = mock(200, r#"{"organization_role":"admin"}"#);
+        assert_eq!(
+            fetch_user_roles("tok", &roles)
+                .await
+                .unwrap()
+                .organization_role
+                .as_deref(),
+            Some("admin")
+        );
+        let request = roles.requests.lock().unwrap().pop().unwrap();
+        assert!(request.url.ends_with("/api/oauth/claude_cli/roles"));
+    }
+
+    #[tokio::test]
+    async fn profile_fetch_handles_non_success_and_missing_api_key_inputs() {
+        let forbidden = mock(403, r#"{"error":"forbidden"}"#);
+        assert!(fetch_profile_from_oauth_token("tok", &forbidden)
+            .await
+            .is_none());
+        let unused = mock(200, "{}");
+        assert!(fetch_profile_from_api_key("", "key", &unused)
+            .await
+            .is_none());
+        assert!(fetch_profile_from_api_key("account", "", &unused)
+            .await
+            .is_none());
+        assert!(unused.requests.lock().unwrap().is_empty());
     }
 }
