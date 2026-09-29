@@ -66,17 +66,30 @@ pub fn copilot(
 pub fn oauth_beta_value<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     let mut tokens = Vec::new();
     for value in values {
-        for token in value.split(',').map(str::trim).filter(|token| !token.is_empty()) {
-            if !tokens.contains(&token) { tokens.push(token); }
+        for token in value
+            .split(',')
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        {
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
         }
     }
-    if !tokens.contains(&"oauth-2025-04-20") { tokens.push("oauth-2025-04-20"); }
+    if !tokens.contains(&"oauth-2025-04-20") {
+        tokens.push("oauth-2025-04-20");
+    }
     tokens.join(",")
 }
 pub fn anthropic_oauth(headers: &mut BTreeMap<String, String>) {
-    let value = oauth_beta_value(headers.iter().filter(|(name,_)| name.eq_ignore_ascii_case("anthropic-beta")).map(|(_,value)| value.as_str()));
-    headers.retain(|name,_| !name.eq_ignore_ascii_case("anthropic-beta"));
-    headers.insert("anthropic-beta".into(),value);
+    let value = oauth_beta_value(
+        headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str()),
+    );
+    headers.retain(|name, _| !name.eq_ignore_ascii_case("anthropic-beta"));
+    headers.insert("anthropic-beta".into(), value);
 }
 
 #[cfg(test)]
@@ -84,9 +97,15 @@ mod tests {
     use super::*;
     #[test]
     fn oauth_merges_duplicate_case_variants_without_losing_custom_betas() {
-        let mut headers = BTreeMap::from([("Anthropic-Beta".into(),"custom-a".into()),("anthropic-beta".into(),"custom-b,oauth-2025-04-20".into())]);
+        let mut headers = BTreeMap::from([
+            ("Anthropic-Beta".into(), "custom-a".into()),
+            ("anthropic-beta".into(), "custom-b,oauth-2025-04-20".into()),
+        ]);
         anthropic_oauth(&mut headers);
-        assert_eq!(headers.len(),1);
-        assert_eq!(headers["anthropic-beta"],"custom-a,custom-b,oauth-2025-04-20");
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers["anthropic-beta"],
+            "custom-a,custom-b,oauth-2025-04-20"
+        );
     }
 }

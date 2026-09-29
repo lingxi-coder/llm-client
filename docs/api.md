@@ -948,3 +948,33 @@ Qwen Audio Generation 使用 `LlmClient` 与 `ClientSnapshot` 上独立的 `qwen
 
 
 `realtime::OpenAiLiveSession` 提供独立 GPT-Live 主 WebSocket 会话、显式工具委派和关闭流程。参见 [OpenAI GPT-Live](openai-live.md)。
+
+## Host integration boundaries
+
+Hosts can build canonical input with `ChatRequest::new(model)` and use the same
+`ChatRequest`, `ChatResponse` and `StreamEvent` types for ordinary, auxiliary and
+hosted-tool calls. Keep application admission authority and credential storage
+outside serialized model input.
+
+`StreamAccumulator` assembles canonical events and batch accounting into complete
+or partial results. Its snapshots distinguish unfinished blocks and incomplete
+tools; unfinished tool arguments are observations, not executable calls.
+`ModelStream::collect_response()` uses the same accumulator. Native metadata,
+search attribution and provider signatures remain available for durable replay.
+
+Use `replay::ReplayContext` when adapting history across protocols. Its strict
+mode rejects incompatible native state; dropping incompatible state is an
+explicit caller choice. `execution_safety::request_replay_safety` classifies
+stateful or unknown request content without making a retry decision or sending
+another request. Explicit response IDs and scoped continuations both pin
+execution.
+
+`auth::apply_credential` applies provider authentication to the outgoing byte
+image from borrowed `CredentialRef` material. It owns header placement and
+SigV4 encoding; hosts still fetch and refresh credentials and supply application
+identity. `CredentialRef` cannot be debug-formatted or serialized.
+
+Reasoning controls and validation are exposed by `reasoning`; opt-in conservative
+Anthropic tool-schema conversion is available at
+`providers::anthropic::strict_schema`. Schema transformation and the choice to
+fall back to non-strict tools remain separate decisions.

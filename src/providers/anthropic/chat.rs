@@ -182,6 +182,7 @@ pub(crate) struct StreamObservation {
     enabled: bool,
     container: Option<crate::providers::anthropic::types::AnthropicContainerMetadata>,
     usage: Option<Value>,
+    stop_details: Option<Value>,
 }
 impl StreamObservation {
     pub(crate) fn new(context: &CodecContext) -> Self {
@@ -199,6 +200,14 @@ impl StreamObservation {
         else {
             return;
         };
+        if payload["type"] == "message_delta" {
+            if let Some(details) = payload
+                .get("delta")
+                .and_then(|delta| delta.get("stop_details"))
+            {
+                self.stop_details = (!details.is_null()).then(|| details.clone());
+            }
+        }
         if !self.enabled {
             return;
         }
@@ -216,6 +225,9 @@ impl StreamObservation {
                 }
             });
         }
+    }
+    pub(crate) fn stop_details(&self) -> Option<&Value> {
+        self.stop_details.as_ref()
     }
     pub(crate) fn container(
         &self,

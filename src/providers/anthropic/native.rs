@@ -175,6 +175,9 @@ pub struct AnthropicResponseMetadata {
     pub container: Option<AnthropicContainerMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<serde_json::Value>,
+    /// Provider stop diagnostics, preserved without interpreting their schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_details: Option<serde_json::Value>,
 }
 impl NativeType for AnthropicResponseMetadata {
     const FORMAT: &'static str = "anthropic.response_metadata.v1";
@@ -194,17 +197,50 @@ impl crate::protocol::ChatResponse {
             .and_then(|extension| extension.decode::<AnthropicResponseMetadata>().ok())
             .and_then(|metadata| metadata.usage.as_ref())
     }
+    pub fn anthropic_stop_details(&self) -> Option<&serde_json::Value> {
+        self.native_metadata
+            .iter()
+            .find(|extension| extension.is::<AnthropicResponseMetadata>())
+            .and_then(|extension| extension.decode::<AnthropicResponseMetadata>().ok())
+            .and_then(|metadata| metadata.stop_details.as_ref())
+    }
+    pub fn set_anthropic_stop_details(&mut self, stop_details: Option<serde_json::Value>) {
+        if let Some(extension) = self
+            .native_metadata
+            .iter_mut()
+            .find(|extension| extension.is::<AnthropicResponseMetadata>())
+        {
+            extension
+                .edit::<AnthropicResponseMetadata, _>(|metadata| {
+                    metadata.stop_details = stop_details
+                })
+                .expect("native response metadata is JSON");
+        } else if stop_details.is_some() {
+            self.native_metadata.push(
+                NativeExtension::from_typed(AnthropicResponseMetadata {
+                    stop_details,
+                    ..Default::default()
+                })
+                .expect("native response metadata is JSON"),
+            );
+        }
+    }
     pub fn set_anthropic_metadata(
         &mut self,
         container: Option<AnthropicContainerMetadata>,
         usage: Option<serde_json::Value>,
     ) {
+        let stop_details = self.anthropic_stop_details().cloned();
         self.native_metadata
             .retain(|extension| !extension.is::<AnthropicResponseMetadata>());
-        if container.is_some() || usage.is_some() {
+        if container.is_some() || usage.is_some() || stop_details.is_some() {
             self.native_metadata.push(
-                NativeExtension::from_typed(AnthropicResponseMetadata { container, usage })
-                    .expect("native response metadata is JSON"),
+                NativeExtension::from_typed(AnthropicResponseMetadata {
+                    container,
+                    usage,
+                    stop_details,
+                })
+                .expect("native response metadata is JSON"),
             );
         }
     }

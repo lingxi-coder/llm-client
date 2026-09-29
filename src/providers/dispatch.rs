@@ -227,6 +227,9 @@ impl StreamObservation {
     ) -> Option<&crate::providers::anthropic::types::AnthropicContainerMetadata> {
         self.anthropic.container()
     }
+    pub(crate) fn anthropic_stop_details(&self) -> Option<&serde_json::Value> {
+        self.anthropic.stop_details()
+    }
     pub(crate) fn anthropic_usage(&self) -> Option<&serde_json::Value> {
         self.anthropic.usage()
     }

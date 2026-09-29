@@ -84,3 +84,6 @@ fn required<'a>(
 }
 
 pub mod header_policy;
+
+mod credential;
+pub use credential::{apply_credential, ClientIdentity, CredentialRef};

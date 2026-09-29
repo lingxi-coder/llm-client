@@ -22,16 +22,36 @@ pub fn response(
             message: "provider response has no valid content array".to_owned(),
         });
     }
-    let mut content = Vec::new();
-    for b in body
-        .get("content")
-        .and_then(Value::as_array)
-        .unwrap_or(&Vec::new())
-    {
-        if let Some(block) = decode_block(b) {
-            content.push(block);
-        }
-    }
+    let content = body["content"]
+        .as_array()
+        .expect("content array checked above")
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            // A complete Messages block must identify its wire type. Unknown
+            // types stay native, but malformed known content must never be
+            // silently dropped and mistaken for a successfully completed turn.
+            let kind = block.get("type").and_then(Value::as_str);
+            let valid = match kind {
+                Some("text") => block.get("text").is_some_and(Value::is_string),
+                Some("redacted_thinking") => block.get("data").is_some_and(Value::is_string),
+                Some("tool_use") => {
+                    block.get("id").is_some_and(Value::is_string)
+                        && block.get("name").is_some_and(Value::is_string)
+                }
+                Some(kind) => !kind.is_empty(),
+                None => false,
+            };
+            valid
+                .then(|| decode_block(block))
+                .flatten()
+                .ok_or_else(|| LlmError::ProviderInternal {
+                    message: format!(
+                        "provider response contains malformed content block at index {index}"
+                    ),
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut response = ChatResponse {
         inference: Default::default(),
         response_cache: None,
@@ -65,6 +85,11 @@ pub fn response(
         continuation: None,
         executed_profile: None,
     };
+    response.set_anthropic_stop_details(
+        body.get("stop_details")
+            .filter(|value| !value.is_null())
+            .cloned(),
+    );
     if retain_anthropic_container {
         response.set_anthropic_metadata(
             body.get("container")
@@ -352,4 +377,110 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
                 .and_then(|v| v.trim().parse::<f64>().ok())
                 .and_then(|v| Duration::try_from_secs_f64(v).ok())
         })
+}
+
+#[cfg(test)]
+mod complete_response_validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn decode(content: Value) -> Result<ChatResponse, LlmError> {
+        response(
+            &HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: serde_json::to_vec(&json!({
+                    "model": "claude-opus-5", "stop_reason": "end_turn",
+                    "content": content, "usage": {"input_tokens": 3, "output_tokens": 5}
+                }))
+                .unwrap()
+                .into(),
+            },
+            false,
+            false,
+        )
+    }
+
+    #[test]
+    fn malformed_blocks_fail_the_whole_response_instead_of_being_omitted() {
+        for malformed in [
+            json!({"type":"text"}),
+            json!({"type":"text", "text":17}),
+            json!({"type":"redacted_thinking"}),
+            json!({"type":"tool_use", "name":"read", "input":{}}),
+            json!({"type":"tool_use", "id":"tool_1", "name":false}),
+            json!({"type":"text", "citations":[{"type":"future_citation"}]}),
+            json!(null),
+            json!("text"),
+            json!({}),
+            json!({"type":7}),
+            json!({"type":""}),
+        ] {
+            let result = decode(json!([
+                {"type":"text", "text":"valid prefix"},
+                {"type":"server_tool_use", "id":"srv_1", "name":"web_search", "input":{"query":"x"}},
+                malformed,
+                {"type":"text", "text":"valid suffix"}
+            ]));
+            assert!(
+                matches!(result, Err(LlmError::ProviderInternal { ref message }) if message.contains("index 2")),
+                "{malformed}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normal_and_hosted_native_blocks_keep_their_order_and_payload() {
+        let hosted = vec![
+            json!({"type":"server_tool_use", "id":"srv_1", "name":"web_search", "input":{"query":"x"}}),
+            json!({"type":"web_search_tool_result", "tool_use_id":"srv_1", "content":[]}),
+            json!({"type":"mcp_tool_use", "id":"mcp_1", "name":"lookup", "server_name":"docs", "input":{}}),
+            json!({"type":"future_provider_block", "opaque":{"retain":[1,2,3]}}),
+            json!({"type":"text", "text":"cited", "citations":[{"type":"future_citation", "opaque":true}]}),
+        ];
+        let mut content = vec![
+            json!({"type":"text", "text":"answer"}),
+            json!({"type":"tool_use", "id":"tool_1", "name":"read", "input":{"path":"a"}}),
+        ];
+        content.extend(hosted.clone());
+        let decoded = decode(json!(content)).unwrap();
+        assert!(
+            matches!(&decoded.message.content[0], ContentBlock::Text { text, .. } if text == "answer")
+        );
+        assert!(
+            matches!(&decoded.message.content[1], ContentBlock::ToolUse { name, input, .. } if name == "read" && input == &json!({"path":"a"}))
+        );
+        assert_eq!(decoded.message.content.len(), content.len());
+        for (actual, expected) in decoded.message.content[2..].iter().zip(hosted) {
+            assert!(
+                matches!(actual, ContentBlock::ProviderContent { value, .. } if value == &expected)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod stop_details_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stop_details_survive_decode_and_other_metadata_updates() {
+        let details = json!({"type":"refusal","future":{"reason":"blocked"}});
+        let wire = HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: serde_json::to_vec(
+                &json!({"model":"m","content":[],"stop_reason":"refusal","stop_details":details}),
+            )
+            .unwrap()
+            .into(),
+        };
+        let mut result = response(&wire, false, false).unwrap();
+        assert_eq!(result.anthropic_stop_details(), Some(&details));
+        result.set_anthropic_metadata(None, Some(json!({"output_tokens":1})));
+        assert_eq!(result.anthropic_stop_details(), Some(&details));
+        result.set_anthropic_stop_details(Some(json!({"type":"other"})));
+        assert_eq!(result.anthropic_usage(), Some(&json!({"output_tokens":1})));
+    }
 }

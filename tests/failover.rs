@@ -2536,7 +2536,10 @@ fn an_explicit_legacy_response_id_also_pins_the_connection() {
     let c = stateful_pair(http.clone());
 
     let mut next = continuing("m-1");
-    next.controls.responses.previous_response_id = next.continuation.take().map(|reference| reference.response_id.as_str().to_owned());
+    next.controls.responses.previous_response_id = next
+        .continuation
+        .take()
+        .map(|reference| reference.response_id.as_str().to_owned());
     let err = block_on(c.chat().complete(
         &next,
         &RequestOptions {

@@ -31,9 +31,15 @@ impl Authenticator for BearerAuthenticator {
         if profile.auth == crate::protocol::AuthStrategy::OAuthBearer
             && profile.protocol == crate::protocol::ProtocolFamily::AnthropicMessages
         {
-            let value = super::header_policy::oauth_beta_value(req.headers.iter().filter(|(name,_)| name.eq_ignore_ascii_case("anthropic-beta")).map(|(_,value)|value.as_str()));
-            req.headers.retain(|(name,_)| !name.eq_ignore_ascii_case("anthropic-beta"));
-            req.headers.push(("anthropic-beta".into(),value));
+            let value = super::header_policy::oauth_beta_value(
+                req.headers
+                    .iter()
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+                    .map(|(_, value)| value.as_str()),
+            );
+            req.headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("anthropic-beta"));
+            req.headers.push(("anthropic-beta".into(), value));
         }
         Ok(())
     }

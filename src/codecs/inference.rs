@@ -347,7 +347,9 @@ pub(crate) fn validate(
                             "manual thinking requires temperature 1 when temperature is specified",
                         ));
                     }
-                    if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS || (!interleaved && n >= req.max_tokens.unwrap_or(4096)) {
+                    if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
+                        || (!interleaved && n >= req.max_tokens.unwrap_or(4096))
+                    {
                         return Err(invalid("manual thinking needs at least 1024 tokens and a budget below max_tokens (except enabled interleaved thinking)"));
                     }
                     if thinking.mode == Some(ThinkingMode::Adaptive) {

@@ -27,3 +27,6 @@ pub mod request_policy;
 
 mod connector;
 pub use connector::ConnectorTextAccumulator;
+
+/// Explicit conversion to the conservative Messages strict-tool schema subset.
+pub mod strict_schema;

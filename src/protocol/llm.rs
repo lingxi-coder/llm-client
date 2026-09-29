@@ -544,8 +544,34 @@ pub struct ChatRequest {
 }
 
 impl ChatRequest {
+    /// Construct model input with no conversation or optional overrides.
+    #[must_use]
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            prompt_cache: super::PromptCachePolicy::default(),
+            output_format: super::OutputFormat::default(),
+            controls: super::RequestControls::default(),
+            hosted_tools: Vec::new(),
+            native_options: Vec::new(),
+            continuation: None,
+            system: Vec::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: ToolChoice::Auto,
+            max_tokens: None,
+            temperature: None,
+            thinking: None,
+            service_tier: None,
+            stop_sequences: Vec::new(),
+            metadata: Value::Null,
+        }
+    }
+
     /// Both scoped and explicitly supplied legacy response IDs pin execution.
-    pub fn has_response_continuation(&self) -> bool { self.continuation.is_some() || self.controls.responses.previous_response_id.is_some() }
+    pub fn has_response_continuation(&self) -> bool {
+        self.continuation.is_some() || self.controls.responses.previous_response_id.is_some()
+    }
     pub fn hosted_web_search(&self) -> Option<&WebSearchConfig> {
         self.hosted_tools.iter().find_map(|tool| match tool {
             HostedTool::WebSearch(config) => Some(config),

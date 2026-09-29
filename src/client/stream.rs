@@ -3,14 +3,14 @@
 use crate::codecs::StreamDecoder;
 use crate::files::AutomaticFileCleanup;
 use crate::protocol::{
-    ChatResponse, ContentBlock, ContinuationRef, ConversationMessage, LlmError, OutputFormat,
-    ResponseCacheObservation, StreamEvent, StructuredOutputError, StructuredOutputErrorKind, Usage,
+    ChatResponse, ContinuationRef, LlmError, OutputFormat, ResponseCacheObservation, StreamEvent,
+    StructuredOutputError, StructuredOutputErrorKind, Usage,
 };
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -85,6 +85,7 @@ pub struct ModelStream {
     requested_inference: crate::protocol::InferenceReport,
     ready: VecDeque<Result<StreamEvent, LlmError>>,
     finished: bool,
+    yielded_event: bool,
     status: u16,
     headers: Vec<(String, String)>,
     executed_profile: String,
@@ -119,6 +120,7 @@ impl ModelStream {
             decoder,
             ready,
             finished: false,
+            yielded_event: false,
             status: resp.status,
             headers: resp.headers,
             executed_profile,
@@ -155,6 +157,10 @@ impl ModelStream {
     /// Native Anthropic usage with reported fields folded across stream frames.
     /// Original JSON frames remain available through `ProviderEvent`. This
     /// observation may be partial until the terminal usage event arrives.
+    pub fn anthropic_stop_details(&self) -> Option<&Value> {
+        self.provider_observation.anthropic_stop_details()
+    }
+
     pub fn anthropic_usage(&self) -> Option<&Value> {
         self.provider_observation.anthropic_usage()
     }
@@ -272,8 +278,9 @@ impl ModelStream {
                     self.ready.extend(events);
                 }
                 Some(Err(error)) => {
-                    self.finish_transport();
-                    return Some(Err(error));
+                    let mut event = Err(error);
+                    self.observe_event(&mut event);
+                    return Some(event);
                 }
                 None => {
                     self.ready.extend(self.decoder.finish());
@@ -286,7 +293,20 @@ impl ModelStream {
     /// A terminal outcome releases network resources even when the caller
     /// retains this handle to inspect usage and response headers.
     fn observe_event(&mut self, event: &mut Result<StreamEvent, LlmError>) {
+        if self.yielded_event {
+            if let Err(LlmError::Transport { message }) = event {
+                *event = Err(LlmError::StreamInterrupted {
+                    message: message.clone(),
+                });
+            }
+        }
         if let Ok(event) = event {
+            // Raw provider observations can be keepalives, and inference
+            // settings may be seeded before any provider output arrives.
+            self.yielded_event |= !matches!(
+                event,
+                StreamEvent::ProviderEvent { .. } | StreamEvent::Inference { .. }
+            );
             self.provider_observation.observe(event);
         }
         match &mut *event {
@@ -357,79 +377,46 @@ impl ModelStream {
         mut self,
         format: &OutputFormat,
     ) -> Result<StructuredStreamResult<Value>, StructuredStreamError> {
-        let mut events = Vec::new();
-        let mut text_by_block = BTreeMap::<usize, String>::new();
-        let mut text_bytes = 0usize;
+        let mut accumulator = crate::StreamAccumulator::new();
         let mut event_bytes = EventByteCounter {
             bytes: 0,
             limit: MAX_STRUCTURED_STREAM_BYTES,
         };
-        let mut model = None;
-        let mut response_id = None;
-        let mut terminal = None;
         let mut saw_tool = false;
         while let Some(next) = self.next().await {
             let event = match next {
                 Ok(event) => event,
-                Err(source) => return Err(StructuredStreamError::Stream { source, events }),
+                Err(source) => {
+                    return Err(StructuredStreamError::Stream {
+                        source,
+                        events: accumulator.snapshot().events,
+                    })
+                }
             };
             if serde_json::to_writer(&mut event_bytes, &event).is_err() {
-                return Err(StructuredStreamError::TooLarge { events });
+                return Err(StructuredStreamError::TooLarge {
+                    events: accumulator.snapshot().events,
+                });
             }
-            match &event {
-                StreamEvent::Start {
-                    model: observed,
-                    response_id: id,
-                } => {
-                    model = Some(observed.clone());
-                    response_id = id.clone();
-                }
-                StreamEvent::TextDelta { block, text } => {
-                    text_bytes = text_bytes.saturating_add(text.len());
-                    if text_bytes > MAX_STRUCTURED_STREAM_BYTES {
-                        return Err(StructuredStreamError::TooLarge { events });
-                    }
-                    text_by_block.entry(*block).or_default().push_str(text);
-                }
-                StreamEvent::ToolCallDelta { .. } => saw_tool = true,
-                StreamEvent::End {
-                    stop_reason,
-                    usage,
-                    inference,
-                } => terminal = Some((stop_reason.clone(), usage.clone(), inference.clone())),
-                _ => {}
-            }
-            events.push(event);
+            saw_tool |= matches!(event, StreamEvent::ToolCallDelta { .. });
+            accumulator.observe(&event);
         }
-        let Some((stop_reason, usage, inference)) = terminal else {
-            return Err(StructuredStreamError::MissingEnd { events });
-        };
-        let mut response = ChatResponse {
-            inference,
-            response_cache: self.response_cache.clone(),
-            message: ConversationMessage::assistant(
-                text_by_block
-                    .into_values()
-                    .map(|text| ContentBlock::Text {
-                        text,
-                        thought_signature: None,
-                    })
-                    .collect(),
-            ),
-            web_search: None,
-            file_search: None,
-            native_metadata: Vec::new(),
-            stop_reason,
-            usage,
-            model: model.unwrap_or_default(),
-            response_id,
-            continuation: self.continuation().cloned(),
-            executed_profile: Some(self.executed_profile.clone()),
-        };
+        let assembly = accumulator.snapshot();
+        if !assembly.terminal {
+            return Err(StructuredStreamError::MissingEnd {
+                events: assembly.events,
+            });
+        }
+        let events = assembly.events;
+        let mut response = assembly.response;
+        response.response_cache = self.response_cache.clone();
+        response.continuation = self.continuation().cloned();
+        response.executed_profile = Some(self.executed_profile.clone());
         response.set_anthropic_metadata(
             self.anthropic_container().cloned(),
             self.anthropic_usage().cloned(),
         );
+        response.set_anthropic_stop_details(self.anthropic_stop_details().cloned());
         if saw_tool {
             return Err(StructuredStreamError::Validation {
                 source: StructuredOutputError {

@@ -25,6 +25,23 @@ pub enum ProtocolFamily {
 }
 
 impl ProtocolFamily {
+    /// Whether the SDK codec accepts a structured response format. Model-level
+    /// capability checks still apply independently of this wire support.
+    #[must_use]
+    pub const fn encodes_response_format(&self) -> bool {
+        match self {
+            Self::AnthropicMessages
+            | Self::OpenAiResponses
+            | Self::OpenAiChat
+            | Self::GeminiGenerateContent
+            | Self::VertexGemini
+            | Self::VertexClaude
+            | Self::BedrockClaude
+            | Self::FoundryClaude
+            | Self::AzureOpenAi => true,
+        }
+    }
+
     pub const ALL: [ProtocolFamily; 9] = [
         ProtocolFamily::AnthropicMessages,
         ProtocolFamily::OpenAiChat,

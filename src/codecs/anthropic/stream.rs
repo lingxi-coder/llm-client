@@ -139,11 +139,15 @@ impl EventDecoder for AnthropicStreamDecoder {
                 });
             }
             Some("message_delta") => {
-                if self.retain_anthropic_container
-                    && (crate::providers::anthropic::code_execution::stream_container(&root)
-                        .is_some()
-                        || crate::providers::anthropic::code_execution::stream_usage(&root)
-                            .is_some())
+                if root
+                    .get("delta")
+                    .and_then(|delta| delta.get("stop_details"))
+                    .is_some()
+                    || self.retain_anthropic_container
+                        && (crate::providers::anthropic::code_execution::stream_container(&root)
+                            .is_some()
+                            || crate::providers::anthropic::code_execution::stream_usage(&root)
+                                .is_some())
                 {
                     self.push_provider_event(&root, &mut out);
                 }

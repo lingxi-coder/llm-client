@@ -50,6 +50,175 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observational_provider_frames_do_not_turn_opening_transport_failure_into_interruption()
+    {
+        for batches in [false, true] {
+            let frames = vec![
+                Ok(Bytes::from_static(
+                    b"data: {\"type\":\"future_keepalive\"}\n\n",
+                )),
+                Err(LlmError::Transport {
+                    message: "disconnected".into(),
+                }),
+            ];
+            let mut stream = stream_for(stream::iter(frames).boxed(), "anthropic_messages").await;
+            let error = if batches {
+                let observed = stream.next_batch().await.unwrap();
+                assert!(observed
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, Ok(StreamEvent::ProviderEvent { .. }))));
+                stream
+                    .next_batch()
+                    .await
+                    .unwrap()
+                    .events
+                    .into_iter()
+                    .find_map(Result::err)
+                    .unwrap()
+            } else {
+                assert!(matches!(
+                    stream.next().await,
+                    Some(Ok(StreamEvent::ProviderEvent { .. }))
+                ));
+                stream.next().await.unwrap().unwrap_err()
+            };
+            assert!(matches!(error, LlmError::Transport { message } if message == "disconnected"));
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_error_is_interruption_only_after_exposed_events_for_both_pull_apis() {
+        for batches in [false, true] {
+            for started in [false, true] {
+                let mut frames = Vec::new();
+                if started {
+                    frames.push(Ok(Bytes::from_static(
+                        br#"data: {"model":"m","choices":[{"delta":{"content":"partial"}}]}
+
+"#,
+                    )));
+                }
+                frames.push(Err(LlmError::Transport {
+                    message: "disconnected".into(),
+                }));
+                let mut stream = stream_for(stream::iter(frames).boxed(), "open_ai_chat").await;
+                let mut successful = 0;
+                let error = if batches {
+                    loop {
+                        let batch = stream.next_batch().await.expect("error batch");
+                        let mut error = None;
+                        for event in batch.events {
+                            match event {
+                                Ok(_) => successful += 1,
+                                Err(source) => error = Some(source),
+                            }
+                        }
+                        if let Some(error) = error {
+                            break error;
+                        }
+                    }
+                } else {
+                    loop {
+                        match stream.next().await.expect("error event") {
+                            Ok(_) => successful += 1,
+                            Err(error) => break error,
+                        }
+                    }
+                };
+                if started {
+                    assert!(successful > 0);
+                    assert!(
+                        matches!(error, LlmError::StreamInterrupted { message } if message == "disconnected")
+                    );
+                } else {
+                    assert_eq!(successful, 0);
+                    assert!(
+                        matches!(error, LlmError::Transport { message } if message == "disconnected")
+                    );
+                }
+                assert!(stream.next_batch().await.is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_collection_preserves_anthropic_stop_details() {
+        let payload = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":2}}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"future\":true}},\"usage\":{\"output_tokens\":1}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let result = stream_for(
+            stream::iter(vec![Ok(Bytes::from(payload))]).boxed(),
+            "anthropic_messages",
+        )
+        .await
+        .collect_response()
+        .await
+        .unwrap();
+        assert_eq!(
+            result.response.anthropic_stop_details(),
+            Some(&json!({"type":"refusal","future":true}))
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_collection_retains_final_usage_and_tool_input() {
+        let payload = concat!(
+            "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let result = stream_for(
+            stream::iter(vec![Ok(Bytes::from(payload))]).boxed(),
+            "open_ai_chat",
+        )
+        .await
+        .collect_response()
+        .await
+        .unwrap();
+        assert!(result.terminal);
+        assert_eq!(
+            result.response.usage.state,
+            lingxi_llm_client::protocol::UsageState::Complete
+        );
+        assert_eq!(result.response.executed_profile.as_deref(), Some("test"));
+        assert!(
+            matches!(&result.response.message.content[0], lingxi_llm_client::protocol::ContentBlock::ToolUse { name, input, .. } if name == "read" && input == &json!({}))
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_collection_salvages_transport_interruption() {
+        let payload =
+            "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        let result = stream_for(
+            stream::iter(vec![
+                Ok(Bytes::from(payload)),
+                Err(LlmError::StreamInterrupted {
+                    message: "disconnected".into(),
+                }),
+            ])
+            .boxed(),
+            "open_ai_chat",
+        )
+        .await
+        .collect_response()
+        .await
+        .unwrap_err();
+        assert!(!result.partial.terminal);
+        assert_eq!(result.partial.response.message.text(), "partial");
+        assert_eq!(
+            result.partial.response.executed_profile.as_deref(),
+            Some("test")
+        );
+        assert!(
+            matches!(result.source, LlmError::StreamInterrupted { message } if message == "disconnected")
+        );
+    }
+
+    #[tokio::test]
     async fn structured_stream_validates_only_after_terminal_event() {
         let payload = concat!(
             "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"{\\\"answer\\\":\"}}]}\n\n",

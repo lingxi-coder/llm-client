@@ -133,6 +133,7 @@ impl EventDecoder for GeminiStreamDecoder {
                 if let Some(signature) = signature {
                     out.push(StreamEvent::ThoughtSignature { block, signature });
                 }
+                out.push(StreamEvent::BlockEnd { block });
                 continue;
             }
             if part.get("executableCode").is_some()

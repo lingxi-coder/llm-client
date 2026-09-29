@@ -987,3 +987,29 @@ fn gemini_audio_limit_counts_the_complete_json_body() {
         .unwrap_err();
     assert!(matches!(error, LlmError::RequestTooLarge { message } if message.contains("20 MB")));
 }
+
+#[test]
+fn complete_function_call_closes_before_transport_or_response_end() {
+    let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let events = wire_api::decode_frame(&mut *decoder, br#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call-a","name":"read","args":{"path":"a"}},"thoughtSignature":"sig"}]}}]}"#).unwrap();
+    let signature = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::ThoughtSignature { block: 0, .. }))
+        .unwrap();
+    let closed = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::BlockEnd { block: 0 }))
+        .unwrap();
+    assert!(closed > signature);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, StreamEvent::End { .. })));
+    let mut accumulator = lingxi_llm_client::StreamAccumulator::new();
+    for event in &events {
+        accumulator.observe(event);
+    }
+    let partial = accumulator.finish().unwrap_err().partial;
+    assert!(
+        matches!(&partial.indexed_content[&0], ContentBlock::ToolUse { input, thought_signature:Some(signature), .. } if input == &json!({"path":"a"}) && signature == "sig")
+    );
+}
