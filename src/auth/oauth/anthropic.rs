@@ -1,5 +1,6 @@
 //! Anthropic OAuth wire protocol. The caller owns tokens, browser callbacks, and persistence.
 
+use super::pkce::{generate_pkce, generate_state_token};
 use crate::transport::{HttpExecutor, HttpRequest, Transport};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -73,6 +74,63 @@ pub struct AuthorizeOptions {
     pub login_method: Option<String>,
 }
 
+/// Two redirect variants backed by the same authorization grant.
+#[derive(Clone)]
+pub struct AuthorizeUrlPair {
+    pub automatic_url: String,
+    pub manual_url: String,
+    pub verifier: String,
+    pub state: String,
+}
+
+impl std::fmt::Debug for AuthorizeUrlPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthorizeUrlPair")
+            .field("automatic_url", &"[REDACTED]")
+            .field("manual_url", &"[REDACTED]")
+            .field("verifier", &"[REDACTED]")
+            .field("state", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Create a single authorization URL and its PKCE verifier and state.
+#[must_use]
+pub fn build_authorize_url(
+    config: &ClaudeAiOAuthConfig,
+    redirect_uri: &str,
+    options: &AuthorizeOptions,
+) -> (String, String, String) {
+    let (verifier, challenge) = generate_pkce();
+    let state = generate_state_token();
+    let url = format_authorize_url(config, redirect_uri, &challenge, &state, options);
+    (url, verifier, state)
+}
+
+/// Create loopback and manual URLs from one PKCE verifier and state.
+/// Either redirect can therefore complete the same pending authorization.
+#[must_use]
+pub fn build_authorize_url_pair(
+    config: &ClaudeAiOAuthConfig,
+    redirect_uri: &str,
+    options: &AuthorizeOptions,
+) -> AuthorizeUrlPair {
+    let (verifier, challenge) = generate_pkce();
+    let state = generate_state_token();
+    AuthorizeUrlPair {
+        automatic_url: format_authorize_url(config, redirect_uri, &challenge, &state, options),
+        manual_url: format_authorize_url(
+            config,
+            &config.manual_redirect_uri,
+            &challenge,
+            &state,
+            options,
+        ),
+        verifier,
+        state,
+    }
+}
+
 fn encode(value: &str) -> String {
     form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
@@ -130,6 +188,29 @@ pub struct RefreshResponse {
     pub refresh_token: Option<String>,
     pub expires_in: u64,
     pub scope: Option<String>,
+}
+
+fn granted_scopes(scope: Option<&str>, config: &ClaudeAiOAuthConfig) -> Vec<String> {
+    scope.map_or_else(
+        || config.scopes.clone(),
+        |value| value.split_whitespace().map(str::to_string).collect(),
+    )
+}
+
+impl ExchangeResponse {
+    /// Granted scopes from the token endpoint, falling back to configured scopes.
+    #[must_use]
+    pub fn granted_scopes(&self, config: &ClaudeAiOAuthConfig) -> Vec<String> {
+        granted_scopes(self.scope.as_deref(), config)
+    }
+}
+
+impl RefreshResponse {
+    /// Granted scopes from the token endpoint, falling back to the configured set.
+    #[must_use]
+    pub fn granted_scopes(&self, config: &ClaudeAiOAuthConfig) -> Vec<String> {
+        granted_scopes(self.scope.as_deref(), config)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -623,6 +704,71 @@ mod tests {
         );
         assert!(url.contains("scope=org%3Acreate_api_key+user%3Aprofile"));
         assert!(parse_scope_upgrade(r#"{"required_scopes":["user:file_upload"]}"#).is_some());
+    }
+
+    #[test]
+    fn authorize_pair_reuses_pkce_and_state_for_manual_redirect() {
+        let config = ClaudeAiOAuthConfig::default_with_port(45321);
+        let pair =
+            build_authorize_url_pair(&config, &config.redirect_uri, &AuthorizeOptions::default());
+        assert!(!pair.verifier.is_empty());
+        assert!(!pair.state.is_empty());
+        let strip_redirect = |url: &str| {
+            url.split('&')
+                .filter(|part| !part.starts_with("redirect_uri="))
+                .collect::<Vec<_>>()
+                .join("&")
+        };
+        assert_eq!(
+            strip_redirect(&pair.automatic_url),
+            strip_redirect(&pair.manual_url)
+        );
+        assert!(pair
+            .automatic_url
+            .contains("redirect_uri=http%3A%2F%2Flocalhost%3A45321%2Fcallback"));
+        assert!(pair
+            .manual_url
+            .contains("redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"));
+        assert!(pair
+            .automatic_url
+            .contains(&format!("state={}", pair.state)));
+        assert!(pair.manual_url.contains(&format!("state={}", pair.state)));
+    }
+
+    #[test]
+    fn authorize_pair_debug_redacts_urls_and_grant_secrets() {
+        let pair = AuthorizeUrlPair {
+            automatic_url: "https://example.test/automatic?secret-auto".into(),
+            manual_url: "https://example.test/manual?secret-manual".into(),
+            verifier: "secret-verifier".into(),
+            state: "secret-state".into(),
+        };
+        let debug = format!("{pair:?}");
+        assert!(debug.contains("AuthorizeUrlPair"));
+        assert_eq!(debug.matches("[REDACTED]").count(), 4);
+        for secret in [
+            "secret-auto",
+            "secret-manual",
+            "secret-verifier",
+            "secret-state",
+        ] {
+            assert!(!debug.contains(secret), "debug leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn token_responses_resolve_granted_scopes_in_sdk() {
+        let config = ClaudeAiOAuthConfig::default_with_port(45321);
+        let exchange: ExchangeResponse =
+            serde_json::from_str(r#"{"access_token":"a","scope":"read:user write:messages"}"#)
+                .unwrap();
+        assert_eq!(
+            exchange.granted_scopes(&config),
+            vec!["read:user".to_string(), "write:messages".to_string()]
+        );
+        let refresh: RefreshResponse =
+            serde_json::from_str(r#"{"access_token":"a","expires_in":3600}"#).unwrap();
+        assert_eq!(refresh.granted_scopes(&config), config.scopes);
     }
 
     #[test]

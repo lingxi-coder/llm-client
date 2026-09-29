@@ -53,6 +53,9 @@ impl OpenAiOAuthConfig {
     pub fn redirect_uri(&self, port: u16) -> String {
         format!("http://localhost:{port}/auth/callback")
     }
+    pub fn device_redirect_uri(&self) -> String {
+        format!("{}/deviceauth/callback", self.issuer.trim_end_matches('/'))
+    }
     pub fn whoami_url(&self) -> String {
         format!(
             "{}/v1/user-auth-credential/whoami",
@@ -139,6 +142,18 @@ pub struct ExchangedTokens {
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub expires_in: u64,
+}
+
+impl ExchangedTokens {
+    /// The token endpoint may omit `expires_in` or return zero; both use the
+    /// OpenAI OAuth default of one hour.
+    pub fn effective_lifetime(&self) -> Duration {
+        Duration::from_secs(if self.expires_in == 0 {
+            3600
+        } else {
+            self.expires_in
+        })
+    }
 }
 
 impl fmt::Debug for ExchangedTokens {
@@ -512,6 +527,33 @@ mod tests {
             response: response.into(),
             sent: Mutex::new(vec![]),
         }
+    }
+
+    #[test]
+    fn device_redirect_uri_uses_issuer_without_duplicate_slash() {
+        let mut cfg = OpenAiOAuthConfig::default();
+        assert_eq!(
+            cfg.device_redirect_uri(),
+            "https://auth.openai.com/deviceauth/callback"
+        );
+        cfg.issuer = "https://login.example.test/custom/".into();
+        assert_eq!(
+            cfg.device_redirect_uri(),
+            "https://login.example.test/custom/deviceauth/callback"
+        );
+    }
+
+    #[test]
+    fn token_effective_lifetime_uses_default_only_for_zero() {
+        let mut tokens = ExchangedTokens {
+            id_token: None,
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_in: 0,
+        };
+        assert_eq!(tokens.effective_lifetime(), Duration::from_secs(3600));
+        tokens.expires_in = 42;
+        assert_eq!(tokens.effective_lifetime(), Duration::from_secs(42));
     }
     #[tokio::test]
     async fn exchange_posts_form_with_deadline_and_redacts_token_debug() {

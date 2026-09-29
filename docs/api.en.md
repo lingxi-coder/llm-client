@@ -664,6 +664,13 @@ The built-in authenticators are stateless unit structs. Both `new()` and `with_t
 
 ### Provider OAuth
 
+Anthropic `build_authorize_url_pair` generates automatic and manual redirect URLs
+with shared PKCE and state. Both token response types provide `granted_scopes`
+for scope parsing and configuration fallback. OpenAI
+`OpenAiOAuthConfig::device_redirect_uri` supplies the device callback URI, while
+`ExchangedTokens::effective_lifetime` applies the token lifetime default. Hosts
+use their own clock to convert this duration into a persisted expiration time.
+
 `auth::oauth::{anthropic, openai, copilot}` implements provider authorization
 URLs, code exchange, refresh-token requests, individual device authorization
 requests/polls, and account identity queries. `auth::oauth::pkce` supplies shared

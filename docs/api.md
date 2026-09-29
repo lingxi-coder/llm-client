@@ -660,6 +660,12 @@ OpenAI Chat 连接可通过 `extra.max_tokens_field` 选择输出上限字段：
 
 ### Provider OAuth
 
+Anthropic `build_authorize_url_pair` 为自动回调和手动输入流程生成共享的 PKCE 与
+state；两个 token 响应类型的 `granted_scopes` 统一解析 scope 和默认配置。
+OpenAI `OpenAiOAuthConfig::device_redirect_uri` 提供设备授权回调地址，
+`ExchangedTokens::effective_lifetime` 统一 token 有效期默认规则；宿主使用自己的
+时钟将该时长转换成持久化的到期时间。
+
 `auth::oauth::{anthropic, openai, copilot}` 实现 provider 认证协议：授权 URL、
 授权码交换、refresh token 请求、设备授权的单次申请/查询，以及账户身份查询。
 `auth::oauth::pkce` 提供共用的 PKCE 与 CSRF state 生成。
