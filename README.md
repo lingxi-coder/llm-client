@@ -4,7 +4,7 @@
 
 `llm-client` 是一个独立的 Rust 库，用于在应用中调用不同的 LLM 服务。应用使用统一的请求和响应类型，通过 provider 配置选择模型与连接；客户端负责协议编码、HTTP 传输、流式解析和错误分类。它也提供模型目录、托管式 Web Search、用量与费用估算等能力。
 
-协议类型由本 crate 自身定义，可通过 `lingxi_llm_client::protocol` 使用。应用负责工具执行、权限、会话历史、凭证刷新和上下文压缩；接入示例见 [API 指南](docs/api.md#宿主工具执行与上下文恢复)。
+协议类型由本 crate 自身定义，可通过 `lingxi_llm_client::protocol` 使用。应用负责工具执行、权限、会话历史、凭证存储与刷新调度和上下文压缩；接入示例见 [API 指南](docs/api.md#宿主工具执行与上下文恢复)。
 
 版本 **0.3.0** 按 `providers/<provider_id>` 组织实现。通用操作使用 `client.chat()`、`client.images()` 和 `client.embeddings()`；原生资源先通过 `client.provider::<OpenAiClient>("openai")?` 绑定，再调用 `provider.audio()`、`provider.batches()` 或 `provider.retrieval()`。专属类型位于各自 provider 模块。本版本删除旧入口和模块路径，不提供兼容别名。详见 [0.3.0 架构说明](docs/architecture-migration.md)和[固定版本的官方 SDK 参考](docs/provider-sdk-references.md)。
 
@@ -18,6 +18,7 @@
 - **独立图像服务**：通过 `client.images()` 生成、编辑图片并查询原生异步任务；图像请求与模型能力和 Chat 分开。详见[图像生成指南](docs/images.md)。
 - **用量与费用可追踪**：统一输入、输出和缓存 token 用量，支持根据模型目录价格及实际执行连接估算费用。
 - **离线输入 token 估算**：按需启用供应商 tokenizer，估算 system、工具定义及会话文本等可见输入，并明确列出未计数的内容。
+- **Provider 认证协议**：`auth::oauth` 提供 Anthropic、OpenAI 和 Copilot 的显式登录/刷新请求；浏览器交互、凭证存储与任务调度由应用负责。
 - **查询账户额度**：按连接读取供应商公开的余额、历史 Token 用量、额度窗口和编程套餐权益，区分 API Key 与登录用户，并标明数据的账户范围。
 - **跨设备文件附件**：会话保存应用拥有的稳定附件引用，模型请求按当前连接自动解析为内联内容或受支持的 provider 文件引用；文件模型输入与跨设备预览保持独立。
 - **开箱即用，也可扩展**：内置 HTTP 客户端与认证器，可替换传输、时钟或扩展协议。凭证由应用按请求传入，不写入本地 provider 配置。

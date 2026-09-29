@@ -658,6 +658,18 @@ OpenAI Chat 连接可通过 `extra.max_tokens_field` 选择输出上限字段：
 
 `RequestOptions.credential` 只用于首连接。自动故障转移到需要认证的备用连接时，必须在 `fallback_credentials` 中按 profile 名提供其凭证；缺失时返回 `Authentication`，不会发送该备用请求。宿主负责凭证的获取和更新；自定义认证器仍可按传入的 `profile` 实现其他认证策略。
 
+### Provider OAuth
+
+`auth::oauth::{anthropic, openai, copilot}` 实现 provider 认证协议：授权 URL、
+授权码交换、refresh token 请求、设备授权的单次申请/查询，以及账户身份查询。
+`auth::oauth::pkce` 提供共用的 PKCE 与 CSRF state 生成。
+
+这些操作使用调用方注入的 SDK `Transport` 和 `HttpExecutor`，与模型请求共用网络
+配置；请求及响应读取有期限和响应体大小限制。SDK 不自动刷新、重发、轮询或持久化
+凭据。设备流程的等待、`slow_down` 后的调度、浏览器/回调、并发刷新协调、账号选择
+及 Keychain 存储由调用方处理。刷新凭据明确被拒绝与网络/服务暂时失败分别返回，
+成功刷新也不触发模型请求重放。认证错误不得包含原始 token 响应或秘密值。
+
 ## 传输接口
 
 ### 内置 HTTP 客户端
@@ -838,7 +850,7 @@ query.alibaba_access_key = Some(AlibabaAccessKey {
 
 MiniMax Token Plan 的 `quota_windows` 使用 `AccountQuery.credential` 查询 `/v1/token_plan/remains`。返回中的 `current_interval_usage_count` / `current_weekly_usage_count` 语义不明确时不会当作已用量或剩余量；只使用明确的剩余数量或百分比。MiniMax 按量付费余额和历史账单没有在这里假造为支持项，仍返回 `Unsupported`。
 
-ChatGPT/Codex、GitHub Copilot 和 Kimi Code 的用户账户查询由宿主提供已经登录的官方本地服务或 SDK。单账号可通过 `register_account_source(provider_id, AccountIdentity::AuthUser, source)` 接入；同一供应商有多个 Auth 用户时，应通过 `register_profile_account_source(profile_name, AccountIdentity::AuthUser, source)` 分别绑定登录会话。共用单会话数据源会返回 `AmbiguousAccountSource`，避免额度归属错误。若提供 `AccountQuery.credential`，Copilot 会将它作为用户的 `gitHubToken` 传给 `account.getQuota`。`CodexAccountSource` 和 `CopilotAccountSource` 接受宿主实现的 `AccountRpc`，其 `call` 返回 JSON-RPC 的 `result` 内容，并将 RPC 错误转换成 `AccountFailure`；`KimiCodeAccountSource` 使用每次查询显式提供的回环地址及令牌。客户端不执行 OAuth 登录、刷新或凭证持久化。Codex 的 5 小时／每周窗口、Kimi Code 的 5 小时／可用时的 7 天窗口按实际响应返回；Copilot 仅返回官方 SDK 报告的窗口。Codex 的每日 Token 记录按 UTC 整天返回；时间区间只筛选与之相交的完整日桶，不按小时分摊。Kimi Code 的官方 `userinfo` 只给出等级名称，没有明确的订阅状态语义，因此其订阅状态保持 `Unknown`；GLM Coding Plan 暂无已确认的公开账户查询接口，也不会根据连接配置宣称已订阅。
+ChatGPT/Codex、GitHub Copilot 和 Kimi Code 的用户账户查询由宿主提供已经登录的官方本地服务或 SDK。单账号可通过 `register_account_source(provider_id, AccountIdentity::AuthUser, source)` 接入；同一供应商有多个 Auth 用户时，应通过 `register_profile_account_source(profile_name, AccountIdentity::AuthUser, source)` 分别绑定登录会话。共用单会话数据源会返回 `AmbiguousAccountSource`，避免额度归属错误。若提供 `AccountQuery.credential`，Copilot 会将它作为用户的 `gitHubToken` 传给 `account.getQuota`。`CodexAccountSource` 和 `CopilotAccountSource` 接受宿主实现的 `AccountRpc`，其 `call` 返回 JSON-RPC 的 `result` 内容，并将 RPC 错误转换成 `AccountFailure`；`KimiCodeAccountSource` 使用每次查询显式提供的回环地址及令牌。账户查询本身不隐式执行 OAuth 登录或刷新。独立的 `auth::oauth` 接口支持显式认证协议操作，凭证持久化仍由宿主负责。Codex 的 5 小时／每周窗口、Kimi Code 的 5 小时／可用时的 7 天窗口按实际响应返回；Copilot 仅返回官方 SDK 报告的窗口。Codex 的每日 Token 记录按 UTC 整天返回；时间区间只筛选与之相交的完整日桶，不按小时分摊。Kimi Code 的官方 `userinfo` 只给出等级名称，没有明确的订阅状态语义，因此其订阅状态保持 `Unknown`；GLM Coding Plan 暂无已确认的公开账户查询接口，也不会根据连接配置宣称已订阅。
 
 Copilot 也可在每次查询的 `AccountQuery.credential` 中提供对应用户的 GitHub 令牌；此时共享 SDK 数据源会按令牌分别查询，不需要逐连接绑定。
 

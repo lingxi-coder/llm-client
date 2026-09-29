@@ -1,5 +1,6 @@
 //! Provider authentication for borrowed, host-owned credential material.
-//! Storage, refresh and account selection stay with the caller.
+//! Storage, refresh scheduling and account selection stay with the caller.
+//! Explicit token-exchange and refresh protocols are available in `auth::oauth`.
 use super::{header_policy, sigv4};
 use crate::protocol::{AuthStrategy, LlmError, ProtocolFamily, ProviderProfile};
 use crate::HttpRequest;

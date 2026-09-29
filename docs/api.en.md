@@ -662,6 +662,21 @@ The built-in authenticators are stateless unit structs. Both `new()` and `with_t
 
 `RequestOptions.credential` is used only for the first connection. Automatic failover to a fallback connection requiring authentication needs that profile's credential in `fallback_credentials`; if it is absent, the client returns `Authentication` without sending the fallback request. The host obtains and updates credentials. A custom authenticator can still implement another strategy using the passed `profile`.
 
+### Provider OAuth
+
+`auth::oauth::{anthropic, openai, copilot}` implements provider authorization
+URLs, code exchange, refresh-token requests, individual device authorization
+requests/polls, and account identity queries. `auth::oauth::pkce` supplies shared
+PKCE and CSRF state generation.
+
+Operations use an injected SDK `Transport` and bounded `HttpExecutor`, so they
+can share model networking configuration. The SDK does not automatically refresh,
+retry, poll or persist credentials. Callers own browser/callback handling,
+poll scheduling (including `slow_down`), concurrent refresh coordination, account
+selection and secure storage. Explicit rejection of a refresh credential is
+separate from temporary network/server failure. Successful refresh never replays
+a model request. Authentication errors do not expose raw token responses.
+
 ## Transport API
 
 ### Built-in HTTP client
@@ -842,7 +857,7 @@ query.alibaba_access_key = Some(AlibabaAccessKey {
 
 MiniMax Token Plan quota windows use `AccountQuery.credential` to query `/v1/token_plan/remains`. Ambiguous `current_interval_usage_count` / `current_weekly_usage_count` values are not interpreted as either consumed or remaining usage; only explicit remaining counts or percentages are mapped. Pay-as-you-go balance and billing history are not reported as supported.
 
-For ChatGPT/Codex, GitHub Copilot and Kimi Code user accounts, the host supplies a signed-in official local service or SDK. One account can use `register_account_source(provider_id, AccountIdentity::AuthUser, source)`; for several Auth users of the same provider, bind each signed-in session with `register_profile_account_source(profile_name, AccountIdentity::AuthUser, source)`. A shared single-session source returns `AmbiguousAccountSource` rather than attributing one user's quota to another. When supplied, `AccountQuery.credential` is passed to Copilot `account.getQuota` as the user's `gitHubToken`. `CodexAccountSource` and `CopilotAccountSource` accept a host-implemented `AccountRpc`; its `call` returns the JSON-RPC `result` value and maps RPC errors to `AccountFailure`. `KimiCodeAccountSource` uses a loopback service URL and token provided per query. The client does not perform OAuth login, refresh or credential persistence. Codex five-hour/weekly and Kimi Code five-hour/available seven-day windows are returned when present; Copilot returns only windows reported by its SDK. Codex daily token records are whole UTC-day buckets: the requested range selects every overlapping full day without prorating by hour. Kimi Code's documented `userinfo` gives a level name but no unambiguous subscription-state contract, so its subscription status remains `Unknown`. GLM Coding Plan has no confirmed public account-query API and is not marked subscribed from profile configuration alone.
+For ChatGPT/Codex, GitHub Copilot and Kimi Code user accounts, the host supplies a signed-in official local service or SDK. One account can use `register_account_source(provider_id, AccountIdentity::AuthUser, source)`; for several Auth users of the same provider, bind each signed-in session with `register_profile_account_source(profile_name, AccountIdentity::AuthUser, source)`. A shared single-session source returns `AmbiguousAccountSource` rather than attributing one user's quota to another. When supplied, `AccountQuery.credential` is passed to Copilot `account.getQuota` as the user's `gitHubToken`. `CodexAccountSource` and `CopilotAccountSource` accept a host-implemented `AccountRpc`; its `call` returns the JSON-RPC `result` value and maps RPC errors to `AccountFailure`. `KimiCodeAccountSource` uses a loopback service URL and token provided per query. Account queries do not implicitly perform OAuth login or refresh. The separate `auth::oauth` API supports explicit authentication operations; credential persistence remains the host's responsibility. Codex five-hour/weekly and Kimi Code five-hour/available seven-day windows are returned when present; Copilot returns only windows reported by its SDK. Codex daily token records are whole UTC-day buckets: the requested range selects every overlapping full day without prorating by hour. Kimi Code's documented `userinfo` gives a level name but no unambiguous subscription-state contract, so its subscription status remains `Unknown`. GLM Coding Plan has no confirmed public account-query API and is not marked subscribed from profile configuration alone.
 
 Copilot can also receive the queried user's GitHub token in `AccountQuery.credential`; then one SDK source can query several users without profile-specific binding.
 
