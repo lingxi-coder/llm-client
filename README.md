@@ -16,6 +16,7 @@
 - **路由与故障转移**：按模型解析连接，也可明确指定 profile；按需配置备用连接及其凭证，响应可用于追踪实际执行连接。
 - **统一流式输出与搜索结果**：使用统一事件处理文本、工具调用和用量；通过 Web Search 接口获取服务端搜索结果及引用。搜索选项和模型能力按 provider 支持情况校验。
 - **独立图像服务**：通过 `client.images()` 生成、编辑图片并查询原生异步任务；图像请求与模型能力和 Chat 分开。详见[图像生成指南](docs/images.md)。
+- **有限选项决策**：通过 `client.decisions()` 对共享文本或图片上下文中的多个问题分别单选，严格校验选项。详见 [Decision API](docs/api.md#decision-api)。
 - **用量与费用可追踪**：统一输入、输出和缓存 token 用量，支持根据模型目录价格及实际执行连接估算费用。
 - **离线输入 token 估算**：按需启用供应商 tokenizer，估算 system、工具定义及会话文本等可见输入，并明确列出未计数的内容。
 - **查询账户额度**：按连接读取供应商公开的余额、历史 Token 用量、额度窗口和编程套餐权益，区分 API Key 与登录用户，并标明数据的账户范围。
@@ -61,6 +62,7 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 | 对话、流式输出与函数工具 | 统一文本、工具调用与用量事件；工具由应用执行 | 全部内置 Provider，具体模型需支持请求能力 | [API](docs/api.md) |
 | 推理与服务档位 | 调节思考预算、effort 和 fast；读取实际执行档位 | 全部内置 Provider 可查询能力；budget、effort、fast 按模型分别声明，不互相等同 | [推理与定价](docs/inference.md) |
 | JSON 与 Schema 输出 | 约束输出格式，并校验 JSON/schema 或反序列化为 Rust 类型 | OpenAI、Anthropic、Gemini；OpenRouter 按上游模型；其他兼容服务须核实 JSON Object / Schema 各自支持 | [输出契约](docs/services.md) |
+| 有限选项 Decision | 一次请求回答多个单选题；返回答案、执行连接与用量 | OpenAI Responses、Anthropic、Gemini、xAI；北京 Qwen 严格模式模型限文本。首版使用结构化输出，并非 OpenAI 原生 Decisions | [Decision API](docs/api.md#decision-api) |
 | 联网搜索与引用 | 由服务端搜索网页，返回来源与引用 | OpenAI、Anthropic、Gemini、OpenRouter、GLM/Z.AI、MiniMax、Kimi Search、Qwen Search、DeepSeek Search；xAI 需自定义 Responses 搜索 profile | [搜索矩阵](docs/web-search.md) |
 | 显式提示缓存 | 复用工具、system 或消息前缀，减少重复输入开销 | OpenAI Responses（GPT-5.6+ 原生 options 与独立 retention）；Anthropic / Messages；MiniMax 仅五分钟断点。服务端自动缓存另计 | [OpenAI Responses](docs/openai-responses-prompt-cache.md) · [提示缓存总览](docs/services.md) |
 | 远端上下文缓存 | 创建、读取、更新和删除可复用的上下文缓存资源 | Gemini（独立 cachedContents 服务） | [Gemini Cache](docs/gemini-context-cache.md) |

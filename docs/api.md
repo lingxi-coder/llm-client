@@ -4,7 +4,7 @@
 
 本文对应本仓库的 Rust API。`lingxi-llm-client` 是库，内置 HTTP 客户端，不提供监听端口的 HTTP 服务、CLI 或密钥管理服务。核心客户端 API 可从 `lingxi_llm_client` 导入；请求、响应和配置类型通过 `lingxi_llm_client::protocol` 导入。
 
-图像生成与编辑使用独立的 `client.images()` 服务；请求、任务和内置 provider 能力见[图像生成指南](images.md)。`client.chat()` 提供与原有 `complete()` / `stream()` 相同的对话接口。
+图像生成与编辑使用独立的 `client.images()` 服务；请求、任务和内置 provider 能力见[图像生成指南](images.md)。`client.chat()` 提供与原有 `complete()` / `stream()` 相同的对话接口。有限选项决策使用 `client.decisions()`。
 
 ## Provider 原生选项
 
@@ -32,6 +32,7 @@
 - [接入与生命周期](#接入与生命周期)
 - [客户端和构建器](#客户端和构建器)
 - [请求与消息](#请求与消息)
+- [Decision API](#decision-api)
 - [宿主工具执行与上下文恢复](#宿主工具执行与上下文恢复)
 - [Web Search 接口](#web-search-接口)
 - [Qwen 知识库 File Search](#qwen-知识库-file-search)
@@ -331,6 +332,37 @@ async fn call_with_one_context_retry(
 - 删除未使用的 `TokenEstimate`、`TokenEstimateSource`。本地估算使用 `estimate_local_tokens()` / `estimate_local_tokens_in()` 及其 `LocalTokenEstimate` 返回值；供应商实际用量仍由 `Usage` 表示。
 
 错误反序列化不再接受已删除的变体；保存过这些错误的宿主应将其迁入自身错误模型。provider 管理、账号用量查询、费用估算和本地 token 计数继续保留。
+
+## Decision API
+
+`client.decisions()` 与 `snapshot.decisions()` 提供 `models()`、`decide()` 和 `decide_in(profile, ...)`。这是从预定义有限选项中每题选择一个答案的 Rust 服务；一次请求可包含多个问题，共用文本和图片上下文。`decide_in` 指定起始 profile，`decide` 按模型路由，并会在同组**可见**连接中选取满足 Decision 准入条件的起始连接；隐藏连接只可通过明确指定 profile 或合格的故障切换到达。明确指定不合格连接时仍会拒绝。调用使用普通 `RequestOptions` 中的请求级凭证和期限；附件由构建 client 时注册的解析器处理。若无作用域路由将另一连接提升为起始连接，原 `credential` 和请求级 `authenticator` 不会发给它：需通过 `fallback_credentials` 按提升目标的 profile 名提供凭证，否则发送前失败。原连接的 `account_scope` 和 `file_account_scope` 也不会复用。Decision 请求的 finalizer 和 authenticator 可添加认证或其他头部，但不能更改最终请求的方法、URL 或已编码的严格 schema 请求体。
+
+```rust,no_run
+use lingxi_llm_client::protocol::{
+    DecisionContextPart, DecisionOption, DecisionQuestion, DecisionRequest, DecisionResult,
+};
+use lingxi_llm_client::{DecisionError, LlmClient, RequestOptions};
+
+async fn classify(client: &LlmClient, options: &RequestOptions) -> Result<DecisionResult, DecisionError> {
+    let request = DecisionRequest {
+        model: "gpt-6-luna".into(),
+        context: vec![DecisionContextPart::Text { text: "客户申请退款".into() }],
+        questions: vec![DecisionQuestion {
+            id: "route".into(),
+            prompt: "交给哪个团队？".into(),
+            options: vec![
+                DecisionOption { id: "sales".into(), label: "销售".into() },
+                DecisionOption { id: "support".into(), label: "客服".into() },
+            ],
+        }],
+    };
+    client.decisions().decide_in("openai", &request, options).await
+}
+```
+
+每个问题及选项都需要非空且唯一的 ID；`DecisionResult.answers` 以原始问题 ID 为键，值为选项 ID。不提供隐含的“都不选”，需要时应将它声明为一个选项。图片使用 `DecisionContextPart::Image { source: Box::new(image_source) }`，只会发送给该连接及模型明确支持的路径。`DecisionResult.report` 保留实际模型、执行 profile、实现方式和 `UsageReport`；`DecisionError::Refused`、`Incomplete`、`InvalidResult` 在提供方已返回用量时也保留报告。`report.usage` 只对应最后一次尝试；故障切换前已报告用量的连接保存在 `report.prior_attempts`，每项含模型、profile 和独立的用量报告。如果最后一次尝试在进入传输层之前失败，`executed_profile` 为 `None`。缺少明确的终止状态或 HTTP 2xx 响应体读取中断会返回 `Incomplete`，不会重新决策。HTTP 2xx 响应的外层格式若无法解码，会作为 `InvalidResult` 返回并保留可解析的用量，不会触发故障切换。OpenAI Responses 的 `status=failed` 会按提供方错误分类；未能故障切换时，`ProviderWithReport` 保留可解析的用量，包括此前连接已报告的用量。无效结果不会重试或改用弱约束输出；模型只给出建议，调用方仍负责授权和执行。
+
+内置的显式 `ProviderProfile.decisions` 配置只对已核实的连接和模型启用。首批模型为 OpenAI Responses `gpt-6-luna`、Anthropic Messages `claude-sonnet-5`、Gemini GenerateContent `gemini-3.7-flash`、xAI Chat `grok-4.20`，以及北京 Qwen Chat 的 `qwen3.8-flash/max`。通用目录的 `structured_output` 标记不能单独增加 Decision 模型；新增模型须独立核对严格输出协议。xAI 和 Qwen 的 Decision 路径目前限文本；ChatGPT 订阅凭证连接不支持这个非流式服务；实际列表以 `decisions().models()` 为准。通过 `register_codec` 替换某协议的内建 codec 后，该协议不再提供 Decision 能力；普通 Chat 仍使用替换后的 codec。首版 `DecisionImplementation::StructuredOutput` 通过严格 JSON Schema 实现，**不是** OpenAI 预览中的原生 Decisions API。OpenAI 原生接口的公开 wire 契约建立后再增加适配；DeepSeek Responses 和 OpenRouter 路由仍待独立验证。语法及选项成员受约束不代表模型选对业务答案，真实账户、延迟和正确率需要单独验收。
 
 ## Web Search 接口
 

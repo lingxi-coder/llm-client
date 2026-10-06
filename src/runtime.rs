@@ -75,7 +75,7 @@ use crate::codecs::WireCodec;
 use crate::directory::ModelDirectory;
 use crate::protocol::{AuthStrategy, ProtocolFamily, Region};
 use crate::transport::{Clock, Transport};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 /// An owned, immutable view of one configuration revision.
@@ -91,6 +91,7 @@ pub(crate) struct RuntimeResources {
     pub(crate) http: Arc<dyn Transport>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
+    pub(crate) builtin_codec_families: BTreeSet<ProtocolFamily>,
     pub(crate) image_adapters:
         BTreeMap<crate::protocol::ImageApi, Arc<dyn crate::images::ImageAdapter>>,
     pub(crate) image_authenticators: BTreeMap<String, Arc<dyn crate::images::ImageAuthenticator>>,

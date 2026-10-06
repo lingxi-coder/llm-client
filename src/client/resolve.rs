@@ -19,6 +19,36 @@ pub(super) struct RequestRoute<'a> {
 }
 
 impl RequestRoute<'_> {
+    /// Promote a selected connection while keeping route metadata aligned with
+    /// the connection that will actually receive the first request.
+    pub(super) fn promote_head(&mut self, index: usize) {
+        let selected = self.connections.remove(index);
+        let profile = selected.profile;
+        let model = selected.model;
+        self.connections.insert(0, selected);
+        self.route.provider_id = profile.provider_id.clone();
+        self.route.profile_name = profile.profile_name.clone();
+        self.route.request_model = model.request_model.clone();
+        self.route.display_model = model.display_model.clone();
+        self.route.pricing_model = PricingModelRef {
+            pricing_provider_id: profile.provider_id.clone(),
+            billing_model: model.billing_model.clone(),
+            request_model: model.request_model.clone(),
+            display_model: model.display_model.clone(),
+        };
+        self.route.capability_support = model.capability_support.unwrap_or_default();
+        self.route.failover = profile.connection.failover;
+        self.route.connection_chain = self
+            .connections
+            .iter()
+            .skip(1)
+            .map(|connection| ConnectionHop {
+                profile_name: connection.profile.profile_name.clone(),
+                request_model: connection.model.request_model.clone(),
+            })
+            .collect();
+    }
+
     /// A typed provider client may use sibling profiles, but never another
     /// provider's implementation from the same routing group.
     pub(super) fn retain_provider(&mut self, provider_id: &str) -> Result<(), LlmError> {

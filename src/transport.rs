@@ -194,11 +194,31 @@ impl<'a> HttpExecutor<'a> {
         self
     }
 
-    pub async fn send(&self, mut request: HttpRequest) -> Result<StreamResponse, LlmError> {
+    pub async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+        self.send_with_dispatch_report(request)
+            .await
+            .map_err(|(error, _)| error)
+    }
+
+    /// The flag is false when the deadline expired before the transport
+    /// future was polled, so callers can distinguish an unsent attempt.
+    pub(crate) async fn send_with_dispatch_report(
+        &self,
+        mut request: HttpRequest,
+    ) -> Result<StreamResponse, (LlmError, bool)> {
         let deadline = self.deadline.cap(request.timeout);
-        request.timeout = deadline.remaining()?;
-        let response = deadline.run(self.transport.send(request)).await??;
-        Ok(Self::bound_response(response, deadline))
+        request.timeout = deadline.remaining().map_err(|error| (error, false))?;
+        let mut transport_attempted = false;
+        let outcome = deadline
+            .run(async {
+                transport_attempted = true;
+                self.transport.send(request).await
+            })
+            .await;
+        match outcome {
+            Ok(Ok(response)) => Ok(Self::bound_response(response, deadline)),
+            Ok(Err(error)) | Err(error) => Err((error, transport_attempted)),
+        }
     }
 
     pub async fn send_stream(
@@ -265,18 +285,49 @@ impl<'a> HttpExecutor<'a> {
         response: StreamResponse,
         limit: Option<usize>,
     ) -> Result<HttpResponse, LlmError> {
+        Self::collect_response_with_partial(response, limit)
+            .await
+            .map_err(|(error, _)| error)
+    }
+
+    /// Keep the status, headers, and bytes already received when a successful
+    /// response body stops early. Decision calls use this to avoid replaying a
+    /// generation whose outcome may already have been produced.
+    pub(crate) async fn collect_response_with_partial(
+        response: StreamResponse,
+        limit: Option<usize>,
+    ) -> Result<HttpResponse, (LlmError, HttpResponse)> {
+        let status = response.status;
+        let headers = response.headers;
         let body = if (200..300).contains(&response.status) {
             let mut chunks = response.body;
             let mut body = BytesMut::new();
             while let Some(chunk) = chunks.next().await {
-                let chunk = chunk.map_err(|error| match error {
-                    LlmError::StreamInterrupted { message } => LlmError::Transport { message },
-                    other => other,
+                let chunk = chunk.map_err(|error| {
+                    let error = match error {
+                        LlmError::StreamInterrupted { message } => LlmError::Transport { message },
+                        other => other,
+                    };
+                    (
+                        error,
+                        HttpResponse {
+                            status,
+                            headers: headers.clone(),
+                            body: body.clone().freeze(),
+                        },
+                    )
                 })?;
                 if limit.is_some_and(|limit| chunk.len() > limit.saturating_sub(body.len())) {
-                    return Err(LlmError::Transport {
-                        message: "HTTP response body exceeds operation limit".into(),
-                    });
+                    return Err((
+                        LlmError::Transport {
+                            message: "HTTP response body exceeds operation limit".into(),
+                        },
+                        HttpResponse {
+                            status,
+                            headers,
+                            body: body.freeze(),
+                        },
+                    ));
                 }
                 body.extend_from_slice(&chunk);
             }
@@ -285,8 +336,8 @@ impl<'a> HttpExecutor<'a> {
             collect_error_body(response.body).await
         };
         Ok(HttpResponse {
-            status: response.status,
-            headers: response.headers,
+            status,
+            headers,
             body,
         })
     }
@@ -318,3 +369,43 @@ impl Clock for SystemClock {
 
 const _: Option<&dyn Transport> = None;
 const _: Option<&dyn Clock> = None;
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingTransport(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Transport for CountingTransport {
+        async fn send(&self, _request: HttpRequest) -> Result<StreamResponse, LlmError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(LlmError::Transport {
+                message: "unexpected dispatch".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_does_not_mark_transport_attempted() {
+        let transport = CountingTransport(AtomicUsize::new(0));
+        let expired = std::time::Instant::now() - Duration::from_secs(1);
+        let request = HttpRequest {
+            method: "POST".into(),
+            url: "https://example.test/decision".into(),
+            headers: vec![],
+            body: Bytes::new(),
+            timeout: None,
+        };
+        let outcome = HttpExecutor::new(&transport)
+            .with_deadline(crate::runtime::Deadline::at(Some(expired)))
+            .send_with_dispatch_report(request)
+            .await;
+        assert!(matches!(
+            outcome,
+            Err((LlmError::TransportTimeout { .. }, false))
+        ));
+        assert_eq!(transport.0.load(Ordering::Relaxed), 0);
+    }
+}

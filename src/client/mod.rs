@@ -21,6 +21,8 @@ pub(crate) use attachments::*;
 use builder::validate_profiles;
 pub use builder::{BuildError, LlmClientBuilder};
 pub mod chat;
+pub mod decisions;
+pub use decisions::{DecisionError, DecisionService};
 pub mod options;
 mod price_query;
 pub mod pricing;
@@ -106,6 +108,10 @@ impl ClientSnapshot {
         ChatService::new(ClientSource::fixed(self))
     }
 
+    pub fn decisions(&self) -> DecisionService<'_> {
+        DecisionService::new(ClientSource::fixed(self))
+    }
+
     pub fn embeddings(&self) -> crate::embeddings::EmbeddingService<'_> {
         crate::embeddings::EmbeddingService::new(ClientSource::fixed(self))
     }
@@ -161,6 +167,18 @@ impl ClientSnapshot {
         &self,
         include: impl Fn(&crate::protocol::ModelProfile) -> bool,
     ) -> Vec<ModelListing> {
+        self.models_with(|_, model| include(model).then_some(()))
+            .into_iter()
+            .map(|(listing, ())| listing)
+            .collect()
+    }
+
+    /// Keep the model row alongside its listing so capability-specific
+    /// pickers never have to recover row identity from a shared wire ID.
+    fn models_with<T>(
+        &self,
+        include: impl Fn(&ProviderProfile, &crate::protocol::ModelProfile) -> Option<T>,
+    ) -> Vec<(ModelListing, T)> {
         self.state
             .config
             .profiles
@@ -168,32 +186,38 @@ impl ClientSnapshot {
             .filter(|p| p.supports_region(self.runtime.region) && !p.connection.hidden)
             .flat_map(|p| {
                 let include = &include;
-                p.models
-                    .iter()
-                    .filter(move |m| !m.hidden && self.tracks(p, m) && include(m))
-                    .map(move |m| ModelListing {
-                        info: {
-                            let mut info = m.info.clone();
-                            info.features = info.features.on_connection(&p.info.features);
-                            info.pricing = m.pricing.clone();
-                            info
+                p.models.iter().filter_map(move |m| {
+                    if m.hidden || !self.tracks(p, m) {
+                        return None;
+                    }
+                    let selected = include(p, m)?;
+                    Some((
+                        ModelListing {
+                            info: {
+                                let mut info = m.info.clone();
+                                info.features = info.features.on_connection(&p.info.features);
+                                info.pricing = m.pricing.clone();
+                                info
+                            },
+                            regions: p.regions.clone(),
+                            id: m.display_model.clone(),
+                            profile_name: p.profile_name.clone(),
+                            request_model: m.request_model.clone(),
+                            billing_mode: m.billing_mode_on(&p.pricing),
+                            pricing: m.pricing.clone(),
+                            // The catalog's display name, not its description: the
+                            // latter is a paragraph of vendor prose and was never a
+                            // name. It keeps its own field below.
+                            display_name: m.display_model.clone(),
+                            description: m.description.clone(),
+                            provider_id: p.provider_id.clone(),
+                            context_window: m.metadata.context_window_tokens,
+                            max_output_tokens: m.metadata.max_output_tokens,
+                            capability_support: m.capability_support.unwrap_or_default(),
                         },
-                        regions: p.regions.clone(),
-                        id: m.display_model.clone(),
-                        profile_name: p.profile_name.clone(),
-                        request_model: m.request_model.clone(),
-                        billing_mode: m.billing_mode_on(&p.pricing),
-                        pricing: m.pricing.clone(),
-                        // The catalog's display name, not its description: the
-                        // latter is a paragraph of vendor prose and was never a
-                        // name. It keeps its own field below.
-                        display_name: m.display_model.clone(),
-                        description: m.description.clone(),
-                        provider_id: p.provider_id.clone(),
-                        context_window: m.metadata.context_window_tokens,
-                        max_output_tokens: m.metadata.max_output_tokens,
-                        capability_support: m.capability_support.unwrap_or_default(),
-                    })
+                        selected,
+                    ))
+                })
             })
             .collect()
     }

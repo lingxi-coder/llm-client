@@ -5,6 +5,12 @@
 //! credential refresh, and context-compaction decisions.
 
 mod continuation;
+mod decision;
+pub use decision::{
+    DecisionAttemptReport, DecisionCallReport, DecisionContextPart, DecisionImplementation,
+    DecisionModelListing, DecisionOption, DecisionQuestion, DecisionRequest, DecisionResult,
+    DecisionSupport,
+};
 mod native;
 pub use native::{NativeExtension, NativeType};
 pub mod ids;

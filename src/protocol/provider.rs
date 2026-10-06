@@ -764,6 +764,9 @@ pub struct ProviderProfile {
     pub images: super::ImageServiceConfig,
     #[serde(default)]
     pub embeddings: crate::protocol::ServiceSetting<crate::embeddings::EmbeddingRoute>,
+    /// Explicit finite-choice decision support. Missing means disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<super::DecisionSupport>,
     #[serde(default)]
     pub retrieval:
         crate::protocol::ServiceSetting<crate::providers::openai::retrieval::RetrievalRoute>,

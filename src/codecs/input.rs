@@ -72,6 +72,7 @@ impl CodecContext {
                 .collect(),
             images: Default::default(),
             embeddings: Default::default(),
+            decisions: profile.decisions,
             retrieval: Default::default(),
             batches: Default::default(),
             deferred: Default::default(),

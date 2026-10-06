@@ -2,6 +2,10 @@
 
 本地契约测试、官方文档证据和真实账户验收分别记录。通过某个只读接口，不代表同一账户能够生成内容、使用音频/Realtime、访问自定义音色或在其他区域调用服务。
 
+## Decision API
+
+首版 `client.decisions()` 使用各 provider 的严格 JSON Schema 输出，不调用 OpenAI 预览中的原生 Decisions 端点。Mock transport 覆盖 OpenAI Responses、Anthropic Messages、Gemini GenerateContent、xAI Chat 和北京 Qwen Chat 的编码、答案校验、拒答、用量及能力门控；真实账户请求、权限、延迟和决策正确率均未验收。原生 OpenAI 适配仍等待[公开协议](https://openai.com/index/devday-2026-recap/)；DeepSeek Responses 和 OpenRouter 的严格路由亦未纳入首批。只有在明确记录账号、区域、模型、输入模态和实际调用结果后，才能将相应路径标为 live 通过。
+
 ## xAI 内置音色目录
 
 `examples/xai_voice_acceptance.rs` 使用库的 `XaiAudioService` 和默认官方端点，检查 `list_voices()`，然后读取返回的第一个音色的 `get_voice()`。最多两个 GET，不创建资源、不生成音频、不自动重试、不访问自定义音色。详情请求核对返回 ID 与请求 ID 完全一致；目录为空时详情保持 `not_run`，整体验收不算通过。

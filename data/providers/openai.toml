@@ -15,6 +15,7 @@ regions = ["international"]
 provider_id = "openai"
 base_url = "https://api.openai.com/v1"
 protocol = "open_ai_responses"
+decisions = { implementation = "structured_output", text = true, image = true }
 # The completion wire and the model directory are different things here:
 # this vendor serves one shared model list for both of its wires, in the
 # other one's shape. Left unstated, a refresh would look for a directory in

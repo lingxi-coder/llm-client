@@ -11,6 +11,7 @@ regions = ["international"]
 provider_id = "xai"
 base_url = "https://api.x.ai/v1"
 protocol = "open_ai_chat"
+decisions = { implementation = "structured_output", text = true, image = false }
 auth = "api_key"
 credential_env = "XAI_API_KEY"
 billing_mode = "per_token"

@@ -20,6 +20,9 @@ impl LlmClient {
     pub fn chat(&self) -> ChatService<'_> {
         ChatService::new(ClientSource::live(&self.runtime, &self.published))
     }
+    pub fn decisions(&self) -> super::DecisionService<'_> {
+        super::DecisionService::new(ClientSource::live(&self.runtime, &self.published))
+    }
     pub fn images(&self) -> crate::images::ImageService<'_> {
         crate::images::ImageService::new(ClientSource::live(&self.runtime, &self.published))
     }

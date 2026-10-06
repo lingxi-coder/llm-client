@@ -8,6 +8,7 @@ regions = ["china_mainland"]
 provider_id = "qwen"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 protocol = "open_ai_chat"
+decisions = { implementation = "structured_output", text = true, image = false }
 auth = "bearer"
 credential_env = "DASHSCOPE_API_KEY"
 billing_mode = "per_token"

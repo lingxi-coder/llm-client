@@ -4,7 +4,7 @@
 
 This document covers the Rust API in this repository. `lingxi-llm-client` is a library with a built-in HTTP client. It does not provide an HTTP service with a listening port, a CLI, or a key management service. The core client API can be imported from `lingxi_llm_client`; request, response, and configuration types are available through `lingxi_llm_client::protocol`.
 
-Image generation and editing use the independent `client.images()` service; see the [image guide](images.en.md) for requests, tasks, and built-in provider support. `client.chat()` exposes the same conversation operations as the existing `complete()` and `stream()` methods.
+Image generation and editing use the independent `client.images()` service; see the [image guide](images.en.md) for requests, tasks, and built-in provider support. `client.chat()` exposes the same conversation operations as the existing `complete()` and `stream()` methods. Finite-choice decisions use `client.decisions()`.
 
 ## Provider native options
 
@@ -32,6 +32,7 @@ Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, 
 - [Getting started and lifecycle](#getting-started-and-lifecycle)
 - [Client and builder](#client-and-builder)
 - [Requests and messages](#requests-and-messages)
+- [Decision API](#decision-api)
 - [Host tool execution and context recovery](#host-tool-execution-and-context-recovery)
 - [Web Search API](#web-search-api)
 - [Qwen knowledge-base File Search](#qwen-knowledge-base-file-search)
@@ -331,6 +332,37 @@ The client now defines its own protocol types. Replace old `lingxi-agent-api` im
 - The unused `TokenEstimate` and `TokenEstimateSource` types are removed. Use `estimate_local_tokens()` / `estimate_local_tokens_in()` and their `LocalTokenEstimate` result for local estimates; `Usage` retains provider-reported consumption.
 
 Removed error variants are no longer accepted by the error deserializer. Hosts that persisted those errors should migrate them into their own error model. Provider management, account usage queries, pricing, and local token counting remain available.
+
+## Decision API
+
+`client.decisions()` and `snapshot.decisions()` expose `models()`, `decide()`, and `decide_in(profile, ...)`. One request can ask several single-choice questions over shared text and image context. `decide_in` selects the starting profile; `decide` resolves the model and starts on an eligible, visible Decision connection in its group. A hidden connection is reached only by explicit profile selection or eligible failover. Explicitly selecting an ineligible connection still fails. Both use request-scoped credentials and deadlines from `RequestOptions`; the attachment resolver is registered when the client is built. If unscoped routing promotes a different connection, the original `credential` and request-local `authenticator` are not passed to it: supply its credential under its profile name in `fallback_credentials`, or the call fails before dispatch. The original connection's `account_scope` and `file_account_scope` are not reused either. Decision finalizers and authenticators may add authentication or other headers, but may not change the final request method, URL, or encoded strict-schema body.
+
+```rust,no_run
+use lingxi_llm_client::protocol::{
+    DecisionContextPart, DecisionOption, DecisionQuestion, DecisionRequest, DecisionResult,
+};
+use lingxi_llm_client::{DecisionError, LlmClient, RequestOptions};
+
+async fn classify(client: &LlmClient, options: &RequestOptions) -> Result<DecisionResult, DecisionError> {
+    let request = DecisionRequest {
+        model: "gpt-6-luna".into(),
+        context: vec![DecisionContextPart::Text { text: "A customer requests a refund.".into() }],
+        questions: vec![DecisionQuestion {
+            id: "route".into(),
+            prompt: "Which team should receive this?".into(),
+            options: vec![
+                DecisionOption { id: "sales".into(), label: "Sales".into() },
+                DecisionOption { id: "support".into(), label: "Support".into() },
+            ],
+        }],
+    };
+    client.decisions().decide_in("openai", &request, options).await
+}
+```
+
+Question and option IDs must be nonempty and unique. `DecisionResult.answers` maps each original question ID to its selected option ID. There is no implicit abstain; offer it as an explicit option if needed. Images use `DecisionContextPart::Image { source: Box::new(image_source) }` and are sent only where both the connection and model allow them. `DecisionResult.report` retains the actual model, executed profile, implementation, and `UsageReport`; `DecisionError::Refused`, `Incomplete`, and `InvalidResult` retain the report when the provider supplied usage. `report.usage` describes only the final attempt; `report.prior_attempts` preserves earlier connections that reported usage, each with its own model, profile, and usage. If the final attempt fails before reaching the transport, `executed_profile` is `None`. A missing explicit terminal status or an interrupted HTTP 2xx body yields `Incomplete` without another decision attempt. A malformed HTTP 2xx response envelope yields `InvalidResult`, retains parseable usage, and does not trigger failover. OpenAI Responses `status=failed` keeps its provider error classification; `ProviderWithReport` retains parseable usage if failover is not possible, including usage reported by earlier connections. Invalid results are not retried or downgraded to weak output constraints. The host still owns authorization and execution.
+
+Built-in `ProviderProfile.decisions` opt-in is limited to verified connections and models. The initial model set is OpenAI Responses `gpt-6-luna`, Anthropic Messages `claude-sonnet-5`, Gemini GenerateContent `gemini-3.7-flash`, xAI Chat `grok-4.20`, and Beijing Qwen Chat `qwen3.8-flash/max`. A generic catalog `structured_output` flag cannot add another Decision model by itself; each new model needs a separate strict-wire check. xAI and Qwen decisions are text-only; ChatGPT plan credentials are not supported by this nonstreaming service. `decisions().models()` reflects the selected region and exact eligible models. Replacing a protocol's built-in codec through `register_codec` disables Decision support on that protocol; ordinary Chat still uses the replacement. The initial `DecisionImplementation::StructuredOutput` uses strict JSON Schema. It is **not** OpenAI's preview native Decisions API. Native OpenAI integration awaits a published wire contract; DeepSeek Responses and OpenRouter routing need separate validation. Schema adherence and offered-option membership do not establish business correctness; live account access, latency, and accuracy require separate acceptance.
 
 ## Web Search API
 

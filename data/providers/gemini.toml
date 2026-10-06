@@ -11,6 +11,7 @@ regions = ["international"]
 provider_id = "google"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 protocol = "gemini_generate_content"
+decisions = { implementation = "structured_output", text = true, image = true }
 auth = "api_key"
 credential_env = "GEMINI_API_KEY"
 billing_mode = "per_token"

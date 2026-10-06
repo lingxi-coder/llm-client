@@ -1,5 +1,5 @@
 //! Public request entry points.
-use super::executor::{RequestExecutor, RequestOutput};
+use super::executor::{DecisionExecutionError, RequestExecutor, RequestOutput};
 use super::resolve::RequestRoute;
 use super::*;
 use crate::codecs::RequestMode;
@@ -115,7 +115,7 @@ impl ClientSnapshot {
         route.retain_provider(provider_id)?;
         self.stream_route(route, req, opts).await
     }
-    async fn complete_route(
+    pub(super) async fn complete_route(
         &self,
         route: RequestRoute<'_>,
         req: &ChatRequest,
@@ -128,6 +128,22 @@ impl ClientSnapshot {
         {
             RequestOutput::Complete(response) => Ok(*response),
             RequestOutput::Stream(_) => unreachable!(),
+        }
+    }
+    pub(super) async fn complete_decision_route(
+        &self,
+        route: RequestRoute<'_>,
+        req: &ChatRequest,
+        opts: &RequestOptions,
+    ) -> Result<(ChatResponse, Vec<crate::protocol::DecisionAttemptReport>), DecisionExecutionError>
+    {
+        reject_image_output(&route).map_err(DecisionExecutionError::Provider)?;
+        match RequestExecutor::new(self)
+            .run_decision(route, req, opts)
+            .await?
+        {
+            (RequestOutput::Complete(response), prior_attempts) => Ok((*response, prior_attempts)),
+            (RequestOutput::Stream(_), _) => unreachable!(),
         }
     }
     async fn stream_route(

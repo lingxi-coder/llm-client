@@ -2,6 +2,10 @@
 
 Local contract tests, first-party documentation evidence and live account acceptance are recorded separately. A successful read-only request does not establish inference, audio/Realtime, custom voice entitlement or availability in another region.
 
+## Decision API
+
+The first `client.decisions()` implementation uses each provider's strict JSON Schema output, not OpenAI's preview native Decisions endpoint. Mock transports cover encoding, answer validation, refusals, usage, and capability gates for OpenAI Responses, Anthropic Messages, Gemini GenerateContent, xAI Chat, and Beijing Qwen Chat. No live account request, entitlement, latency, or decision-accuracy test has passed. Native OpenAI integration awaits a [published wire contract](https://openai.com/index/devday-2026-recap/); DeepSeek Responses and strict OpenRouter routing are outside this initial set. A live pass must name the account, region, model, input modality, and actual request outcome.
+
 ## xAI built-in voice catalog
 
 `examples/xai_voice_acceptance.rs` uses the library's `XaiAudioService` with its fixed official default endpoint. It calls `list_voices()`, then `get_voice()` for the first returned voice. This sends at most two GET requests with no generation, mutation, retry or custom voice access. The detail response ID must exactly match the requested ID. An empty catalog leaves the detail check `not_run` and the overall result incomplete.
