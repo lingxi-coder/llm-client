@@ -245,7 +245,8 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                             *protocol == ProtocolFamily::OpenAiResponses
                                 && can_mark_provider_message(value)
                         }
-                        ContentBlock::Thinking { .. }
+                        ContentBlock::Native { .. }
+                        | ContentBlock::Thinking { .. }
                         | ContentBlock::RedactedThinking { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::Document { .. }

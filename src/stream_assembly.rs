@@ -60,8 +60,11 @@ struct Block {
     ended: bool,
 }
 impl Block {
-    fn content(&self, terminal: bool) -> Option<ContentBlock> {
+    fn content(&self, terminal: bool, native_terminal: bool) -> Option<ContentBlock> {
         if let Some(native) = &self.native {
+            if matches!(native, ContentBlock::Native { .. }) && !native_terminal {
+                return None;
+            }
             return Some(native.clone());
         }
         if let Some(tool) = &self.tool {
@@ -147,6 +150,13 @@ impl StreamAccumulator {
             StreamEvent::RedactedThinking { block, data } => {
                 self.blocks.entry(*block).or_default().native =
                     Some(ContentBlock::RedactedThinking { data: data.clone() })
+            }
+            StreamEvent::Native { block, value } => {
+                let entry = self.blocks.entry(*block).or_default();
+                entry.native = Some(ContentBlock::Native {
+                    value: value.clone(),
+                });
+                entry.ended = true;
             }
             StreamEvent::ProviderContent {
                 block,
@@ -255,7 +265,19 @@ impl StreamAccumulator {
 
     /// Project one block for incremental presentation without cloning the event log.
     pub fn content_at(&self, block: usize) -> Option<ContentBlock> {
-        self.blocks.get(&block)?.content(self.is_terminal())
+        self.blocks
+            .get(&block)?
+            .content(self.is_terminal(), self.native_terminal())
+    }
+
+    fn native_terminal(&self) -> bool {
+        match self.stop_reason.as_ref() {
+            Some(StopReason::ToolUse | StopReason::EndTurn) => true,
+            // A completed Responses turn may contain both a computer call and
+            // another client action such as tool search or MCP approval.
+            Some(StopReason::Other(reason)) if reason == "requires_action" => true,
+            _ => false,
+        }
     }
 
     /// Current canonical tool identity and all arguments received so far. This
@@ -293,7 +315,8 @@ impl StreamAccumulator {
             .blocks
             .iter()
             .filter_map(|(index, block)| {
-                let unfinished = block.tool.is_some() && block.content(terminal).is_none()
+                let unfinished = block.tool.is_some()
+                    && block.content(terminal, self.native_terminal()).is_none()
                     || !terminal && !block.ended && block.native.is_none();
                 unfinished.then_some(*index)
             })
@@ -303,7 +326,7 @@ impl StreamAccumulator {
             .iter()
             .filter_map(|(index, block)| {
                 let tool = block.tool.as_ref()?;
-                if block.content(terminal).is_some() {
+                if block.content(terminal, self.native_terminal()).is_some() {
                     return None;
                 }
                 Some(IncompleteTool {
@@ -317,7 +340,11 @@ impl StreamAccumulator {
         let indexed_content: BTreeMap<_, _> = self
             .blocks
             .iter()
-            .filter_map(|(index, block)| block.content(terminal).map(|content| (*index, content)))
+            .filter_map(|(index, block)| {
+                block
+                    .content(terminal, self.native_terminal())
+                    .map(|content| (*index, content))
+            })
             .collect();
         StreamAssembly {
             response: ChatResponse {

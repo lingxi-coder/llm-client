@@ -16,6 +16,11 @@ pub enum MessageRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// Provider-owned typed content, distinct from ordinary function calls.
+    /// The provider codec validates the native format; callers own execution.
+    Native {
+        value: crate::protocol::NativeExtension,
+    },
     /// Native content required to replay reasoning or a hosted tool's turn unchanged.
     /// Kept separate from client tools, which the caller must execute.
     /// Replaying onto a different protocol is rejected by the built-in codecs.

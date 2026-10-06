@@ -23,6 +23,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::codecs::reject_typed_native(req, profile.protocol)?;
     crate::providers::anthropic::conversation::validate(req, opts)?;
     crate::providers::anthropic::client_toolsets::validate(req, opts)?;
     crate::providers::anthropic::tool_search::validate(req, opts)?;
@@ -339,6 +340,11 @@ fn encode_block<'a>(
     opts: &CodecContext,
 ) -> Result<WireValue<'a>, LlmError> {
     let value = match b {
+        ContentBlock::Native { .. } => {
+            return Err(LlmError::UnsupportedCapability {
+                message: "Anthropic cannot encode this typed native content".into(),
+            });
+        }
         ContentBlock::ProviderContent { protocol, value } => {
             if *protocol != crate::protocol::ProtocolFamily::AnthropicMessages {
                 return Err(LlmError::UnsupportedCapability {

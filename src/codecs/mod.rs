@@ -42,6 +42,32 @@ pub(crate) fn reject_responses_continuation(
     Ok(())
 }
 
+/// These codecs have no typed native content path. Refuse the computer
+/// declaration as well, so a first request cannot silently lose its tool.
+pub(crate) fn reject_typed_native(
+    req: &ChatRequest,
+    family: ProtocolFamily,
+) -> Result<(), LlmError> {
+    use crate::providers::openai::computer::OpenAiComputerToolConfig;
+    if req
+        .native_options
+        .iter()
+        .any(|value| value.is::<OpenAiComputerToolConfig>())
+        || req
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| matches!(block, crate::protocol::ContentBlock::Native { .. }))
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: format!(
+                "{family:?} cannot encode typed native content or the OpenAI computer tool"
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn reject_code_interpreter(
     req: &ChatRequest,
     family: ProtocolFamily,

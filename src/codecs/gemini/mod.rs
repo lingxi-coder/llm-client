@@ -38,6 +38,7 @@ impl WireCodec for GeminiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::reject_typed_native(req, context.profile().protocol)?;
         encode::validate_audio_input(req)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;

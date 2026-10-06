@@ -288,6 +288,12 @@ impl Usage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// A complete provider-owned typed item. Preserve its native format and
+    /// require a successful terminal response before caller-owned execution.
+    Native {
+        block: usize,
+        value: super::NativeExtension,
+    },
     /// The provider completed this output block.
     BlockEnd {
         block: usize,

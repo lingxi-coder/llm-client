@@ -46,6 +46,7 @@ impl WireCodec for AnthropicMessagesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::reject_typed_native(req, context.profile().protocol)?;
         crate::providers::anthropic::client_toolsets::validate(req, context)?;
         crate::providers::anthropic::tool_search::validate(req, context)?;
         crate::codecs::cache::validate(req, context)?;

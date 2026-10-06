@@ -44,6 +44,7 @@ impl WireCodec for OpenAiResponsesCodec {
         if context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan {
             crate::auth::chatgpt_plan::validate_chat_request(req)?;
         }
+        encode::validate_computer_request(req, context.profile())?;
         crate::providers::openai::prompt_cache::validate(req, context)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;

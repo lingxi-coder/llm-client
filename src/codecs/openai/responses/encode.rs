@@ -6,7 +6,14 @@ use crate::protocol::{
     ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
     ProviderProfile, ToolChoice, ToolSpec,
 };
-use crate::providers::openai::types::OpenAiToolSearchExecution;
+use crate::providers::openai::{
+    computer::{
+        OpenAiComputerCall, OpenAiComputerCallOutput, OpenAiComputerToolConfig,
+        OPENAI_COMPUTER_CALL_FORMAT, OPENAI_COMPUTER_CALL_OUTPUT_FORMAT,
+        OPENAI_COMPUTER_TOOL_FORMAT,
+    },
+    types::OpenAiToolSearchExecution,
+};
 
 use base64::Engine;
 use serde_json::{json, Map, Value};
@@ -17,6 +24,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    let computer_tool = validate_computer_request(req, profile)?;
     if req.anthropic_mcp_servers().next().is_some() {
         return Err(LlmError::UnsupportedCapability {
             message: "OpenAI Responses cannot encode the Anthropic MCP connector".into(),
@@ -144,6 +152,15 @@ pub fn request<'a>(
                 message: "Responses hosted tools must encode as an array".into(),
             })?
             .push(encode_openai_tool_search(config));
+    }
+    if computer_tool.is_some() {
+        body.entry("tools")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Responses hosted tools must encode as an array".into(),
+            })?
+            .push(json!({"type":"computer"}));
     }
     // OpenAI's current web_search wire has its own filter names and supports
     // both allow/block lists together. Other Responses adapters keep using the
@@ -324,6 +341,14 @@ fn encode_message<'a>(
                             .to_owned(),
                     });
                 }
+                if matches!(
+                    value.get("type").and_then(Value::as_str),
+                    Some("computer_call" | "computer_call_output")
+                ) {
+                    return Err(LlmError::UnsupportedCapability {
+                        message: "OpenAI computer calls and outputs must use their validated typed native blocks".into(),
+                    });
+                }
                 validate_provider_item_replay(value, wire.request())?;
                 flush(role, &mut parts, input);
                 let item = if crate::providers::openai::prompt_cache::has_message_breakpoint(
@@ -447,10 +472,182 @@ fn encode_message<'a>(
                     .with("output", output),
                 );
             }
+            ContentBlock::Native { value } => {
+                if value.format() == OPENAI_COMPUTER_CALL_FORMAT {
+                    // Model-generated calls are output items. Continuations
+                    // must send only the caller's matching typed output.
+                    OpenAiComputerCall::from_extension(value)?;
+                    return Err(LlmError::InvalidRequest {
+                        message: "replay OpenAI computer work with its previous_response_id and a typed computer_call_output, not a computer_call input item".into(),
+                    });
+                }
+                if value.format() != OPENAI_COMPUTER_CALL_OUTPUT_FORMAT {
+                    return Err(LlmError::UnsupportedCapability {
+                        message: format!(
+                            "Responses cannot encode native content format {}",
+                            value.format()
+                        ),
+                    });
+                }
+                if m.role != MessageRole::User {
+                    return Err(LlmError::InvalidRequest {
+                        message: "computer_call_output must be supplied as user input".into(),
+                    });
+                }
+                if wire.request().continuation.is_none() {
+                    return Err(LlmError::InvalidRequest {
+                        message: "computer_call_output requires its scoped previous_response_id continuation".into(),
+                    });
+                }
+                if computer_tool_config(wire.request())?.is_none() {
+                    return Err(LlmError::InvalidRequest {
+                        message: "computer_call_output requires the typed OpenAI computer tool declaration".into(),
+                    });
+                }
+                let output = OpenAiComputerCallOutput::from_extension(value)?;
+                output.validate_for_submission()?;
+                let item =
+                    serde_json::to_value(output).map_err(|error| LlmError::InvalidRequest {
+                        message: format!("cannot encode typed computer_call_output: {error}"),
+                    })?;
+                flush(role, &mut parts, input);
+                input.push(item.into());
+            }
         }
     }
     flush(role, &mut parts, input);
     Ok(())
+}
+
+fn computer_tool_config(
+    request: &crate::protocol::ChatRequest,
+) -> Result<Option<&OpenAiComputerToolConfig>, LlmError> {
+    let mut count = 0;
+    for extension in &request.native_options {
+        if extension.format() == OPENAI_COMPUTER_TOOL_FORMAT {
+            count += 1;
+            extension.decode::<OpenAiComputerToolConfig>()?;
+        }
+    }
+    if count > 1 {
+        return Err(LlmError::InvalidRequest {
+            message: "OpenAI computer tool may be declared only once".into(),
+        });
+    }
+    if count == 0 {
+        return Ok(None);
+    }
+    request
+        .openai_computer_tool()
+        .map(Some)
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "OpenAI computer tool configuration could not be decoded".into(),
+        })
+}
+
+fn reject_duplicate_or_raw_computer_declarations(
+    request: &crate::protocol::ChatRequest,
+    profile: &ProviderProfile,
+) -> Result<(), LlmError> {
+    if request
+        .tools
+        .iter()
+        .any(|tool| tool.tool_type.as_deref() == Some("computer"))
+    {
+        return Err(LlmError::InvalidRequest {
+            message: "declare OpenAI computer use through the typed native computer tool option, not a raw ToolSpec".into(),
+        });
+    }
+    if request.hosted_tools.iter().any(|tool| {
+        matches!(tool, crate::protocol::HostedTool::Native(extension)
+            if extension.format() == "openai.hosted_tool.v1" && extension.data()["type"] == "computer")
+    }) {
+        return Err(LlmError::InvalidRequest {
+            message: "OpenAI computer use must use the typed native computer tool option, not a hosted-tool payload".into(),
+        });
+    }
+    if let Some(raw_tools) = profile.extra.pointer("/body/tools") {
+        let entries = raw_tools
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(std::slice::from_ref(raw_tools));
+        if entries
+            .iter()
+            .any(|tool| tool.get("type").and_then(Value::as_str) == Some("computer"))
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "profile.extra.body.tools cannot inject or duplicate the typed OpenAI computer tool".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_computer_request<'a>(
+    request: &'a crate::protocol::ChatRequest,
+    profile: &ProviderProfile,
+) -> Result<Option<&'a OpenAiComputerToolConfig>, LlmError> {
+    let computer_tool = computer_tool_config(request)?;
+    reject_duplicate_or_raw_computer_declarations(request, profile)?;
+
+    let mut has_computer_content = false;
+    for message in &request.messages {
+        for block in &message.content {
+            match block {
+                ContentBlock::ProviderContent { value, .. }
+                    if matches!(
+                        value.get("type").and_then(Value::as_str),
+                        Some("computer_call" | "computer_call_output")
+                    ) =>
+                {
+                    return Err(LlmError::UnsupportedCapability {
+                        message: "OpenAI computer calls and outputs must use their validated typed native blocks".into(),
+                    });
+                }
+                ContentBlock::Native { value } if value.format() == OPENAI_COMPUTER_CALL_FORMAT => {
+                    OpenAiComputerCall::from_extension(value)?;
+                    return Err(LlmError::InvalidRequest {
+                        message: "replay OpenAI computer work with its previous_response_id and a typed computer_call_output, not a computer_call input item".into(),
+                    });
+                }
+                ContentBlock::Native { value }
+                    if value.format() == OPENAI_COMPUTER_CALL_OUTPUT_FORMAT =>
+                {
+                    has_computer_content = true;
+                    if message.role != MessageRole::User {
+                        return Err(LlmError::InvalidRequest {
+                            message: "computer_call_output must be supplied as user input".into(),
+                        });
+                    }
+                    if request.continuation.is_none() {
+                        return Err(LlmError::InvalidRequest {
+                            message: "computer_call_output requires its scoped previous_response_id continuation".into(),
+                        });
+                    }
+                    if computer_tool.is_none() {
+                        return Err(LlmError::InvalidRequest {
+                            message: "computer_call_output requires the typed OpenAI computer tool declaration".into(),
+                        });
+                    }
+                    OpenAiComputerCallOutput::from_extension(value)?.validate_for_submission()?;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if (computer_tool.is_some() || has_computer_content)
+        && !crate::providers::openai::responses_policy::is_official_openai_responses_profile(
+            profile,
+        )
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: "OpenAI Responses computer use requires the official OpenAI Responses profile"
+                .into(),
+        });
+    }
+
+    Ok(computer_tool)
 }
 
 fn validate_provider_item_replay(

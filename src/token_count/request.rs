@@ -250,7 +250,7 @@ impl<'a> Accumulator<'a> {
                     self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
                 }
             }
-            ContentBlock::ProviderContent { .. } => {
+            ContentBlock::Native { .. } | ContentBlock::ProviderContent { .. } => {
                 self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
             }
             ContentBlock::Image { source } => match source {

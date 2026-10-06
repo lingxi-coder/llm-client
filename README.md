@@ -66,6 +66,7 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 | 远端上下文缓存 | 创建、读取、更新和删除可复用的上下文缓存资源 | Gemini（独立 cachedContents 服务） | [Gemini Cache](docs/gemini-context-cache.md) |
 | 网关响应缓存 | 复用完整响应，读取服务端明确返回的 HIT/MISS | OpenRouter Chat、Responses、Messages、Embeddings | [OpenRouter Cache](docs/services.md) |
 | 状态续接 | 用账户绑定引用接续已有响应，避免重复发送历史 | OpenAI Responses；Gemini Interactions 使用独立接口 | [Responses](docs/services.md) · [Interactions](docs/interactions.md) |
+| Computer 决策 | 接收类型化有序动作并回传截图；应用负责授权、执行与验证 | 官方 OpenAI Responses `computer` 工具 | [Computer](docs/openai-computer.md) |
 | 服务端代码执行与容器 | 让模型在远端容器执行代码，并管理容器文件 | OpenAI Responses；Anthropic 第一方与显式 Anthropic 托管 Foundry 代码执行及容器续用 | [Code Interpreter](docs/services.md) · [Containers](docs/openai-containers.md) · [Anthropic](docs/anthropic-code-execution.md) |
 | 程序化工具调用 | 接收远端代码执行器发起的函数调用，由宿主执行并返回结果 | Anthropic 支持模型及代码执行工具；保留调用者信息 | [程序化工具调用](docs/anthropic-programmatic-tools.md) |
 | Anthropic Skills 请求 | 在远端代码执行容器中加载内置或已上传的 Skill | 第一方及 Anthropic 托管 Foundry；自定义引用绑定工作空间或资源账户；支持上传及版本管理 | [Skills 与容器](docs/anthropic-code-execution.md) · [Skills 资源](docs/anthropic-skills.md) |

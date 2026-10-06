@@ -1,8 +1,11 @@
 //! Validation shared by provider-native request extensions.
 use super::{
-    anthropic::native::AnthropicHostedTool, google::native::GoogleHostedTool,
-    openai::native::OpenAiHostedTool, openrouter::native::OpenRouterHostedTool,
-    qwen::native::QwenHostedTool, xai::native::XaiHostedTool,
+    anthropic::native::AnthropicHostedTool,
+    google::native::GoogleHostedTool,
+    openai::{computer::OpenAiComputerToolConfig, native::OpenAiHostedTool},
+    openrouter::native::OpenRouterHostedTool,
+    qwen::native::QwenHostedTool,
+    xai::native::XaiHostedTool,
 };
 use crate::protocol::{ChatRequest, HostedTool, LlmError, NativeExtension, NativeType};
 
@@ -10,15 +13,7 @@ impl ChatRequest {
     /// Reject malformed, unknown, and duplicate native tools before provider
     /// helpers read optional typed views. No unknown format is silently dropped.
     pub fn validate_hosted_tools(&self) -> Result<(), LlmError> {
-        validate_options(
-            &self.native_options,
-            super::anthropic::native::AnthropicRequestOptions::FORMAT,
-            |value| {
-                value
-                    .decode::<super::anthropic::native::AnthropicRequestOptions>()
-                    .map(|_| ())
-            },
-        )?;
+        validate_request_options(&self.native_options)?;
         for tool in &self.tools {
             validate_options(
                 &tool.native_options,
@@ -106,7 +101,7 @@ fn validate_native_tool(
         format => {
             return Err(LlmError::UnsupportedCapability {
                 message: format!("unsupported native hosted-tool format {format}"),
-            })
+            });
         }
     }
     let kind = extension
@@ -138,6 +133,32 @@ fn validate_options(
         }
         decode(extension)?;
         seen = true;
+    }
+    Ok(())
+}
+
+fn validate_request_options(options: &[NativeExtension]) -> Result<(), LlmError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for extension in options {
+        let format = extension.format();
+        if !seen.insert(format) {
+            return Err(LlmError::InvalidRequest {
+                message: format!("duplicate native options format {format}"),
+            });
+        }
+        match format {
+            super::anthropic::native::AnthropicRequestOptions::FORMAT => {
+                extension.decode::<super::anthropic::native::AnthropicRequestOptions>()?;
+            }
+            OpenAiComputerToolConfig::FORMAT => {
+                extension.decode::<OpenAiComputerToolConfig>()?;
+            }
+            format => {
+                return Err(LlmError::UnsupportedCapability {
+                    message: format!("unsupported native options format {format}"),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -180,6 +201,20 @@ mod tests {
             json!({"client_toolsets":false}),
         )
         .unwrap()];
+        assert!(request.validate_hosted_tools().is_err());
+        request.native_options = vec![
+            NativeExtension::from_typed(OpenAiComputerToolConfig::default()).unwrap(),
+            NativeExtension::from_typed(OpenAiComputerToolConfig::default()).unwrap(),
+        ];
+        assert!(request.validate_hosted_tools().is_err());
+        request.native_options = vec![NativeExtension::new(
+            OpenAiComputerToolConfig::FORMAT,
+            json!({"unexpected":true}),
+        )
+        .unwrap()];
+        assert!(request.validate_hosted_tools().is_err());
+        request.native_options =
+            vec![NativeExtension::new("unknown.request.option.v1", json!({})).unwrap()];
         assert!(request.validate_hosted_tools().is_err());
         request.native_options.clear();
         let mut message = crate::protocol::ConversationMessage::user_text("hello");

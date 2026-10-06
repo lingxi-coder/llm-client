@@ -5,6 +5,7 @@ use crate::protocol::{
     ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ResponseId, StopReason,
     ToolUseId, Usage,
 };
+use crate::providers::openai::computer::OpenAiComputerCall;
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
@@ -47,12 +48,57 @@ pub(crate) fn response_with_approval_support(
     let mut content = Vec::new();
     let mut saw_tool_call = false;
     let mut saw_refusal = false;
-    for item in body
+    let output = body
         .get("output")
         .and_then(Value::as_array)
-        .unwrap_or(&Vec::new())
-    {
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    validate_output_call_ids(output)?;
+    let response_status = body.get("status").and_then(Value::as_str);
+    let has_computer_calls = output
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("computer_call"));
+    if has_computer_calls {
+        if !matches!(response_status, Some("completed" | "incomplete")) {
+            return Err(LlmError::InvalidRequest {
+                message: "Responses computer calls require a completed or incomplete terminal response status".into(),
+            });
+        }
+        if response_status == Some("completed")
+            && body
+                .get("id")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "completed Responses computer calls require a nonempty response ID".into(),
+            });
+        }
+    }
+    for item in output {
         saw_refusal |= has_refusal(item);
+        if item.get("type").and_then(Value::as_str) == Some("computer_call") {
+            if !openai_tool_search_semantics {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "OpenAI computer calls require the official OpenAI Responses profile"
+                        .into(),
+                });
+            }
+            if response_status == Some("completed") {
+                let call = OpenAiComputerCall::from_response_item(item)?;
+                call.validate_completed_generation()?;
+                content.push(call.into_content_block()?);
+                saw_tool_call = true;
+            } else {
+                // Preserve unfinished provider output for inspection, but do
+                // not expose it as a typed call that a caller might dispatch.
+                content.push(ContentBlock::ProviderContent {
+                    protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                    value: item.clone(),
+                });
+            }
+            continue;
+        }
         if item["type"].as_str() == Some("function_call") {
             for key in ["call_id", "name", "arguments"] {
                 if item.get(key).and_then(Value::as_str).is_none() {
@@ -90,7 +136,11 @@ pub(crate) fn response_with_approval_support(
             role: MessageRole::Assistant,
             content,
         },
-        stop_reason: if openai_tool_search_semantics && has_client_tool_search_call(&body) {
+        stop_reason: if has_pending_client_action(
+            &body,
+            openai_approval_semantics,
+            openai_tool_search_semantics,
+        ) {
             StopReason::Other("requires_action".into())
         } else if body.get("status").and_then(Value::as_str) == Some("incomplete") {
             stop_reason_with_approval_support(
@@ -142,6 +192,26 @@ fn plan_provider_error(
         classification,
         retry_after,
     }
+}
+
+fn validate_output_call_ids(items: &[Value]) -> Result<(), LlmError> {
+    let mut ids = std::collections::BTreeSet::new();
+    for item in items {
+        if !matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "computer_call")
+        ) {
+            continue;
+        }
+        if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+            if !ids.insert(call_id) {
+                return Err(LlmError::InvalidRequest {
+                    message: "Responses output contains duplicate call_id values".into(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An output item is a message, a function call, or something this codec does
@@ -243,14 +313,11 @@ pub(crate) fn stop_reason_with_approval_support(
     openai_approval_semantics: bool,
     openai_tool_search_semantics: bool,
 ) -> StopReason {
-    if openai_tool_search_semantics && has_client_tool_search_call(response)
-        || openai_approval_semantics
-            && response["output"].as_array().is_some_and(|items| {
-                items
-                    .iter()
-                    .any(|item| item["type"] == "mcp_approval_request")
-            })
-    {
+    if has_pending_client_action(
+        response,
+        openai_approval_semantics,
+        openai_tool_search_semantics,
+    ) {
         return StopReason::Other("requires_action".into());
     }
     match response.get("status").and_then(Value::as_str) {
@@ -267,6 +334,20 @@ pub(crate) fn stop_reason_with_approval_support(
         Some("completed") | None => StopReason::EndTurn,
         Some(status) => StopReason::Other(status.to_owned()),
     }
+}
+
+fn has_pending_client_action(
+    response: &Value,
+    openai_approval_semantics: bool,
+    openai_tool_search_semantics: bool,
+) -> bool {
+    (openai_tool_search_semantics && has_client_tool_search_call(response))
+        || (openai_approval_semantics
+            && response["output"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["type"] == "mcp_approval_request")
+            }))
 }
 
 pub(super) fn has_client_tool_search_call(response: &Value) -> bool {

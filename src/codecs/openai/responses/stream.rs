@@ -8,16 +8,35 @@ use crate::codecs::file_search_decode::FileSearchStream;
 use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
-use crate::protocol::{LlmError, LlmErrorKind, ResponseId, StopReason, StreamEvent, ToolUseId};
+use crate::protocol::{
+    LlmError, LlmErrorKind, NativeExtension, ResponseId, StopReason, StreamEvent, ToolUseId,
+};
+use crate::providers::openai::computer::OpenAiComputerCall;
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Debug)]
+struct StreamedFunctionCall {
+    index: usize,
+    id: ToolUseId,
+    name: String,
+    arguments: String,
+}
 
 #[derive(Debug, Default)]
 pub struct ResponsesStreamDecoder {
     inference: crate::codecs::inference::StreamInference,
     started: bool,
+    created_response_id: Option<ResponseId>,
     native_items: std::collections::BTreeSet<usize>,
-    /// output index → (call id, name), learned from `output_item.added`.
-    calls: Vec<(usize, ToolUseId, String)>,
+    /// Function calls learned from `output_item.added` and argument deltas.
+    calls: Vec<StreamedFunctionCall>,
+    /// Final computer items observed before the terminal response.
+    done_computer_calls: BTreeMap<usize, OpenAiComputerCall>,
+    /// Stable computer identity learned when an output item is added.
+    added_computer_calls: BTreeMap<usize, (String, String)>,
+    /// A computer item was observed, but only a terminal response can publish it.
+    observed_computer_call: bool,
     /// The provider's usage object as sent. Kept raw so the report can be
     /// checked for self-consistency: the buckets we publish are derived by
     /// subtraction, and a saturated subtraction must not read as a measurement.
@@ -43,6 +62,9 @@ pub struct ResponsesStreamDecoder {
 
 impl EventDecoder for ResponsesStreamDecoder {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
+        if self.done {
+            return Ok(Vec::new());
+        }
         let text = std::str::from_utf8(frame).map_err(|_| LlmError::InvalidRequest {
             message: "stream frame is not valid UTF-8".to_owned(),
         })?;
@@ -55,6 +77,11 @@ impl EventDecoder for ResponsesStreamDecoder {
             if self.chatgpt_plan {
                 return Err(LlmError::StreamInterrupted {
                     message: "ChatGPT plan stream ended without response.completed".into(),
+                });
+            }
+            if self.observed_computer_call {
+                return Err(LlmError::StreamInterrupted {
+                    message: "Responses stream ended before its computer call was confirmed by a terminal response".into(),
                 });
             }
             self.finish_into(&mut out);
@@ -93,11 +120,40 @@ impl EventDecoder for ResponsesStreamDecoder {
                 }
             }
             Some("response.output_item.done") => {
+                let item = &root["item"];
+                if let Some((id, call_id)) = self.added_computer_calls.get(&index(&root)) {
+                    if item.get("type").and_then(Value::as_str) != Some("computer_call")
+                        || item.get("id").and_then(Value::as_str) != Some(id.as_str())
+                        || item.get("call_id").and_then(Value::as_str) != Some(call_id.as_str())
+                    {
+                        return Err(LlmError::InvalidRequest {
+                            message:
+                                "Responses computer call identity changed before output_item.done"
+                                    .into(),
+                        });
+                    }
+                }
+                if item.get("type").and_then(Value::as_str) == Some("computer_call") {
+                    self.observed_computer_call = true;
+                    let call = OpenAiComputerCall::from_response_item(item)?;
+                    if self
+                        .done_computer_calls
+                        .insert(index(&root), call)
+                        .is_some()
+                    {
+                        return Err(LlmError::InvalidRequest {
+                            message:
+                                "Responses stream repeated a completed computer call output index"
+                                    .into(),
+                        });
+                    }
+                }
                 out.push(StreamEvent::BlockEnd {
                     block: index(&root),
                 });
-                let item = &root["item"];
-                self.emit_native(index(&root), item, &mut out);
+                if item.get("type").and_then(Value::as_str) != Some("computer_call") {
+                    self.emit_native(index(&root), item, &mut out);
+                }
                 self.saw_refusal |= decode::has_refusal(item);
                 if item.get("type").and_then(Value::as_str) == Some("file_search_call") {
                     self.file_search
@@ -113,6 +169,11 @@ impl EventDecoder for ResponsesStreamDecoder {
             Some("response.created") => {
                 if !self.started {
                     self.started = true;
+                    self.created_response_id = root
+                        .pointer("/response/id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .map(ResponseId::new);
                     out.push(StreamEvent::Start {
                         model: root
                             .get("response")
@@ -120,17 +181,36 @@ impl EventDecoder for ResponsesStreamDecoder {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_owned(),
-                        response_id: root
-                            .get("response")
-                            .and_then(|r| r.get("id"))
-                            .and_then(Value::as_str)
-                            .map(ResponseId::new),
+                        response_id: self.created_response_id.clone(),
                     });
                 }
             }
             Some("response.output_item.added") => {
                 let item = root.get("item").unwrap_or(&Value::Null);
                 self.saw_refusal |= decode::has_refusal(item);
+                if item.get("type").and_then(Value::as_str) == Some("computer_call") {
+                    self.observed_computer_call = true;
+                    let id = item.get("id").and_then(Value::as_str).ok_or_else(|| {
+                        LlmError::InvalidRequest {
+                            message: "streamed computer call has no item id".into(),
+                        }
+                    })?;
+                    let call_id = item.get("call_id").and_then(Value::as_str).ok_or_else(|| {
+                        LlmError::InvalidRequest {
+                            message: "streamed computer call has no call_id".into(),
+                        }
+                    })?;
+                    if self
+                        .added_computer_calls
+                        .insert(index(&root), (id.to_owned(), call_id.to_owned()))
+                        .is_some()
+                    {
+                        return Err(LlmError::InvalidRequest {
+                            message: "Responses stream repeated a computer call output index"
+                                .into(),
+                        });
+                    }
+                }
                 if item.get("type").and_then(Value::as_str) == Some("function_call") {
                     self.saw_tool_call = true;
                     let id = ToolUseId::new(
@@ -143,16 +223,26 @@ impl EventDecoder for ResponsesStreamDecoder {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
                     // Only this event names the call; the argument deltas that
                     // follow carry the index alone.
-                    self.calls.push((index(&root), id.clone(), name.clone()));
+                    self.calls.push(StreamedFunctionCall {
+                        index: index(&root),
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    });
                     out.push(StreamEvent::ToolCallDelta {
                         block: index(&root),
                         id,
                         caller: None,
                         toolset_name: None,
                         name,
-                        arguments_fragment: String::new(),
+                        arguments_fragment: arguments,
                         provider_id: None,
                     });
                 }
@@ -183,14 +273,16 @@ impl EventDecoder for ResponsesStreamDecoder {
             }),
             Some("response.function_call_arguments.delta") => {
                 let i = index(&root);
-                if let Some((_, id, name)) = self.calls.iter().find(|(c, _, _)| *c == i) {
+                if let Some(call) = self.calls.iter_mut().find(|call| call.index == i) {
+                    let fragment = delta(&root);
+                    call.arguments.push_str(&fragment);
                     out.push(StreamEvent::ToolCallDelta {
                         block: i,
-                        id: id.clone(),
+                        id: call.id.clone(),
                         caller: None,
                         toolset_name: None,
-                        name: name.clone(),
-                        arguments_fragment: delta(&root),
+                        name: call.name.clone(),
+                        arguments_fragment: fragment,
                         provider_id: None,
                     });
                 } else {
@@ -199,8 +291,57 @@ impl EventDecoder for ResponsesStreamDecoder {
                     });
                 }
             }
+            Some("response.function_call_arguments.done") => {
+                let i = index(&root);
+                let arguments = root
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "finalized function call has no arguments string".into(),
+                    })?;
+                let call = self
+                    .calls
+                    .iter_mut()
+                    .find(|call| call.index == i)
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "finalized function call has no preceding call identity".into(),
+                    })?;
+                if let Some(remainder) = arguments.strip_prefix(call.arguments.as_str()) {
+                    if !remainder.is_empty() {
+                        out.push(StreamEvent::ToolCallDelta {
+                            block: i,
+                            id: call.id.clone(),
+                            caller: None,
+                            toolset_name: None,
+                            name: call.name.clone(),
+                            arguments_fragment: remainder.to_owned(),
+                            provider_id: None,
+                        });
+                    }
+                } else {
+                    let streamed: Value = serde_json::from_str(&call.arguments).map_err(|_| {
+                        LlmError::InvalidRequest {
+                            message: "streamed function call arguments are malformed".into(),
+                        }
+                    })?;
+                    let finalized: Value =
+                        serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
+                            message: "finalized function call arguments are malformed".into(),
+                        })?;
+                    if streamed != finalized {
+                        return Err(LlmError::InvalidRequest {
+                            message:
+                                "finalized function call arguments conflict with streamed fragments"
+                                    .into(),
+                        });
+                    }
+                }
+                call.arguments.clear();
+                call.arguments.push_str(arguments);
+            }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
+                let completed_event = root["type"] == "response.completed";
                 if self.chatgpt_plan && root["type"] == "response.incomplete" {
                     return Err(LlmError::ProviderResponse {
                         status: self.http_status.unwrap_or(200),
@@ -224,9 +365,69 @@ impl EventDecoder for ResponsesStreamDecoder {
                         retry_after: None,
                     });
                 }
-                if let Some(items) = response.get("output").and_then(Value::as_array) {
-                    for (index, item) in items.iter().enumerate() {
-                        self.emit_native(index, item, &mut out);
+                let output = response.get("output").and_then(Value::as_array);
+                if completed_event && self.observed_computer_call && output.is_none() {
+                    return Err(LlmError::InvalidRequest {
+                        message: "completed Responses computer call response has no output array"
+                            .into(),
+                    });
+                }
+                if let Some(items) = output {
+                    let terminal_status = response.get("status").and_then(Value::as_str);
+                    let has_computer_calls = items.iter().any(|item| {
+                        item.get("type").and_then(Value::as_str) == Some("computer_call")
+                    });
+                    if has_computer_calls || completed_event && self.observed_computer_call {
+                        let terminal_id = response
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty());
+                        if self.created_response_id.as_ref().map(ResponseId::as_str) != terminal_id
+                            || terminal_id.is_none()
+                        {
+                            return Err(LlmError::InvalidRequest {
+                                message: "Responses computer call terminal response ID does not match response.created".into(),
+                            });
+                        }
+                        let expected_status = if completed_event {
+                            "completed"
+                        } else {
+                            "incomplete"
+                        };
+                        if terminal_status != Some(expected_status) {
+                            return Err(LlmError::InvalidRequest {
+                                message: format!(
+                                    "Responses {} event contains computer calls but response.status is {:?}",
+                                    root["type"].as_str().unwrap_or("unknown terminal"),
+                                    terminal_status,
+                                ),
+                            });
+                        }
+                    }
+                    let completed_response =
+                        completed_event && terminal_status == Some("completed");
+                    let computer_calls =
+                        self.decode_terminal_computer_calls(items, completed_response)?;
+                    for (output_index, item) in items.iter().enumerate() {
+                        if let Some(value) = computer_calls.get(&output_index) {
+                            self.saw_tool_call = true;
+                            out.push(StreamEvent::Native {
+                                block: output_index,
+                                value: value.clone(),
+                            });
+                        } else if item.get("type").and_then(Value::as_str) == Some("computer_call")
+                        {
+                            // An incomplete terminal response remains visible
+                            // as raw provider content, never as an executable
+                            // typed call.
+                            out.push(StreamEvent::ProviderContent {
+                                block: output_index,
+                                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                                value: item.clone(),
+                            });
+                        } else {
+                            self.emit_native(output_index, item, &mut out);
+                        }
                     }
                 }
                 self.file_search.emit(response, &mut out);
@@ -340,10 +541,163 @@ impl EventDecoder for ResponsesStreamDecoder {
 }
 
 impl ResponsesStreamDecoder {
+    /// Validate the complete call batch before emitting any computer call.
+    /// Earlier function-call observations must agree with the terminal items.
+    fn decode_terminal_computer_calls(
+        &self,
+        items: &[Value],
+        completed_response: bool,
+    ) -> Result<BTreeMap<usize, NativeExtension>, LlmError> {
+        let mut calls = BTreeMap::new();
+        let mut call_ids = BTreeSet::new();
+        for (index, item) in items.iter().enumerate() {
+            match item.get("type").and_then(Value::as_str) {
+                Some("function_call") => {
+                    if completed_response {
+                        for key in ["call_id", "name", "arguments"] {
+                            if item.get(key).and_then(Value::as_str).is_none() {
+                                return Err(LlmError::InvalidRequest {
+                                    message: format!("provider function call has no {key} string"),
+                                });
+                            }
+                        }
+                        if serde_json::from_str::<Value>(item["arguments"].as_str().unwrap())
+                            .is_err()
+                        {
+                            return Err(LlmError::InvalidRequest {
+                                message: "provider returned malformed tool arguments".into(),
+                            });
+                        }
+                    }
+                    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                        if !call_ids.insert(call_id.to_owned()) {
+                            return Err(LlmError::InvalidRequest {
+                                message: "Responses output contains duplicate call_id values"
+                                    .into(),
+                            });
+                        }
+                    }
+                }
+                Some("computer_call") => {
+                    if !self.openai_tool_search_semantics {
+                        return Err(LlmError::UnsupportedCapability {
+                            message: "OpenAI computer calls require the official OpenAI Responses profile".into(),
+                        });
+                    }
+                    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                        if !call_ids.insert(call_id.to_owned()) {
+                            return Err(LlmError::InvalidRequest {
+                                message: "Responses output contains duplicate call_id values"
+                                    .into(),
+                            });
+                        }
+                    }
+                    if completed_response {
+                        let call = OpenAiComputerCall::from_response_item(item)?;
+                        call.validate_completed_generation()?;
+                        calls.insert(index, call.into_native_extension()?);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if completed_response {
+            for (index, (id, call_id)) in &self.added_computer_calls {
+                let Some(item) = items.get(*index) else {
+                    return Err(LlmError::InvalidRequest {
+                        message: "added computer call is missing from terminal output".into(),
+                    });
+                };
+                if item.get("type").and_then(Value::as_str) != Some("computer_call")
+                    || item.get("id").and_then(Value::as_str) != Some(id.as_str())
+                    || item.get("call_id").and_then(Value::as_str) != Some(call_id.as_str())
+                {
+                    return Err(LlmError::InvalidRequest {
+                        message: "added computer call identity changed before terminal response"
+                            .into(),
+                    });
+                }
+            }
+            for (index, observed) in &self.done_computer_calls {
+                let Some(item) = items.get(*index) else {
+                    return Err(LlmError::InvalidRequest {
+                        message: "completed computer call is missing from terminal output".into(),
+                    });
+                };
+                let terminal = OpenAiComputerCall::from_response_item(item)?;
+                if observed != &terminal {
+                    return Err(LlmError::InvalidRequest {
+                        message: "completed computer call changed before terminal response".into(),
+                    });
+                }
+            }
+        }
+        if completed_response && !calls.is_empty() {
+            self.validate_streamed_function_calls(items)?;
+        }
+        Ok(calls)
+    }
+
+    fn validate_streamed_function_calls(&self, items: &[Value]) -> Result<(), LlmError> {
+        let mut observed_indices = BTreeSet::new();
+        for call in &self.calls {
+            if !observed_indices.insert(call.index) {
+                return Err(LlmError::InvalidRequest {
+                    message: "Responses stream repeated a function call output index".into(),
+                });
+            }
+            let Some(item) = items.get(call.index) else {
+                return Err(LlmError::InvalidRequest {
+                    message: "Responses stream function call is missing from terminal output"
+                        .into(),
+                });
+            };
+            if item["type"] != "function_call"
+                || item["call_id"].as_str() != Some(call.id.as_str())
+                || item["name"].as_str() != Some(call.name.as_str())
+            {
+                return Err(LlmError::InvalidRequest {
+                    message: "Responses stream function call identity changed before completion"
+                        .into(),
+                });
+            }
+            let streamed_arguments = if call.arguments.is_empty() {
+                Value::Object(Default::default())
+            } else {
+                serde_json::from_str(&call.arguments).map_err(|_| LlmError::InvalidRequest {
+                    message: "Responses stream function call arguments are malformed".into(),
+                })?
+            };
+            let terminal_arguments: Value =
+                serde_json::from_str(item["arguments"].as_str().unwrap()).map_err(|_| {
+                    LlmError::InvalidRequest {
+                        message: "provider returned malformed tool arguments".into(),
+                    }
+                })?;
+            if streamed_arguments != terminal_arguments {
+                return Err(LlmError::InvalidRequest {
+                    message: "Responses stream function call arguments changed before completion"
+                        .into(),
+                });
+            }
+        }
+        if items.iter().enumerate().any(|(index, item)| {
+            item["type"] == "function_call" && !observed_indices.contains(&index)
+        }) {
+            return Err(LlmError::InvalidRequest {
+                message: "Responses terminal function call has no preceding stream identity".into(),
+            });
+        }
+        Ok(())
+    }
+
     fn emit_native(&mut self, block: usize, item: &Value, out: &mut Vec<StreamEvent>) {
         self.requires_action |= self.openai_approval_semantics
             && item["type"] == "mcp_approval_request"
             || self.openai_tool_search_semantics && decode::is_client_tool_search_call(item);
+        if item.get("type").and_then(Value::as_str) == Some("computer_call") {
+            return;
+        }
         if item["type"]
             .as_str()
             .is_some_and(|kind| !matches!(kind, "message" | "function_call"))

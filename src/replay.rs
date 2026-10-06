@@ -84,8 +84,33 @@ impl ReplayContext {
             reason,
         };
         match block {
+            ContentBlock::Native { value } => {
+                use crate::providers::openai::computer::{
+                    OpenAiComputerCall, OpenAiComputerCallOutput,
+                };
+                if value.is::<OpenAiComputerCall>() {
+                    incompatible(None, "computer calls continue through their response reference and paired output")
+                } else if self.target == ProtocolFamily::OpenAiResponses
+                    && value.is::<OpenAiComputerCallOutput>()
+                {
+                    ReplayDecision::Compatible(block.clone())
+                } else {
+                    incompatible(
+                        None,
+                        "typed native content is unsupported on the target protocol",
+                    )
+                }
+            }
             ContentBlock::ProviderContent { protocol, value } => {
-                if native_family(*protocol) == self.target {
+                if matches!(
+                    value.get("type").and_then(serde_json::Value::as_str),
+                    Some("computer_call" | "computer_call_output")
+                ) {
+                    incompatible(
+                        None,
+                        "computer calls and outputs require the validated typed continuation path",
+                    )
+                } else if native_family(*protocol) == self.target {
                     ReplayDecision::Compatible(ContentBlock::ProviderContent {
                         protocol: native_family(*protocol),
                         value: value.clone(),

@@ -7,6 +7,7 @@ pub mod batches;
 pub(crate) mod chat;
 pub mod chatgpt_plan;
 mod client;
+pub mod computer;
 pub mod containers;
 pub(crate) mod files;
 pub(crate) mod images;

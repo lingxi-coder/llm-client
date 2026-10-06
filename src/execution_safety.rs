@@ -30,6 +30,7 @@ pub fn request_replay_safety(request: &ChatRequest) -> RequestReplaySafety {
         || request.messages.iter().any(|message| {
             !message.native_options.is_empty()
                 || message.content.iter().any(|block| match block {
+                    ContentBlock::Native { .. } => true,
                     ContentBlock::ToolUse {
                         caller,
                         toolset_name,

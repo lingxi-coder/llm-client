@@ -41,6 +41,7 @@ impl WireCodec for OpenAiChatCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::reject_typed_native(req, context.profile().protocol)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::providers::qwen::cache::validate(req, context)?;
         crate::providers::openrouter::prompt_cache::validate(req, context)?;

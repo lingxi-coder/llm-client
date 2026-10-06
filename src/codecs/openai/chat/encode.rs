@@ -31,6 +31,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::codecs::reject_typed_native(req, profile.protocol)?;
     crate::providers::anthropic::code_execution::validate(req, opts)?;
     crate::providers::qwen::cache::validate(req, opts)?;
     crate::providers::openrouter::prompt_cache::validate(req, opts)?;
@@ -402,6 +403,11 @@ fn encode_message<'a>(
             continue;
         }
         match block {
+            ContentBlock::Native { .. } => {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "Chat Completions cannot encode typed Responses content".into(),
+                });
+            }
             // Pre-scanned because the envelope describes the whole message,
             // including tool calls which may precede it in the block sequence.
             ContentBlock::ProviderContent { .. } => {}
