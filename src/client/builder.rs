@@ -69,8 +69,9 @@ pub struct LlmClientBuilder {
 }
 
 impl LlmClientBuilder {
-    /// Use the built-in HTTP/HTTPS transport and system clock, with API-key
-    /// and bearer authentication registered. No custom services are needed.
+    /// Use the built-in HTTP/HTTPS transport and system clock, with API-key,
+    /// bearer, and restricted ChatGPT plan authentication registered. No custom
+    /// services are needed.
     /// Requests require a Tokio runtime with I/O and time enabled.
     pub fn new(profiles: &[ProviderProfile]) -> Result<Self, LlmError> {
         Ok(Self::with_transport(
@@ -80,8 +81,8 @@ impl LlmClientBuilder {
     }
 
     /// Use a custom transport with the system clock. Registers all built-in
-    /// codecs, model directories, API-key and bearer authenticators, just like
-    /// [`Self::new`]. This constructor does not create a network client.
+    /// codecs, model directories, API-key, bearer, and ChatGPT plan authenticators,
+    /// just like [`Self::new`]. This constructor does not create a network client.
     pub fn with_transport(http: Arc<dyn Transport>, profiles: &[ProviderProfile]) -> Self {
         let mut codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>> = BTreeMap::new();
         for codec in crate::codecs::builtin() {
@@ -109,6 +110,10 @@ impl LlmClientBuilder {
         };
         builder.register_authenticator(AuthStrategy::ApiKey, Arc::new(crate::ApiKeyAuthenticator));
         builder.register_authenticator(AuthStrategy::Bearer, Arc::new(crate::BearerAuthenticator));
+        builder.register_authenticator(
+            AuthStrategy::ChatGptPlan,
+            Arc::new(crate::auth::ChatGptPlanAuthenticator),
+        );
         builder
     }
 
@@ -499,6 +504,14 @@ pub(super) fn validate_profiles(
         }
     }
     for p in profiles {
+        if p.auth == AuthStrategy::ChatGptPlan {
+            crate::auth::chatgpt_plan::validate_profile(p).map_err(|reason| {
+                BuildError::InvalidService {
+                    profile_name: p.profile_name.clone(),
+                    reason,
+                }
+            })?;
+        }
         if !p.chat_enabled && !p.models.is_empty() {
             return Err(BuildError::InvalidService {
                 profile_name: p.profile_name.clone(),

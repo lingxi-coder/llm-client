@@ -126,6 +126,16 @@ pub(crate) fn pin_realtime_scope(
     pinned
         .validate_scope(profile_name, account_scope)
         .map_err(map_error)?;
+    if pinned
+        .pin()
+        .map_err(map_error)?
+        .profile(profile_name)
+        .is_some_and(|profile| profile.auth == crate::protocol::AuthStrategy::ChatGptPlan)
+    {
+        return Err(crate::realtime::RealtimeError::InvalidConfig {
+            message: "ChatGPT plan usage does not support Realtime or Live connections".into(),
+        });
+    }
     Ok(pinned)
 }
 
@@ -136,6 +146,27 @@ mod tests {
         LlmClientBuilder,
     };
     use serde_json::json;
+
+    #[test]
+    fn chatgpt_plan_profile_cannot_open_a_realtime_scope() {
+        let profile: ProviderProfile = serde_json::from_value(json!({
+            "provider_id":"openai", "profile_name":"chatgpt-plan",
+            "protocol":"open_ai_responses", "base_url":"https://api.openai.com/v1",
+            "auth":"chat_gpt_plan", "model_list":"none",
+            "pricing":{"billingMode":"subscription"},
+            "models":[{"request_model":"gpt-6.1-sol","display_model":"gpt-6.1-sol","billing_model":"gpt-6.1-sol"}]
+        }))
+        .unwrap();
+        let client = LlmClientBuilder::new(&[profile])
+            .unwrap()
+            .with_region(crate::protocol::Region::International)
+            .build()
+            .unwrap();
+        let typed = client
+            .provider::<crate::providers::OpenAiClient>("chatgpt-plan")
+            .unwrap();
+        assert!(super::pin_realtime_scope(&typed.binding, "chatgpt-plan", "account").is_err());
+    }
 
     #[test]
     fn native_scope_restriction_does_not_hide_snapshot_pricing_profiles() {

@@ -151,6 +151,9 @@ pub enum AuthStrategy {
     ApiKey,
     Bearer,
     OAuthBearer,
+    /// An OpenAI OAuth token with the separately granted ChatGPT plan-usage scope.
+    /// Only the public, restricted Responses endpoint accepts this strategy.
+    ChatGptPlan,
     CopilotBearer,
     ChatGptOAuth,
     GcpToken,
@@ -160,10 +163,11 @@ pub enum AuthStrategy {
 }
 
 impl AuthStrategy {
-    pub const ALL: [AuthStrategy; 9] = [
+    pub const ALL: [AuthStrategy; 10] = [
         AuthStrategy::ApiKey,
         AuthStrategy::Bearer,
         AuthStrategy::OAuthBearer,
+        AuthStrategy::ChatGptPlan,
         AuthStrategy::CopilotBearer,
         AuthStrategy::ChatGptOAuth,
         AuthStrategy::GcpToken,
@@ -297,13 +301,13 @@ impl FailoverTriggers {
     /// and retrying it elsewhere only buries the real reason.
     #[must_use]
     pub fn matches(self, error: &crate::protocol::LlmError) -> bool {
-        use crate::protocol::LlmError;
-        match error {
-            LlmError::RateLimited { .. } | LlmError::QuotaExceeded { .. } => self.rate_limit,
-            LlmError::Overloaded { .. } => self.overloaded,
-            LlmError::ProviderInternal { .. } => self.server_error,
-            LlmError::Transport { .. } | LlmError::TransportTimeout { .. } => self.network,
-            LlmError::Authentication { .. } | LlmError::PermissionDenied { .. } => self.auth,
+        use crate::protocol::LlmErrorKind;
+        match error.kind() {
+            LlmErrorKind::RateLimited | LlmErrorKind::QuotaExceeded => self.rate_limit,
+            LlmErrorKind::Overloaded => self.overloaded,
+            LlmErrorKind::ProviderInternal => self.server_error,
+            LlmErrorKind::Transport | LlmErrorKind::TransportTimeout => self.network,
+            LlmErrorKind::Authentication | LlmErrorKind::PermissionDenied => self.auth,
             _ => false,
         }
     }

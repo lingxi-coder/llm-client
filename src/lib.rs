@@ -4,7 +4,8 @@
 //! [`Authenticator`]. Use [`LlmClientBuilder::new`] for built-in
 //! HTTP/HTTPS or inject a custom HTTP client through [`Transport`].
 //! [`LlmClientBuilder`] registers the built-in codecs and model directories;
-//! the built-in HTTP constructor also registers API-key and bearer authentication.
+//! the built-in HTTP constructor also registers API-key, bearer, and restricted
+//! ChatGPT plan authentication.
 //!
 //! It does not hold, fetch or store credentials. A secret arrives per request
 //! on `RequestOptions::credential`, from whoever owns it; key and token
@@ -52,7 +53,7 @@ pub mod websocket;
 mod wire_options;
 
 pub use account::AccountRpc;
-pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator};
+pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator, ChatGptPlanAuthenticator};
 pub use client::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 pub use client::{
     AccountBalance, AccountCostBucket, AccountCostUsage, AccountExecutionOptions, AccountFailure,

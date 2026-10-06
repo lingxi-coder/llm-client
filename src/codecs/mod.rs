@@ -161,6 +161,7 @@ pub trait StreamDecoder: Send {
         Default::default()
     }
     fn set_response_headers(&mut self, _headers: &[(String, String)]) {}
+    fn set_response_status(&mut self, _status: u16) {}
     fn push_bytes(&mut self, bytes: &[u8]) -> Vec<Result<StreamEvent, LlmError>>;
     fn finish(&mut self) -> Vec<Result<StreamEvent, LlmError>>;
     fn usage_report(&self) -> crate::protocol::UsageReport;
@@ -172,6 +173,7 @@ pub(crate) trait EventDecoder: Send {
         Default::default()
     }
     fn set_response_headers(&mut self, _headers: &[(String, String)]) {}
+    fn set_response_status(&mut self, _status: u16) {}
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError>;
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError>;
     fn usage_report(&self) -> crate::protocol::UsageReport;

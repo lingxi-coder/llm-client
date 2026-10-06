@@ -12,9 +12,10 @@ use serde_json::Value;
 use std::time::Duration;
 use thiserror::Error;
 
-/// Provider and client communication failures. HTTP status details, when
-/// available, are included in `message`; callers can classify failures by
-/// variant or [`LlmError::kind`]. Recovery decisions belong to the caller.
+/// Provider and client communication failures. Most variants include HTTP
+/// details in `message`; [`LlmError::ProviderResponse`] retains structured
+/// provider diagnostics. Callers can classify failures with [`LlmError::kind`].
+/// Recovery decisions belong to the caller.
 ///
 /// Deliberately not `#[non_exhaustive]`: downstream `match`es must fail to
 /// compile when a variant is added, so no branch dies silently.
@@ -48,6 +49,16 @@ pub enum LlmError {
     ModelUnavailable { message: String },
     #[error("provider internal error: {message}")]
     ProviderInternal { message: String },
+    /// A provider failure whose exact response is needed for recovery.
+    /// `classification` retains the usual error category for generic callers.
+    #[error("provider response HTTP {status} ({classification:?}): {body}")]
+    ProviderResponse {
+        status: u16,
+        request_id: Option<String>,
+        body: Value,
+        classification: LlmErrorKind,
+        retry_after: Option<Duration>,
+    },
     #[error("provider overloaded: {message}")]
     Overloaded { message: String },
     #[error("transport error: {message}")]
@@ -134,6 +145,7 @@ impl LlmError {
             LlmError::RequestTooLarge { .. } => LlmErrorKind::RequestTooLarge,
             LlmError::ModelUnavailable { .. } => LlmErrorKind::ModelUnavailable,
             LlmError::ProviderInternal { .. } => LlmErrorKind::ProviderInternal,
+            LlmError::ProviderResponse { classification, .. } => *classification,
             LlmError::Overloaded { .. } => LlmErrorKind::Overloaded,
             LlmError::Transport { .. } => LlmErrorKind::Transport,
             LlmError::TransportTimeout { .. } => LlmErrorKind::TransportTimeout,

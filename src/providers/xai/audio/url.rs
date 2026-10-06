@@ -178,6 +178,19 @@ impl XaiTranscriptionUrl {
             LlmError::ProviderInternal { message } => LlmError::ProviderInternal {
                 message: self.redact_text(&message),
             },
+            LlmError::ProviderResponse {
+                status,
+                request_id,
+                body,
+                classification,
+                retry_after,
+            } => LlmError::ProviderResponse {
+                status,
+                request_id: request_id.map(|value| self.redact_text(&value)),
+                body: self.redact_value(body),
+                classification,
+                retry_after,
+            },
             LlmError::Overloaded { message } => LlmError::Overloaded {
                 message: self.redact_text(&message),
             },

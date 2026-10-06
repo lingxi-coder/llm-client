@@ -8,7 +8,7 @@ use crate::codecs::file_search_decode::FileSearchStream;
 use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
-use crate::protocol::{LlmError, ResponseId, StopReason, StreamEvent, ToolUseId};
+use crate::protocol::{LlmError, LlmErrorKind, ResponseId, StopReason, StreamEvent, ToolUseId};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
@@ -33,6 +33,9 @@ pub struct ResponsesStreamDecoder {
     openai_approval_semantics: bool,
     openai_tool_search_semantics: bool,
     qwen_code_interpreter: bool,
+    chatgpt_plan: bool,
+    http_status: Option<u16>,
+    request_id: Option<String>,
     done: bool,
     search: SearchStream,
     file_search: FileSearchStream,
@@ -49,6 +52,11 @@ impl EventDecoder for ResponsesStreamDecoder {
         // This wire ends at `response.completed` and sends no sentinel, but an
         // OpenAI-compatible gateway in front of it may append one.
         if data == "[DONE]" {
+            if self.chatgpt_plan {
+                return Err(LlmError::StreamInterrupted {
+                    message: "ChatGPT plan stream ended without response.completed".into(),
+                });
+            }
             self.finish_into(&mut out);
             return Ok(out);
         }
@@ -193,6 +201,29 @@ impl EventDecoder for ResponsesStreamDecoder {
             }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
+                if self.chatgpt_plan && root["type"] == "response.incomplete" {
+                    return Err(LlmError::ProviderResponse {
+                        status: self.http_status.unwrap_or(200),
+                        request_id: self.request_id.clone(),
+                        body: response.clone(),
+                        classification: LlmErrorKind::StreamInterrupted,
+                        retry_after: None,
+                    });
+                }
+                if self.chatgpt_plan
+                    && response
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| status != "completed")
+                {
+                    return Err(LlmError::ProviderResponse {
+                        status: self.http_status.unwrap_or(200),
+                        request_id: self.request_id.clone(),
+                        body: response.clone(),
+                        classification: LlmErrorKind::ProviderInternal,
+                        retry_after: None,
+                    });
+                }
                 if let Some(items) = response.get("output").and_then(Value::as_array) {
                     for (index, item) in items.iter().enumerate() {
                         self.emit_native(index, item, &mut out);
@@ -222,7 +253,18 @@ impl EventDecoder for ResponsesStreamDecoder {
             }
             Some("response.failed") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
-                return Err(decode::classify_error(500, response, None));
+                let classified = decode::classify_error(500, response, None);
+                return Err(if self.chatgpt_plan {
+                    LlmError::ProviderResponse {
+                        status: self.http_status.unwrap_or(200),
+                        request_id: self.request_id.clone(),
+                        body: response.clone(),
+                        classification: classified.kind(),
+                        retry_after: None,
+                    }
+                } else {
+                    classified
+                });
             }
             Some("error") => {
                 let envelope = if root.get("error").is_some() {
@@ -240,7 +282,18 @@ impl EventDecoder for ResponsesStreamDecoder {
                     .and_then(Value::as_str)
                     .and_then(|s| s.parse::<f64>().ok())
                     .and_then(|s| std::time::Duration::try_from_secs_f64(s).ok());
-                return Err(decode::classify_error(status, &envelope, retry_after));
+                let classified = decode::classify_error(status, &envelope, retry_after);
+                return Err(if self.chatgpt_plan {
+                    LlmError::ProviderResponse {
+                        status: self.http_status.unwrap_or(200),
+                        request_id: self.request_id.clone(),
+                        body: envelope.clone(),
+                        classification: classified.kind(),
+                        retry_after,
+                    }
+                } else {
+                    classified
+                });
             }
             // Unknown types (`response.in_progress`, `…output_text.done`, and
             // whatever is added next) are ignored.
@@ -265,6 +318,16 @@ impl EventDecoder for ResponsesStreamDecoder {
     }
     fn set_response_headers(&mut self, headers: &[(String, String)]) {
         self.inference.headers(headers);
+        self.request_id = headers
+            .iter()
+            .find(|(name, _)| {
+                name.eq_ignore_ascii_case("x-request-id")
+                    || name.eq_ignore_ascii_case("openai-request-id")
+            })
+            .map(|(_, value)| value.clone());
+    }
+    fn set_response_status(&mut self, status: u16) {
+        self.http_status = Some(status);
     }
     fn usage_report(&self) -> crate::protocol::UsageReport {
         usage::report(
@@ -337,6 +400,7 @@ impl ResponsesStreamDecoder {
                 context.profile(),
                 context.request_model(),
             ),
+            chatgpt_plan: context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan,
             ..Self::default()
         }
     }

@@ -18,6 +18,18 @@ impl OpenAiClient {
         self.binding.profile_name()
     }
 
+    /// List models visible to the selected ChatGPT account and its plan grant.
+    /// The caller supplies a current OAuth token for this exact account.
+    pub async fn chatgpt_plan_models(
+        &self,
+        access_token: &crate::protocol::Secret<String>,
+    ) -> Result<
+        Vec<crate::providers::openai::chatgpt_plan::ChatGptPlanModel>,
+        crate::providers::openai::chatgpt_plan::ChatGptPlanModelError,
+    > {
+        crate::providers::openai::chatgpt_plan::list_models(&self.binding, access_token).await
+    }
+
     pub fn containers(
         &self,
         scope: crate::providers::openai::containers::OpenAiContainerScope,
@@ -25,6 +37,16 @@ impl OpenAiClient {
         crate::providers::openai::containers::OpenAiContainersService<'_>,
         crate::providers::openai::containers::OpenAiContainersError,
     > {
+        let snapshot = self.binding.pin()?;
+        if snapshot
+            .profile(self.profile_name())
+            .is_some_and(|profile| profile.auth == crate::protocol::AuthStrategy::ChatGptPlan)
+        {
+            return Err(crate::protocol::LlmError::UnsupportedCapability {
+                message: "ChatGPT plan usage does not support OpenAI Containers".into(),
+            }
+            .into());
+        }
         self.binding
             .validate_scope(scope.profile_name(), scope.account_scope())?;
 

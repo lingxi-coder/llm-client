@@ -116,7 +116,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
 
 | 方法 | 返回值 | 行为 |
 | --- | --- | --- |
-| `new(&[ProviderProfile])` | `Result<Self, LlmError>` | 创建内置 HTTP 传输和系统时钟，注册全部内置 codec、目录解析器，以及 `ApiKey` / `Bearer` 认证器 |
+| `new(&[ProviderProfile])` | `Result<Self, LlmError>` | 创建内置 HTTP 传输和系统时钟，注册全部内置 codec、目录解析器，以及 `ApiKey` / `Bearer` / `ChatGptPlan` 认证器 |
 | `with_transport(Arc<dyn Transport>, &[ProviderProfile])` | `Self` | 使用自定义传输与内置系统时钟，注册全部内置 codec、目录解析器及 `ApiKey` / `Bearer` 认证器 |
 | `with_region(Region)` | `Self` | 消费并返回 builder，设置必选的使用区域 |
 | `with_clock(Arc<dyn Clock>)` | `&mut Self` | 覆盖构建器的时钟，适用于固定时间的测试 |
@@ -647,12 +647,13 @@ OpenAI Chat 连接可通过 `extra.max_tokens_field` 选择输出上限字段：
 
 ## 认证与凭证
 
-内置认证器均为无状态 unit struct。`new()` 和 `with_transport()` 均自动为 `ApiKey`、`Bearer` 注册对应实现；也可通过 `register_authenticator(..., Arc::new(...))` 替换：
+内置认证器均为无状态 unit struct。`new()` 和 `with_transport()` 均自动为 `ApiKey`、`Bearer`、`ChatGptPlan` 注册对应实现；也可通过 `register_authenticator(..., Arc::new(...))` 替换：
 
 - `ApiKeyAuthenticator`：Anthropic 系列默认 `x-api-key`，Gemini 系列默认 `x-goog-api-key`，OpenAI 系列默认 `authorization: Bearer ...`。`extra.credential_header` 可覆盖头名，例如 Azure API key 使用 `api-key`。
 - `BearerAuthenticator`：始终使用 `authorization: Bearer ...`，适用于调用方已经获得的有效 token。
+- `ChatGptPlanAuthenticator`：仅允许已单独授权套餐额度的 OAuth token 调用公开的 OpenAI Responses HTTP 流式端点，并在发送前检查当前预览期的请求限制；登录和刷新仍由宿主负责。配置及模型发现见 [Sign in with ChatGPT 套餐调用](chatgpt-plan.md)。
 
-`AuthStrategy` 包括 `ApiKey`、`Bearer`、`OAuthBearer`、`CopilotBearer`、`ChatGptOAuth`、`GcpToken`、`AzureToken` 和 `None`。策略名并不自动启用登录、刷新或交换逻辑；除构建器已注册的 `ApiKey` / `Bearer` 外，宿主需为使用的策略注册适合的实现。
+`AuthStrategy` 包括 `ApiKey`、`Bearer`、`OAuthBearer`、`ChatGptPlan`、`CopilotBearer`、`ChatGptOAuth`、`GcpToken`、`AwsSigV4`、`AzureToken` 和 `None`。策略名并不自动启用登录、刷新或交换逻辑；除构建器已注册的 `ApiKey` / `Bearer` / `ChatGptPlan` 外，宿主需为使用的策略注册适合的实现。
 
 `CredentialConfig::{Env, Static, HostManaged, None}` 只是来源描述；内置认证器仅使用 `RequestOptions.credential`，缺失时返回 `Authentication`。`Secret<String>` 的 Debug/Display 脱敏且不能序列化，读取明文需 `expose_secret()` 或 `into_inner()`；它不承诺内存清零。认证后的 `HttpRequest.headers` 包含明文凭证；`HttpRequest` 的 Debug 输出会隐藏 URL、header 值与 body 内容，但直接记录这些字段仍需宿主自行脱敏。
 
@@ -856,12 +857,13 @@ Copilot 也可在每次查询的 `AccountQuery.credential` 中提供对应用户
 | `ContextOverflow { limit, actual, .. }`、`RequestTooLarge` | 缩减历史或请求体 |
 | `ModelUnavailable` | 模型无法解析或不可用 |
 | `ProviderInternal`、`Overloaded` | provider 内部故障/过载 |
+| `ProviderResponse { status, request_id, body, classification, retry_after }` | 保留 ChatGPT Plan 推理失败的原始响应；`kind()` 返回 `classification`，宿主再按 `body.error.code` 处理具体恢复 |
 | `Transport`、`TransportTimeout`、`TlsCert` | 网络、超时、TLS 问题 |
 | `StreamInterrupted` | 流内容损坏或意外中断 |
 | `ProviderFileProcessing { file, .. }` | 文件就绪状态未确认；保存账号绑定的引用以便稍后继续轮询 |
 | `CostUnavailable` | 价格数据不足 |
 
-上述变体除特别列出的附加字段外均含 `message: String`。`retry_after` 是可选 `Duration`；当前内置解析器支持秒数形式的 `Retry-After`。宿主直接匹配 `ContextOverflow` 和 `RequestTooLarge`，自主决定是否缩减输入和再次调用；客户端不会因这些错误自动压缩或重试。
+上述变体除 `ProviderResponse` 和特别列出的附加字段外均含 `message: String`。`retry_after` 是可选 `Duration`；当前内置解析器支持秒数形式的 `Retry-After`。宿主直接匹配 `ContextOverflow` 和 `RequestTooLarge`，自主决定是否缩减输入和再次调用；客户端不会因这些错误自动压缩或重试。
 
 ## 扩展接口
 

@@ -8,10 +8,12 @@
 
 mod api_key;
 mod bearer;
+pub(crate) mod chatgpt_plan;
 pub mod sigv4;
 
 pub use api_key::ApiKeyAuthenticator;
 pub use bearer::BearerAuthenticator;
+pub use chatgpt_plan::ChatGptPlanAuthenticator;
 
 use crate::protocol::{LlmError, ProtocolFamily, ProviderProfile, Secret};
 use crate::transport::HttpRequest;

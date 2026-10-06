@@ -48,6 +48,9 @@ impl<D: EventDecoder> StreamDecoder for SseDecoder<D> {
     fn set_response_headers(&mut self, headers: &[(String, String)]) {
         self.inner.set_response_headers(headers);
     }
+    fn set_response_status(&mut self, status: u16) {
+        self.inner.set_response_status(status);
+    }
     fn push_bytes(&mut self, bytes: &[u8]) -> Vec<Result<StreamEvent, LlmError>> {
         if self.ended {
             return vec![];

@@ -13,13 +13,31 @@ pub(crate) fn response_with_approval_support(
     resp: &HttpResponse,
     openai_approval_semantics: bool,
     openai_tool_search_semantics: bool,
+    chatgpt_plan: bool,
 ) -> Result<ChatResponse, LlmError> {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+    let body: Value = serde_json::from_slice(&resp.body).unwrap_or_else(|_| {
+        if chatgpt_plan {
+            Value::String(String::from_utf8_lossy(&resp.body).into_owned())
+        } else {
+            Value::Null
+        }
+    });
     if !(200..300).contains(&resp.status) {
-        return Err(classify_error(resp.status, &body, retry_after(resp)));
+        let retry_after = retry_after(resp);
+        let classified = classify_error(resp.status, &body, retry_after);
+        return Err(if chatgpt_plan {
+            plan_provider_error(resp, body, classified.kind(), retry_after)
+        } else {
+            classified
+        });
     }
     if body.get("status").and_then(Value::as_str) == Some("failed") {
-        return Err(classify_error(500, &body, None));
+        let classified = classify_error(500, &body, None);
+        return Err(if chatgpt_plan {
+            plan_provider_error(resp, body, classified.kind(), None)
+        } else {
+            classified
+        });
     }
     if !body.get("output").is_some_and(Value::is_array) {
         return Err(LlmError::ProviderInternal {
@@ -106,6 +124,24 @@ pub(crate) fn response_with_approval_support(
         continuation: None,
         executed_profile: None,
     })
+}
+
+fn plan_provider_error(
+    resp: &HttpResponse,
+    body: Value,
+    classification: crate::protocol::LlmErrorKind,
+    retry_after: Option<Duration>,
+) -> LlmError {
+    LlmError::ProviderResponse {
+        status: resp.status,
+        request_id: resp
+            .header("x-request-id")
+            .or_else(|| resp.header("openai-request-id"))
+            .map(str::to_owned),
+        body,
+        classification,
+        retry_after,
+    }
 }
 
 /// An output item is a message, a function call, or something this codec does

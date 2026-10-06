@@ -5,6 +5,7 @@ pub mod audio;
 pub mod background;
 pub mod batches;
 pub(crate) mod chat;
+pub mod chatgpt_plan;
 mod client;
 pub mod containers;
 pub(crate) mod files;

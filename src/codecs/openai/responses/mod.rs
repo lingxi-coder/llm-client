@@ -41,6 +41,9 @@ impl WireCodec for OpenAiResponsesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        if context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan {
+            crate::auth::chatgpt_plan::validate_chat_request(req)?;
+        }
         crate::providers::openai::prompt_cache::validate(req, context)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
@@ -88,6 +91,7 @@ impl WireCodec for OpenAiResponsesCodec {
             crate::providers::openai::responses_policy::is_official_openai_responses_profile(
                 context.profile(),
             ),
+            context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan,
         )
         .map(|mut response| {
             response.inference = crate::codecs::inference::response(resp, context.profile());

@@ -251,6 +251,13 @@ impl RequestDraft {
                     .await??;
             }
         }
+        if self.call.profile.auth == crate::protocol::AuthStrategy::ChatGptPlan {
+            crate::auth::chatgpt_plan::validate_request(
+                &self.call.prepared.http,
+                &self.call.profile,
+                Some(&self.call.model.request_model),
+            )?;
+        }
         let body = serde_json::from_slice::<serde_json::Value>(&self.call.prepared.http.body)
             .ok()
             .or_else(|| {
@@ -310,6 +317,19 @@ impl PreparedCall {
         mut handshake: HttpRequest,
         transport: &dyn crate::Transport,
     ) -> Result<Box<dyn crate::transport::WebSocketConnection>, LlmError> {
+        self.validate_websocket_profile()?;
+        handshake.method = "GET".into();
+        handshake.body = Default::default();
+        if let Some(milliseconds) = self.profile.websocket_connect_timeout_ms {
+            handshake.timeout = Some(std::time::Duration::from_millis(milliseconds));
+        }
+        crate::runtime::Deadline::at(self.deadline)
+            .cap(handshake.timeout)
+            .run(transport.connect_websocket(handshake))
+            .await?
+    }
+
+    fn validate_websocket_profile(&self) -> Result<(), LlmError> {
         if self.profile.protocol != crate::protocol::ProtocolFamily::OpenAiResponses
             || !self.profile.supports_websockets
         {
@@ -322,15 +342,7 @@ impl PreparedCall {
                 message: "WebSocket compression is not supported".into(),
             });
         }
-        handshake.method = "GET".into();
-        handshake.body = Default::default();
-        if let Some(milliseconds) = self.profile.websocket_connect_timeout_ms {
-            handshake.timeout = Some(std::time::Duration::from_millis(milliseconds));
-        }
-        crate::runtime::Deadline::at(self.deadline)
-            .cap(handshake.timeout)
-            .run(transport.connect_websocket(handshake))
-            .await?
+        Ok(())
     }
 
     /// Send one request on an already-open connection. Connection failures are
@@ -357,6 +369,7 @@ impl PreparedCall {
                 message: "WebSocket dispatch requires a streaming Responses request".into(),
             });
         }
+        self.validate_websocket_profile()?;
         self.validate_file_expirations()?;
         let body = crate::websocket::request_payload(&self.prepared.http.body)?;
         self.prepared.inference.executed_at = self

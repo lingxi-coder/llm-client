@@ -174,8 +174,28 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
                     message: display(status, body, &message),
                 }
             }
-            "insufficient_quota" | "credit_balance_exhausted" => {
+            "insufficient_quota"
+            | "credit_balance_exhausted"
+            | "subscription_sharing_usage_limit_exceeded" => {
                 return LlmError::QuotaExceeded {
+                    message: display(status, body, &message),
+                }
+            }
+            "subscription_sharing_user_not_eligible"
+            | "subscription_sharing_route_not_supported"
+            | "chatpass_v2_scope_not_authorized"
+            | "chatpass_v2_invalid_authorization_context" => {
+                return LlmError::PermissionDenied {
+                    message: display(status, body, &message),
+                }
+            }
+            "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
+                return LlmError::ProviderInternal {
+                    message: display(status, body, &message),
+                }
+            }
+            "subscription_sharing_unsupported_capability" => {
+                return LlmError::InvalidRequest {
                     message: display(status, body, &message),
                 }
             }
@@ -186,7 +206,7 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
                     actual: None,
                 }
             }
-            "invalid_api_key" | "invalid_authentication" => {
+            "invalid_api_key" | "invalid_authentication" | "subscription_sharing_invalid_user" => {
                 return LlmError::Authentication {
                     message: display(status, body, &message),
                 }

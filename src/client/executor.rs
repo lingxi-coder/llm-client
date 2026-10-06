@@ -433,6 +433,13 @@ impl<'client> RequestExecutor<'client> {
             if let Some(auth) = authenticator {
                 auth.apply(&mut http, profile, credential).await?;
             }
+            if profile.auth == AuthStrategy::ChatGptPlan {
+                crate::auth::chatgpt_plan::validate_request(
+                    &http,
+                    profile,
+                    Some(&attempt.model.request_model),
+                )?;
+            }
         }
         Ok(PreparedAttempt {
             inference,
@@ -623,7 +630,17 @@ impl<'client> RequestExecutor<'client> {
             .ok_or_else(|| LlmError::ModelUnavailable {
                 message: format!("no connection served {:?}", req.model),
             })?;
-        let replay = dispatch::chat(head.profile).replay_policy(req, &opts);
+        let mut replay = dispatch::chat(head.profile).replay_policy(req, &opts);
+        if connections
+            .iter()
+            .any(|attempt| attempt.profile.auth == AuthStrategy::ChatGptPlan)
+        {
+            // A plan grant may never become either the source or the target of
+            // automatic failover. Account and billing selection stay explicit.
+            replay.pin_to_connection = true;
+            replay.allow_failover = false;
+            replay.repair_missing_files = false;
+        }
         let prepared_request = self.resolve_before_deadline(req, &opts, started).await?;
         let mut last = None;
         for (attempt_index, attempt) in attempts(&connections, replay.pin_to_connection)

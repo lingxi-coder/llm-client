@@ -3,7 +3,7 @@
 
 use super::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 use super::snapshot::RuntimeSnapshot;
-use crate::protocol::{LlmError, ModelProfile, ProviderProfile};
+use crate::protocol::{AuthStrategy, LlmError, ModelProfile, ProviderProfile};
 use thiserror::Error;
 
 /// Borrow the exact rows from the immutable snapshot for the whole request.
@@ -282,6 +282,8 @@ impl RuntimeSnapshot {
                 if !c.supports_region(self.region)
                     || c.group() != group
                     || c.profile_name == provider.profile_name
+                    || provider.auth == AuthStrategy::ChatGptPlan
+                    || c.auth == AuthStrategy::ChatGptPlan
                 {
                     return None;
                 }

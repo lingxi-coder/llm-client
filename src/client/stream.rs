@@ -107,6 +107,7 @@ impl ModelStream {
         requested_inference: crate::protocol::InferenceReport,
         continuation: Option<ContinuationRef>,
     ) -> Self {
+        decoder.set_response_status(resp.status);
         decoder.set_response_headers(&resp.headers);
         let mut ready = VecDeque::new();
         let initial = decoder.inference_report();

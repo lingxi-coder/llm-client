@@ -54,7 +54,10 @@ pub fn apply_credential(
             "credential material does not match {:?} authentication",
             profile.auth
         );
-        if profile.auth == AuthStrategy::ChatGptOAuth {
+        if matches!(
+            profile.auth,
+            AuthStrategy::ChatGptOAuth | AuthStrategy::ChatGptPlan
+        ) {
             LlmError::Authentication { message }
         } else {
             LlmError::InvalidRequest { message }
@@ -175,6 +178,15 @@ pub fn apply_credential(
                     {
                         header_policy::anthropic_oauth(&mut headers);
                     }
+                }
+                AuthStrategy::ChatGptPlan => {
+                    super::chatgpt_plan::validate_request(request, profile, None)?;
+                    if token.is_empty() {
+                        return Err(LlmError::Authentication {
+                            message: "ChatGPT plan usage requires a nonempty access token".into(),
+                        });
+                    }
+                    header_policy::bearer(&mut headers, token);
                 }
                 _ => unreachable!("specialized strategies handled above"),
             }
