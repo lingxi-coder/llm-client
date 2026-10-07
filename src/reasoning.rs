@@ -134,6 +134,7 @@ pub fn reasoning_control_spec(target: ReasoningTarget<'_>) -> ReasoningControlSp
         | ProtocolFamily::FoundryClaude
         | ProtocolFamily::VertexClaude => anthropic_spec(target.model),
         ProtocolFamily::OpenAiResponses => openai_responses_spec(target.base_url, target.model),
+        ProtocolFamily::GeminiInteractions => ReasoningControlSpec::automatic_only(),
         ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini => {
             gemini_spec(target.model)
         }

@@ -14,6 +14,7 @@ pub use input::{CodecContext, ContentBinding, EncodeRequest, PreparedMedia, Requ
 pub mod anthropic;
 pub(crate) mod file_search_decode;
 pub mod gemini;
+pub mod gemini_interactions;
 pub mod openai;
 pub(crate) mod stream;
 pub(crate) mod usage;
@@ -49,15 +50,14 @@ pub(crate) fn reject_typed_native(
     family: ProtocolFamily,
 ) -> Result<(), LlmError> {
     use crate::providers::openai::computer::OpenAiComputerToolConfig;
-    if req
-        .native_options
+    if req.native_options.iter().any(|value| {
+        value.is::<OpenAiComputerToolConfig>()
+            || value.is::<crate::providers::google::computer::GeminiComputerToolConfig>()
+    }) || req
+        .messages
         .iter()
-        .any(|value| value.is::<OpenAiComputerToolConfig>())
-        || req
-            .messages
-            .iter()
-            .flat_map(|message| &message.content)
-            .any(|block| matches!(block, crate::protocol::ContentBlock::Native { .. }))
+        .flat_map(|message| &message.content)
+        .any(|block| matches!(block, crate::protocol::ContentBlock::Native { .. }))
     {
         return Err(LlmError::UnsupportedCapability {
             message: format!(
@@ -215,6 +215,7 @@ pub(crate) fn builtin() -> Vec<Arc<dyn WireCodec>> {
     vec![
         Arc::new(crate::codecs::anthropic::AnthropicMessagesCodec),
         Arc::new(crate::codecs::gemini::GeminiCodec),
+        Arc::new(crate::codecs::gemini_interactions::GeminiInteractionsCodec),
         Arc::new(crate::hosting::AzureOpenAiCodec),
         Arc::new(crate::hosting::BedrockClaudeCodec),
         Arc::new(crate::hosting::FoundryClaudeCodec),

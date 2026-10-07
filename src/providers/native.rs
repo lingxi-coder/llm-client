@@ -153,6 +153,11 @@ fn validate_request_options(options: &[NativeExtension]) -> Result<(), LlmError>
             OpenAiComputerToolConfig::FORMAT => {
                 extension.decode::<OpenAiComputerToolConfig>()?;
             }
+            super::google::computer::GeminiComputerToolConfig::FORMAT => {
+                extension
+                    .decode::<super::google::computer::GeminiComputerToolConfig>()?
+                    .validate()?;
+            }
             format => {
                 return Err(LlmError::UnsupportedCapability {
                     message: format!("unsupported native options format {format}"),

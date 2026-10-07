@@ -1,9 +1,9 @@
 //! A provider response that can be continued only on its original route.
 
-use super::{LlmError, ProviderId, ProviderProfile, ResponseId};
+use super::{LlmError, ProtocolFamily, ProviderId, ProviderProfile, ResponseId};
 use serde::{Deserialize, Serialize};
 
-/// Opaque Responses state bound to the connection, model and caller's account.
+/// Opaque provider state bound to the connection, model and caller's account.
 ///
 /// Obtain this from `ChatResponse::continuation` or `ModelStream::continuation`.
 /// `account_scope` is a stable, non-secret account identifier supplied in
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ContinuationRef {
     pub response_id: ResponseId,
+    pub protocol: ProtocolFamily,
     pub provider_id: ProviderId,
     pub profile_name: String,
     pub endpoint_fingerprint: String,
@@ -31,6 +32,7 @@ impl ContinuationRef {
     ) -> Self {
         Self {
             response_id,
+            protocol: profile.protocol,
             provider_id: profile.provider_id.clone(),
             profile_name: profile.profile_name.clone(),
             endpoint_fingerprint: crate::files::provider_file_endpoint_fingerprint(
@@ -49,7 +51,8 @@ impl ContinuationRef {
         account_scope: Option<&str>,
         workspace_id: Option<&str>,
     ) -> Result<(), LlmError> {
-        if self.response_id.as_str().trim().is_empty()
+        if self.protocol != profile.protocol
+            || self.response_id.as_str().trim().is_empty()
             || self.provider_id != profile.provider_id
             || self.profile_name != profile.profile_name
             || self.endpoint_fingerprint

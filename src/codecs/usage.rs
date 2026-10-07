@@ -49,6 +49,9 @@ pub(crate) fn response_report(
             super::gemini::decode::usage,
             true,
         ),
+        P::GeminiInteractions => {
+            super::gemini_interactions::decode::usage_report(body.get("usage"))
+        }
         P::OpenAiResponses => report(
             body.get("usage"),
             &OPENAI_RESPONSES,

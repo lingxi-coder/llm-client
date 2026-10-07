@@ -178,6 +178,7 @@ fn computer_tool_config_and_matching_output_use_responses_items_and_scoped_conti
     let mut request = request();
     request.set_openai_computer_tool(Some(OpenAiComputerToolConfig::default()));
     request.continuation = Some(ContinuationRef {
+        protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
         response_id: ResponseId::new("resp-previous"),
         provider_id: ProviderId::new("openai"),
         profile_name: "openai".into(),
@@ -928,6 +929,7 @@ fn returned_computer_outputs_accept_readback_fields_without_reusing_them_as_inpu
         let mut request = request();
         request.set_openai_computer_tool(Some(OpenAiComputerToolConfig::default()));
         request.continuation = Some(ContinuationRef {
+            protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
             response_id: ResponseId::new("resp-previous"),
             provider_id: ProviderId::new("openai"),
             profile_name: "openai".into(),
@@ -1011,7 +1013,7 @@ fn incomplete_terminal_stream_retains_raw_call_and_usage_without_native_executio
 }
 
 #[test]
-fn output_without_typed_tool_declaration_is_rejected_by_request_validator() {
+fn old_computer_output_can_accompany_next_round_function_declarations() {
     let profile = profile();
     let mut request = request();
     let output = serde_json::from_value::<OpenAiComputerCallOutput>(json!({
@@ -1024,6 +1026,7 @@ fn output_without_typed_tool_declaration_is_rejected_by_request_validator() {
     .unwrap();
     request.messages[0].content = vec![output];
     request.continuation = Some(ContinuationRef {
+        protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
         response_id: ResponseId::new("resp-previous"),
         provider_id: ProviderId::new("openai"),
         profile_name: "openai".into(),
@@ -1032,10 +1035,23 @@ fn output_without_typed_tool_declaration_is_rejected_by_request_validator() {
         request_model: MODEL.into(),
         workspace_id: None,
     });
-    assert!(matches!(
-        OpenAiResponsesCodec.validate_request(&request, &context(&profile, RequestMode::Complete)),
-        Err(LlmError::InvalidRequest { .. })
-    ));
+    request.tools.push(serde_json::from_value(json!({"name":"computer","description":"Manage computer access","input_schema":{"type":"object","properties":{"action":{"type":"string"}}}})).unwrap());
+    OpenAiResponsesCodec
+        .validate_request(&request, &context(&profile, RequestMode::Complete))
+        .unwrap();
+    let body = encode(&request, &profile).unwrap();
+    assert_eq!(body["input"][0]["type"], "computer_call_output");
+    assert_eq!(body["tools"][0]["type"], "function");
+    assert_eq!(body["tools"][0]["name"], "computer");
+    assert!(!body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["type"] == "computer"));
+    request.continuation = None;
+    assert!(OpenAiResponsesCodec
+        .validate_request(&request, &context(&profile, RequestMode::Complete))
+        .is_err());
 }
 
 #[test]

@@ -15,6 +15,7 @@ fn codecs() -> Vec<Box<dyn WireCodec>> {
         Box::new(OpenAiResponsesCodec),
         Box::new(AnthropicMessagesCodec),
         Box::new(GeminiCodec),
+        Box::new(GeminiInteractionsCodec),
         Box::new(AzureOpenAiCodec),
         Box::new(BedrockClaudeCodec),
         Box::new(FoundryClaudeCodec),
@@ -42,6 +43,19 @@ fn fixtures(family: ProtocolFamily) -> (Value, Vec<u8>) {
                 vec![
                     json!({"type":"response.output_text.delta","output_index":0,"delta":"héllo"}),
                     json!({"type":"response.completed","response":response}),
+                ],
+            )
+        }
+        ProtocolFamily::GeminiInteractions => {
+            let value = json!({"id":"int_fixture","model":"m","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"héllo"}]}],"usage":{"total_input_tokens":2,"total_output_tokens":3,"total_tokens":5}});
+            (
+                value.clone(),
+                vec![
+                    json!({"event_type":"interaction.created","interaction":{"id":"int_fixture","model":"m"}}),
+                    json!({"event_type":"step.start","index":0,"step":{"type":"model_output"}}),
+                    json!({"event_type":"step.delta","index":0,"delta":{"type":"text","text":"héllo"}}),
+                    json!({"event_type":"step.stop","index":0}),
+                    json!({"event_type":"interaction.completed","interaction":{"id":"int_fixture","status":"completed","usage":value["usage"]}}),
                 ],
             )
         }

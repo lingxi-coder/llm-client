@@ -392,6 +392,7 @@ mod tests {
                 .into(),
             ],
             continuation: Some(ContinuationRef {
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
                 response_id: ResponseId::new("resp_previous"),
                 provider_id: ProviderId::new("deepseek"),
                 profile_name: "deepseek".into(),

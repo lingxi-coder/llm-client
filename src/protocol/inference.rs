@@ -158,9 +158,9 @@ impl ProviderProfile {
         self.inference.reasoning.unwrap_or(match self.protocol {
             ProtocolFamily::OpenAiChat | ProtocolFamily::AzureOpenAi => ReasoningWire::OpenAiChat,
             ProtocolFamily::OpenAiResponses => ReasoningWire::OpenAiResponses,
-            ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini => {
-                ReasoningWire::Gemini
-            }
+            ProtocolFamily::GeminiGenerateContent
+            | ProtocolFamily::GeminiInteractions
+            | ProtocolFamily::VertexGemini => ReasoningWire::Gemini,
             _ => ReasoningWire::Anthropic,
         })
     }

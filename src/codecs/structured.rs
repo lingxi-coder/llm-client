@@ -304,6 +304,7 @@ fn fields(req: &ChatRequest, context: &CodecContext) -> Map<String, Value> {
     }
     let p = context.profile();
     match p.protocol {
+        ProtocolFamily::GeminiInteractions => {}
         ProtocolFamily::OpenAiChat | ProtocolFamily::AzureOpenAi => {
             let value = match &req.output_format {
                 OutputFormat::JsonSchema {

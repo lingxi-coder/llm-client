@@ -70,6 +70,7 @@ pub use client::{
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;
+pub use codecs::gemini_interactions::GeminiInteractionsCodec;
 pub use codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 pub use codecs::{
     CodecContext, ContentBinding, EncodeRequest, PreparedMedia, RequestMode, StreamDecoder,

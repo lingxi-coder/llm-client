@@ -19,6 +19,7 @@ pub struct CodecContext {
     mode: RequestMode,
     pub(crate) file_account_scope: Option<String>,
     account_scope: Option<String>,
+    native_options: Vec<crate::protocol::NativeExtension>,
     file_validation_time: Option<std::time::SystemTime>,
 }
 impl CodecContext {
@@ -101,6 +102,7 @@ impl CodecContext {
             mode,
             file_account_scope: None,
             account_scope: None,
+            native_options: Vec::new(),
             file_validation_time: None,
         }
     }
@@ -108,6 +110,13 @@ impl CodecContext {
     pub fn with_account_scope(mut self, scope: Option<&str>) -> Self {
         self.account_scope = scope.map(str::to_owned);
         self
+    }
+    pub fn with_native_options(mut self, options: &[crate::protocol::NativeExtension]) -> Self {
+        self.native_options = options.to_vec();
+        self
+    }
+    pub fn native_options(&self) -> &[crate::protocol::NativeExtension] {
+        &self.native_options
     }
     pub fn account_scope(&self) -> Option<&str> {
         self.account_scope.as_deref()

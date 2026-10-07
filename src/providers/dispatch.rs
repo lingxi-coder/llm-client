@@ -72,7 +72,10 @@ pub(crate) trait ChatBackend: Send + Sync {
             });
         }
         if req.has_response_continuation()
-            && context.profile().protocol != ProtocolFamily::OpenAiResponses
+            && !matches!(
+                context.profile().protocol,
+                ProtocolFamily::OpenAiResponses | ProtocolFamily::GeminiInteractions
+            )
         {
             return Err(LlmError::UnsupportedCapability {
                 message: format!(

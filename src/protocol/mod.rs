@@ -4,7 +4,15 @@
 //! the client. Callers own tool execution, conversation storage, permissions,
 //! credential refresh, and context-compaction decisions.
 
+pub mod computer;
 mod continuation;
+pub use computer::{
+    computer_call_id, declare_computer_tool, decode_computer_calls, encode_computer_receipt,
+    ComputerCapabilities, ComputerFrame, ComputerMouseButton, ComputerOperation,
+    ComputerOperationKind, ComputerPoint, ComputerReceiptInput, ComputerScrollDirection,
+    ComputerTarget, NativeCallContext, NativeComputerCall, NativeComputerProvider,
+    NativeComputerResult, NativeExecutionStatus,
+};
 mod decision;
 pub use decision::{
     DecisionAttemptReport, DecisionCallReport, DecisionContextPart, DecisionImplementation,

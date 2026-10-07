@@ -1,4 +1,7 @@
 //! Gemini Interactions API: independent model/agent turns and stored references.
+mod result;
+pub(crate) use result::encode_result_block;
+
 mod stream;
 use crate::{
     client::RequestOptions,
@@ -711,7 +714,7 @@ fn invalid(message: &str) -> LlmError {
     }
 }
 
-pub(super) fn encode_create_body(
+pub(crate) fn encode_create_body(
     request: &InteractionRequest,
     stream: bool,
 ) -> Result<Vec<u8>, InteractionError> {

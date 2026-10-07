@@ -499,11 +499,6 @@ fn encode_message<'a>(
                         message: "computer_call_output requires its scoped previous_response_id continuation".into(),
                     });
                 }
-                if computer_tool_config(wire.request())?.is_none() {
-                    return Err(LlmError::InvalidRequest {
-                        message: "computer_call_output requires the typed OpenAI computer tool declaration".into(),
-                    });
-                }
                 let output = OpenAiComputerCallOutput::from_extension(value)?;
                 output.validate_for_submission()?;
                 let item =
@@ -622,11 +617,6 @@ pub(super) fn validate_computer_request<'a>(
                     if request.continuation.is_none() {
                         return Err(LlmError::InvalidRequest {
                             message: "computer_call_output requires its scoped previous_response_id continuation".into(),
-                        });
-                    }
-                    if computer_tool.is_none() {
-                        return Err(LlmError::InvalidRequest {
-                            message: "computer_call_output requires the typed OpenAI computer tool declaration".into(),
                         });
                     }
                     OpenAiComputerCallOutput::from_extension(value)?.validate_for_submission()?;

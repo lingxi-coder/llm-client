@@ -6,6 +6,7 @@ mod client;
 pub(crate) mod client_toolset_history;
 pub(crate) mod client_toolsets;
 pub(crate) mod code_execution;
+pub mod computer;
 pub(crate) mod conversation;
 pub mod fetch_sources;
 pub(crate) mod files;

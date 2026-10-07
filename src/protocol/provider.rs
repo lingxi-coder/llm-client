@@ -9,7 +9,7 @@ use crate::protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Closed set of 9. Adding a family means adding a codec crate.
+/// Closed set of 10. Adding a family means adding a codec crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProtocolFamily {
@@ -17,6 +17,7 @@ pub enum ProtocolFamily {
     OpenAiChat,
     OpenAiResponses,
     GeminiGenerateContent,
+    GeminiInteractions,
     VertexClaude,
     VertexGemini,
     BedrockClaude,
@@ -30,6 +31,7 @@ impl ProtocolFamily {
     #[must_use]
     pub const fn encodes_response_format(&self) -> bool {
         match self {
+            Self::GeminiInteractions => false,
             Self::AnthropicMessages
             | Self::OpenAiResponses
             | Self::OpenAiChat
@@ -42,11 +44,12 @@ impl ProtocolFamily {
         }
     }
 
-    pub const ALL: [ProtocolFamily; 9] = [
+    pub const ALL: [ProtocolFamily; 10] = [
         ProtocolFamily::AnthropicMessages,
         ProtocolFamily::OpenAiChat,
         ProtocolFamily::OpenAiResponses,
         ProtocolFamily::GeminiGenerateContent,
+        ProtocolFamily::GeminiInteractions,
         ProtocolFamily::VertexClaude,
         ProtocolFamily::VertexGemini,
         ProtocolFamily::BedrockClaude,

@@ -229,6 +229,7 @@ fn approval_required_and_mcp_output_are_retained_without_host_tool_calls() {
         lingxi_llm_client::providers::openai::native::OpenAiHostedTool::RemoteMcp(mcp()).into(),
     );
     follow_up.continuation = Some(ContinuationRef {
+        protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
         response_id: ResponseId::new("resp-approval"),
         provider_id: ProviderId::new("openai"),
         profile_name: "openai".into(),

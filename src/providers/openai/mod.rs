@@ -8,6 +8,7 @@ pub(crate) mod chat;
 pub mod chatgpt_plan;
 mod client;
 pub mod computer;
+pub mod computer_adapter;
 pub mod containers;
 pub(crate) mod files;
 pub(crate) mod images;

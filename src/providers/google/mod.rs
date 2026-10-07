@@ -3,6 +3,7 @@ pub(crate) mod account;
 pub mod batch;
 pub(crate) mod chat;
 mod client;
+pub mod computer;
 pub mod context_cache;
 pub mod file_search;
 pub(crate) mod files;

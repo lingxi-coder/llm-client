@@ -165,12 +165,13 @@ fn attempts<'a>(connections: &[Attempt<'a>], continuation: bool) -> Vec<Attempt<
 }
 
 fn supports_continuation(profile: &ProviderProfile) -> bool {
-    profile.protocol == ProtocolFamily::OpenAiResponses
-        && profile
-            .extra
-            .get("supports_previous_response_id")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
+    profile.protocol == ProtocolFamily::GeminiInteractions
+        || profile.protocol == ProtocolFamily::OpenAiResponses
+            && profile
+                .extra
+                .get("supports_previous_response_id")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
 }
 
 pub(super) fn continuation_template(
@@ -467,6 +468,7 @@ impl<'client> RequestExecutor<'client> {
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
             .with_account_scope(opts.account_scope.as_deref())
+            .with_native_options(&req.request.native_options)
             .with_file_scope(opts.file_account_scope.as_deref())
             .with_file_validation_time(self.clock.now());
         backend.validate_preparation(req.request, &validation_context, opts)?;
@@ -531,6 +533,7 @@ impl<'client> RequestExecutor<'client> {
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
             .with_file_scope(attempt_opts.file_account_scope.as_deref())
             .with_account_scope(opts.account_scope.as_deref())
+            .with_native_options(&req.request.native_options)
             .with_file_validation_time(self.clock.now());
         crate::codecs::structured::validate(req.request, &context)?;
         codec.validate_request(req.request, &context)?;
@@ -812,7 +815,10 @@ impl<'client> RequestExecutor<'client> {
                 .ok_or_else(|| LlmError::ModelUnavailable {
                     message: format!("no connection served {:?}", req.model),
                 })?;
-            if head.profile.protocol != ProtocolFamily::OpenAiResponses {
+            if !matches!(
+                head.profile.protocol,
+                ProtocolFamily::OpenAiResponses | ProtocolFamily::GeminiInteractions
+            ) {
                 return Err(LlmError::UnsupportedCapability {
                     message: format!(
                         "profile {:?} cannot continue a Responses reference",
@@ -883,6 +889,16 @@ impl<'client> RequestExecutor<'client> {
             })
             .map_err(DecisionExecutionError::Provider)?;
         let mut replay = dispatch::chat(head.profile).replay_policy(req, &opts);
+        // Interactions creates stored provider state even on a function turn.
+        // An uncertain submission must never create a second interaction.
+        if connections
+            .iter()
+            .any(|attempt| attempt.profile.protocol == ProtocolFamily::GeminiInteractions)
+        {
+            replay.pin_to_connection = true;
+            replay.allow_failover = false;
+            replay.repair_missing_files = false;
+        }
         if connections
             .iter()
             .any(|attempt| attempt.profile.auth == AuthStrategy::ChatGptPlan)

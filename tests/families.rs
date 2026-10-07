@@ -34,6 +34,7 @@ fn profile(protocol: &str, base: &str) -> ProviderProfile {
 
 fn continuation() -> ContinuationRef {
     ContinuationRef {
+        protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
         response_id: ResponseId::new("resp_previous"),
         provider_id: ProviderId::new("acme"),
         profile_name: "acme".into(),
@@ -119,7 +120,7 @@ fn every_protocol_family_has_a_codec() {
              (gate 33) — and nothing else would have said so"
         );
     }
-    assert_eq!(families.len(), 9);
+    assert_eq!(families.len(), 10);
 }
 
 // --- the Responses wire ----------------------------------------------------

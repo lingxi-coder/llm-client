@@ -8,6 +8,17 @@ pub(crate) fn has_hosted_tools(req: &ChatRequest) -> bool {
     crate::providers::google::hosted_tools::has_gemini_hosted_tools(req)
 }
 pub(crate) fn validate_host(req: &ChatRequest, context: &CodecContext) -> Result<(), LlmError> {
+    if req
+        .native_options
+        .iter()
+        .any(|option| option.is::<super::computer::GeminiComputerToolConfig>())
+        && context.profile().protocol != ProtocolFamily::GeminiInteractions
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: "Gemini desktop computer declaration requires the Interactions protocol"
+                .into(),
+        });
+    }
     if has_hosted_tools(req) {
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
             req,

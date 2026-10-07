@@ -178,6 +178,7 @@ async fn continuation_scope_is_checked_before_submission() {
     let (client, mock) = setup(vec![]);
     let mut req = request();
     req.continuation = Some(ContinuationRef {
+        protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
         response_id: ResponseId::new("resp_previous"),
         provider_id: ProviderId::new("openai"),
         profile_name: "openai".into(),

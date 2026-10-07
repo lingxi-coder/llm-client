@@ -57,7 +57,9 @@ fn key_header(profile: &ProviderProfile) -> &str {
         | ProtocolFamily::VertexClaude
         | ProtocolFamily::BedrockClaude
         | ProtocolFamily::FoundryClaude => "x-api-key",
-        ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini => "x-goog-api-key",
+        ProtocolFamily::GeminiGenerateContent
+        | ProtocolFamily::GeminiInteractions
+        | ProtocolFamily::VertexGemini => "x-goog-api-key",
         ProtocolFamily::OpenAiChat
         | ProtocolFamily::OpenAiResponses
         | ProtocolFamily::AzureOpenAi => AUTHORIZATION,

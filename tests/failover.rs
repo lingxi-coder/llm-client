@@ -1406,6 +1406,7 @@ fn stateful_pair(http: Arc<ScriptedTransport>) -> lingxi_llm_client::LlmClient {
 fn continuing(model: &str) -> ChatRequest {
     let mut req = request(model);
     req.continuation = Some(ContinuationRef {
+        protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
         response_id: ResponseId::new("resp_previous"),
         provider_id: "acme".into(),
         profile_name: "acme:one".into(),

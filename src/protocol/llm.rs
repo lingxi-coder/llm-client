@@ -945,6 +945,7 @@ mod tests {
     fn response_ids_round_trip_as_opaque_strings() {
         let id = ResponseId::new("resp_abc");
         let reference = ContinuationRef {
+            protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
             response_id: id.clone(),
             provider_id: ProviderId::new("acme"),
             profile_name: "acme:one".into(),
