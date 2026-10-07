@@ -1,10 +1,11 @@
 //! Request signing, one implementation per `AuthStrategy`.
 //!
-//! This crate does not hold, fetch or store credentials. It speaks to
-//! providers; whoever calls it owns the secrets and hands one in per request
-//! (`RequestOptions::credential`). That keeps every key and token outside a
-//! crate whose job is HTTP, and keeps token storage, refresh and OAuth in the
-//! host, where the platform's secure storage already lives.
+//! Provider authentication protocols live here. Callers supply credentials and
+//! transports; secure storage, browser interaction, refresh scheduling and model
+//! retry decisions stay in the host. OAuth operations perform one request only.
+
+pub mod aws;
+pub mod oauth;
 
 mod api_key;
 mod bearer;

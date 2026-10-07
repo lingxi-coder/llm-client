@@ -608,6 +608,39 @@ pub struct TokenPricing {
     pub batch: Option<BatchPricing>,
 }
 
+impl TokenPricing {
+    /// Fixed USD input/output prices, with reasoning included at the output rate.
+    pub fn input_output(input_per_million: f64, output_per_million: f64) -> Self {
+        Self {
+            currency: Some("USD".into()),
+            input_per_million: Some(input_per_million),
+            output_per_million: Some(output_per_million),
+            reasoning_per_million: Some(output_per_million),
+            ..Self::default()
+        }
+    }
+
+    /// Replace the published schedule with a caller's fixed interactive
+    /// Standard price. Fast remains unpublished unless separately declared.
+    pub fn with_fixed_standard_override(mut self) -> Self {
+        self.rules = vec![super::PriceRule {
+            service_tier: super::ServiceTier::Standard,
+            submission: super::Submission::Interactive,
+            rates: super::TokenRates {
+                input_per_million: self.input_per_million,
+                output_per_million: self.output_per_million,
+                cache_read_per_million: self.cache_read_per_million,
+                cache_write_per_million: self.cache_write_per_million,
+                cache_write_1h_per_million: self.cache_write_1h_per_million,
+                reasoning_per_million: self.reasoning_per_million,
+            },
+            apply_peak_schedule: false,
+            ..Default::default()
+        }];
+        self
+    }
+}
+
 /// Published rates for the same model submitted as a batch job.
 ///
 /// Separate buckets rather than one multiplier. Across the whole shipped

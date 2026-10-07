@@ -4,7 +4,7 @@
 
 `llm-client` is a standalone Rust library for calling different LLM services from an application. Applications use shared request and response types and choose models and connections through provider profiles; the client handles protocol encoding, HTTP transport, stream parsing, and error classification. It also supports model catalogs, provider-hosted Web Search, usage tracking, and cost estimation.
 
-Protocol types are defined by this crate and available through `lingxi_llm_client::protocol`. Applications own tool execution, permissions, conversation history, credential refresh, and context compaction; see the [API guide](docs/api.en.md#host-tool-execution-and-context-recovery).
+Protocol types are defined by this crate and available through `lingxi_llm_client::protocol`. Applications own tool execution, permissions, conversation history, credential storage and refresh scheduling, and context compaction; see the [API guide](docs/api.en.md#host-tool-execution-and-context-recovery).
 
 Version **0.3.0** organizes implementations under `providers/<provider_id>`. Use `client.chat()`, `client.images()`, and `client.embeddings()` for common operations; bind `client.provider::<OpenAiClient>("openai")?` for resources such as `provider.audio()`, `provider.batches()`, and `provider.retrieval()`. Provider-specific types live with their provider. This release removes old entry points and module paths without compatibility aliases. See [the 0.3.0 architecture](docs/architecture-migration.en.md) and [pinned official SDK references](docs/provider-sdk-references.md).
 
@@ -21,6 +21,7 @@ Version **0.3.0** organizes implementations under `providers/<provider_id>`. Use
 - **Offline input token estimates**: count visible request content with optional provider-specific tokenizers, including system messages, tools, and conversation text; report uncounted components explicitly.
 - **Account limits**: read documented provider balances, historical token usage, quota windows, and coding-plan entitlements per connection, with explicit account identity and data scope.
 - **Cross-device file attachments**: conversations keep stable application-owned references; each model request resolves them to inline content or a supported provider file input for its active connection. Display and model-input lifetimes stay separate.
+- **Provider authentication protocols**: `auth::oauth` provides explicit Anthropic, OpenAI, and Copilot login/refresh requests. Applications own browser interaction, credential storage, and scheduling.
 - **Built-in defaults, extensible interfaces**: HTTP transport and authenticators are included; replace transport or clocks, or add protocols. Applications supply credentials per request; secrets are not persisted in provider configuration.
 
 ### Supported LLM Providers

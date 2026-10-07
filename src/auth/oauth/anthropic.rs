@@ -1,0 +1,843 @@
+//! Anthropic OAuth wire protocol. The caller owns tokens, browser callbacks, and persistence.
+
+use super::pkce::{generate_pkce, generate_state_token};
+use crate::transport::{HttpExecutor, HttpRequest, Transport};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use url::form_urlencoded;
+
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
+const PROFILE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_RESPONSE: usize = 1024 * 1024;
+pub const BASE_API_URL: &str = "https://api.anthropic.com";
+pub const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
+pub const ROLES_URL_PATH: &str = "/api/oauth/claude_cli/roles";
+pub const CLAUDE_CODE_OAUTH_SCOPES: &[&str] = &[
+    "org:create_api_key",
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+    "user:file_upload",
+];
+pub const CLAUDE_CODE_INFERENCE_SCOPE: &str = "user:inference";
+pub const LONG_LIVED_OAUTH_TOKEN_TTL_SECONDS: u64 = 31_536_000;
+pub const REFRESH_GRANT_TYPE: &str = "refresh_token";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeAiOAuthConfig {
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub revocation_endpoint: String,
+    pub profile_endpoint: String,
+    pub client_id: String,
+    pub redirect_uri: String,
+    #[serde(default = "default_manual_redirect_uri")]
+    pub manual_redirect_uri: String,
+    pub scopes: Vec<String>,
+}
+
+fn default_manual_redirect_uri() -> String {
+    "https://platform.claude.com/oauth/code/callback".into()
+}
+
+impl ClaudeAiOAuthConfig {
+    pub fn default_with_port(port: u16) -> Self {
+        Self {
+            authorization_endpoint: "https://claude.com/cai/oauth/authorize".into(),
+            token_endpoint: "https://platform.claude.com/v1/oauth/token".into(),
+            revocation_endpoint: "https://platform.claude.com/v1/oauth/token/revoke".into(),
+            profile_endpoint: format!("{BASE_API_URL}/api/oauth/profile"),
+            client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e".into(),
+            redirect_uri: format!("http://localhost:{port}/callback"),
+            manual_redirect_uri: default_manual_redirect_uri(),
+            scopes: CLAUDE_CODE_OAUTH_SCOPES
+                .iter()
+                .map(|s| (*s).into())
+                .collect(),
+        }
+    }
+    pub fn console_with_port(port: u16) -> Self {
+        Self {
+            authorization_endpoint: "https://platform.claude.com/oauth/authorize".into(),
+            ..Self::default_with_port(port)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuthorizeOptions {
+    pub scopes: Option<Vec<String>>,
+    pub org_uuid: Option<String>,
+    pub login_hint: Option<String>,
+    pub login_method: Option<String>,
+}
+
+/// Two redirect variants backed by the same authorization grant.
+#[derive(Clone)]
+pub struct AuthorizeUrlPair {
+    pub automatic_url: String,
+    pub manual_url: String,
+    pub verifier: String,
+    pub state: String,
+}
+
+impl std::fmt::Debug for AuthorizeUrlPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthorizeUrlPair")
+            .field("automatic_url", &"[REDACTED]")
+            .field("manual_url", &"[REDACTED]")
+            .field("verifier", &"[REDACTED]")
+            .field("state", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Create a single authorization URL and its PKCE verifier and state.
+#[must_use]
+pub fn build_authorize_url(
+    config: &ClaudeAiOAuthConfig,
+    redirect_uri: &str,
+    options: &AuthorizeOptions,
+) -> (String, String, String) {
+    let (verifier, challenge) = generate_pkce();
+    let state = generate_state_token();
+    let url = format_authorize_url(config, redirect_uri, &challenge, &state, options);
+    (url, verifier, state)
+}
+
+/// Create loopback and manual URLs from one PKCE verifier and state.
+/// Either redirect can therefore complete the same pending authorization.
+#[must_use]
+pub fn build_authorize_url_pair(
+    config: &ClaudeAiOAuthConfig,
+    redirect_uri: &str,
+    options: &AuthorizeOptions,
+) -> AuthorizeUrlPair {
+    let (verifier, challenge) = generate_pkce();
+    let state = generate_state_token();
+    AuthorizeUrlPair {
+        automatic_url: format_authorize_url(config, redirect_uri, &challenge, &state, options),
+        manual_url: format_authorize_url(
+            config,
+            &config.manual_redirect_uri,
+            &challenge,
+            &state,
+            options,
+        ),
+        verifier,
+        state,
+    }
+}
+
+fn encode(value: &str) -> String {
+    form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+pub fn format_authorize_url(
+    config: &ClaudeAiOAuthConfig,
+    redirect_uri: &str,
+    challenge: &str,
+    state: &str,
+    options: &AuthorizeOptions,
+) -> String {
+    let scopes = options.scopes.as_ref().unwrap_or(&config.scopes).join(" ");
+    let mut url = format!("{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        config.authorization_endpoint, encode(&config.client_id), encode(redirect_uri), encode(&scopes), encode(challenge), encode(state));
+    for (name, value) in [
+        ("orgUUID", &options.org_uuid),
+        ("login_hint", &options.login_hint),
+        ("login_method", &options.login_method),
+    ] {
+        if let Some(value) = value {
+            url.push('&');
+            url.push_str(name);
+            url.push('=');
+            url.push_str(&encode(value));
+        }
+    }
+    url
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExchangeAccount {
+    #[serde(default)]
+    pub uuid: String,
+    #[serde(default)]
+    pub email_address: String,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExchangeOrganization {
+    #[serde(default)]
+    pub uuid: String,
+}
+#[derive(Clone, Deserialize)]
+pub struct ExchangeResponse {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_in: u64,
+    pub scope: Option<String>,
+    pub account: Option<ExchangeAccount>,
+    pub organization: Option<ExchangeOrganization>,
+}
+#[derive(Clone, Deserialize)]
+pub struct RefreshResponse {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_in: u64,
+    pub scope: Option<String>,
+}
+
+fn granted_scopes(scope: Option<&str>, config: &ClaudeAiOAuthConfig) -> Vec<String> {
+    scope.map_or_else(
+        || config.scopes.clone(),
+        |value| value.split_whitespace().map(str::to_string).collect(),
+    )
+}
+
+impl ExchangeResponse {
+    /// Granted scopes from the token endpoint, falling back to configured scopes.
+    #[must_use]
+    pub fn granted_scopes(&self, config: &ClaudeAiOAuthConfig) -> Vec<String> {
+        granted_scopes(self.scope.as_deref(), config)
+    }
+}
+
+impl RefreshResponse {
+    /// Granted scopes from the token endpoint, falling back to the configured set.
+    #[must_use]
+    pub fn granted_scopes(&self, config: &ClaudeAiOAuthConfig) -> Vec<String> {
+        granted_scopes(self.scope.as_deref(), config)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenError {
+    InvalidAuthorizationCode,
+    InvalidRefreshToken,
+    Temporary(String),
+}
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidAuthorizationCode => {
+                write!(f, "Authentication failed: Invalid authorization code")
+            }
+            Self::InvalidRefreshToken => write!(f, "refresh credential rejected"),
+            Self::Temporary(message) => f.write_str(message),
+        }
+    }
+}
+impl std::error::Error for TokenError {}
+
+fn safe_error(status: u16, body: &[u8]) -> String {
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let kind = parsed
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .and_then(|e| e.get("type").or_else(|| e.get("code")))
+        .and_then(|v| v.as_str());
+    let safe_kind = kind.filter(|s| {
+        matches!(
+            *s,
+            "invalid_request"
+                | "invalid_grant"
+                | "unauthorized"
+                | "access_denied"
+                | "rate_limit_error"
+                | "overloaded_error"
+                | "api_error"
+        )
+    });
+    match safe_kind {
+        Some(kind) => format!("status {status} [{kind}]"),
+        None => format!("status {status}"),
+    }
+}
+
+#[derive(Serialize)]
+struct ExchangeRequest<'a> {
+    grant_type: &'a str,
+    code: &'a str,
+    redirect_uri: &'a str,
+    client_id: &'a str,
+    code_verifier: &'a str,
+    state: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_in: Option<u64>,
+}
+#[derive(Serialize)]
+struct RefreshRequest<'a> {
+    grant_type: &'a str,
+    refresh_token: &'a str,
+    client_id: &'a str,
+    scope: &'a str,
+}
+
+async fn token_post<T: for<'de> Deserialize<'de>>(
+    transport: &dyn Transport,
+    url: &str,
+    body: impl Serialize,
+    timeout: Duration,
+    refresh: bool,
+) -> Result<T, TokenError> {
+    let body = serde_json::to_vec(&body)
+        .map_err(|_| TokenError::Temporary("could not encode token request".into()))?;
+    let response = HttpExecutor::new(transport)
+        .execute_bounded(
+            HttpRequest {
+                method: "POST".into(),
+                url: url.into(),
+                headers: vec![
+                    ("content-type".into(), "application/json".into()),
+                    ("accept".into(), "application/json".into()),
+                ],
+                body: body.into(),
+                timeout: Some(timeout),
+            },
+            MAX_RESPONSE,
+        )
+        .await
+        .map_err(|_| TokenError::Temporary("token endpoint unavailable".into()))?;
+    match response.status {
+        200 => serde_json::from_slice(&response.body)
+            .map_err(|_| TokenError::Temporary("invalid token endpoint response".into())),
+        401 if !refresh => Err(TokenError::InvalidAuthorizationCode),
+        400 | 401 | 403 if refresh && invalid_grant(&response.body) => {
+            Err(TokenError::InvalidRefreshToken)
+        }
+        status => Err(TokenError::Temporary(safe_error(status, &response.body))),
+    }
+}
+
+fn invalid_grant(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let error = &value["error"];
+    let rejected = [
+        error.as_str(),
+        error.get("type").and_then(|v| v.as_str()),
+        error.get("code").and_then(|v| v.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|code| matches!(code, "invalid_grant" | "invalid_refresh_token"));
+    rejected
+}
+
+pub async fn exchange_code(
+    transport: &dyn Transport,
+    config: &ClaudeAiOAuthConfig,
+    code: &str,
+    verifier: &str,
+    state: &str,
+    redirect_uri: &str,
+    expires_in: Option<u64>,
+) -> Result<ExchangeResponse, TokenError> {
+    token_post(
+        transport,
+        &config.token_endpoint,
+        ExchangeRequest {
+            grant_type: "authorization_code",
+            code,
+            redirect_uri,
+            client_id: &config.client_id,
+            code_verifier: verifier,
+            state,
+            expires_in,
+        },
+        EXCHANGE_TIMEOUT,
+        false,
+    )
+    .await
+}
+pub async fn refresh_token(
+    transport: &dyn Transport,
+    config: &ClaudeAiOAuthConfig,
+    refresh_token: &str,
+) -> Result<RefreshResponse, TokenError> {
+    let scope = config.scopes.join(" ");
+    token_post(
+        transport,
+        &config.token_endpoint,
+        RefreshRequest {
+            grant_type: REFRESH_GRANT_TYPE,
+            refresh_token,
+            client_id: &config.client_id,
+            scope: &scope,
+        },
+        REFRESH_TIMEOUT,
+        true,
+    )
+    .await
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OAuthOrganization {
+    #[serde(default)]
+    pub organization_type: Option<String>,
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub rate_limit_tier: Option<String>,
+    #[serde(default)]
+    pub billing_type: Option<String>,
+    #[serde(default)]
+    pub has_extra_usage_enabled: Option<bool>,
+    #[serde(default)]
+    pub subscription_created_at: Option<String>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OAuthAccount {
+    #[serde(default)]
+    pub uuid: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct OAuthProfileResponse {
+    #[serde(default)]
+    pub organization: Option<OAuthOrganization>,
+    #[serde(default)]
+    pub account: Option<OAuthAccount>,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct UserRolesResponse {
+    #[serde(default)]
+    pub organization_role: Option<String>,
+    #[serde(default)]
+    pub workspace_role: Option<String>,
+    #[serde(default)]
+    pub organization_name: Option<String>,
+}
+
+/// Subscription tier reported by a Claude.ai organization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub enum SubscriptionType {
+    Free,
+    Pro,
+    Max,
+    Team,
+    Enterprise,
+    Unknown,
+}
+
+/// Interpret the organization discriminant returned by the profile endpoint.
+pub fn subscription_type(profile: &OAuthProfileResponse) -> Option<SubscriptionType> {
+    match profile
+        .organization
+        .as_ref()?
+        .organization_type
+        .as_deref()?
+    {
+        "claude_max" => Some(SubscriptionType::Max),
+        "claude_pro" => Some(SubscriptionType::Pro),
+        "claude_enterprise" => Some(SubscriptionType::Enterprise),
+        "claude_team" => Some(SubscriptionType::Team),
+        _ => None,
+    }
+}
+
+/// The paid tier spelling consumed by host subscription snapshots.
+pub fn paid_subscription_type(tier: SubscriptionType) -> Option<&'static str> {
+    match tier {
+        SubscriptionType::Pro => Some("pro"),
+        SubscriptionType::Max => Some("max"),
+        SubscriptionType::Team => Some("team"),
+        SubscriptionType::Enterprise => Some("enterprise"),
+        SubscriptionType::Free | SubscriptionType::Unknown => None,
+    }
+}
+
+pub const CLAUDE_AI_INFERENCE_SCOPE: &str = "user:inference";
+pub const CLAUDE_AI_PROFILE_SCOPE: &str = "user:profile";
+
+pub fn subscription_from_scopes(scopes: &[String]) -> bool {
+    scopes
+        .iter()
+        .any(|scope| scope == CLAUDE_AI_INFERENCE_SCOPE)
+}
+
+pub fn has_profile_scope(scopes: &[String]) -> bool {
+    scopes.iter().any(|scope| scope == CLAUDE_AI_PROFILE_SCOPE)
+}
+
+/// Provider quota fields present in a Claude.ai response. Missing or malformed
+/// values are absent, allowing the host to retain its previous snapshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClaudeAiQuotaHeaders {
+    pub message_count_window: Option<u32>,
+    pub message_limit_window: Option<u32>,
+}
+
+pub fn parse_claudeai_quota_headers(
+    headers: &std::collections::HashMap<String, String>,
+) -> ClaudeAiQuotaHeaders {
+    ClaudeAiQuotaHeaders {
+        message_count_window: headers
+            .get("x-claudeai-window-count")
+            .and_then(|value| value.parse().ok()),
+        message_limit_window: headers
+            .get("x-claudeai-window-limit")
+            .and_then(|value| value.parse().ok()),
+    }
+}
+
+async fn get<T: for<'de> Deserialize<'de>>(
+    transport: &dyn Transport,
+    url: String,
+    headers: Vec<(String, String)>,
+) -> Option<T> {
+    let response = HttpExecutor::new(transport)
+        .execute_bounded(
+            HttpRequest {
+                method: "GET".into(),
+                url,
+                headers,
+                body: Default::default(),
+                timeout: Some(PROFILE_TIMEOUT),
+            },
+            MAX_RESPONSE,
+        )
+        .await
+        .ok()?;
+    if response.status != 200 {
+        return None;
+    }
+    serde_json::from_slice(&response.body).ok()
+}
+pub async fn fetch_profile_from_oauth_token(
+    token: &str,
+    transport: &dyn Transport,
+) -> Option<OAuthProfileResponse> {
+    get(
+        transport,
+        format!("{BASE_API_URL}/api/oauth/profile"),
+        vec![
+            ("Authorization".into(), format!("Bearer {token}")),
+            ("Content-Type".into(), "application/json".into()),
+        ],
+    )
+    .await
+}
+pub async fn fetch_profile_from_api_key(
+    account_uuid: &str,
+    api_key: &str,
+    transport: &dyn Transport,
+) -> Option<OAuthProfileResponse> {
+    if account_uuid.is_empty() || api_key.is_empty() {
+        return None;
+    }
+    let encoded: String = form_urlencoded::byte_serialize(account_uuid.as_bytes()).collect();
+    get(
+        transport,
+        format!("{BASE_API_URL}/api/claude_cli_profile?account_uuid={encoded}"),
+        vec![
+            ("x-api-key".into(), api_key.into()),
+            ("anthropic-beta".into(), OAUTH_BETA_HEADER.into()),
+        ],
+    )
+    .await
+}
+pub async fn fetch_user_roles(token: &str, transport: &dyn Transport) -> Option<UserRolesResponse> {
+    get(
+        transport,
+        format!("{BASE_API_URL}{ROLES_URL_PATH}"),
+        vec![("Authorization".into(), format!("Bearer {token}"))],
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct LoginProfile {
+    account: Option<LoginAccount>,
+    organization: Option<LoginOrganization>,
+}
+#[derive(Deserialize)]
+struct LoginAccount {
+    #[serde(default)]
+    email: String,
+}
+#[derive(Deserialize)]
+struct LoginOrganization {
+    #[serde(default)]
+    uuid: String,
+}
+
+pub async fn fetch_login_identity(
+    transport: &dyn Transport,
+    profile_endpoint: &str,
+    token: &str,
+) -> Result<(String, String), String> {
+    let response = HttpExecutor::new(transport)
+        .execute_bounded(
+            HttpRequest {
+                method: "GET".into(),
+                url: profile_endpoint.into(),
+                headers: vec![
+                    ("authorization".into(), format!("Bearer {token}")),
+                    ("accept".into(), "application/json".into()),
+                ],
+                body: Default::default(),
+                timeout: Some(Duration::from_secs(15)),
+            },
+            MAX_RESPONSE,
+        )
+        .await
+        .map_err(|_| "profile endpoint unavailable".to_string())?;
+    if response.status != 200 {
+        return Err(format!("profile fetch failed: status {}", response.status));
+    }
+    let profile: LoginProfile = serde_json::from_slice(&response.body)
+        .map_err(|_| "invalid profile response".to_string())?;
+    Ok((
+        profile.account.map(|a| a.email).unwrap_or_default(),
+        profile.organization.map(|o| o.uuid).unwrap_or_default(),
+    ))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScopeUpgradeRequired {
+    pub required: Vec<String>,
+    #[serde(default)]
+    pub granted: Vec<String>,
+}
+pub fn parse_scope_upgrade(body: &str) -> Option<ScopeUpgradeRequired> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let required = value
+        .get("required_scopes")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    if required.is_empty() {
+        return None;
+    }
+    let granted = value
+        .get("granted_scopes")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    Some(ScopeUpgradeRequired { required, granted })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::LlmError;
+    use crate::transport::StreamResponse;
+    use async_trait::async_trait;
+    use futures::stream;
+    use std::sync::Mutex;
+
+    struct Mock {
+        status: u16,
+        body: &'static str,
+        requests: Mutex<Vec<HttpRequest>>,
+    }
+    #[async_trait]
+    impl Transport for Mock {
+        async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+            self.requests.lock().unwrap().push(request);
+            let body = self.body;
+            Ok(StreamResponse {
+                status: self.status,
+                headers: vec![],
+                body: Box::pin(stream::once(
+                    async move { Ok(body.as_bytes().to_vec().into()) },
+                )),
+            })
+        }
+    }
+    fn mock(status: u16, body: &'static str) -> Mock {
+        Mock {
+            status,
+            body,
+            requests: Mutex::new(vec![]),
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_rejects_only_explicit_invalid_grant_and_never_echoes_body() {
+        let config = ClaudeAiOAuthConfig::default_with_port(1234);
+        let rejected = mock(400, r#"{"error":"invalid_grant"}"#);
+        assert!(matches!(
+            refresh_token(&rejected, &config, "secret").await,
+            Err(TokenError::InvalidRefreshToken)
+        ));
+        let temporary = mock(
+            403,
+            r#"{"error":{"type":"overloaded_error","message":"secret"}}"#,
+        );
+        assert!(matches!(
+            refresh_token(&temporary, &config, "secret").await,
+            Err(TokenError::Temporary(_))
+        ));
+        let malformed = mock(200, "secret malformed");
+        let error = refresh_token(&malformed, &config, "secret")
+            .await
+            .err()
+            .unwrap();
+        assert!(!error.to_string().contains("secret"));
+        let request = rejected.requests.lock().unwrap().pop().unwrap();
+        assert!(request.timeout.is_some_and(
+            |timeout| timeout > Duration::from_secs(14) && timeout <= Duration::from_secs(15)
+        ));
+    }
+
+    #[test]
+    fn authorize_encoding_and_scope_signal() {
+        let config = ClaudeAiOAuthConfig::default_with_port(1234);
+        let url = format_authorize_url(
+            &config,
+            &config.redirect_uri,
+            "challenge",
+            "state",
+            &AuthorizeOptions::default(),
+        );
+        assert!(url.contains("scope=org%3Acreate_api_key+user%3Aprofile"));
+        assert!(parse_scope_upgrade(r#"{"required_scopes":["user:file_upload"]}"#).is_some());
+    }
+
+    #[test]
+    fn authorize_pair_reuses_pkce_and_state_for_manual_redirect() {
+        let config = ClaudeAiOAuthConfig::default_with_port(45321);
+        let pair =
+            build_authorize_url_pair(&config, &config.redirect_uri, &AuthorizeOptions::default());
+        assert!(!pair.verifier.is_empty());
+        assert!(!pair.state.is_empty());
+        let strip_redirect = |url: &str| {
+            url.split('&')
+                .filter(|part| !part.starts_with("redirect_uri="))
+                .collect::<Vec<_>>()
+                .join("&")
+        };
+        assert_eq!(
+            strip_redirect(&pair.automatic_url),
+            strip_redirect(&pair.manual_url)
+        );
+        assert!(pair
+            .automatic_url
+            .contains("redirect_uri=http%3A%2F%2Flocalhost%3A45321%2Fcallback"));
+        assert!(pair
+            .manual_url
+            .contains("redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback"));
+        assert!(pair
+            .automatic_url
+            .contains(&format!("state={}", pair.state)));
+        assert!(pair.manual_url.contains(&format!("state={}", pair.state)));
+    }
+
+    #[test]
+    fn authorize_pair_debug_redacts_urls_and_grant_secrets() {
+        let pair = AuthorizeUrlPair {
+            automatic_url: "https://example.test/automatic?secret-auto".into(),
+            manual_url: "https://example.test/manual?secret-manual".into(),
+            verifier: "secret-verifier".into(),
+            state: "secret-state".into(),
+        };
+        let debug = format!("{pair:?}");
+        assert!(debug.contains("AuthorizeUrlPair"));
+        assert_eq!(debug.matches("[REDACTED]").count(), 4);
+        for secret in [
+            "secret-auto",
+            "secret-manual",
+            "secret-verifier",
+            "secret-state",
+        ] {
+            assert!(!debug.contains(secret), "debug leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn token_responses_resolve_granted_scopes_in_sdk() {
+        let config = ClaudeAiOAuthConfig::default_with_port(45321);
+        let exchange: ExchangeResponse =
+            serde_json::from_str(r#"{"access_token":"a","scope":"read:user write:messages"}"#)
+                .unwrap();
+        assert_eq!(
+            exchange.granted_scopes(&config),
+            vec!["read:user".to_string(), "write:messages".to_string()]
+        );
+        let refresh: RefreshResponse =
+            serde_json::from_str(r#"{"access_token":"a","expires_in":3600}"#).unwrap();
+        assert_eq!(refresh.granted_scopes(&config), config.scopes);
+    }
+
+    #[test]
+    fn profile_tier_scopes_and_quota_are_provider_data() {
+        let profile: OAuthProfileResponse =
+            serde_json::from_str(r#"{"organization":{"organization_type":"claude_team"}}"#)
+                .unwrap();
+        let tier = subscription_type(&profile).unwrap();
+        assert_eq!(tier, SubscriptionType::Team);
+        assert_eq!(paid_subscription_type(tier), Some("team"));
+        assert_eq!(subscription_type(&OAuthProfileResponse::default()), None);
+        let scopes = vec!["user:profile".into(), "user:inference".into()];
+        assert!(has_profile_scope(&scopes));
+        assert!(subscription_from_scopes(&scopes));
+        let headers = std::collections::HashMap::from([
+            ("x-claudeai-window-count".into(), "3".into()),
+            ("x-claudeai-window-limit".into(), "bad".into()),
+        ]);
+        assert_eq!(
+            parse_claudeai_quota_headers(&headers).message_count_window,
+            Some(3)
+        );
+        assert_eq!(
+            parse_claudeai_quota_headers(&headers).message_limit_window,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_and_roles_requests_use_oauth_bearer() {
+        let profile = mock(
+            200,
+            r#"{"organization":{"organization_type":"claude_max"}}"#,
+        );
+        let data = fetch_profile_from_oauth_token("tok", &profile)
+            .await
+            .unwrap();
+        assert_eq!(subscription_type(&data), Some(SubscriptionType::Max));
+        let request = profile.requests.lock().unwrap().pop().unwrap();
+        assert!(request.headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && value == "Bearer tok"
+        }));
+
+        let roles = mock(200, r#"{"organization_role":"admin"}"#);
+        assert_eq!(
+            fetch_user_roles("tok", &roles)
+                .await
+                .unwrap()
+                .organization_role
+                .as_deref(),
+            Some("admin")
+        );
+        let request = roles.requests.lock().unwrap().pop().unwrap();
+        assert!(request.url.ends_with("/api/oauth/claude_cli/roles"));
+    }
+
+    #[tokio::test]
+    async fn profile_fetch_handles_non_success_and_missing_api_key_inputs() {
+        let forbidden = mock(403, r#"{"error":"forbidden"}"#);
+        assert!(fetch_profile_from_oauth_token("tok", &forbidden)
+            .await
+            .is_none());
+        let unused = mock(200, "{}");
+        assert!(fetch_profile_from_api_key("", "key", &unused)
+            .await
+            .is_none());
+        assert!(fetch_profile_from_api_key("account", "", &unused)
+            .await
+            .is_none());
+        assert!(unused.requests.lock().unwrap().is_empty());
+    }
+}

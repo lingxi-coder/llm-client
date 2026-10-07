@@ -1,5 +1,6 @@
 //! Provider authentication for borrowed, host-owned credential material.
-//! Storage, refresh and account selection stay with the caller.
+//! Storage, refresh scheduling and account selection stay with the caller.
+//! Explicit token-exchange and refresh protocols are available in `auth::oauth`.
 use super::{header_policy, sigv4};
 use crate::protocol::{AuthStrategy, LlmError, ProtocolFamily, ProviderProfile};
 use crate::HttpRequest;
@@ -383,5 +384,95 @@ mod tests {
             .headers
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("ChatGPT-Account-ID")));
+    }
+}
+
+#[cfg(test)]
+mod copilot_contract_tests {
+    use crate::auth::oauth::copilot::CopilotSecret;
+    const COPILOT_USER_AGENT: &str = "example-editor";
+    const COPILOT_EDITOR_VERSION: &str = "example/1.0";
+    const COPILOT_EDITOR_PLUGIN_VERSION: &str = "example-plugin/1.0";
+    use crate::auth::{apply_credential, ClientIdentity, CredentialRef};
+    use serde_json::json;
+
+    #[test]
+    fn injects_copilot_headers_and_strips_x_api_key() {
+        let mut request = crate::HttpRequest {
+            method: "POST".into(),
+            url: "https://api.githubcopilot.com/chat/completions".into(),
+            headers: vec![("x-api-key".into(), "leftover".into())],
+            body: serde_json::to_vec(&json!({"model":"gpt-5.4-nano"}))
+                .unwrap()
+                .into(),
+            timeout: None,
+        };
+        let profile = serde_json::from_value(json!({
+            "provider_id":"github-copilot", "profile_name":"github-copilot",
+            "base_url":"https://api.githubcopilot.com", "protocol":"open_ai_chat",
+            "auth":"copilot_bearer", "models":[]
+        }))
+        .unwrap();
+        apply_credential(
+            &mut request,
+            &profile,
+            CredentialRef::Token("ght_token"),
+            ClientIdentity {
+                user_agent: COPILOT_USER_AGENT,
+                editor_version: COPILOT_EDITOR_VERSION,
+                plugin_version: COPILOT_EDITOR_PLUGIN_VERSION,
+            },
+            std::time::SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        let headers: std::collections::BTreeMap<_, _> = request.headers.into_iter().collect();
+
+        assert_eq!(
+            headers.get("Authorization"),
+            Some(&"Bearer ght_token".to_string())
+        );
+        assert_eq!(
+            headers.get("X-GitHub-Api-Version"),
+            Some(&"2026-06-01".to_string())
+        );
+        assert_eq!(
+            headers.get("Openai-Intent"),
+            Some(&"conversation-edits".to_string())
+        );
+        assert_eq!(
+            headers.get("User-Agent"),
+            Some(&COPILOT_USER_AGENT.to_string())
+        );
+        assert_eq!(headers.get("x-initiator"), Some(&"agent".to_string()));
+        assert_eq!(
+            headers.get("Copilot-Integration-Id"),
+            Some(&"vscode-chat".to_string())
+        );
+        assert_eq!(
+            headers.get("Editor-Version"),
+            Some(&COPILOT_EDITOR_VERSION.to_string())
+        );
+        assert_eq!(
+            headers.get("Editor-Plugin-Version"),
+            Some(&COPILOT_EDITOR_PLUGIN_VERSION.to_string())
+        );
+        assert!(!headers.contains_key("x-api-key"));
+    }
+
+    #[test]
+    fn token_for_storage_returns_raw_token_for_persistence() {
+        // Frozen-crate (§10) exception: the /connect device-flow MUST persist the
+        // GitHub token under `github-copilot`. The Debug stays redacting; only
+        // this explicit, doc-hidden accessor exposes the raw token.
+        let s = CopilotSecret::new("ght_live_token");
+        assert_eq!(s.token_for_storage(), "ght_live_token");
+        // Debug is still redacting (no regression).
+        assert!(!format!("{s:?}").contains("ght_live_token"));
+    }
+
+    #[test]
+    fn debug_does_not_leak_token() {
+        let dbg_secret = format!("{:?}", CopilotSecret::new("supersecret"));
+        assert!(!dbg_secret.contains("supersecret"));
     }
 }
