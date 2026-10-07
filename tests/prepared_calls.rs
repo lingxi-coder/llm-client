@@ -1,14 +1,17 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use lingxi_llm_client::{
-    protocol::{ChatRequest, LlmError, ProviderProfile, Region, UsageState},
     HttpRequest, LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport,
+    protocol::{
+        AuthStrategy, ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole,
+        ProviderProfile, Region, Secret, UsageState,
+    },
 };
 use serde_json::json;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct ResponseTransport {
@@ -52,6 +55,137 @@ fn profiles(protocol: &str) -> Vec<ProviderProfile> {
 fn request() -> ChatRequest {
     serde_json::from_value(json!({"model":"test", "messages":[]})).unwrap()
 }
+fn request_with_lone_surrogate() -> ChatRequest {
+    let mut request = request();
+    request.messages.push(ConversationMessage {
+        native_options: Vec::new(),
+        role: MessageRole::User,
+        content: vec![ContentBlock::TextJsUtf16 {
+            text: "�".into(),
+            utf16_code_units: vec![0xd800],
+            thought_signature: None,
+            citations: None,
+        }],
+    });
+    request
+}
+
+fn assert_exact_text_request(http: &ResponseTransport, expected_count: usize) {
+    let requests = http.requests.lock().unwrap();
+    assert_eq!(requests.len(), expected_count);
+    for request in requests.iter() {
+        let body = std::str::from_utf8(&request.body).unwrap();
+        assert!(body.contains("\\ud800"), "{body}");
+        assert!(!body.contains("�"), "{body}");
+        assert!(!body.contains("utf16_code_units"), "{body}");
+        assert!(!body.contains("text_js_utf16"), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn sdk_carried_utf16_replays_on_prepared_and_normal_generation_paths() {
+    let request = request_with_lone_surrogate();
+    for protocol in [
+        "anthropic_messages",
+        "open_ai_chat",
+        "open_ai_responses",
+        "gemini_generate_content",
+    ] {
+        let http = http(200, "{}", false);
+        let client = LlmClientBuilder::with_transport(http, &profiles(protocol))
+            .with_region(Region::International)
+            .build()
+            .unwrap();
+        let prepared = client
+            .prepare_on(
+                "primary",
+                &request,
+                &RequestOptions::default(),
+                RequestMode::Complete,
+            )
+            .await
+            .unwrap();
+        let prepared_body = std::str::from_utf8(&prepared.request().body).unwrap();
+        assert!(
+            prepared_body.contains("\\ud800"),
+            "{protocol}: {prepared_body}"
+        );
+        assert!(
+            !prepared_body.contains("utf16_code_units"),
+            "{protocol}: {prepared_body}"
+        );
+        assert!(
+            !prepared_body.contains("text_js_utf16"),
+            "{protocol}: {prepared_body}"
+        );
+    }
+
+    let http = http(
+        200,
+        r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        false,
+    );
+    let client = LlmClientBuilder::with_transport(http.clone(), &profiles("open_ai_chat"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    client
+        .snapshot()
+        .chat()
+        .complete_in("primary", &request, &RequestOptions::default())
+        .await
+        .unwrap();
+    assert_exact_text_request(&http, 1);
+
+    let _stream = client
+        .snapshot()
+        .chat()
+        .stream_in("primary", &request, &RequestOptions::default())
+        .await
+        .unwrap();
+    assert_exact_text_request(&http, 2);
+}
+
+#[tokio::test]
+async fn decoded_anthropic_text_replays_with_exact_units_on_the_next_request() {
+    let http = http(
+        200,
+        br#"{"id":"msg_1","model":"test","stop_reason":"end_turn","content":[{"type":"text","text":"A\ud800B"}],"usage":{"input_tokens":1,"output_tokens":1}}"#.as_slice(),
+        false,
+    );
+    let client = LlmClientBuilder::with_transport(http.clone(), &profiles("anthropic_messages"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut first_request = request_with_lone_surrogate();
+    first_request.max_tokens = Some(256);
+    let response = client
+        .snapshot()
+        .chat()
+        .complete_in("primary", &first_request, &RequestOptions::default())
+        .await
+        .unwrap();
+    assert!(matches!(
+        response.message.content.as_slice(),
+        [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+            if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+    ));
+
+    first_request.messages.push(response.message);
+    let prepared = client
+        .prepare_on(
+            "primary",
+            &first_request,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    let body = std::str::from_utf8(&prepared.request().body).unwrap();
+    assert_eq!(body.matches("\\ud800").count(), 2, "{body}");
+    assert!(!body.contains("utf16_code_units"), "{body}");
+    assert!(!body.contains("text_js_utf16"), "{body}");
+}
 fn http(status: u16, body: impl Into<Bytes>, stall: bool) -> Arc<ResponseTransport> {
     Arc::new(ResponseTransport {
         sends: AtomicUsize::new(0),
@@ -80,7 +214,18 @@ async fn exact_counting_uses_count_endpoint_and_never_generates() {
     );
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].url.ends_with("/v1/messages/count_tokens"));
+    assert!(
+        requests[0]
+            .url
+            .ends_with("/v1/messages/count_tokens?beta=true")
+    );
+    assert!(
+        requests[0]
+            .headers
+            .iter()
+            .any(|(key, value)| key.eq_ignore_ascii_case("anthropic-beta")
+                && value == "token-counting-2024-11-01")
+    );
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert!(body.get("max_tokens").is_none());
     assert!(body.get("stream").is_none());
@@ -101,6 +246,171 @@ async fn counting_unsupported_protocol_is_not_an_approximation() {
         None
     );
     assert_eq!(http.sends.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn exact_count_materializes_virtual_parameters_before_dispatch() {
+    for (betas, expected) in [
+        (
+            json!(["one", null, ["two", "three"]]),
+            "one,,two,three,token-counting-2024-11-01",
+        ),
+        (json!("ab"), "a,b,token-counting-2024-11-01"),
+        (serde_json::Value::Null, "token-counting-2024-11-01"),
+    ] {
+        let http = http(200, r#"{"input_tokens":42}"#, false);
+        let mut profiles = profiles("anthropic_messages");
+        profiles[0].extra =
+            json!({"body": {"betas":betas,"user_profile_id":"profile","workspace_id":"workspace"}});
+        let client = LlmClientBuilder::with_transport(http.clone(), &profiles)
+            .with_region(Region::International)
+            .build()
+            .unwrap();
+        assert_eq!(
+            client
+                .count_tokens_exact_in("primary", &request(), &RequestOptions::default())
+                .await
+                .unwrap(),
+            Some(42)
+        );
+        let requests = http.requests.lock().unwrap();
+        let wire = &requests[0];
+        let header = |name: &str| {
+            wire.headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(header("anthropic-beta"), Some(expected));
+        assert_eq!(header("anthropic-user-profile-id"), Some("profile"));
+        assert_eq!(header("anthropic-workspace-id"), Some("workspace"));
+        let body: serde_json::Value = serde_json::from_slice(&wire.body).unwrap();
+        for field in ["betas", "user_profile_id", "workspace_id"] {
+            assert!(body.get(field).is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn sdk_dispatch_preserves_hook_prompt_kind_override_on_non_anthropic_codec() {
+    let http = http(200, "{}", false);
+    let client = LlmClientBuilder::with_transport(http.clone(), &profiles("open_ai_chat"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let request: ChatRequest = serde_json::from_value(json!({
+        "model":"test",
+        "messages":[{"role":"user","content":[{"type":"text","text":"\u{fffd}"}]}]
+    }))
+    .unwrap();
+    let options = RequestOptions {
+        anthropic_request_kind:
+            lingxi_llm_client::providers::anthropic::request_policy::AnthropicRequestKind::HookPrompt,
+        message_text_utf16_overrides: [("/messages/0/content/0/text".into(), vec![0xd800])]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+
+    let _response = client
+        .prepare_on("primary", &request, &options, RequestMode::Complete)
+        .await
+        .unwrap()
+        .dispatch_once()
+        .await
+        .unwrap();
+
+    let requests = http.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let body = std::str::from_utf8(&requests[0].body).unwrap();
+    assert!(body.contains("\\ud800"), "{body}");
+    assert!(!body.contains('\u{fffd}'), "{body}");
+}
+
+#[tokio::test]
+async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
+    let transport = http(200, "{}", false);
+    let mut profiles = profiles("open_ai_responses");
+    profiles[0].auth = AuthStrategy::ChatGptOAuth;
+    let mut builder = LlmClientBuilder::with_transport(transport, &profiles);
+    builder.register_authenticator(
+        AuthStrategy::ChatGptOAuth,
+        Arc::new(lingxi_llm_client::BearerAuthenticator),
+    );
+    let client = builder.with_region(Region::International).build().unwrap();
+
+    let mut input = ChatRequest::new("test");
+    input
+        .messages
+        .push(lingxi_llm_client::protocol::ConversationMessage::user_text(
+            "�",
+        ));
+    input.max_tokens = Some(96);
+    input.temperature = Some(0.4);
+    let options = RequestOptions {
+        credential: Some(Secret::new("synthetic-chatgpt-token".into())),
+        message_text_utf16_overrides: [("/messages/0/content/0/text".into(), vec![0xd800])]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+
+    let mut draft = client
+        .prepare_draft_on("primary", &input, &options, RequestMode::Complete)
+        .await
+        .unwrap();
+    let mut overrides = draft.message_json_string_overrides().clone();
+    let mut body = draft.semantic_body_json().unwrap();
+    // Simulate the final host body policy after request preparation.
+    body["instructions"] = json!("�");
+    body["metadata"] = json!({"annotation":"�"});
+    body["max_output_tokens"] = json!("discarded exact field");
+    body["temperature"] = json!(0.4);
+    body["top_p"] = json!({"annotation":"discarded exact descendant"});
+    overrides.insert("/instructions".into(), vec![0xd801]);
+    overrides.insert("/metadata/annotation".into(), vec![0xd802]);
+    overrides.insert("/max_output_tokens".into(), vec![0xd803]);
+    overrides.insert("/top_p/annotation".into(), vec![0xd804]);
+    assert!(
+        !draft
+            .message_json_string_overrides()
+            .contains_key("/instructions")
+    );
+    draft.set_json_body(body, &overrides).unwrap();
+    assert!(
+        !draft
+            .message_json_string_overrides()
+            .contains_key("/metadata/annotation")
+    );
+    assert_eq!(
+        draft
+            .request_json_string_overrides()
+            .get("/metadata/annotation"),
+        Some(&vec![0xd802])
+    );
+    let exact_body = draft.request().body.clone();
+    let semantic_body = draft.semantic_body_json().unwrap();
+    draft.set_body_bytes(exact_body, semantic_body);
+    let call = draft.seal().await.unwrap();
+
+    let bytes = &call.request().body;
+    let wire = std::str::from_utf8(bytes).unwrap();
+    assert!(wire.contains("\\ud800"), "{wire}");
+    assert!(wire.contains("\"store\":false"), "{wire}");
+    assert!(wire.contains("\"instructions\":\"\\ud801\""), "{wire}");
+    assert!(wire.contains("\\ud802"), "{wire}");
+    assert!(!wire.contains("\\ud803"), "{wire}");
+    assert!(!wire.contains("\\ud804"), "{wire}");
+    for removed in ["max_output_tokens", "temperature", "top_p"] {
+        assert!(!wire.contains(removed), "{wire}");
+    }
+    assert!(
+        call.request()
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
+                && value == "Bearer synthetic-chatgpt-token")
+    );
 }
 
 #[tokio::test]
@@ -293,7 +603,11 @@ async fn error_status_still_exposes_usage_and_actual_tier() {
 
 #[tokio::test]
 async fn usage_only_frame_returns_before_next_frame_or_cancellation() {
-    let http = http(200, "data: {\"model\":\"wire\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n", true);
+    let http = http(
+        200,
+        "data: {\"model\":\"wire\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n",
+        true,
+    );
     let client = LlmClientBuilder::with_transport(http, &profiles("open_ai_chat"))
         .with_region(Region::International)
         .build()
@@ -325,7 +639,11 @@ async fn usage_only_frame_returns_before_next_frame_or_cancellation() {
 
 #[tokio::test]
 async fn error_frame_retains_usage_before_terminating() {
-    let http = http(200, "data: {\"error\":{\"message\":\"failed\"},\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n", true);
+    let http = http(
+        200,
+        "data: {\"error\":{\"message\":\"failed\"},\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2}}\n\n",
+        true,
+    );
     let client = LlmClientBuilder::with_transport(http, &profiles("open_ai_chat"))
         .with_region(Region::International)
         .build()
@@ -358,15 +676,17 @@ async fn group_names_cannot_masquerade_as_selected_connections() {
         .with_region(Region::International)
         .build()
         .unwrap();
-    assert!(client
-        .prepare_on(
-            "test",
-            &request(),
-            &RequestOptions::default(),
-            RequestMode::Complete
-        )
-        .await
-        .is_err());
+    assert!(
+        client
+            .prepare_on(
+                "test",
+                &request(),
+                &RequestOptions::default(),
+                RequestMode::Complete
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(http.sends.load(Ordering::SeqCst), 0);
 }
 
@@ -444,16 +764,19 @@ async fn draft_is_signed_only_after_final_exact_bytes_and_dispatch_marker_can_re
         )
         .await
         .unwrap();
-    assert!(!draft
-        .request()
-        .headers
-        .iter()
-        .any(|(k, _)| k == "signed-body"));
+    assert!(
+        !draft
+            .request()
+            .headers
+            .iter()
+            .any(|(k, _)| k == "signed-body")
+    );
     let bytes = lingxi_llm_client::exact_json::serialize(
         &json!({"text":"display"}),
         &[("/text".into(), vec![0xd800, 65, 0xd83d, 0xde00])]
             .into_iter()
             .collect(),
+        lingxi_llm_client::exact_json::JsonEncoding::JavaScript,
     )
     .unwrap();
     assert_eq!(
@@ -528,11 +851,14 @@ async fn finalizer_runs_before_authentication_and_exact_override_rejects_wrong_l
     .await
     .unwrap();
     assert_eq!(http.sends.load(Ordering::SeqCst), 1);
-    assert!(lingxi_llm_client::exact_json::serialize(
-        &json!({"x":1}),
-        &[("/x".into(), vec![65])].into_iter().collect()
-    )
-    .is_err());
+    assert!(
+        lingxi_llm_client::exact_json::serialize(
+            &json!({"x":1}),
+            &[("/x".into(), vec![65])].into_iter().collect(),
+            lingxi_llm_client::exact_json::JsonEncoding::JavaScript,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -591,14 +917,281 @@ async fn final_body_controls_and_exact_utf16_cannot_silently_price_fast_as_stand
         received.inference_report().requested_service_tier,
         Some(lingxi_llm_client::protocol::ServiceTier::Fast)
     );
-    assert!(received
-        .pricing_snapshot()
-        .estimate(
-            received.usage_report(),
-            received.inference_report(),
-            lingxi_llm_client::protocol::Submission::Interactive
+    assert!(
+        received
+            .pricing_snapshot()
+            .estimate(
+                received.usage_report(),
+                received.inference_report(),
+                lingxi_llm_client::protocol::Submission::Interactive
+            )
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn native_client_request_id_uses_seal_and_fetch_fallback_stages() {
+    use lingxi_llm_client::protocol::ProtocolFamily;
+    use lingxi_llm_client::providers::response_headers::{
+        AnthropicAwsBaseUrlFact, FirstPartyBaseUrlFact, NativeAnthropicProvider,
+        NativeAnthropicRequestHeaderFacts,
+    };
+
+    let direct_http = http(200, "{}", false);
+    let mut direct_profiles = profiles("anthropic_messages");
+    for profile in &mut direct_profiles {
+        profile.provider_id = "anthropic".into();
+        profile.base_url = "https://api.anthropic.com".into();
+    }
+    let direct_client = LlmClientBuilder::with_transport(direct_http.clone(), &direct_profiles)
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut direct_draft = direct_client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete,
         )
-        .is_err());
+        .await
+        .unwrap();
+    direct_draft
+        .set_native_anthropic_request_header_facts(NativeAnthropicRequestHeaderFacts {
+            protocol: ProtocolFamily::AnthropicMessages,
+            provider: NativeAnthropicProvider::FirstParty,
+            first_party_base_url: FirstPartyBaseUrlFact::Default,
+            selected_base_url: FirstPartyBaseUrlFact::AnthropicApiHost,
+            anthropic_aws_base_url: AnthropicAwsBaseUrlFact::Undefined,
+        })
+        .unwrap();
+    let direct = direct_draft.seal().await.unwrap();
+    let direct_id = direct.client_request_id().unwrap().to_owned();
+    assert_uuid_v4(&direct_id);
+    let received = direct
+        .dispatch_once_using(direct_http.as_ref(), || Ok(()))
+        .await
+        .unwrap();
+    assert_eq!(received.client_request_id(), Some(direct_id.as_str()));
+    assert_eq!(
+        direct_http.requests.lock().unwrap()[0]
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-client-request-id"))
+            .map(|(_, value)| value.as_str()),
+        Some(direct_id.as_str())
+    );
+
+    let aws_http = http(200, "{}", false);
+    let mut aws_profiles = profiles("anthropic_messages");
+    for profile in &mut aws_profiles {
+        profile.provider_id = "anthropicAws".into();
+        profile.base_url = "https://bedrock-gateway.example".into();
+    }
+    let aws_client = LlmClientBuilder::with_transport(aws_http.clone(), &aws_profiles)
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut aws_draft = aws_client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    aws_draft
+        .set_native_anthropic_request_header_facts(NativeAnthropicRequestHeaderFacts {
+            protocol: ProtocolFamily::AnthropicMessages,
+            provider: NativeAnthropicProvider::AnthropicAws,
+            first_party_base_url: FirstPartyBaseUrlFact::Custom,
+            selected_base_url: FirstPartyBaseUrlFact::Custom,
+            anthropic_aws_base_url: AnthropicAwsBaseUrlFact::DefinedEmpty,
+        })
+        .unwrap();
+    let aws = aws_draft.seal().await.unwrap();
+    assert_eq!(aws.client_request_id(), None);
+    let received = aws
+        .dispatch_once_using(aws_http.as_ref(), || Ok(()))
+        .await
+        .unwrap();
+    let aws_id = received.client_request_id().unwrap().to_owned();
+    assert_uuid_v4(&aws_id);
+    assert_eq!(
+        aws_http.requests.lock().unwrap()[0]
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-client-request-id"))
+            .map(|(_, value)| value.as_str()),
+        Some(aws_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn native_client_request_id_preserves_empty_caller_header_and_custom_route() {
+    use lingxi_llm_client::protocol::ProtocolFamily;
+    use lingxi_llm_client::providers::response_headers::{
+        AnthropicAwsBaseUrlFact, FirstPartyBaseUrlFact, NativeAnthropicProvider,
+        NativeAnthropicRequestHeaderFacts,
+    };
+
+    let http = http(200, "{}", false);
+    let mut provider_profiles = profiles("anthropic_messages");
+    for profile in &mut provider_profiles {
+        profile.provider_id = "anthropic".into();
+        profile.base_url = "https://gateway.example".into();
+    }
+    let client = LlmClientBuilder::with_transport(http.clone(), &provider_profiles)
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    draft
+        .request_mut()
+        .headers
+        .push(("X-Client-Request-Id".into(), String::new()));
+    draft
+        .set_native_anthropic_request_header_facts(NativeAnthropicRequestHeaderFacts {
+            protocol: ProtocolFamily::AnthropicMessages,
+            provider: NativeAnthropicProvider::FirstParty,
+            first_party_base_url: FirstPartyBaseUrlFact::Default,
+            selected_base_url: FirstPartyBaseUrlFact::Custom,
+            anthropic_aws_base_url: AnthropicAwsBaseUrlFact::Undefined,
+        })
+        .unwrap();
+    let call = draft.seal().await.unwrap();
+    assert_eq!(call.client_request_id(), Some(""));
+    call.dispatch_once_using(http.as_ref(), || Ok(()))
+        .await
+        .unwrap();
+    let requests = http.requests.lock().unwrap();
+    let id_headers: Vec<_> = requests[0]
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("x-client-request-id"))
+        .collect();
+    assert_eq!(id_headers.len(), 1);
+    assert_eq!(id_headers[0].1, "");
+}
+
+#[tokio::test]
+async fn native_count_tokens_uses_fetch_fallback_without_per_attempt_id() {
+    use lingxi_llm_client::protocol::ProtocolFamily;
+    use lingxi_llm_client::providers::response_headers::{
+        AnthropicAwsBaseUrlFact, FirstPartyBaseUrlFact, NativeAnthropicProvider,
+        NativeAnthropicRequestHeaderFacts,
+    };
+
+    let transport = http(200, "{}", false);
+    let client =
+        LlmClientBuilder::with_transport(transport.clone(), &profiles("anthropic_messages"))
+            .with_region(Region::International)
+            .build()
+            .unwrap();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::CountTokens,
+        )
+        .await
+        .unwrap();
+    draft
+        .set_native_anthropic_request_header_facts(NativeAnthropicRequestHeaderFacts {
+            protocol: ProtocolFamily::AnthropicMessages,
+            provider: NativeAnthropicProvider::FirstParty,
+            first_party_base_url: FirstPartyBaseUrlFact::Default,
+            selected_base_url: FirstPartyBaseUrlFact::AnthropicApiHost,
+            anthropic_aws_base_url: AnthropicAwsBaseUrlFact::Undefined,
+        })
+        .unwrap();
+    let call = draft.seal().await.unwrap();
+    assert_eq!(call.client_request_id(), None);
+    let received = call
+        .dispatch_once_using(transport.as_ref(), || Ok(()))
+        .await
+        .unwrap();
+    let client_request_id = received.client_request_id().unwrap().to_owned();
+    assert_uuid_v4(&client_request_id);
+    let sent = transport.requests.lock().unwrap();
+    assert!(sent[0].url.contains("/v1/messages/count_tokens"));
+    assert_eq!(
+        sent[0]
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-client-request-id"))
+            .map(|(_, value)| value.as_str()),
+        Some(client_request_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn native_traceparent_is_inserted_after_the_per_attempt_gate() {
+    use lingxi_llm_client::protocol::ProtocolFamily;
+    use lingxi_llm_client::providers::response_headers::{
+        AnthropicAwsBaseUrlFact, FirstPartyBaseUrlFact, NativeAnthropicProvider,
+        NativeAnthropicRequestHeaderFacts,
+    };
+
+    const TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let transport = http(200, "{}", false);
+    let mut provider_profiles = profiles("anthropic_messages");
+    for profile in &mut provider_profiles {
+        profile.provider_id = "anthropic".into();
+        profile.base_url = "https://api.anthropic.com".into();
+    }
+    let client = LlmClientBuilder::with_transport(transport, &provider_profiles)
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    draft
+        .set_native_anthropic_request_header_facts(NativeAnthropicRequestHeaderFacts {
+            protocol: ProtocolFamily::AnthropicMessages,
+            provider: NativeAnthropicProvider::FirstParty,
+            first_party_base_url: FirstPartyBaseUrlFact::Default,
+            selected_base_url: FirstPartyBaseUrlFact::AnthropicApiHost,
+            anthropic_aws_base_url: AnthropicAwsBaseUrlFact::Undefined,
+        })
+        .unwrap();
+    draft.set_native_traceparent(TRACEPARENT.into()).unwrap();
+    let call = draft.seal().await.unwrap();
+    assert_eq!(
+        call.request()
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("traceparent"))
+            .map(|(_, value)| value.as_str()),
+        Some(TRACEPARENT)
+    );
+}
+
+fn assert_uuid_v4(value: &str) {
+    assert_eq!(value.len(), 36);
+    assert_eq!(&value[8..9], "-");
+    assert_eq!(&value[13..14], "-");
+    assert_eq!(&value[18..19], "-");
+    assert_eq!(&value[23..24], "-");
+    assert_eq!(&value[14..15], "4");
+    assert!(matches!(&value[19..20], "8" | "9" | "a" | "b"));
 }
 
 struct MergeClock(std::sync::atomic::AtomicU64);
@@ -702,11 +1295,13 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
             .unwrap();
     let mut request = request();
     request.controls.top_p = Some(0.7);
-    request.tools = vec![serde_json::from_value(json!({
-        "name":"computer","tool_type":"computer_20250124","description":"desktop",
-        "input_schema":{},"extra":{"display_width_px":1024,"display_height_px":768}
-    }))
-    .unwrap()];
+    request.tools = vec![
+        serde_json::from_value(json!({
+            "name":"computer","tool_type":"computer_20250124","description":"desktop",
+            "input_schema":{},"extra":{"display_width_px":1024,"display_height_px":768}
+        }))
+        .unwrap(),
+    ];
     let call = client
         .prepare_on(
             "primary",
@@ -721,10 +1316,10 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
     assert_eq!(body["tools"][0]["type"], "computer_20250124");
     assert_eq!(body["tools"][0]["display_width_px"], 1024);
     assert!(body["tools"][0].get("input_schema").is_none());
-    assert!(call
-        .request()
-        .headers
-        .iter()
-        .any(|(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")));
+    assert!(
+        call.request().headers.iter().any(
+            |(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")
+        )
+    );
     assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
 }

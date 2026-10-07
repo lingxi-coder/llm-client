@@ -474,6 +474,7 @@ fn structured_request(request: &DecisionRequest) -> (ChatRequest, Value) {
             DecisionContextPart::Text { text } => ContentBlock::Text {
                 text: text.clone(),
                 thought_signature: None,
+                citations: None,
             },
             DecisionContextPart::Image { source } => ContentBlock::Image {
                 source: (**source).clone(),
@@ -499,6 +500,7 @@ fn structured_request(request: &DecisionRequest) -> (ChatRequest, Value) {
             Value::Array(questions)
         ),
         thought_signature: None,
+        citations: None,
     });
     chat.messages = vec![ConversationMessage {
         role: MessageRole::User,

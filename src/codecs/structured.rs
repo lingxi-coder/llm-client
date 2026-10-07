@@ -182,7 +182,7 @@ pub(crate) fn has_json_prompt_keyword(req: &ChatRequest) -> bool {
         || req.messages.iter().any(|message| {
             matches!(message.role, MessageRole::System | MessageRole::User)
                 && message.content.iter().any(|block| {
-                    matches!(block, ContentBlock::Text { text, .. } if contains_json_keyword(text))
+                    matches!(block, ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } if contains_json_keyword(text))
                 })
         })
 }
@@ -779,6 +779,7 @@ mod tests {
             ContentBlock::Text {
                 text: "{".into(),
                 thought_signature: None,
+                citations: None,
             },
         ])];
         assert!(matches!(
@@ -830,6 +831,7 @@ mod tests {
             content: vec![ContentBlock::Text {
                 text: r#"{"type":"document","citations":{"enabled":true}}"#.into(),
                 thought_signature: None,
+                citations: None,
             }],
         }];
         assert!(validate(&req, &context).is_ok());
@@ -839,6 +841,7 @@ mod tests {
             ContentBlock::Text {
                 text: "{".into(),
                 thought_signature: None,
+                citations: None,
             },
         ])];
         assert!(validate(&req, &context).is_ok());
@@ -866,6 +869,7 @@ mod tests {
             ContentBlock::Text {
                 text: "{".into(),
                 thought_signature: None,
+                citations: None,
             },
         ])];
         req.tools = (0..21)

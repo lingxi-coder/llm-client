@@ -410,6 +410,7 @@ fn fetch_cache_markers_follow_mcp_wire_order_and_share_the_four_slot_limit() {
         .push(ConversationMessage::assistant(vec![ContentBlock::Text {
             text: "More".into(),
             thought_signature: None,
+            citations: None,
         }]));
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         scope: None,

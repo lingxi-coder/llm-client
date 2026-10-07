@@ -6,6 +6,7 @@ use crate::protocol::{
     ToolUseId, Usage,
 };
 use crate::providers::openai::computer::OpenAiComputerCall;
+use crate::response_json::{content_block, ResponseJson};
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
@@ -16,14 +17,14 @@ pub(crate) fn response_with_approval_support(
     openai_tool_search_semantics: bool,
     chatgpt_plan: bool,
 ) -> Result<ChatResponse, LlmError> {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or_else(|_| {
-        if chatgpt_plan {
-            Value::String(String::from_utf8_lossy(&resp.body).into_owned())
-        } else {
-            Value::Null
-        }
-    });
     if !(200..300).contains(&resp.status) {
+        let body: Value = serde_json::from_slice(&resp.body).unwrap_or_else(|_| {
+            if chatgpt_plan {
+                Value::String(String::from_utf8_lossy(&resp.body).into_owned())
+            } else {
+                Value::Null
+            }
+        });
         let retry_after = retry_after(resp);
         let classified = classify_error(resp.status, &body, retry_after);
         return Err(if chatgpt_plan {
@@ -32,7 +33,11 @@ pub(crate) fn response_with_approval_support(
             classified
         });
     }
+    let mut response_json =
+        ResponseJson::parse(&resp.body, "OpenAI Responses body is not valid JSON")?;
+    let body = response_json.value.clone();
     if body.get("status").and_then(Value::as_str) == Some("failed") {
+        response_json.finish()?;
         let classified = classify_error(500, &body, None);
         return Err(if chatgpt_plan {
             plan_provider_error(resp, body, classified.kind(), None)
@@ -75,7 +80,7 @@ pub(crate) fn response_with_approval_support(
             });
         }
     }
-    for item in output {
+    for (item_index, item) in output.iter().enumerate() {
         saw_refusal |= has_refusal(item);
         if item.get("type").and_then(Value::as_str) == Some("computer_call") {
             if !openai_tool_search_semantics {
@@ -120,8 +125,15 @@ pub(crate) fn response_with_approval_support(
                 });
             }
         }
-        decode_item(item, &mut content, &mut saw_tool_call);
+        decode_item_with_json(
+            item,
+            item_index,
+            &mut response_json,
+            &mut content,
+            &mut saw_tool_call,
+        )?;
     }
+    response_json.finish()?;
     Ok(ChatResponse {
         inference: Default::default(),
         response_cache: None,
@@ -214,6 +226,37 @@ fn validate_output_call_ids(items: &[Value]) -> Result<(), LlmError> {
     Ok(())
 }
 
+fn decode_item_with_json(
+    item: &Value,
+    item_index: usize,
+    response_json: &mut ResponseJson,
+    out: &mut Vec<ContentBlock>,
+    saw_tool_call: &mut bool,
+) -> Result<(), LlmError> {
+    if item.get("type").and_then(Value::as_str) == Some("message") {
+        for (part_index, part) in item
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if part.get("type").and_then(Value::as_str) == Some("output_text") {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    let decoded = response_json.take_text(
+                        &format!("/output/{item_index}/content/{part_index}/text"),
+                        text,
+                    )?;
+                    out.push(content_block(decoded, None, None));
+                }
+            }
+        }
+        return Ok(());
+    }
+    decode_item(item, out, saw_tool_call);
+    Ok(())
+}
+
 /// An output item is a message, a function call, or something this codec does
 /// not model; only `output_text` parts carry model text, so a refusal part is
 /// skipped rather than shown as the answer.
@@ -230,6 +273,7 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                         out.push(ContentBlock::Text {
                             text: text.to_owned(),
                             thought_signature: None,
+                            citations: None,
                         });
                     }
                 }
@@ -280,6 +324,31 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
             value: item.clone(),
         }),
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod utf16_response_tests {
+    use super::*;
+
+    #[test]
+    fn completed_response_text_retains_lone_units() {
+        let response = response_with_approval_support(
+            &crate::transport::HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"A\ud800B"}]}]}"#.as_slice().into(),
+            },
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            response.message.content.as_slice(),
+            [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        ));
     }
 }
 

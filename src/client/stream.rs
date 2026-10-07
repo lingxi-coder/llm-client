@@ -85,7 +85,6 @@ pub struct ModelStream {
     requested_inference: crate::protocol::InferenceReport,
     ready: VecDeque<Result<StreamEvent, LlmError>>,
     finished: bool,
-    yielded_event: bool,
     status: u16,
     headers: Vec<(String, String)>,
     executed_profile: String,
@@ -121,7 +120,6 @@ impl ModelStream {
             decoder,
             ready,
             finished: false,
-            yielded_event: false,
             status: resp.status,
             headers: resp.headers,
             executed_profile,
@@ -164,6 +162,12 @@ impl ModelStream {
 
     pub fn anthropic_usage(&self) -> Option<&Value> {
         self.provider_observation.anthropic_usage()
+    }
+    /// Server fallback controls observed so far, independent of host admission.
+    pub fn anthropic_fallback(
+        &self,
+    ) -> Option<&crate::providers::anthropic::fallback_response::FallbackResponse> {
+        self.provider_observation.anthropic_fallback()
     }
 
     /// The status the stream opened with.
@@ -294,20 +298,10 @@ impl ModelStream {
     /// A terminal outcome releases network resources even when the caller
     /// retains this handle to inspect usage and response headers.
     fn observe_event(&mut self, event: &mut Result<StreamEvent, LlmError>) {
-        if self.yielded_event {
-            if let Err(LlmError::Transport { message }) = event {
-                *event = Err(LlmError::StreamInterrupted {
-                    message: message.clone(),
-                });
-            }
-        }
         if let Ok(event) = event {
-            // Raw provider observations can be keepalives, and inference
-            // settings may be seeded before any provider output arrives.
-            self.yielded_event |= !matches!(
-                event,
-                StreamEvent::ProviderEvent { .. } | StreamEvent::Inference { .. }
-            );
+            // Progress is carried by events and usage. Keep a terminal error's
+            // original cause so the host can distinguish network recovery from
+            // malformed provider frames after output has started.
             self.provider_observation.observe(event);
         }
         match &mut *event {
@@ -418,6 +412,7 @@ impl ModelStream {
             self.anthropic_usage().cloned(),
         );
         response.set_anthropic_stop_details(self.anthropic_stop_details().cloned());
+        response.set_anthropic_fallback(self.anthropic_fallback().cloned());
         if saw_tool {
             return Err(StructuredStreamError::Validation {
                 source: StructuredOutputError {

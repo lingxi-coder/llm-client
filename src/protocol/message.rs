@@ -4,6 +4,22 @@ use crate::protocol::ids::{ProviderId, ToolUseId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn deserialize_present_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    bool::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_present_nullable_value<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Value>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageRole {
@@ -36,6 +52,32 @@ pub enum ContentBlock {
         /// Gemini's opaque signature, attached to this exact text part.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
+        /// Exact provider field presence; the inner option preserves JSON null.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_present_nullable_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        citations: Option<Option<Value>>,
+    },
+    /// Text decoded from JSON with one or more unpaired JavaScript UTF-16
+    /// units. `text` is the lossy display string; codecs use the exact units
+    /// when this block is replayed into a later request.
+    TextJsUtf16 {
+        text: String,
+        /// Runtime-only exact source units. Provider encoders move these into
+        /// the selected codec's JSON-string override map; they are never
+        /// serialized as a provider field.
+        #[serde(skip)]
+        utf16_code_units: Vec<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_present_nullable_value",
+            skip_serializing_if = "Option::is_none"
+        )]
+        citations: Option<Option<Value>>,
     },
 
     /// A tool invocation requested by the model.
@@ -67,7 +109,13 @@ pub enum ContentBlock {
         tool_use_id: ToolUseId,
         /// Model-facing text. Always populated, even when `blocks` is set.
         content: String,
-        is_error: bool,
+        /// `None` preserves an omitted provider key; explicit false remains present.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_present_bool",
+            skip_serializing_if = "Option::is_none"
+        )]
+        is_error: Option<bool>,
         /// Structured blocks when the result is an array (an MCP result with
         /// images or resources). Sent verbatim when present.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -317,6 +365,7 @@ impl ConversationMessage {
             content: vec![ContentBlock::Text {
                 text: text.into(),
                 thought_signature: None,
+                citations: None,
             }],
             native_options: Vec::new(),
         }
@@ -328,6 +377,7 @@ impl ConversationMessage {
             content: vec![ContentBlock::Text {
                 text: text.into(),
                 thought_signature: None,
+                citations: None,
             }],
             native_options: Vec::new(),
         }
@@ -362,7 +412,9 @@ impl ConversationMessage {
         self.content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } => {
+                    Some(text.as_str())
+                }
                 ContentBlock::ProviderContent { value, .. } => {
                     value.get("text").and_then(Value::as_str)
                 }
@@ -385,7 +437,7 @@ mod tests {
         let b = ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_1"),
             content: "ok".into(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         };
@@ -393,6 +445,89 @@ mod tests {
         assert!(!s.contains("blocks"));
         assert!(!s.contains("toolset_name"));
         assert_eq!(serde_json::from_str::<ContentBlock>(&s).unwrap(), b);
+    }
+
+    #[test]
+    fn text_citations_preserve_absence_null_and_value() {
+        for (input, expected) in [
+            (serde_json::json!({"type":"text","text":"x"}), None),
+            (
+                serde_json::json!({"type":"text","text":"x","citations":null}),
+                Some(serde_json::Value::Null),
+            ),
+            (
+                serde_json::json!({"type":"text","text":"x","citations":[]}),
+                Some(serde_json::json!([])),
+            ),
+        ] {
+            let block: ContentBlock = serde_json::from_value(input).unwrap();
+            let output = serde_json::to_value(block).unwrap();
+            assert_eq!(output.get("citations"), expected.as_ref());
+        }
+    }
+
+    #[test]
+    fn tool_result_is_error_preserves_omission_and_explicit_false() {
+        let absent: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type":"tool_result",
+            "tool_use_id":"toolu_1",
+            "content":"ok"
+        }))
+        .unwrap();
+        assert!(matches!(
+            absent,
+            ContentBlock::ToolResult { is_error: None, .. }
+        ));
+        assert!(serde_json::to_value(absent)
+            .unwrap()
+            .get("is_error")
+            .is_none());
+
+        let explicit_false: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type":"tool_result",
+            "tool_use_id":"toolu_1",
+            "content":"ok",
+            "is_error":false
+        }))
+        .unwrap();
+        assert!(matches!(
+            explicit_false,
+            ContentBlock::ToolResult {
+                is_error: Some(false),
+                ..
+            }
+        ));
+        assert_eq!(
+            serde_json::to_value(explicit_false).unwrap()["is_error"],
+            false
+        );
+
+        let explicit_true: ContentBlock = serde_json::from_value(serde_json::json!({
+            "type":"tool_result",
+            "tool_use_id":"toolu_1",
+            "content":"failed",
+            "is_error":true
+        }))
+        .unwrap();
+        assert!(matches!(
+            explicit_true,
+            ContentBlock::ToolResult {
+                is_error: Some(true),
+                ..
+            }
+        ));
+        assert_eq!(
+            serde_json::to_value(explicit_true).unwrap()["is_error"],
+            true
+        );
+
+        assert!(serde_json::from_value::<ContentBlock>(serde_json::json!({
+            "type":"tool_result",
+            "tool_use_id":"toolu_1",
+            "content":"invalid",
+            "is_error":null
+        }))
+        .is_err());
     }
 
     #[test]
@@ -416,7 +551,7 @@ mod tests {
         let result_block = ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_browser"),
             content: "done".into(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: Some("browser".into()),
         };

@@ -178,11 +178,42 @@ pub struct AnthropicResponseMetadata {
     /// Provider stop diagnostics, preserved without interpreting their schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<super::fallback_response::FallbackResponse>,
 }
 impl NativeType for AnthropicResponseMetadata {
     const FORMAT: &'static str = "anthropic.response_metadata.v1";
 }
 impl crate::protocol::ChatResponse {
+    pub fn anthropic_fallback(&self) -> Option<&super::fallback_response::FallbackResponse> {
+        self.native_metadata
+            .iter()
+            .find(|extension| extension.is::<AnthropicResponseMetadata>())
+            .and_then(|extension| extension.decode::<AnthropicResponseMetadata>().ok())
+            .and_then(|metadata| metadata.fallback.as_ref())
+    }
+    pub fn set_anthropic_fallback(
+        &mut self,
+        fallback: Option<super::fallback_response::FallbackResponse>,
+    ) {
+        if let Some(extension) = self
+            .native_metadata
+            .iter_mut()
+            .find(|extension| extension.is::<AnthropicResponseMetadata>())
+        {
+            extension
+                .edit::<AnthropicResponseMetadata, _>(|metadata| metadata.fallback = fallback)
+                .expect("native response metadata is JSON");
+        } else if fallback.is_some() {
+            self.native_metadata.push(
+                NativeExtension::from_typed(AnthropicResponseMetadata {
+                    fallback,
+                    ..Default::default()
+                })
+                .expect("native response metadata is JSON"),
+            );
+        }
+    }
     pub fn anthropic_container(&self) -> Option<&AnthropicContainerMetadata> {
         self.native_metadata
             .iter()
@@ -231,14 +262,16 @@ impl crate::protocol::ChatResponse {
         usage: Option<serde_json::Value>,
     ) {
         let stop_details = self.anthropic_stop_details().cloned();
+        let fallback = self.anthropic_fallback().cloned();
         self.native_metadata
             .retain(|extension| !extension.is::<AnthropicResponseMetadata>());
-        if container.is_some() || usage.is_some() || stop_details.is_some() {
+        if container.is_some() || usage.is_some() || stop_details.is_some() || fallback.is_some() {
             self.native_metadata.push(
                 NativeExtension::from_typed(AnthropicResponseMetadata {
                     container,
                     usage,
                     stop_details,
+                    fallback,
                 })
                 .expect("native response metadata is JSON"),
             );

@@ -202,13 +202,14 @@ pub(super) fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmErr
         LlmError::InvalidRequest {
             message: "could not build HTTP request".into(),
         }
-    } else if streaming_body {
-        LlmError::StreamInterrupted {
-            message: "HTTP response stream interrupted".into(),
-        }
     } else {
         LlmError::Transport {
-            message: "HTTP connection or response read failed".into(),
+            message: if streaming_body {
+                "HTTP response stream interrupted"
+            } else {
+                "HTTP connection or response read failed"
+            }
+            .into(),
         }
     }
 }

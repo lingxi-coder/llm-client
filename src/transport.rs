@@ -107,6 +107,22 @@ impl HttpResponse {
     pub fn header(&self, name: &str) -> Option<&str> {
         header(&self.headers, name)
     }
+
+    /// Preserve JSON provider payloads and non-JSON HTTP error text for policy
+    /// decisions. Successful binary/SSE bodies do not become an error payload.
+    pub fn payload_value(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or_else(|_| {
+            let text = String::from_utf8_lossy(&self.body);
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+            serde_json::from_str(text).unwrap_or_else(|_| {
+                if self.status >= 400 {
+                    serde_json::Value::String(text.to_owned())
+                } else {
+                    serde_json::Value::Null
+                }
+            })
+        })
+    }
 }
 
 /// A streamed response. The status and headers arrive whole, before the body,
@@ -407,5 +423,56 @@ mod dispatch_tests {
             Err((LlmError::TransportTimeout { .. }, false))
         ));
         assert_eq!(transport.0.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn provider_payload_preserves_error_text_json_scalars_and_success_body_ownership() {
+        for (status, bytes, expected) in [
+            (
+                400,
+                b"could not process image".as_slice(),
+                serde_json::json!("could not process image"),
+            ),
+            (
+                422,
+                b"\xff field".as_slice(),
+                serde_json::json!("\u{fffd} field"),
+            ),
+            (500, b"".as_slice(), serde_json::json!("")),
+            (
+                400,
+                b"{\"message\":\"known\"}".as_slice(),
+                serde_json::json!({"message":"known"}),
+            ),
+            (400, b"false".as_slice(), serde_json::json!(false)),
+            (
+                400,
+                b"\xef\xbb\xbfcould not process image".as_slice(),
+                serde_json::json!("could not process image"),
+            ),
+            (
+                400,
+                b"{\"message\":\"\xff\"}".as_slice(),
+                serde_json::json!({"message":"\u{fffd}"}),
+            ),
+            (200, b"data: event\n\n".as_slice(), serde_json::Value::Null),
+            (
+                200,
+                b"{\"content\":[]}".as_slice(),
+                serde_json::json!({"content":[]}),
+            ),
+        ] {
+            let response = HttpResponse {
+                status,
+                headers: vec![],
+                body: Bytes::copy_from_slice(bytes),
+            };
+            assert_eq!(response.payload_value(), expected);
+            assert_eq!(response.body.as_ref(), bytes);
+        }
     }
 }

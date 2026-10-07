@@ -1,5 +1,9 @@
 //! JSON values that borrow request text, schemas, and inline byte payloads.
-use crate::{protocol::LlmError, transport::HttpRequest};
+use crate::{
+    exact_json::{JavaScriptFormatter, JavaScriptValue, JsonEncoding},
+    protocol::LlmError,
+    transport::HttpRequest,
+};
 use serde::{
     ser::{SerializeMap, SerializeSeq},
     Serialize, Serializer,
@@ -215,8 +219,23 @@ impl fmt::Display for Data<'_> {
         )
     }
 }
+struct EncodedWireValue<'a, 'b>(&'a WireValue<'b>, JsonEncoding);
+impl Serialize for EncodedWireValue<'_, '_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize_mode(serializer, self.1)
+    }
+}
 impl Serialize for WireValue<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.serialize_mode(serializer, JsonEncoding::Serde)
+    }
+}
+impl WireValue<'_> {
+    fn serialize_mode<S: Serializer>(
+        &self,
+        serializer: S,
+        encoding: JsonEncoding,
+    ) -> Result<S::Ok, S::Error> {
         if let Some(payload) = &self.payload {
             return match payload {
                 Payload::Text(text) => serializer.serialize_str(text),
@@ -224,20 +243,26 @@ impl Serialize for WireValue<'_> {
                 Payload::Array(array) => {
                     let mut seq = serializer.serialize_seq(Some(array.len()))?;
                     for value in array {
-                        seq.serialize_element(value)?;
+                        seq.serialize_element(&EncodedWireValue(value, encoding))?;
                     }
                     seq.end()
                 }
             };
         }
         if self.fields.is_empty() {
-            return self.value.serialize(serializer);
+            return if encoding == JsonEncoding::JavaScript {
+                JavaScriptValue(&self.value).serialize(serializer)
+            } else {
+                self.value.serialize(serializer)
+            };
         }
         let object = self.value.as_object().expect("overridden wire object");
         let mut map = serializer.serialize_map(Some(object.len()))?;
-        for (key, value) in object {
+        for (key, value) in crate::exact_json::entries(object, encoding) {
             if let Some(value) = self.field(key) {
-                map.serialize_entry(key, value)?;
+                map.serialize_entry(key, &EncodedWireValue(value, encoding))?;
+            } else if encoding == JsonEncoding::JavaScript {
+                map.serialize_entry(key, &JavaScriptValue(value))?;
             } else {
                 map.serialize_entry(key, value)?;
             }
@@ -248,6 +273,7 @@ impl Serialize for WireValue<'_> {
 pub(crate) struct WireRequest<'a> {
     pub(crate) http: HttpRequest,
     pub(crate) body: WireValue<'a>,
+    pub(crate) json_encoding: JsonEncoding,
 }
 impl<'a> WireRequest<'a> {
     pub(crate) fn new(url: String, headers: Vec<(String, String)>, body: WireValue<'a>) -> Self {
@@ -260,15 +286,29 @@ impl<'a> WireRequest<'a> {
                 timeout: None,
             },
             body,
+            json_encoding: JsonEncoding::Serde,
+        }
+    }
+    pub(crate) fn write_body<W: io::Write>(&self, writer: W) -> Result<(), LlmError> {
+        match self.json_encoding {
+            JsonEncoding::Serde => serde_json::to_writer(writer, &self.body).map_err(json_error),
+            JsonEncoding::JavaScript => EncodedWireValue(&self.body, self.json_encoding)
+                .serialize(&mut serde_json::Serializer::with_formatter(
+                    writer,
+                    JavaScriptFormatter,
+                ))
+                .map_err(json_error),
         }
     }
     pub(crate) fn encode(mut self) -> Result<HttpRequest, LlmError> {
-        self.http.body = serde_json::to_vec(&self.body).map_err(json_error)?.into();
+        let mut bytes = Vec::new();
+        self.write_body(&mut bytes)?;
+        self.http.body = bytes.into();
         Ok(self.http)
     }
     pub(crate) fn body_len(&self) -> Result<usize, LlmError> {
         let mut writer = Counter(0);
-        serde_json::to_writer(&mut writer, &self.body).map_err(json_error)?;
+        self.write_body(&mut writer)?;
         Ok(writer.0)
     }
 }
@@ -295,6 +335,39 @@ impl io::Write for Counter {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_numbers_and_order_keep_borrowed_payloads_and_exact_size() {
+        let schema = json!({"2":1.0,"0":-0.0,"integer":u64::MAX});
+        let text = "borrowed text";
+        for encoding in [JsonEncoding::Serde, JsonEncoding::JavaScript] {
+            let body = WireValue::from(json!({"schema":null,"text":null,"data":null}))
+                .with("schema", WireValue::borrowed(&schema))
+                .with("text", WireValue::text(text))
+                .with("data", WireValue::base64(b"bytes", String::new()));
+            let mut request = WireRequest::new("https://fixture".into(), vec![], body);
+            request.json_encoding = encoding;
+            let length = request.body_len().unwrap();
+            assert!(request.body.materialized.get().is_none());
+            for (_, field) in &request.body.fields {
+                assert!(field.materialized.get().is_none());
+            }
+            let bytes = request.encode().unwrap().body;
+            assert_eq!(length, bytes.len());
+            let wire = std::str::from_utf8(&bytes).unwrap();
+            if encoding == JsonEncoding::JavaScript {
+                assert_eq!(
+                    wire,
+                    r#"{"schema":{"0":0,"2":1,"integer":18446744073709552000},"text":"borrowed text","data":"Ynl0ZXM="}"#
+                );
+            } else {
+                assert_eq!(
+                    wire,
+                    r#"{"schema":{"2":1.0,"0":-0.0,"integer":18446744073709551615},"text":"borrowed text","data":"Ynl0ZXM="}"#
+                );
+            }
+        }
+    }
 
     #[test]
     fn borrowed_values_remain_coherent_when_inspected_and_mutated() {

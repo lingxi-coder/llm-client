@@ -3,8 +3,8 @@ use super::executor::{PreparedAttempt, RequestExecutor};
 use super::{ClientSnapshot, LlmClient, ModelStream, RequestOptions};
 use crate::codecs::RequestMode;
 use crate::protocol::{
-    ChatRequest, ChatResponse, InferenceReport, LlmError, ModelProfile, ProviderProfile,
-    UsageReport,
+    ChatRequest, ChatResponse, InferenceReport, LlmError, ModelProfile, ProtocolFamily,
+    ProviderProfile, UsageReport,
 };
 use crate::transport::{HttpExecutor, HttpRequest, HttpResponse, StreamResponse, Transport};
 use std::sync::Arc;
@@ -24,6 +24,9 @@ pub struct PreparedCall {
     continuation: Option<crate::protocol::ContinuationRef>,
     file_expirations: Vec<String>,
     session_binding: Option<Arc<()>>,
+    native_anthropic_request_header_facts:
+        Option<crate::providers::response_headers::NativeAnthropicRequestHeaderFacts>,
+    anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
 }
 
 impl ClientSnapshot {
@@ -123,8 +126,41 @@ impl ClientSnapshot {
                 .iter()
                 .filter_map(|file| file.expires_at.clone()),
         );
+        let has_carried_text_units = request.request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, crate::protocol::ContentBlock::TextJsUtf16 { .. }))
+        });
+        let message_json_string_overrides =
+            if options.message_text_utf16_overrides.is_empty() && !has_carried_text_units {
+                std::collections::BTreeMap::new()
+            } else {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&prepared.http.body).map_err(|error| {
+                        LlmError::InvalidRequest {
+                            message: format!(
+                                "encoded request body is not JSON for UTF-16 text mapping: {error}"
+                            ),
+                        }
+                    })?;
+                crate::exact_json::map_message_text_overrides(
+                    request.request,
+                    selected.profile.protocol,
+                    &body,
+                    &options.message_text_utf16_overrides,
+                )?
+            };
+        let native_anthropic_request_header_facts = prepared.native_anthropic_request_header_facts;
         Ok(RequestDraft {
+            native_traceparent: None,
             semantic_body: None,
+            request_json_string_overrides: message_json_string_overrides.clone(),
+            message_json_string_overrides,
+            raw_body_set: false,
+            body_auth_strategy: None,
+            auth_body_policy_applied: false,
+            mutable_body_baseline: None,
             authenticator: options
                 .authenticator
                 .as_ref()
@@ -142,6 +178,8 @@ impl ClientSnapshot {
                 continuation,
                 file_expirations,
                 session_binding: None,
+                native_anthropic_request_header_facts,
+                anthropic_request_kind: options.anthropic_request_kind,
                 http: self.runtime.http.clone(),
                 clock: self.runtime.clock.clone(),
                 deadline: options
@@ -158,13 +196,91 @@ impl ClientSnapshot {
 /// Mutable generation request before its final authentication step. It cannot
 /// dispatch. Sealing consumes the draft and produces an immutable single-use call.
 pub struct RequestDraft {
+    native_traceparent: Option<String>,
     semantic_body: Option<(bytes::Bytes, serde_json::Value)>,
+    request_json_string_overrides: std::collections::BTreeMap<String, Vec<u16>>,
+    message_json_string_overrides: std::collections::BTreeMap<String, Vec<u16>>,
+    raw_body_set: bool,
+    body_auth_strategy: Option<crate::protocol::AuthStrategy>,
+    auth_body_policy_applied: bool,
+    mutable_body_baseline: Option<bytes::Bytes>,
     call: PreparedCall,
     authenticator: Option<Arc<dyn crate::Authenticator>>,
     credential: Option<crate::protocol::Secret<String>>,
     account_scope: Option<String>,
 }
+
+pub(super) fn chatgpt_body_policy_applies(
+    strategy: crate::protocol::AuthStrategy,
+    protocol: ProtocolFamily,
+    mode: RequestMode,
+) -> bool {
+    strategy == crate::protocol::AuthStrategy::ChatGptOAuth
+        && protocol == ProtocolFamily::OpenAiResponses
+        && matches!(mode, RequestMode::Complete | RequestMode::Stream)
+}
+
 impl RequestDraft {
+    /// Exact source-message strings reindexed onto this selected codec's JSON
+    /// body. This source-message projection stays separate from exact mappings
+    /// added to later request fields through `set_json_body`.
+    pub fn message_json_string_overrides(&self) -> &std::collections::BTreeMap<String, Vec<u16>> {
+        &self.message_json_string_overrides
+    }
+    /// The complete retained exact-string map, including host fields added
+    /// through `set_json_body` after the source-message projection.
+    pub fn request_json_string_overrides(&self) -> &std::collections::BTreeMap<String, Vec<u16>> {
+        &self.request_json_string_overrides
+    }
+    /// Return the semantic JSON paired with the current exact byte image, or
+    /// parse the current body when no paired semantic view is available.
+    /// Hosts use this before exposing the request to policy code so escaped
+    /// lone UTF-16 units remain represented by the display string and override
+    /// map instead of being parsed from wire bytes.
+    pub fn semantic_body_json(&self) -> Result<serde_json::Value, LlmError> {
+        if let Some((bytes, value)) = &self.semantic_body {
+            if bytes == &self.call.prepared.http.body {
+                return Ok(value.clone());
+            }
+        }
+        serde_json::from_slice(&self.call.prepared.http.body).map_err(|error| {
+            LlmError::InvalidRequest {
+                message: format!("prepared request body has no semantic JSON view: {error}"),
+            }
+        })
+    }
+
+    /// Select a provider auth strategy whose generation-body policy must be
+    /// applied by the SDK before exact JSON serialization and signing. Hosts
+    /// that replace `ProviderProfile.auth` while deferring credentials pass the
+    /// selected route's original strategy here before exposing the body.
+    pub fn apply_request_body_auth_policy(
+        &mut self,
+        strategy: crate::protocol::AuthStrategy,
+    ) -> Result<(), LlmError> {
+        self.body_auth_strategy = Some(strategy);
+        self.apply_current_request_body_auth_policy()
+    }
+
+    fn apply_current_request_body_auth_policy(&mut self) -> Result<(), LlmError> {
+        let strategy = self.body_auth_strategy.unwrap_or(self.call.profile.auth);
+        if !chatgpt_body_policy_applies(strategy, self.call.profile.protocol, self.call.mode)
+            || self.auth_body_policy_applied
+        {
+            return Ok(());
+        }
+        let mut body = self.semantic_body_json()?;
+        if body.get("model").is_none() || body.get("input").is_none() {
+            self.auth_body_policy_applied = true;
+            return Ok(());
+        }
+        crate::auth::header_policy::chatgpt_body(&mut body);
+        let mut overrides = self.request_json_string_overrides.clone();
+        overrides.retain(|pointer, _| crate::exact_json::canonical_string_pointer(&body, pointer));
+        self.set_json_body(body, &overrides)?;
+        self.auth_body_policy_applied = true;
+        Ok(())
+    }
     pub(super) fn transport(&self) -> Arc<dyn Transport> {
         self.call.http.clone()
     }
@@ -211,6 +327,9 @@ impl RequestDraft {
     }
     pub fn request_mut(&mut self) -> &mut HttpRequest {
         self.call.session_binding = None;
+        if self.mutable_body_baseline.is_none() {
+            self.mutable_body_baseline = Some(self.call.prepared.http.body.clone());
+        }
         &mut self.call.prepared.http
     }
     pub(super) fn bind_session(&mut self, binding: Arc<()>) {
@@ -218,16 +337,67 @@ impl RequestDraft {
     }
     /// Set exact JSON bytes while retaining a safe semantic view for final
     /// inference facts, including when strings contain lone UTF-16 surrogates.
+    /// `overrides` is the full pointer map for this JSON body; it is retained
+    /// separately from the source-message projection returned above.
     pub fn set_json_body(
         &mut self,
         value: serde_json::Value,
         overrides: &std::collections::BTreeMap<String, Vec<u16>>,
     ) -> Result<(), LlmError> {
-        let bytes: bytes::Bytes = crate::exact_json::serialize(&value, overrides)?.into();
+        let bytes: bytes::Bytes = crate::exact_json::serialize_for_request(
+            &value,
+            overrides,
+            crate::exact_json::JsonEncoding::for_protocol(self.call.profile.protocol),
+            Some(self.call.profile.protocol),
+            self.call.anthropic_request_kind,
+        )?
+        .into();
         self.call.session_binding = None;
         self.call.prepared.http.body = bytes.clone();
         self.semantic_body = Some((bytes, value));
+        self.request_json_string_overrides = overrides.clone();
+        self.raw_body_set = false;
+        self.auth_body_policy_applied = false;
+        self.mutable_body_baseline = None;
         Ok(())
+    }
+    /// Set a caller-authenticated JSON byte image after its SDK serializer has
+    /// applied the selected request policy. A semantic fallback is retained
+    /// only when the bytes decode directly or exactly match this SDK's encoder
+    /// and currently retained UTF-16 map. This API has no override-map input;
+    /// use `set_json_body` when a changed raw body adds exact string fields.
+    pub fn set_body_bytes(&mut self, body: bytes::Bytes, semantic_value: serde_json::Value) {
+        self.call.session_binding = None;
+        let paired_current_image = self
+            .semantic_body
+            .as_ref()
+            .is_some_and(|(paired_body, _)| paired_body == &self.call.prepared.http.body)
+            && self.call.prepared.http.body == body;
+        let policy_image_unchanged = self.auth_body_policy_applied && paired_current_image;
+        let parsed_body = serde_json::from_slice::<serde_json::Value>(&body).ok();
+        let expected = crate::exact_json::serialize_for_request(
+            &semantic_value,
+            &self.request_json_string_overrides,
+            crate::exact_json::JsonEncoding::for_protocol(self.call.profile.protocol),
+            Some(self.call.profile.protocol),
+            self.call.anthropic_request_kind,
+        )
+        .ok();
+        let exact_mapped_image = expected
+            .as_ref()
+            .is_some_and(|expected| expected.as_slice() == body.as_ref());
+        self.call.prepared.http.body = body.clone();
+        let semantic_value = parsed_body.or_else(|| exact_mapped_image.then_some(semantic_value));
+        if !paired_current_image && !exact_mapped_image {
+            // This API has no full override-map argument. Do not carry stale
+            // mappings into a changed raw body or claim newly added exact
+            // strings were represented.
+            self.request_json_string_overrides.clear();
+        }
+        self.semantic_body = semantic_value.map(|value| (body, value));
+        self.raw_body_set = true;
+        self.auth_body_policy_applied = policy_image_unchanged;
+        self.mutable_body_baseline = None;
     }
     pub fn profile(&self) -> &ProviderProfile {
         &self.call.profile
@@ -235,7 +405,83 @@ impl RequestDraft {
     pub fn model(&self) -> &ModelProfile {
         &self.call.model
     }
+    /// Provide trusted selected-route facts for Native Anthropic request-id
+    /// policy. The SDK applies the per-attempt stage while sealing and the
+    /// fetch fallback immediately before dispatch.
+    pub fn set_native_anthropic_request_header_facts(
+        &mut self,
+        facts: crate::providers::response_headers::NativeAnthropicRequestHeaderFacts,
+    ) -> Result<(), LlmError> {
+        if facts.protocol != self.call.profile.protocol {
+            return Err(LlmError::InvalidRequest {
+                message: "Native request header facts do not match the selected protocol".into(),
+            });
+        }
+        self.call.native_anthropic_request_header_facts = Some(facts);
+        self.call.prepared.native_anthropic_request_header_facts = Some(facts);
+        Ok(())
+    }
+
+    /// Supply the host's current trace context. The SDK decides whether Native's
+    /// route and opt-in gates permit it on the outgoing Anthropic request.
+    pub fn set_native_traceparent(&mut self, traceparent: String) -> Result<(), LlmError> {
+        if !traceparent.bytes().all(|byte| byte.is_ascii_graphic()) {
+            return Err(LlmError::InvalidRequest {
+                message: "Native traceparent must be a visible ASCII header value".into(),
+            });
+        }
+        self.native_traceparent = (!traceparent.is_empty()).then_some(traceparent);
+        Ok(())
+    }
     pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
+        if self
+            .mutable_body_baseline
+            .as_ref()
+            .is_some_and(|baseline| baseline != &self.call.prepared.http.body)
+        {
+            // `request_mut` exposes the raw byte image. If the caller changed
+            // it, the old semantic value and UTF-16 map no longer describe the
+            // request. Re-parse the new JSON body at policy application time,
+            // and require callers that need exact lone units to use the typed
+            // `set_json_body` API with a fresh complete override map.
+            self.semantic_body = None;
+            self.request_json_string_overrides.clear();
+            self.message_json_string_overrides.clear();
+            self.raw_body_set = true;
+            self.auth_body_policy_applied = false;
+        }
+        self.mutable_body_baseline = None;
+        if !self.raw_body_set
+            && self.semantic_body.is_none()
+            && !self.request_json_string_overrides.is_empty()
+        {
+            let body: serde_json::Value = serde_json::from_slice(&self.call.prepared.http.body)
+                .map_err(|error| LlmError::InvalidRequest {
+                    message: format!(
+                        "prepared request body is not JSON for UTF-16 text encoding: {error}"
+                    ),
+                })?;
+            let overrides = self.request_json_string_overrides.clone();
+            self.set_json_body(body, &overrides)?;
+        }
+        self.apply_current_request_body_auth_policy()?;
+        if matches!(self.call.mode, RequestMode::Complete | RequestMode::Stream) {
+            if let Some(facts) = self.call.native_anthropic_request_header_facts {
+                crate::providers::response_headers::ensure_native_client_request_id(
+                    &mut self.call.prepared.http.headers,
+                    facts,
+                    crate::providers::response_headers::NativeRequestIdStage::PerAttempt,
+                )?;
+                if let Some(traceparent) = self.native_traceparent.as_deref() {
+                    let _ = crate::providers::response_headers::ensure_native_traceparent(
+                        &mut self.call.prepared.http.headers,
+                        traceparent,
+                        facts,
+                        crate::providers::response_headers::native_traceparent_opt_in_from_environment(),
+                    );
+                }
+            }
+        }
         self.call
             .prepared
             .backend
@@ -287,6 +533,49 @@ impl RequestDraft {
         }
         crate::runtime::Deadline::at(self.call.deadline).remaining()?;
         Ok(self.call)
+    }
+}
+
+fn request_client_id(headers: &[(String, String)]) -> Option<&str> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("x-client-request-id"))
+        .map(|(_, value)| value.as_str())
+}
+
+#[cfg(test)]
+mod request_body_policy_tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_body_policy_is_generation_only() {
+        use crate::protocol::{AuthStrategy, ProtocolFamily};
+
+        assert!(chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::Complete
+        ));
+        assert!(chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::Stream
+        ));
+        assert!(!chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::CountTokens
+        ));
+        assert!(!chatgpt_body_policy_applies(
+            AuthStrategy::Bearer,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::Complete
+        ));
+        assert!(!chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiChat,
+            RequestMode::Complete
+        ));
     }
 }
 
@@ -415,6 +704,11 @@ impl PreparedCall {
     pub fn request(&self) -> &HttpRequest {
         &self.prepared.http
     }
+    /// The client request ID on this exact selected wire request, if one was
+    /// supplied or generated by the SDK's native route policy.
+    pub fn client_request_id(&self) -> Option<&str> {
+        request_client_id(&self.prepared.http.headers)
+    }
     /// Frozen connection and pricing configuration, unaffected by later edits.
     pub fn profile(&self) -> &ProviderProfile {
         &self.profile
@@ -457,6 +751,13 @@ impl PreparedCall {
         // Validate the deadline before marking a physical attempt dispatched.
         crate::runtime::Deadline::at(self.deadline).remaining()?;
         on_dispatch()?;
+        if let Some(facts) = self.native_anthropic_request_header_facts {
+            crate::providers::response_headers::ensure_native_client_request_id(
+                &mut self.prepared.http.headers,
+                facts,
+                crate::providers::response_headers::NativeRequestIdStage::FetchFallback,
+            )?;
+        }
         let response = HttpExecutor::new(transport)
             .with_deadline(crate::runtime::Deadline::at(self.deadline))
             .send(self.prepared.http.clone())
@@ -475,6 +776,10 @@ pub struct ReceivedCall {
     response: StreamResponse,
 }
 impl ReceivedCall {
+    /// Client ID associated with the outgoing request after both SDK stages.
+    pub fn client_request_id(&self) -> Option<&str> {
+        self.call.client_request_id()
+    }
     pub fn status(&self) -> u16 {
         self.response.status
     }
@@ -567,6 +872,10 @@ pub struct CollectedResponse {
     inference: InferenceReport,
 }
 impl CollectedResponse {
+    /// Client ID associated with the outgoing request after both SDK stages.
+    pub fn client_request_id(&self) -> Option<&str> {
+        self.call.client_request_id()
+    }
     pub fn pricing_snapshot(&self) -> super::FrozenPricing {
         self.call.pricing_snapshot()
     }
@@ -584,6 +893,20 @@ impl CollectedResponse {
     }
     pub fn model(&self) -> &ModelProfile {
         &self.call.model
+    }
+    /// Anthropic server-fallback facts extracted independently of assistant
+    /// content decoding. Usage iterations remain available if malformed
+    /// content makes [`Self::decode`] fail.
+    pub fn anthropic_fallback(
+        &self,
+    ) -> Option<crate::providers::anthropic::fallback_response::FallbackResponse> {
+        if self.call.profile.protocol != ProtocolFamily::AnthropicMessages
+            || !(200..300).contains(&self.response.status)
+        {
+            return None;
+        }
+        let body: serde_json::Value = serde_json::from_slice(&self.response.body).ok()?;
+        crate::providers::anthropic::fallback_response::from_nonstream_body(&body)
     }
     /// Decode an exact count response without interpreting it as a completion.
     pub fn decode_token_count(&self) -> Result<u64, LlmError> {

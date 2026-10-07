@@ -59,6 +59,12 @@ pub enum LlmError {
         classification: LlmErrorKind,
         retry_after: Option<Duration>,
     },
+    /// A provider's typed `timeout_error`, distinct from a local transport timer.
+    #[error("provider timeout: {message}")]
+    ProviderTimeout {
+        message: String,
+        status: Option<u16>,
+    },
     #[error("provider overloaded: {message}")]
     Overloaded { message: String },
     #[error("transport error: {message}")]
@@ -99,6 +105,7 @@ pub enum LlmErrorKind {
     RequestTooLarge,
     ModelUnavailable,
     ProviderInternal,
+    ProviderTimeout,
     Overloaded,
     Transport,
     TransportTimeout,
@@ -111,7 +118,7 @@ pub enum LlmErrorKind {
 }
 
 impl LlmErrorKind {
-    pub const ALL: [LlmErrorKind; 18] = [
+    pub const ALL: [LlmErrorKind; 19] = [
         LlmErrorKind::Authentication,
         LlmErrorKind::PermissionDenied,
         LlmErrorKind::InvalidRequest,
@@ -121,6 +128,7 @@ impl LlmErrorKind {
         LlmErrorKind::RequestTooLarge,
         LlmErrorKind::ModelUnavailable,
         LlmErrorKind::ProviderInternal,
+        LlmErrorKind::ProviderTimeout,
         LlmErrorKind::Overloaded,
         LlmErrorKind::Transport,
         LlmErrorKind::TransportTimeout,
@@ -146,6 +154,7 @@ impl LlmError {
             LlmError::ModelUnavailable { .. } => LlmErrorKind::ModelUnavailable,
             LlmError::ProviderInternal { .. } => LlmErrorKind::ProviderInternal,
             LlmError::ProviderResponse { classification, .. } => *classification,
+            LlmError::ProviderTimeout { .. } => LlmErrorKind::ProviderTimeout,
             LlmError::Overloaded { .. } => LlmErrorKind::Overloaded,
             LlmError::Transport { .. } => LlmErrorKind::Transport,
             LlmError::TransportTimeout { .. } => LlmErrorKind::TransportTimeout,
@@ -294,6 +303,11 @@ pub enum StreamEvent {
         block: usize,
         value: super::NativeExtension,
     },
+    /// SDK-decoded provider control data, never replayable content.
+    NativeControl {
+        protocol: ProtocolFamily,
+        control: super::NativeExtension,
+    },
     /// The provider completed this output block.
     BlockEnd {
         block: usize,
@@ -334,6 +348,14 @@ pub enum StreamEvent {
     TextDelta {
         block: usize,
         text: String,
+    },
+    /// Text delta decoded from a provider JSON string containing unpaired
+    /// JavaScript UTF-16 units. Exact units must survive block accumulation.
+    TextDeltaJsUtf16 {
+        block: usize,
+        text: String,
+        #[serde(skip)]
+        utf16_code_units: Vec<u16>,
     },
     ReasoningDelta {
         block: usize,

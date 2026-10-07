@@ -63,6 +63,7 @@ fn request() -> ChatRequest {
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
                 thought_signature: None,
+                citations: None,
             }],
         }],
         tools: vec![],
@@ -99,6 +100,7 @@ fn single_text_and_multimodal_assistant_keep_their_wire_content() {
             ContentBlock::Text {
                 text: "see".into(),
                 thought_signature: None,
+                citations: None,
             },
             ContentBlock::Image {
                 source: ImageSource::Url {
@@ -256,7 +258,7 @@ fn a_tool_result_becomes_its_own_message() {
         content: vec![ContentBlock::ToolResult {
             tool_use_id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             content: "contents".to_owned(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         }],

@@ -331,7 +331,9 @@ fn encode_message<'a>(
     // A single text block is the usual chat shape. It needs neither content
     // part objects nor the general tool/reasoning partitioning below.
     if let [block] = m.content.as_slice() {
-        if let ContentBlock::Text { text, .. } = wire.block(block) {
+        if let ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } =
+            wire.block(block)
+        {
             let position = CachePosition::Message {
                 index: message_index,
                 block: 0,
@@ -411,7 +413,7 @@ fn encode_message<'a>(
             // Pre-scanned because the envelope describes the whole message,
             // including tool calls which may precede it in the block sequence.
             ContentBlock::ProviderContent { .. } => {}
-            ContentBlock::Text { text, .. } => {
+            ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } => {
                 parts.push(
                     WireValue::from(json!({"type":"text"})).with("text", WireValue::text(text)),
                 );

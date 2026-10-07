@@ -53,6 +53,8 @@ struct Tool {
 #[derive(Debug, Clone, Default)]
 struct Block {
     text: Option<String>,
+    utf16_code_units: Option<Vec<u16>>,
+    citations: Option<Option<Value>>,
     thinking: Option<String>,
     signature: Option<String>,
     tool: Option<Tool>,
@@ -93,9 +95,18 @@ impl Block {
                 signature: self.signature.clone(),
             });
         }
-        self.text.as_ref().map(|text| ContentBlock::Text {
-            text: text.clone(),
-            thought_signature: self.signature.clone(),
+        self.text.as_ref().map(|text| match &self.utf16_code_units {
+            Some(utf16_code_units) => ContentBlock::TextJsUtf16 {
+                text: text.clone(),
+                utf16_code_units: utf16_code_units.clone(),
+                thought_signature: self.signature.clone(),
+                citations: self.citations.clone(),
+            },
+            None => ContentBlock::Text {
+                text: text.clone(),
+                thought_signature: self.signature.clone(),
+                citations: self.citations.clone(),
+            },
         })
     }
 }
@@ -105,6 +116,7 @@ impl Block {
 #[derive(Debug, Default)]
 pub struct StreamAccumulator {
     blocks: BTreeMap<usize, Block>,
+    completed_order: Vec<usize>,
     connectors: crate::providers::anthropic::ConnectorTextAccumulator,
     events: Vec<StreamEvent>,
     model: String,
@@ -116,6 +128,43 @@ pub struct StreamAccumulator {
     file_search: Option<FileSearchResult>,
 }
 impl StreamAccumulator {
+    /// Completed content in block-completion order, which is the order used by
+    /// the Anthropic server-fallback retention projection.
+    pub fn completed_blocks(&self) -> Vec<(usize, ContentBlock)> {
+        self.completed_order
+            .iter()
+            .filter_map(|&index| {
+                self.blocks
+                    .get(&index)?
+                    .content(false, false)
+                    .map(|content| (index, content))
+            })
+            .collect()
+    }
+    /// Set the selected response model after a host admits a native fallback
+    /// start. SDK observation alone deliberately does not change this model.
+    pub fn set_response_model(&mut self, model: &str) {
+        self.model = model.to_owned();
+    }
+
+    /// Update the response identifier after a host admits a native fallback
+    /// start. A missing identifier should not call this method, preserving the
+    /// last observed response id.
+    pub fn set_response_id(&mut self, response_id: &str) {
+        self.response_id = Some(ResponseId::new(response_id));
+    }
+
+    /// Apply an already-admitted server-fallback content projection.
+    pub fn apply_server_fallback(
+        &mut self,
+        event: &crate::providers::anthropic::fallback_response::ServerFallbackEvent,
+    ) {
+        self.set_response_model(&event.to_model);
+        self.blocks
+            .retain(|index, _| !event.discarded_blocks.contains(index));
+        self.completed_order
+            .retain(|index| !event.discarded_blocks.contains(index));
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -126,13 +175,36 @@ impl StreamAccumulator {
                 self.model.clone_from(model);
                 self.response_id.clone_from(response_id);
             }
-            StreamEvent::TextDelta { block, text } => self
-                .blocks
-                .entry(*block)
-                .or_default()
-                .text
-                .get_or_insert_default()
-                .push_str(text),
+            StreamEvent::TextDelta { block, text } => {
+                let block = self.blocks.entry(*block).or_default();
+                if let Some(units) = &mut block.utf16_code_units {
+                    units.extend(text.encode_utf16());
+                    block.text = Some(String::from_utf16_lossy(units));
+                } else {
+                    block.text.get_or_insert_default().push_str(text);
+                }
+            }
+            StreamEvent::TextDeltaJsUtf16 {
+                block,
+                text,
+                utf16_code_units,
+            } => {
+                let block = self.blocks.entry(*block).or_default();
+                if block.utf16_code_units.is_none() {
+                    block.utf16_code_units = Some(
+                        block
+                            .text
+                            .take()
+                            .unwrap_or_default()
+                            .encode_utf16()
+                            .collect(),
+                    );
+                }
+                let units = block.utf16_code_units.as_mut().expect("initialized above");
+                units.extend(utf16_code_units);
+                block.text = Some(String::from_utf16_lossy(units));
+                let _ = text;
+            }
             StreamEvent::ReasoningDelta { block, text } => self
                 .blocks
                 .entry(*block)
@@ -163,11 +235,27 @@ impl StreamAccumulator {
                 protocol,
                 value,
             } => {
-                self.blocks.entry(*block).or_default().native =
-                    Some(ContentBlock::ProviderContent {
+                let current = self.blocks.entry(*block).or_default();
+                if *protocol == crate::protocol::ProtocolFamily::AnthropicMessages
+                    && value.get("type").and_then(Value::as_str) == Some("text")
+                    && crate::codecs::anthropic::decode::has_only_known_text_fields(value)
+                {
+                    if let Some(text) = value.get("text").and_then(Value::as_str) {
+                        current.text = Some(text.to_owned());
+                    }
+                    current.citations = value.get("citations").map(|citations| {
+                        if citations.is_null() {
+                            None
+                        } else {
+                            Some(citations.clone())
+                        }
+                    });
+                } else {
+                    current.native = Some(ContentBlock::ProviderContent {
                         protocol: *protocol,
                         value: value.clone(),
-                    })
+                    });
+                }
             }
             StreamEvent::ToolCallDelta {
                 block,
@@ -208,7 +296,12 @@ impl StreamAccumulator {
                 }
                 tool.arguments.push_str(arguments_fragment);
             }
-            StreamEvent::BlockEnd { block } => self.blocks.entry(*block).or_default().ended = true,
+            StreamEvent::BlockEnd { block } => {
+                self.blocks.entry(*block).or_default().ended = true;
+                if !self.completed_order.contains(block) {
+                    self.completed_order.push(*block);
+                }
+            }
             StreamEvent::Inference { report } => self.inference.clone_from(report),
             StreamEvent::WebSearch { result } => {
                 let current = self.web_search.get_or_insert_default();
@@ -239,10 +332,15 @@ impl StreamAccumulator {
                         let block = self.blocks.entry(index).or_default();
                         block.native = Some(native);
                         block.ended = true;
+                        if !self.completed_order.contains(&index) {
+                            self.completed_order.push(index);
+                        }
                     }
                 }
             }
-            StreamEvent::NativeDelta { .. } | StreamEvent::ProviderEvent { .. } => {}
+            StreamEvent::NativeDelta { .. }
+            | StreamEvent::ProviderEvent { .. }
+            | StreamEvent::NativeControl { .. } => {}
         }
         self.events.push(event.clone());
     }
@@ -448,6 +546,9 @@ impl ModelStream {
         assembly
             .response
             .set_anthropic_stop_details(self.anthropic_stop_details().cloned());
+        assembly
+            .response
+            .set_anthropic_fallback(self.anthropic_fallback().cloned());
         result
     }
 }

@@ -308,7 +308,7 @@ impl FailoverTriggers {
         match error.kind() {
             LlmErrorKind::RateLimited | LlmErrorKind::QuotaExceeded => self.rate_limit,
             LlmErrorKind::Overloaded => self.overloaded,
-            LlmErrorKind::ProviderInternal => self.server_error,
+            LlmErrorKind::ProviderInternal | LlmErrorKind::ProviderTimeout => self.server_error,
             LlmErrorKind::Transport | LlmErrorKind::TransportTimeout => self.network,
             LlmErrorKind::Authentication | LlmErrorKind::PermissionDenied => self.auth,
             _ => false,
@@ -602,6 +602,10 @@ pub struct TokenPricing {
     pub cache_write_per_million: Option<f64>,
     #[serde(default)]
     pub reasoning_per_million: Option<f64>,
+    /// Price in `currency` for one provider-hosted web search request.
+    /// Absent means unknown, not free.
+    #[serde(default)]
+    pub web_search_per_request: Option<f64>,
     /// Where these numbers came from, so a stale estimate can be traced.
     #[serde(default)]
     pub source: Option<String>,
@@ -636,6 +640,7 @@ impl TokenPricing {
                 cache_write_per_million: self.cache_write_per_million,
                 cache_write_1h_per_million: self.cache_write_1h_per_million,
                 reasoning_per_million: self.reasoning_per_million,
+                web_search_per_request: self.web_search_per_request,
             },
             apply_peak_schedule: false,
             ..Default::default()

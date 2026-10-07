@@ -779,7 +779,7 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_programmatic"),
             content: "42".into(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         }],
@@ -873,7 +873,7 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_programmatic"),
             content: "42".into(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         }],

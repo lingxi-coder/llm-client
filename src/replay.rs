@@ -3,6 +3,7 @@
 //! Native state and signatures belong to their wire family. Inspect a decision
 //! first, or opt in to normalization; the default policy never drops content.
 use crate::protocol::{ContentBlock, LlmError, ProtocolFamily};
+use serde_json::Value;
 
 /// Hosting adapters share their underlying wire's replay representation.
 pub const fn native_family(family: ProtocolFamily) -> ProtocolFamily {
@@ -88,7 +89,16 @@ impl ReplayContext {
                 use crate::providers::openai::computer::{
                     OpenAiComputerCall, OpenAiComputerCallOutput,
                 };
-                if value.is::<OpenAiComputerCall>() {
+                if self.target == ProtocolFamily::GeminiInteractions
+                    && !foreign
+                    && matches!(
+                        value.format(),
+                        crate::providers::google::computer::CALL_FORMAT
+                            | crate::providers::google::computer::RESULT_FORMAT
+                    )
+                {
+                    ReplayDecision::Compatible(block.clone())
+                } else if value.is::<OpenAiComputerCall>() {
                     incompatible(None, "computer calls continue through their response reference and paired output")
                 } else if self.target == ProtocolFamily::OpenAiResponses
                     && value.is::<OpenAiComputerCallOutput>()
@@ -120,6 +130,7 @@ impl ReplayContext {
                         value["text"].as_str().map(|text| ContentBlock::Text {
                             text: text.into(),
                             thought_signature: None,
+                            citations: None,
                         })
                     } else if native_family(*protocol) == ProtocolFamily::AnthropicMessages
                         && value["type"] == "tool_result"
@@ -136,7 +147,7 @@ impl ReplayContext {
                                         .map(str::to_owned)
                                         .unwrap_or_else(|| content.to_string()),
                                     blocks: content.as_array().cloned(),
-                                    is_error: value["is_error"].as_bool().unwrap_or(false),
+                                    is_error: value.get("is_error").and_then(Value::as_bool),
                                     toolset_name: None,
                                 }
                             })
@@ -186,11 +197,53 @@ impl ReplayContext {
             }
             ContentBlock::Text {
                 text,
+                citations: Some(_),
+                ..
+            } if foreign || self.target != ProtocolFamily::AnthropicMessages => incompatible(
+                Some(ContentBlock::Text {
+                    text: text.clone(),
+                    thought_signature: None,
+                    citations: None,
+                }),
+                "text citations field presence belongs to Anthropic Messages",
+            ),
+            ContentBlock::TextJsUtf16 {
+                text,
+                utf16_code_units,
+                citations: Some(_),
+                thought_signature,
+            } if foreign || self.target != ProtocolFamily::AnthropicMessages => incompatible(
+                Some(ContentBlock::TextJsUtf16 {
+                    text: text.clone(),
+                    utf16_code_units: utf16_code_units.clone(),
+                    thought_signature: thought_signature.clone(),
+                    citations: None,
+                }),
+                "text citations field presence belongs to Anthropic Messages",
+            ),
+            ContentBlock::Text {
+                text,
                 thought_signature: Some(_),
+                citations,
             } if foreign || self.target != ProtocolFamily::GeminiGenerateContent => incompatible(
                 Some(ContentBlock::Text {
                     text: text.clone(),
                     thought_signature: None,
+                    citations: citations.clone(),
+                }),
+                "text thought signature belongs to a different protocol family",
+            ),
+            ContentBlock::TextJsUtf16 {
+                text,
+                utf16_code_units,
+                thought_signature: Some(_),
+                citations,
+            } if foreign || self.target != ProtocolFamily::GeminiGenerateContent => incompatible(
+                Some(ContentBlock::TextJsUtf16 {
+                    text: text.clone(),
+                    utf16_code_units: utf16_code_units.clone(),
+                    thought_signature: None,
+                    citations: citations.clone(),
                 }),
                 "text thought signature belongs to a different protocol family",
             ),
@@ -347,8 +400,15 @@ pub fn has_replay_metadata(block: &ContentBlock) -> bool {
     }
     match block {
         ContentBlock::Text {
-            thought_signature, ..
-        } => thought_signature.is_some(),
+            thought_signature,
+            citations,
+            ..
+        }
+        | ContentBlock::TextJsUtf16 {
+            thought_signature,
+            citations,
+            ..
+        } => thought_signature.is_some() || citations.is_some(),
         ContentBlock::ToolUse {
             thought_signature,
             provider_id,
@@ -413,9 +473,34 @@ mod tests {
                 .unwrap(),
             Some(ContentBlock::Text {
                 text: "answer".into(),
-                thought_signature: None
+                thought_signature: None,
+                citations: None,
             })
         );
+    }
+
+    #[test]
+    fn nullable_citations_survive_native_replay_without_nonempty_citation_sidecar() {
+        for citations in [Some(None), Some(Some(json!([])))] {
+            let block = ContentBlock::Text {
+                text: "answer".into(),
+                thought_signature: None,
+                citations,
+            };
+            assert!(has_replay_metadata(&block));
+            assert!(serde_json::to_value(&block)
+                .unwrap()
+                .get("citations")
+                .is_some());
+            let context = ReplayContext::for_message(
+                std::slice::from_ref(&block),
+                ProtocolFamily::AnthropicMessages,
+            );
+            assert!(matches!(
+                context.decision(&block, None),
+                ReplayDecision::Compatible(ref preserved) if preserved == &block
+            ));
+        }
     }
 
     #[test]
@@ -429,7 +514,7 @@ mod tests {
             .normalize(&block, None, ReplayPolicy::Reject)
             .is_err());
         assert!(
-            matches!(context.normalize(&block, None, ReplayPolicy::DropIncompatible).unwrap(), Some(ContentBlock::ToolResult { tool_use_id, blocks: Some(blocks), is_error:true, toolset_name:None, .. }) if tool_use_id.as_str() == "id" && blocks == vec![json!({"type":"text","text":"answer"})])
+            matches!(context.normalize(&block, None, ReplayPolicy::DropIncompatible).unwrap(), Some(ContentBlock::ToolResult { tool_use_id, blocks: Some(blocks), is_error:Some(true), toolset_name:None, .. }) if tool_use_id.as_str() == "id" && blocks == vec![json!({"type":"text","text":"answer"})])
         );
     }
 
@@ -497,6 +582,7 @@ mod tests {
         let text = ContentBlock::Text {
             text: "signed text".into(),
             thought_signature: Some("s".into()),
+            citations: None,
         };
         assert_eq!(
             ReplayContext::for_message(&[], ProtocolFamily::VertexGemini)

@@ -610,7 +610,7 @@ async fn custom_read_idle_timeout_ends_a_stalled_stream() {
 }
 
 #[tokio::test]
-async fn truncated_stream_is_reported_as_interrupted() {
+async fn truncated_stream_preserves_its_network_cause() {
     let (url, task) = server("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort".into()).await;
     let mut reply = HttpTransport::new()
         .unwrap()
@@ -624,7 +624,7 @@ async fn truncated_stream_is_reported_as_interrupted() {
             break;
         }
     }
-    assert!(matches!(error, Some(LlmError::StreamInterrupted { .. })));
+    assert!(matches!(error, Some(LlmError::Transport { .. })));
     task.await.unwrap();
 }
 
@@ -645,6 +645,7 @@ fn completion() -> ChatRequest {
             content: vec![ContentBlock::Text {
                 text: "hello".into(),
                 thought_signature: None,
+                citations: None,
             }],
         }],
         tools: vec![],

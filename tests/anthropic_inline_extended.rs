@@ -209,7 +209,7 @@ fn user_tool_result() -> ConversationMessage {
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_inline"),
             content: "found".into(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         }],

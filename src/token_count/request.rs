@@ -183,6 +183,12 @@ impl<'a> Accumulator<'a> {
             ContentBlock::Text {
                 text,
                 thought_signature,
+                ..
+            }
+            | ContentBlock::TextJsUtf16 {
+                text,
+                thought_signature,
+                ..
             } => {
                 self.add_text(text)?;
                 if thought_signature.is_some() {
@@ -422,13 +428,14 @@ mod tests {
                         ContentBlock::ToolResult {
                             tool_use_id: "call-1".into(),
                             content: "found a result".to_owned(),
-                            is_error: false,
+                            is_error: Some(false),
                             blocks: None,
                             toolset_name: None,
                         },
                         ContentBlock::Text {
                             text: "follow-up text".to_owned(),
                             thought_signature: Some("opaque-signature".to_owned()),
+                            citations: None,
                         },
                         ContentBlock::Image {
                             source: ImageSource::Url {

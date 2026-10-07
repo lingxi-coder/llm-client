@@ -70,6 +70,99 @@ fn decode_stream(frames: &[Value]) -> Result<Vec<StreamEvent>, LlmError> {
     Ok(events)
 }
 
+fn decode_stream_bytes(frames: &[&[u8]]) -> Result<Vec<StreamEvent>, LlmError> {
+    let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    let mut events = Vec::new();
+    for frame in frames {
+        events.extend(wire_api::decode_frame(&mut *decoder, frame)?);
+    }
+    events.extend(wire_api::finish(&mut *decoder)?);
+    Ok(events)
+}
+
+#[test]
+fn normal_and_sse_text_preserve_utf16_units_and_pair_across_frames() {
+    let response_bytes = br#"{"model":"claude-sonnet-4-5","stop_reason":"end_turn","content":[{"type":"text","text":"A\ud800B"},{"type":"text","text":"\udfff"},{"type":"text","text":"\ufffd\ud83d\ude00"}]}"#;
+    let decoded = AnthropicMessagesCodec
+        .decode_response(
+            &HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: response_bytes.as_slice().into(),
+            },
+            &wire_api::decode_context(),
+        )
+        .unwrap();
+    assert!(matches!(
+        &decoded.message.content[0],
+        ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }
+            if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+    ));
+    assert!(matches!(
+        &decoded.message.content[1],
+        ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }
+            if text == "�" && utf16_code_units == &[0xdfff]
+    ));
+    assert!(matches!(
+        &decoded.message.content[2],
+        ContentBlock::Text { text, .. } if text == "�😀"
+    ));
+
+    let events = decode_stream_bytes(&[
+        br#"{"type":"message_start","message":{"id":"m","model":"claude-sonnet-4-5"}}"#,
+        br#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"","citations":[]}}"#,
+        br#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\ud83d"}}"#,
+        br#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\ude00"}}"#,
+        br#"{"type":"content_block_stop","index":0}"#,
+        br#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}"#,
+        br#"{"type":"message_stop"}"#,
+    ])
+    .unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::TextDeltaJsUtf16 { utf16_code_units, .. } if utf16_code_units == &[0xd83d]
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::TextDeltaJsUtf16 { utf16_code_units, .. } if utf16_code_units == &[0xde00]
+    )));
+    let mut accumulator = lingxi_llm_client::stream_assembly::StreamAccumulator::new();
+    for event in &events {
+        accumulator.observe(event);
+    }
+    let completed = accumulator.finish().unwrap();
+    assert!(matches!(
+        completed.response.message.content.as_slice(),
+        [ContentBlock::TextJsUtf16 { text, utf16_code_units, citations: Some(Some(citations)), .. }]
+            if text == "😀" && utf16_code_units == &[0xd83d, 0xde00] && citations == &json!([])
+    ));
+}
+
+#[test]
+fn lone_units_in_opaque_native_text_are_rejected_instead_of_lost() {
+    let response = AnthropicMessagesCodec.decode_response(
+        &HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: br#"{"model":"claude-sonnet-4-5","content":[{"type":"text","text":"\ud800","future_field":true}]}"#.as_slice().into(),
+        },
+        &wire_api::decode_context(),
+    );
+    assert!(matches!(
+        response,
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
+
+    let streamed = decode_stream_bytes(&[
+        br#"{"type":"message_start","message":{"model":"claude-sonnet-4-5"}}"#,
+        br#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"\ud800","future_field":true}}"#,
+    ]);
+    assert!(matches!(
+        streamed,
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
+}
+
 fn provider_events(events: &[StreamEvent]) -> Vec<&Value> {
     events
         .iter()
@@ -124,14 +217,20 @@ fn native_server_results_and_future_blocks_decode_and_replay_unchanged() {
             &wire_api::decode_context(),
         )
         .unwrap();
-    let expected = native
+    let mut expected = native
         .iter()
+        .take(3)
         .cloned()
         .map(|value| ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
             value,
         })
         .collect::<Vec<_>>();
+    expected.push(ContentBlock::Text {
+        text: "A cited answer".into(),
+        thought_signature: None,
+        citations: Some(Some(native[3]["citations"].clone())),
+    });
     assert_eq!(response.message.content, expected);
 
     let encoded = encode(response.message.content).unwrap();
@@ -255,7 +354,9 @@ fn streamed_server_tool_input_is_assembled_without_becoming_a_client_tool_call()
     assert_eq!(observed[1], &empty_delta);
     assert_eq!(observed[2], &empty_delta);
     assert_eq!(observed[5]["type"], "content_block_stop");
-    assert_eq!(observed.len(), 6, "repeated frames remain repeated");
+    assert_eq!(observed.len(), 7, "repeated frames remain repeated");
+    assert_eq!(observed[6]["type"], "message_delta");
+    assert_eq!(observed[6]["delta"]["stop_reason"], "end_turn");
 }
 
 #[test]
@@ -315,7 +416,9 @@ fn streamed_mcp_tool_input_is_assembled_with_its_server_identity() {
     assert_eq!(observed[1], &empty_delta);
     assert_eq!(observed[2], &empty_delta);
     assert_eq!(observed[5]["type"], "content_block_stop");
-    assert_eq!(observed.len(), 6, "repeated input frames remain repeated");
+    assert_eq!(observed.len(), 7, "repeated input frames remain repeated");
+    assert_eq!(observed[6]["type"], "message_delta");
+    assert_eq!(observed[6]["delta"]["stop_reason"], "end_turn");
 }
 
 #[test]
@@ -726,8 +829,67 @@ fn citations_arriving_midstream_reconstruct_the_complete_text_block() {
             "content_block_delta",
             "content_block_delta",
             "content_block_delta",
-            "content_block_stop"
+            "content_block_stop",
+            "message_delta"
         ]
+    );
+}
+
+#[test]
+fn explicit_null_and_empty_citations_complete_as_native_text_blocks() {
+    for citations in [json!(null), json!([])] {
+        let events = decode_stream(&[
+            json!({"type":"message_start","message":{"model":"m"}}),
+            json!({"type":"content_block_start","index":25,"content_block":{
+                "type":"text","text":"answer","citations":citations
+            }}),
+            json!({"type":"content_block_delta","index":25,"delta":{"type":"text_delta","text":" tail"}}),
+            json!({"type":"content_block_stop","index":25}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
+            json!({"type":"message_stop"}),
+        ])
+        .unwrap();
+        assert_eq!(
+            events.iter().find_map(|event| match event {
+                StreamEvent::ProviderContent {
+                    block: 25, value, ..
+                } => Some(value),
+                _ => None,
+            }),
+            Some(&json!({
+                "type":"text",
+                "text":"answer tail",
+                "citations":citations
+            }))
+        );
+    }
+}
+
+#[test]
+fn unknown_top_level_text_fields_stay_in_one_complete_native_block() {
+    let events = decode_stream(&[
+        json!({"type":"message_start","message":{"model":"m"}}),
+        json!({"type":"content_block_start","index":26,"content_block":{
+            "type":"text","text":"answer","future_annotation":{"opaque":true}
+        }}),
+        json!({"type":"content_block_delta","index":26,"delta":{"type":"text_delta","text":" tail"}}),
+        json!({"type":"content_block_stop","index":26}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}),
+        json!({"type":"message_stop"}),
+    ])
+    .unwrap();
+    assert_eq!(
+        events.iter().find_map(|event| match event {
+            StreamEvent::ProviderContent {
+                block: 26, value, ..
+            } => Some(value),
+            _ => None,
+        }),
+        Some(&json!({
+            "type":"text",
+            "text":"answer tail",
+            "future_annotation":{"opaque":true}
+        }))
     );
 }
 

@@ -114,6 +114,7 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
     req.messages = vec![ConversationMessage::assistant(vec![ContentBlock::Text {
         text: "JSON".into(),
         thought_signature: None,
+        citations: None,
     }])];
     assert!(matches!(
         encode_model(&OpenAiChatCodec, &req, &p, "qwen3.8-flash"),
@@ -149,6 +150,7 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
         content: vec![ContentBlock::Text {
             text: "Respond with JSON please.".into(),
             thought_signature: None,
+            citations: None,
         }],
     }];
     assert!(encode_model(&OpenAiChatCodec, &req, &p, "qwen3.8-flash").is_ok());
@@ -179,6 +181,7 @@ fn deepseek_json_object_requires_json_in_system_or_user_text_on_first_party_chat
     req.messages = vec![ConversationMessage::assistant(vec![ContentBlock::Text {
         text: "JSON".into(),
         thought_signature: None,
+        citations: None,
     }])];
     assert!(matches!(
         encode_model(&OpenAiChatCodec, &req, &deepseek, "deepseek-flash"),
@@ -475,6 +478,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
     req.messages = vec![ConversationMessage::assistant(vec![ContentBlock::Text {
         text: "{".into(),
         thought_signature: None,
+        citations: None,
     }])];
     assert!(matches!(
         encode(&AnthropicMessagesCodec, &req, &p, false),
@@ -555,6 +559,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
         content: vec![ContentBlock::Text {
             text: r#"{"type":"document","citations":{"enabled":true}}"#.into(),
             thought_signature: None,
+            citations: None,
         }],
     }];
     assert!(encode(&AnthropicMessagesCodec, &req, &p, false).is_ok());
@@ -566,6 +571,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
     req.messages = vec![ConversationMessage::assistant(vec![ContentBlock::Text {
         text: "{".into(),
         thought_signature: None,
+        citations: None,
     }])];
     assert!(encode(&AnthropicMessagesCodec, &req, &gateway, false).is_ok());
 }

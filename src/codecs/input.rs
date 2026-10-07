@@ -118,6 +118,22 @@ impl CodecContext {
     pub fn native_options(&self) -> &[crate::protocol::NativeExtension] {
         &self.native_options
     }
+    /// Apply a request-local capability observation to this selected model.
+    /// The connection's wire vocabulary and every other capability are retained.
+    /// An unknown observation retains the configured catalog fact.
+    pub fn with_fast_capability(
+        mut self,
+        support: Option<crate::protocol::CapabilitySupport>,
+    ) -> Self {
+        if let Some(support) =
+            support.filter(|value| *value != crate::protocol::CapabilitySupport::Unknown)
+        {
+            for model in &mut self.profile.models {
+                model.info.features.fast = support;
+            }
+        }
+        self
+    }
     pub fn account_scope(&self) -> Option<&str> {
         self.account_scope.as_deref()
     }

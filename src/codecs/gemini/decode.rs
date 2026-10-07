@@ -4,6 +4,7 @@ use crate::protocol::{
     ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
     StopReason, ToolUseId, Usage,
 };
+use crate::response_json::{content_block, ResponseJson};
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -13,8 +14,10 @@ use std::time::Duration;
 static NEXT_LOCAL_CALL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatResponse, LlmError> {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+    let mut response_json = ResponseJson::parse(&resp.body, "Gemini response is not valid JSON")?;
+    let body = response_json.value.clone();
     if !(200..300).contains(&resp.status) {
+        response_json.finish()?;
         return Err(classify_error(resp.status, &body, retry_after(resp)));
     }
     if !body.get("candidates").is_some_and(Value::is_array)
@@ -40,12 +43,32 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
     let mut content = Vec::new();
     let mut saw_tool_call = false;
     let mut used_ids = provider_call_ids(parts);
-    for part in parts {
+    for (index, part) in parts.iter().enumerate() {
+        if part.get("functionCall").is_none()
+            && !part.get("executableCode").is_some()
+            && !part.get("codeExecutionResult").is_some()
+            && !part.get("inlineData").is_some()
+            && !part.get("toolCall").is_some()
+            && !part.get("toolResponse").is_some()
+            && part.get("thought").and_then(Value::as_bool) != Some(true)
+        {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                let text = response_json
+                    .take_text(&format!("/candidates/0/content/parts/{index}/text"), text)?;
+                let thought_signature = part
+                    .get("thoughtSignature")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                content.push(content_block(text, thought_signature, None));
+                continue;
+            }
+        }
         if let Some(block) = decode_part(part, protocol, &mut saw_tool_call, &mut used_ids) {
             content.push(block);
         }
     }
 
+    response_json.finish()?;
     Ok(ChatResponse {
         inference: Default::default(),
         response_cache: None,
@@ -155,6 +178,7 @@ fn decode_part(
     Some(ContentBlock::Text {
         text,
         thought_signature,
+        citations: None,
     })
 }
 
@@ -283,4 +307,27 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
     resp.header("retry-after")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
+}
+
+#[cfg(test)]
+mod utf16_response_tests {
+    use super::*;
+
+    #[test]
+    fn completed_gemini_text_retains_lone_units() {
+        let response = response(
+            &HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"modelVersion":"gemini-test","candidates":[{"content":{"parts":[{"text":"A\ud800B"}]},"finishReason":"STOP"}]}"#.as_slice().into(),
+            },
+            ProtocolFamily::GeminiGenerateContent,
+        )
+        .unwrap();
+        assert!(matches!(
+            response.message.content.as_slice(),
+            [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        ));
+    }
 }

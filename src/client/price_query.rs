@@ -151,6 +151,7 @@ fn base_rates(p: &TokenPricing) -> TokenRates {
         cache_write_per_million: p.cache_write_per_million,
         cache_write_1h_per_million: p.cache_write_1h_per_million,
         reasoning_per_million: p.reasoning_per_million,
+        web_search_per_request: p.web_search_per_request,
     }
 }
 fn specificity(r: &PriceRule) -> usize {
@@ -196,6 +197,7 @@ fn scaled(rates: &mut TokenRates, multiplier: &PriceMultiplier) {
             PriceBucket::CacheWrite => &mut rates.cache_write_per_million,
             PriceBucket::CacheWrite1h => &mut rates.cache_write_1h_per_million,
             PriceBucket::Reasoning => &mut rates.reasoning_per_million,
+            PriceBucket::WebSearchRequest => &mut rates.web_search_per_request,
         };
         *value = value.map(|v| v * multiplier.factor);
     }
@@ -335,6 +337,7 @@ pub(crate) fn quote(
                         cache_write_per_million: batch.cache_write_per_million,
                         cache_write_1h_per_million: batch.cache_write_1h_per_million,
                         reasoning_per_million: batch.reasoning_per_million,
+                        web_search_per_request: None,
                     },
                     true,
                 )
@@ -381,6 +384,7 @@ fn validate_rates(r: &TokenRates) -> Result<(), String> {
         r.cache_write_per_million,
         r.cache_write_1h_per_million,
         r.reasoning_per_million,
+        r.web_search_per_request,
     ]
     .into_iter()
     .flatten()
@@ -407,6 +411,7 @@ pub(crate) fn validate_prices(p: &TokenPricing) -> Result<(), String> {
             cache_write_per_million: batch.cache_write_per_million,
             cache_write_1h_per_million: batch.cache_write_1h_per_million,
             reasoning_per_million: batch.reasoning_per_million,
+            web_search_per_request: None,
         })?;
     }
     for (i, r) in p.rules.iter().enumerate() {

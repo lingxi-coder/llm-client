@@ -343,6 +343,12 @@ fn encode_part<'a>(
         ContentBlock::Text {
             text,
             thought_signature,
+            ..
+        }
+        | ContentBlock::TextJsUtf16 {
+            text,
+            thought_signature,
+            ..
         } => {
             let mut part = WireValue::from(json!({})).with("text", WireValue::text(text));
             if let Some(signature) = thought_signature {
@@ -395,7 +401,11 @@ fn encode_part<'a>(
             let mut response = WireValue::from(json!({"name": name})).with(
                 "response",
                 WireValue::from(json!({})).with(
-                    if *is_error { "error" } else { "result" },
+                    if is_error.unwrap_or(false) {
+                        "error"
+                    } else {
+                        "result"
+                    },
                     WireValue::text(content),
                 ),
             );

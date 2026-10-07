@@ -94,6 +94,7 @@ fn user(text: &str) -> ConversationMessage {
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
             thought_signature: None,
+            citations: None,
         }],
     }
 }
@@ -148,7 +149,7 @@ fn the_conversation_is_a_flat_list_of_items() {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
                 content: "contents".to_owned(),
-                is_error: false,
+                is_error: Some(false),
                 blocks: None,
                 toolset_name: None,
             }],
@@ -659,8 +660,10 @@ fn bedrock_puts_the_model_in_the_url_and_its_own_version_in_the_body() {
         "Bedrock selects streaming through the invoke URL, not the Anthropic body field"
     );
     assert!(
-        !http.headers.iter().any(|(k, _)| k == "anthropic-version"),
-        "the header is rejected here"
+        http.headers
+            .iter()
+            .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"),
+        "native hosted Messages retain the common SDK version header"
     );
 }
 
@@ -729,11 +732,10 @@ fn vertex_claude_uses_its_platform_version_in_both_request_modes() {
 
         assert_eq!(body(&http)["anthropic_version"], "vertex-2023-10-16");
         assert!(
-            !http
-                .headers
+            http.headers
                 .iter()
-                .any(|(name, _)| name == "anthropic-version"),
-            "Vertex receives anthropic_version in the body"
+                .any(|(name, value)| name == "anthropic-version" && value == "2023-06-01"),
+            "Vertex retains the common header alongside its body version"
         );
     }
 }
@@ -1277,7 +1279,7 @@ fn responses_reasoning_round_trips_before_tool_outputs() {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: ToolUseId::new("call_1"),
                     content: "result".into(),
-                    is_error: false,
+                    is_error: Some(false),
                     blocks: None,
                     toolset_name: None,
                 }],
@@ -1363,7 +1365,7 @@ fn responses_tool_results_preserve_structured_and_text_outputs() {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call_1"),
                 content: "fallback".into(),
-                is_error: false,
+                is_error: Some(false),
                 blocks: blocks.clone(),
                 toolset_name: None,
             }],
@@ -1384,4 +1386,59 @@ fn responses_tool_results_preserve_structured_and_text_outputs() {
             blocks.map_or(json!("fallback"), |v| json!(v))
         );
     }
+}
+
+#[test]
+fn provider_timeouts_retain_their_type_and_distinguish_http_from_sse_status() {
+    use lingxi_llm_client::protocol::LlmErrorKind;
+    let profile = profile("anthropic_messages", "https://api.anthropic.com");
+    let context = lingxi_llm_client::CodecContext::new(
+        &profile,
+        "m",
+        lingxi_llm_client::RequestMode::Complete,
+    );
+    let body =
+        json!({"type":"error","error":{"type":"timeout_error","message":"upstream deadline"}});
+    let response = lingxi_llm_client::HttpResponse {
+        status: 504,
+        headers: vec![],
+        body: serde_json::to_vec(&body).unwrap().into(),
+    };
+    let error = AnthropicMessagesCodec
+        .decode_response(&response, &context)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        LlmError::ProviderTimeout {
+            status: Some(504),
+            ..
+        }
+    ));
+    assert_eq!(error.kind(), LlmErrorKind::ProviderTimeout);
+    assert!(FailoverTriggers {
+        server_error: true,
+        ..Default::default()
+    }
+    .matches(&error));
+    assert!(!FailoverTriggers {
+        network: true,
+        ..Default::default()
+    }
+    .matches(&error));
+    let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    let error =
+        wire_api::decode_frame(&mut *decoder, &serde_json::to_vec(&body).unwrap()).unwrap_err();
+    assert!(matches!(
+        error,
+        LlmError::ProviderTimeout { status: None, .. }
+    ));
+    assert_eq!(error.kind(), LlmErrorKind::ProviderTimeout);
+    let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    assert!(matches!(
+        wire_api::decode_frame(
+            &mut *decoder,
+            br#"{"type":"error","error":{"type":"api_error","message":"server failure"}}"#
+        ),
+        Err(LlmError::ProviderInternal { .. })
+    ));
 }

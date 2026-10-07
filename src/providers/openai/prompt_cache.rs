@@ -232,7 +232,8 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                             .map(|content| (message.role, content))
                     })
                     .is_some_and(|(role, content)| match content {
-                        ContentBlock::Text { text, .. } => {
+                        ContentBlock::Text { text, .. }
+                        | ContentBlock::TextJsUtf16 { text, .. } => {
                             role != MessageRole::Assistant && !text.is_empty()
                         }
                         ContentBlock::ToolResult {

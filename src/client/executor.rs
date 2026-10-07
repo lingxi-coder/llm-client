@@ -72,6 +72,8 @@ fn validate_prepared_file_expirations(
 pub(super) struct PreparedAttempt {
     pub(super) inference: crate::protocol::InferenceReport,
     pub(super) http: HttpRequest,
+    pub(super) native_anthropic_request_header_facts:
+        Option<crate::providers::response_headers::NativeAnthropicRequestHeaderFacts>,
     pub(super) context: CodecContext,
     pub(super) codec: Arc<dyn WireCodec>,
     pub(super) backend: &'static dyn ChatBackend,
@@ -154,6 +156,85 @@ fn remaining_timeout(
                 .ok_or_else(deadline_elapsed)
         })
         .transpose()
+}
+
+fn apply_generation_body_policies(
+    request: &ChatRequest,
+    profile: &ProviderProfile,
+    options: &RequestOptions,
+    mode: RequestMode,
+    authenticate: bool,
+    http: &mut HttpRequest,
+) -> Result<(), LlmError> {
+    let apply_chatgpt_policy = authenticate
+        && super::prepared::chatgpt_body_policy_applies(profile.auth, profile.protocol, mode);
+    let apply_utf16_text = authenticate && request_has_text_utf16(request, options);
+    if !apply_chatgpt_policy && !apply_utf16_text {
+        return Ok(());
+    }
+
+    let mut body: serde_json::Value =
+        serde_json::from_slice(&http.body).map_err(|error| LlmError::InvalidRequest {
+            message: format!(
+                "encoded request body is not JSON for generation body policy: {error}"
+            ),
+        })?;
+    let mut changed = false;
+    if apply_chatgpt_policy && body.get("model").is_some() && body.get("input").is_some() {
+        crate::auth::header_policy::chatgpt_body(&mut body);
+        changed = true;
+    }
+
+    if apply_utf16_text {
+        if let Some(encoded) = encode_request_text_utf16_body(request, profile, options, &mut body)?
+        {
+            http.body = encoded;
+            return Ok(());
+        }
+    }
+    if changed {
+        http.body = serde_json::to_vec(&body)
+            .map_err(|error| LlmError::InvalidRequest {
+                message: format!("could not serialize final generation body: {error}"),
+            })?
+            .into();
+    }
+    Ok(())
+}
+
+fn request_has_text_utf16(request: &ChatRequest, options: &RequestOptions) -> bool {
+    !options.message_text_utf16_overrides.is_empty()
+        || request.messages.iter().any(|message| {
+            message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::TextJsUtf16 { .. }))
+        })
+}
+
+pub(super) fn encode_request_text_utf16_body(
+    request: &ChatRequest,
+    profile: &ProviderProfile,
+    options: &RequestOptions,
+    body: &mut serde_json::Value,
+) -> Result<Option<bytes::Bytes>, LlmError> {
+    if !request_has_text_utf16(request, options) {
+        return Ok(None);
+    }
+    let overrides = crate::exact_json::map_message_text_overrides(
+        request,
+        profile.protocol,
+        body,
+        &options.message_text_utf16_overrides,
+    )?;
+    let encoded = crate::exact_json::serialize_for_request(
+        body,
+        &overrides,
+        crate::exact_json::JsonEncoding::for_protocol(profile.protocol),
+        Some(profile.protocol),
+        options.anthropic_request_kind,
+    )?;
+    Ok(Some(bytes::Bytes::from(encoded)))
 }
 
 fn attempts<'a>(connections: &[Attempt<'a>], continuation: bool) -> Vec<Attempt<'a>> {
@@ -467,6 +548,11 @@ impl<'client> RequestExecutor<'client> {
         let backend = dispatch::chat(profile);
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_fast_capability(if profile.profile_name == route.profile_name {
+                opts.fast_capability
+            } else {
+                None
+            })
             .with_account_scope(opts.account_scope.as_deref())
             .with_native_options(&req.request.native_options)
             .with_file_scope(opts.file_account_scope.as_deref())
@@ -531,6 +617,11 @@ impl<'client> RequestExecutor<'client> {
             opts.file_account_scope.as_deref(),
         );
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_fast_capability(if profile.profile_name == route.profile_name {
+                opts.fast_capability
+            } else {
+                None
+            })
             .with_file_scope(attempt_opts.file_account_scope.as_deref())
             .with_account_scope(opts.account_scope.as_deref())
             .with_native_options(&req.request.native_options)
@@ -618,6 +709,19 @@ impl<'client> RequestExecutor<'client> {
         if let Some(finalizer) = &opts.finalizer {
             finalizer.finalize(&mut http, profile)?;
         }
+        apply_generation_body_policies(req.request, profile, opts, mode, authenticate, &mut http)?;
+        let native_anthropic_request_header_facts =
+            crate::providers::response_headers::NativeAnthropicRequestHeaderFacts::
+                from_provider_profile(profile, &http.url);
+        if authenticate && matches!(mode, RequestMode::Complete | RequestMode::Stream) {
+            if let Some(facts) = native_anthropic_request_header_facts {
+                crate::providers::response_headers::ensure_native_client_request_id(
+                    &mut http.headers,
+                    facts,
+                    crate::providers::response_headers::NativeRequestIdStage::PerAttempt,
+                )?;
+            }
+        }
         backend.validate_prepared_body(http.body.len(), endpoint)?;
 
         validate_prepared_file_expirations(req.request, &prepared.uses, self.clock.now())?;
@@ -647,6 +751,7 @@ impl<'client> RequestExecutor<'client> {
         Ok(PreparedAttempt {
             inference,
             http,
+            native_anthropic_request_header_facts,
             context,
             codec,
             backend,
@@ -670,7 +775,8 @@ impl<'client> RequestExecutor<'client> {
             .map_err(|e| AttemptFailure::new(e, None, Vec::new()))?;
         let PreparedAttempt {
             inference: mut requested,
-            http,
+            mut http,
+            native_anthropic_request_header_facts,
             context,
             codec,
             backend,
@@ -691,6 +797,14 @@ impl<'client> RequestExecutor<'client> {
         // model write, including uploaded references no longer in req.messages.
         validate_prepared_file_expirations(req.request, &files, self.clock.now())
             .map_err(|error| AttemptFailure::new(error, None, files.clone()))?;
+        if let Some(facts) = native_anthropic_request_header_facts {
+            crate::providers::response_headers::ensure_native_client_request_id(
+                &mut http.headers,
+                facts,
+                crate::providers::response_headers::NativeRequestIdStage::FetchFallback,
+            )
+            .map_err(|error| AttemptFailure::new(error, None, files.clone()))?;
+        }
         let response = HttpExecutor::new(self.http.as_ref())
             .with_deadline(crate::runtime::Deadline::at(deadline))
             .send_with_dispatch_report(http)
@@ -793,6 +907,7 @@ impl<'client> RequestExecutor<'client> {
         validate_request_file_expirations(req, self.clock.now())?;
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
+                .with_fast_capability(opts.fast_capability)
                 .with_account_scope(opts.account_scope.as_deref())
                 .with_file_scope(opts.file_account_scope.as_deref())
                 .with_file_validation_time(self.clock.now());

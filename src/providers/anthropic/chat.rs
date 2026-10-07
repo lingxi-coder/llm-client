@@ -183,6 +183,7 @@ pub(crate) struct StreamObservation {
     container: Option<crate::providers::anthropic::types::AnthropicContainerMetadata>,
     usage: Option<Value>,
     stop_details: Option<Value>,
+    fallback: super::fallback_response::FallbackResponse,
 }
 impl StreamObservation {
     pub(crate) fn new(context: &CodecContext) -> Self {
@@ -193,6 +194,25 @@ impl StreamObservation {
         }
     }
     pub(crate) fn observe(&mut self, event: &StreamEvent) {
+        if let StreamEvent::NativeControl {
+            protocol: ProtocolFamily::AnthropicMessages,
+            control,
+        } = event
+        {
+            if let Ok(super::fallback_response::FallbackControl::Boundary {
+                stop_reason,
+                iterations,
+                iterations_present,
+            }) = control.decode::<super::fallback_response::FallbackControl>()
+            {
+                self.fallback.observe_boundary(
+                    stop_reason.as_deref(),
+                    iterations,
+                    *iterations_present,
+                );
+            }
+            return;
+        }
         let StreamEvent::ProviderEvent {
             protocol: ProtocolFamily::AnthropicMessages,
             payload,
@@ -201,12 +221,21 @@ impl StreamObservation {
             return;
         };
         if payload["type"] == "message_delta" {
+            self.fallback.observe_stop_reason(
+                payload
+                    .pointer("/delta/stop_reason")
+                    .and_then(Value::as_str),
+            );
+            self.fallback.observe_usage(&payload["usage"]);
             if let Some(details) = payload
                 .get("delta")
                 .and_then(|delta| delta.get("stop_details"))
             {
                 self.stop_details = (!details.is_null()).then(|| details.clone());
             }
+        }
+        if super::fallback_response::control_index(payload).is_some() {
+            self.fallback.observe_block(&payload["content_block"]);
         }
         if !self.enabled {
             return;
@@ -228,6 +257,9 @@ impl StreamObservation {
     }
     pub(crate) fn stop_details(&self) -> Option<&Value> {
         self.stop_details.as_ref()
+    }
+    pub(crate) fn fallback(&self) -> Option<&super::fallback_response::FallbackResponse> {
+        self.fallback.observed().then_some(&self.fallback)
     }
     pub(crate) fn container(
         &self,

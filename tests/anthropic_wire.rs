@@ -319,6 +319,7 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
     let mut req = request(vec![ContentBlock::Text {
         text: "hi".to_owned(),
         thought_signature: None,
+        citations: None,
     }]);
     req.system = vec![
         lingxi_llm_client::protocol::SystemBlock {
@@ -609,7 +610,7 @@ fn a_tool_result_carries_its_error_flag() {
         &request(vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_1"),
             content: "no such file".to_owned(),
-            is_error: true,
+            is_error: Some(true),
             blocks: None,
             toolset_name: None,
         }]),
