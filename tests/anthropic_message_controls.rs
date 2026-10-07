@@ -58,6 +58,7 @@ fn scoped_reminder_stays_verbatim_after_later_user_turn() {
         .push(ConversationMessage::assistant(vec![ContentBlock::Text {
             text: "Answer".into(),
             thought_signature: None,
+            citations: None,
         }]));
     r.messages.push(ConversationMessage::user_text("Next"));
     let before_history = serde_json::to_value(&r.messages).unwrap();

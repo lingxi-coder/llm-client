@@ -388,6 +388,11 @@ impl super::ClientSnapshot {
 /// Useful to hosts that attach their own display metadata and retry policies.
 pub struct RoutingCatalog(super::snapshot::RuntimeSnapshot);
 impl RoutingCatalog {
+    /// Immutable selected profiles, including their model inference facts.
+    pub fn profiles(&self) -> &[ProviderProfile] {
+        &self.0.profiles
+    }
+
     /// Preserve an explicit host naming policy: exact native IDs precede UI
     /// qualifiers. The default resolver continues to reject ambiguous inputs.
     pub fn resolve_in_prefer_native(

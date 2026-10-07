@@ -12,6 +12,9 @@ pub struct TokenRates {
     pub cache_write_1h_per_million: Option<f64>,
     /// Absent means reasoning is included in output at the output rate.
     pub reasoning_per_million: Option<f64>,
+    /// Price in the stated currency for one provider-hosted web search.
+    /// Absent means unknown, not free.
+    pub web_search_per_request: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +144,7 @@ pub enum PriceBucket {
     #[serde(rename = "cache_write_1h")]
     CacheWrite1h,
     Reasoning,
+    WebSearchRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

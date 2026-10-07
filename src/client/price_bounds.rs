@@ -151,19 +151,20 @@ fn tier_bounds(
                 continue;
             };
             rates.reasoning_per_million = rates.reasoning_per_million.or(rates.output_per_million);
-            for rate in [
+            for value in [
                 &mut rates.input_per_million,
                 &mut rates.output_per_million,
                 &mut rates.cache_read_per_million,
                 &mut rates.cache_write_per_million,
                 &mut rates.cache_write_1h_per_million,
                 &mut rates.reasoning_per_million,
-            ] {
-                if let Some(value) = rate {
-                    *value *= factor;
-                    if !value.is_finite() || *value < 0.0 {
-                        return Err(unavailable("attempt rate bound exceeds the numeric range"));
-                    }
+            ]
+            .into_iter()
+            .flatten()
+            {
+                *value *= factor;
+                if !value.is_finite() || *value < 0.0 {
+                    return Err(unavailable("attempt rate bound exceeds the numeric range"));
                 }
             }
             upper = Some(match upper {
@@ -193,6 +194,7 @@ fn merge_bounds(a: TokenRates, b: TokenRates) -> TokenRates {
         cache_write_per_million: max(a.cache_write_per_million, b.cache_write_per_million),
         cache_write_1h_per_million: max(a.cache_write_1h_per_million, b.cache_write_1h_per_million),
         reasoning_per_million: max(a.reasoning_per_million, b.reasoning_per_million),
+        web_search_per_request: max(a.web_search_per_request, b.web_search_per_request),
     }
 }
 

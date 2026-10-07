@@ -45,6 +45,7 @@ fn request() -> ChatRequest {
             content: vec![ContentBlock::Text {
                 text: "Transcribe this clip".into(),
                 thought_signature: None,
+                citations: None,
             }],
         }],
         tools: vec![],

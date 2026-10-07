@@ -246,6 +246,41 @@ pub fn request<'a>(
     crate::providers::anthropic::mcp::apply_beta_header(req, profile, &mut headers);
     crate::providers::anthropic::conversation::apply_beta_header(req, profile, &mut headers);
 
+    let endpoint = crate::providers::openrouter::chat::messages_endpoint(profile)
+        .unwrap_or_else(|| format!("{}/v1/messages", profile.base_url.trim_end_matches('/')));
+    let mut endpoint = endpoint;
+    if opts.mode() == crate::RequestMode::CountTokens {
+        let mut parsed = url::Url::parse(&endpoint).map_err(|error| LlmError::InvalidRequest {
+            message: format!("Invalid Messages URL: {error}"),
+        })?;
+        parsed.set_path(&format!(
+            "{}/count_tokens",
+            parsed.path().trim_end_matches('/')
+        ));
+        endpoint = parsed.into();
+        for key in [
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "stream",
+            "stop_sequences",
+            "output_config",
+            "context_hint",
+        ] {
+            body.shift_remove(key);
+        }
+        let mut value = Value::Object(body);
+        let mut count_headers = headers.into_iter().collect();
+        crate::providers::anthropic::request_policy::normalize_message_parameters(
+            &mut value,
+            &mut count_headers,
+            &mut Default::default(),
+            &mut endpoint,
+            opts.mode(),
+        )?;
+        body = value.as_object().expect("Messages body").clone();
+        headers = count_headers.into_iter().collect();
+    }
     let mut body =
         WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages));
     if !req.tools.is_empty() {
@@ -265,23 +300,8 @@ pub fn request<'a>(
             WireValue::from(block).with("text", WireValue::text(&req.system[index].text))
         });
     }
-    let endpoint = crate::providers::openrouter::chat::messages_endpoint(profile)
-        .unwrap_or_else(|| format!("{}/v1/messages", profile.base_url.trim_end_matches('/')));
     let mut encoded = WireRequest::new(endpoint, headers, body);
-    if opts.mode() == crate::RequestMode::CountTokens {
-        encoded.http.url.push_str("/count_tokens");
-        for key in [
-            "max_tokens",
-            "temperature",
-            "top_p",
-            "stream",
-            "stop_sequences",
-            "output_config",
-            "context_hint",
-        ] {
-            encoded.body.remove(key);
-        }
-    }
+    encoded.json_encoding = crate::exact_json::JsonEncoding::JavaScript;
     Ok(encoded)
 }
 
@@ -332,6 +352,20 @@ fn encode_message<'a>(
     Ok(message)
 }
 
+fn encode_text_wire_block<'a>(text: &'a str, citations: &Option<Option<Value>>) -> WireValue<'a> {
+    let mut value = WireValue::from(json!({"type":"text"})).with("text", WireValue::text(text));
+    if let Some(citations) = citations {
+        value["citations"] = citations.clone().unwrap_or(Value::Null);
+    }
+    value
+}
+
+fn encode_optional_bool(block: &mut WireValue<'_>, field: &'static str, value: Option<bool>) {
+    if let Some(value) = value {
+        block[field] = Value::Bool(value);
+    }
+}
+
 fn encode_block<'a>(
     b: &'a ContentBlock,
     unsigned_thinking: bool,
@@ -353,8 +387,13 @@ fn encode_block<'a>(
             }
             return Ok(WireValue::borrowed(value));
         }
-        ContentBlock::Text { text, .. } => {
-            return Ok(WireValue::from(json!({"type": "text"})).with("text", WireValue::text(text)));
+        ContentBlock::Text {
+            text, citations, ..
+        }
+        | ContentBlock::TextJsUtf16 {
+            text, citations, ..
+        } => {
+            return Ok(encode_text_wire_block(text, citations));
         }
         ContentBlock::Thinking { text, signature } => {
             if signature.is_none() && unsigned_thinking {
@@ -411,9 +450,7 @@ fn encode_block<'a>(
                 "tool_use_id": tool_use_id,
             }))
             .with("content", content);
-            if *is_error {
-                v["is_error"] = Value::Bool(true);
-            }
+            encode_optional_bool(&mut v, "is_error", *is_error);
             if let Some(toolset_name) = toolset_name {
                 v["toolset_name"] = json!(toolset_name);
             }
@@ -601,4 +638,40 @@ fn inline<'a>(
         }
         value
     }))
+}
+
+#[cfg(test)]
+mod wire_presence_tests {
+    use super::*;
+
+    #[test]
+    fn text_citations_null_is_emitted_and_absence_stays_absent() {
+        let absent = encode_text_wire_block("answer", &None);
+        assert!(serde_json::to_value(absent)
+            .unwrap()
+            .get("citations")
+            .is_none());
+
+        let explicit_null = encode_text_wire_block("answer", &Some(None));
+        let explicit_null = serde_json::to_value(explicit_null).unwrap();
+        assert!(explicit_null.get("citations").is_some());
+        assert_eq!(explicit_null["citations"], Value::Null);
+    }
+
+    #[test]
+    fn tool_result_error_omission_and_false_are_distinct() {
+        let mut absent = WireValue::from(json!({"type":"tool_result"}));
+        encode_optional_bool(&mut absent, "is_error", None);
+        assert!(serde_json::to_value(absent)
+            .unwrap()
+            .get("is_error")
+            .is_none());
+
+        let mut explicit_false = WireValue::from(json!({"type":"tool_result"}));
+        encode_optional_bool(&mut explicit_false, "is_error", Some(false));
+        assert_eq!(
+            serde_json::to_value(explicit_false).unwrap()["is_error"],
+            false
+        );
+    }
 }

@@ -83,6 +83,7 @@ fn request(profile: &ProviderProfile, source: ProviderFileSource) -> ChatRequest
         ContentBlock::Text {
             text: "Summarize this file.".into(),
             thought_signature: None,
+            citations: None,
         },
         ContentBlock::Document {
             source: DocumentSource::ProviderFile { file: source },

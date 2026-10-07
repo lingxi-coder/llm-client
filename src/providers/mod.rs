@@ -10,6 +10,7 @@ pub mod minimax;
 pub mod openai;
 pub mod openrouter;
 pub mod qwen;
+pub mod response_headers;
 pub mod xai;
 pub mod zhipu;
 pub use anthropic::AnthropicClient;

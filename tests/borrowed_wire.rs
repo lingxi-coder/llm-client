@@ -81,7 +81,7 @@ fn text_tool_schema_results_media_and_additive_extras_keep_exact_wire_bytes() {
                 "messages":[
                     {"role":"user","content":[{"type":"text","text":TEXT},{"type":"image","source":{"type":"url","url":"https://test.invalid/image.png"}}]},
                     {"role":"assistant","content":[{"type":"text","text":"calling"},{"type":"tool_use","id":"call-1","name":"lookup","input":{"query":TEXT}}]},
-                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":TEXT}]}
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":TEXT,"is_error":false}]}
                 ],
             }),
         ),
@@ -160,7 +160,7 @@ fn cache_patches_preserve_borrowed_schema_system_and_structured_tool_results() {
     } = &mut req.messages[2].content[0]
     {
         *blocks = Some(vec![result.clone()]);
-        *is_error = true;
+        *is_error = Some(true);
     }
     req.prompt_cache.breakpoints = vec![
         CacheBreakpoint {

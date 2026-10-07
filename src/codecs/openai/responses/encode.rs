@@ -362,7 +362,7 @@ fn encode_message<'a>(
                 };
                 input.push(item);
             }
-            ContentBlock::Text { text, .. } => {
+            ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } => {
                 let part =
                     WireValue::from(json!({"type": text_part})).with("text", WireValue::text(text));
                 parts.push(crate::providers::openai::prompt_cache::mark_message_block(

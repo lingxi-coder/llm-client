@@ -1,0 +1,1333 @@
+{
+  "version": "2.1.287",
+  "native_sha256": "6eab8333fe2121553100d8f40bfada384a3e989b94f947e18ba6677a6fcb41ea",
+  "sourceByteRanges": [
+    {
+      "label": "Qg array predicate",
+      "start": 184196074,
+      "end": 184196113,
+      "sha256": "64f788a906c8014945c55702a01fbd3f765966140baa948d1c0e638ece405d1e"
+    },
+    {
+      "label": "ve native headers",
+      "start": 184222952,
+      "end": 184224049,
+      "sha256": "71dbdbd4f325cc85a712043b5c4fe6d9579d8583fe47020581376775212994f9"
+    },
+    {
+      "label": "beta Messages.create",
+      "start": 184295055,
+      "end": 184296167,
+      "sha256": "d57394095ec861afd1886d6bdc2a432f313a19e9044a2ab07b3cba30acade280"
+    }
+  ],
+  "scope": "Actual beta Messages.create and ve/MH headers with px identity, no attachments, model warnings/timeouts inactive. Default header precedence supplied as ve input; Node Headers builtin, not embedded Bun fetch; no countTokens, output_format conversion or signed/cloud transport acceptance.",
+  "cases": [
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": null
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": false
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "false",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": true
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "true",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": 0
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "0",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": 7
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "7",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": ""
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": " x "
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "x",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": "\r\n x \t"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "x",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": "x\ny"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Headers.append: \"x\ny\" is an invalid header value."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": "x\u0000y"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Headers.append: \"x\u0000y\" is an invalid header value."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": "💥"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Cannot convert argument to a ByteString because the character at index 0 has a value of 55357 which is greater than 255."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": [
+            "one",
+            "two"
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "one,two",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": [
+            "one",
+            null
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "one,",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": [
+            null,
+            "two"
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": ",two",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": [
+            "one",
+            ""
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "one,",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": []
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": {}
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "[object Object]",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "betas": {
+            "toString": null
+          }
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "h?.toString is not a function"
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": null
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": false
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "false",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": true
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "true",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": 0
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "0",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": 7
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "7",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": ""
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": " x "
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "x",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": "\r\n x \t"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "x",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": "x\ny"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Headers.append: \"x\ny\" is an invalid header value."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": "x\u0000y"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Headers.append: \"x\u0000y\" is an invalid header value."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": "💥"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Cannot convert argument to a ByteString because the character at index 0 has a value of 55357 which is greater than 255."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": [
+            "one",
+            "two"
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "one, two",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": [
+            "one",
+            null
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": [
+            null,
+            "two"
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "two",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": [
+            "one",
+            ""
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "one,",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": []
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": {}
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-user-profile-id": "[object Object]",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "user_profile_id": {
+            "toString": null
+          }
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Cannot convert object to primitive value"
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": null
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": false
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "false"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": true
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "true"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": 0
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "0"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": 7
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "7"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": ""
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": ""
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": " x "
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "x"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": "\r\n x \t"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "x"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": "x\ny"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Headers.append: \"x\ny\" is an invalid header value."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": "x\u0000y"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Headers.append: \"x\u0000y\" is an invalid header value."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": "💥"
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Cannot convert argument to a ByteString because the character at index 0 has a value of 55357 which is greater than 255."
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": [
+            "one",
+            "two"
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "one, two"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": [
+            "one",
+            null
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": [
+            null,
+            "two"
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "two"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": [
+            "one",
+            ""
+          ]
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "one,"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": []
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": {}
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": []
+        },
+        "headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "[object Object]"
+        }
+      }
+    },
+    {
+      "input": {
+        "body": {
+          "model": "claude-sonnet-4-6",
+          "max_tokens": 16,
+          "messages": [],
+          "workspace_id": {
+            "toString": null
+          }
+        },
+        "default_headers": {
+          "anthropic-beta": "default",
+          "anthropic-workspace-id": "old"
+        }
+      },
+      "expected": {
+        "error": "Cannot convert object to primitive value"
+      }
+    }
+  ]
+}

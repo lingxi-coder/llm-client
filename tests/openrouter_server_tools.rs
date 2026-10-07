@@ -536,7 +536,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new(id),
                 content: "Found one record.".into(),
-                is_error: false,
+                is_error: Some(false),
                 blocks: None,
                 toolset_name: None,
             }],
@@ -584,7 +584,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("tool_foundry"),
             content: "Found one record.".into(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         }],

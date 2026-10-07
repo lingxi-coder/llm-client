@@ -1,0 +1,479 @@
+{
+  "version": "2.1.288",
+  "native_sha256": "bbe93063f7a0879a1021b2891e5c9354e5b3b98433e32efe6750f7710afed750",
+  "sourceByteRanges": [
+    {
+      "label": "actual nonstream fallback parameter spread",
+      "start": 188968071,
+      "end": 188968088,
+      "sha256": "9b0ef7bce53b02087ec6df9eff3294684b49895fb363b46818e5fdb84372f11c"
+    }
+  ],
+  "scope": "Actual AWo final parameter spread and JavaScript serialization; valid object inputs. Full envelopes, cloud transforms, signing and physical dispatch excluded.",
+  "cases": [
+    {
+      "body": {
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6"
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "stream": false,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "stream": false,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": false
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": false
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "stream": true,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "stream": true,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": true
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": true
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "stream": null,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "stream": null,
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": null
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": null
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "stream": "extra",
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "stream": "extra",
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": "extra"
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": "extra"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "stream": {
+          "nested": true
+        },
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "stream": {
+          "nested": true
+        },
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": {
+          "nested": true
+        }
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": {
+          "nested": true
+        }
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "stream": [
+          1,
+          2
+        ],
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "stream": [
+          1,
+          2
+        ],
+        "model": "claude-sonnet-4-6",
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "max_tokens": 1000,
+        "extension": "retained"
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"stream\":false,\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"max_tokens\":1000,\"extension\":\"retained\"}"
+    },
+    {
+      "body": {
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": [
+          1,
+          2
+        ]
+      },
+      "expected_json": "{\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    },
+    {
+      "body": {
+        "0": 0,
+        "2": 2,
+        "extension": "retained",
+        "max_tokens": 1000,
+        "messages": [
+          {
+            "role": "user",
+            "content": "fixture"
+          }
+        ],
+        "model": "claude-sonnet-4-6",
+        "stream": [
+          1,
+          2
+        ]
+      },
+      "expected_json": "{\"0\":0,\"2\":2,\"extension\":\"retained\",\"max_tokens\":1000,\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}],\"model\":\"claude-sonnet-4-6\",\"stream\":false}"
+    }
+  ]
+}

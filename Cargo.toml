@@ -23,7 +23,7 @@ tokenizers-all = ["tokenizer-openai", "tokenizer-deepseek", "tokenizer-qwen", "t
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 jsonschema = { version = "0.46.3", default-features = false }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "raw_value"] }
 thiserror = "2"
 async-trait = "0.1"
 futures = "0.3"
@@ -43,6 +43,8 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"], optional = true }
 tiktoken-rs = { version = "0.12", optional = true }
 xz2 = { version = "0.1.7", features = ["static"], optional = true }
+ryu-js = "1.0.3"
+regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "time", "sync", "test-util"] }

@@ -11,6 +11,17 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Host-supplied Native Anthropic request kind, used only by SDK request
+    /// serialization policies that are specific to an exact request route.
+    pub anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
+    /// Exact text sidecars in canonical ChatRequest message/content
+    /// coordinates. The selected SDK codec remaps them to its encoded JSON
+    /// body schema before exposing the prepared request.
+    pub message_text_utf16_overrides: BTreeMap<String, Vec<u16>>,
+    /// Request-local Fast capability observed by the host for the selected
+    /// primary model. It overrides the catalog in validation and encoding,
+    /// without changing the shared client or another failover connection.
+    pub fast_capability: Option<crate::protocol::CapabilitySupport>,
     /// Request-local authentication supplied by an embedding host. Used only for
     /// the selected primary profile; never forwarded to fallback accounts.
     pub authenticator: Option<RequestAuthenticator>,

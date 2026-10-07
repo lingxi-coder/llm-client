@@ -349,6 +349,7 @@ impl WireCodec for FakeCodec {
                 content: vec![ContentBlock::Text {
                     text: "hi".to_owned(),
                     thought_signature: None,
+                    citations: None,
                 }],
             },
             stop_reason: StopReason::EndTurn,
@@ -583,6 +584,7 @@ fn request(model: &str) -> ChatRequest {
             content: vec![ContentBlock::Text {
                 text: "hi".to_owned(),
                 thought_signature: None,
+                citations: None,
             }],
         }],
         tools: vec![],

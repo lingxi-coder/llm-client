@@ -10,7 +10,12 @@ pub use crate::account;
 mod executor;
 mod frozen_pricing;
 mod live;
-pub use frozen_pricing::FrozenPricing;
+pub use frozen_pricing::{
+    resolve_anthropic_server_fallback_summary_model, AnthropicFallbackCostBuckets,
+    AnthropicFallbackCostCompleteness, AnthropicFallbackCostComponent,
+    AnthropicFallbackCostComponentKind, AnthropicFallbackCostQuote, AnthropicFallbackCostUsage,
+    FrozenPricing,
+};
 mod prepared;
 pub use prepared::{CollectedResponse, PreparedCall, ReceivedCall, RequestDraft};
 mod requests;

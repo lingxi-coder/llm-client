@@ -83,6 +83,7 @@ fn user(text: &str) -> ConversationMessage {
         content: vec![ContentBlock::Text {
             text: text.to_owned(),
             thought_signature: None,
+            citations: None,
         }],
     }
 }
@@ -124,6 +125,7 @@ fn the_assistants_role_on_this_wire_is_model() {
             content: vec![ContentBlock::Text {
                 text: "hello".to_owned(),
                 thought_signature: None,
+                citations: None,
             }],
         },
     ]);
@@ -186,7 +188,7 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
                 content: "contents".to_owned(),
-                is_error: false,
+                is_error: Some(false),
                 blocks: None,
                 toolset_name: None,
             }],
@@ -218,7 +220,7 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("orphan"),
             content: "x".to_owned(),
-            is_error: false,
+            is_error: Some(false),
             blocks: None,
             toolset_name: None,
         }],
@@ -508,7 +510,7 @@ fn azure_without_an_api_version_names_the_profile_rather_than_guessing() {
 }
 
 #[test]
-fn vertex_claude_moves_the_version_from_the_header_into_the_body() {
+fn vertex_claude_adds_its_body_version_and_retains_the_common_header() {
     let p = profile(
         "vertex_claude",
         "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
@@ -521,9 +523,10 @@ fn vertex_claude_moves_the_version_from_the_header_into_the_body() {
         .url
         .ends_with("/publishers/anthropic/models/wire-m:streamRawPredict"));
     assert!(
-        !http.headers.iter().any(|(k, _)| k == "anthropic-version"),
-        "Vertex reads the version from the body and rejects the request as \
-         missing it when it stays in the header"
+        http.headers
+            .iter()
+            .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01"),
+        "native Vertex adds its body version while retaining the common header"
     );
     assert_eq!(b["anthropic_version"], "vertex-2023-10-16");
     assert!(b.get("model").is_none(), "the model is in the URL");
@@ -625,7 +628,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
             .map(|id| ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
                 content: "ok".into(),
-                is_error: false,
+                is_error: Some(false),
                 blocks: None,
                 toolset_name: None,
             })

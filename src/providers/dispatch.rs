@@ -222,6 +222,11 @@ pub(crate) struct StreamObservation {
     anthropic: super::anthropic::chat::StreamObservation,
 }
 impl StreamObservation {
+    pub(crate) fn anthropic_fallback(
+        &self,
+    ) -> Option<&super::anthropic::fallback_response::FallbackResponse> {
+        self.anthropic.fallback()
+    }
     pub(crate) fn observe(&mut self, event: &StreamEvent) {
         self.anthropic.observe(event);
     }

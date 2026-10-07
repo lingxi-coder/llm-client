@@ -1,6 +1,6 @@
 use lingxi_llm_client::protocol::{
     CacheBreakpoint, CachePosition, CacheTtl, ChatRequest, ContentBlock, ConversationMessage,
-    MessageRole, ProtocolFamily, ProviderProfile,
+    MessageRole, ProtocolFamily, ProviderProfile, ToolUseId,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, CodecContext, EncodeRequest, RequestMode, WireCodec,
@@ -34,6 +34,7 @@ fn text(value: &str) -> ContentBlock {
     ContentBlock::Text {
         text: value.into(),
         thought_signature: None,
+        citations: None,
     }
 }
 fn request() -> ChatRequest {
@@ -56,6 +57,116 @@ fn definition(name: &str) -> Value {
 fn reference(kind: &str, name: &str) -> Value {
     json!({"type":kind,"tool":{"type":"tool_reference","name":name}})
 }
+fn presence_profile() -> ProviderProfile {
+    serde_json::from_value(json!({
+        "provider_id":"acme",
+        "profile_name":"acme",
+        "base_url":"https://api.acme.test",
+        "protocol":"anthropic_messages",
+        "auth":"none",
+        "models":[{"display_model":"claude-test","request_model":"claude-test","billing_model":"claude-test"}]
+    })).unwrap()
+}
+
+fn presence_context(profile: &ProviderProfile) -> CodecContext {
+    CodecContext::new(profile, "claude-test", RequestMode::Stream)
+}
+
+#[test]
+fn compact_native_presence_fixture_matches_exact_request_body_bytes() {
+    let mut req = request();
+    req.model = "claude-test".into();
+    req.max_tokens = Some(16);
+    req.messages = vec![
+        ConversationMessage::assistant(vec![ContentBlock::Text {
+            text: "accepted replacement".into(),
+            thought_signature: None,
+            citations: Some(None),
+        }]),
+        ConversationMessage {
+            native_options: Vec::new(),
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: ToolUseId::new("toolu_result"),
+                content: "accepted result".into(),
+                is_error: None,
+                blocks: None,
+                toolset_name: None,
+            }],
+        },
+    ];
+    let profile = presence_profile();
+    let context = presence_context(&profile);
+    let encoded = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&req), &context)
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&encoded.body).unwrap(),
+        r#"{"model":"claude-test","max_tokens":16,"messages":[{"role":"assistant","content":[{"type":"text","text":"accepted replacement","citations":null}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_result","content":"accepted result"}]}],"stream":true}"#
+    );
+}
+
+#[test]
+fn nullable_presence_survives_raw_codec_body_with_paired_tool_result() {
+    let mut req = request();
+    req.model = "claude-test".into();
+    req.max_tokens = Some(16);
+    req.messages = vec![
+        ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+            id: ToolUseId::new("toolu_presence"),
+            name: "Read".into(),
+            input: json!({}),
+            provider_id: None,
+            caller: None,
+            toolset_name: None,
+            thought_signature: None,
+        }]),
+        ConversationMessage {
+            native_options: Vec::new(),
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "plain".into(),
+                    thought_signature: None,
+                    citations: None,
+                },
+                ContentBlock::Text {
+                    text: "accepted Mod text".into(),
+                    thought_signature: None,
+                    citations: Some(None),
+                },
+                ContentBlock::Text {
+                    text: "empty citations".into(),
+                    thought_signature: None,
+                    citations: Some(Some(json!([]))),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: ToolUseId::new("toolu_presence"),
+                    content: "done".into(),
+                    is_error: None,
+                    blocks: None,
+                    toolset_name: None,
+                },
+            ],
+        },
+    ];
+    let profile = presence_profile();
+    let context = presence_context(&profile);
+    let encoded = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&req), &context)
+        .unwrap();
+    let body = std::str::from_utf8(&encoded.body).unwrap();
+    assert!(body.starts_with(r#"{"model":"claude-test","max_tokens":16,"messages":["#));
+    assert!(body.contains(r#""stream":true"#));
+    assert!(body.contains(r#"{"type":"text","text":"plain"}"#));
+    assert!(body.contains(r#"{"type":"text","text":"accepted Mod text","citations":null}"#));
+    assert!(body.contains(r#"{"type":"text","text":"empty citations","citations":[]}"#));
+    assert!(
+        body.contains(r#"{"type":"tool_result","tool_use_id":"toolu_presence","content":"done"}"#)
+    );
+    assert!(!body.contains(r#""content":"done","is_error"#));
+}
+
 #[test]
 fn plain_and_consecutive_system_messages_preserve_role_and_prefix() {
     let mut req = request();

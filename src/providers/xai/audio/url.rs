@@ -191,6 +191,10 @@ impl XaiTranscriptionUrl {
                 classification,
                 retry_after,
             },
+            LlmError::ProviderTimeout { message, status } => LlmError::ProviderTimeout {
+                message: self.redact_text(&message),
+                status,
+            },
             LlmError::Overloaded { message } => LlmError::Overloaded {
                 message: self.redact_text(&message),
             },

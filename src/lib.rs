@@ -44,6 +44,7 @@ pub mod providers;
 pub mod realtime;
 pub mod reasoning;
 pub mod replay;
+mod response_json;
 mod runtime;
 pub mod stream_assembly;
 pub use stream_assembly::{IncompleteTool, StreamAccumulator, StreamAssembly, StreamAssemblyError};
@@ -56,17 +57,19 @@ pub use account::AccountRpc;
 pub use auth::{ApiKeyAuthenticator, Authenticator, BearerAuthenticator, ChatGptPlanAuthenticator};
 pub use client::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 pub use client::{
-    AccountBalance, AccountCostBucket, AccountCostUsage, AccountExecutionOptions, AccountFailure,
-    AccountFetchContext, AccountIdentity, AccountMetric, AccountQuery, AccountQuotaWindow,
-    AccountReport, AccountScope, AccountScopeKind, AccountSelector, AccountSnapshot,
-    AccountSubscription, AccountTokenBucket, AccountTokenUsage, AccountUsageError,
-    AccountUsageSource, AttachmentResolver, BuildError, ChatService, ClientConfigManager,
-    ClientSnapshot, CollectedResponse, DecisionError, DecisionService, FrozenPricing, LlmClient,
-    LlmClientBuilder, LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission,
-    ModelStream, PreparedCall, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,
-    ReceivedCall, RequestDraft, RequestOptions, ResolveError, ResponsesSession, RoutingCatalog,
-    StreamBatch, StructuredStreamError, StructuredStreamResult, SubscriptionStatus,
-    MAX_ATTACHMENT_BYTES,
+    resolve_anthropic_server_fallback_summary_model, AccountBalance, AccountCostBucket,
+    AccountCostUsage, AccountExecutionOptions, AccountFailure, AccountFetchContext,
+    AccountIdentity, AccountMetric, AccountQuery, AccountQuotaWindow, AccountReport, AccountScope,
+    AccountScopeKind, AccountSelector, AccountSnapshot, AccountSubscription, AccountTokenBucket,
+    AccountTokenUsage, AccountUsageError, AccountUsageSource, AnthropicFallbackCostBuckets,
+    AnthropicFallbackCostCompleteness, AnthropicFallbackCostComponent,
+    AnthropicFallbackCostComponentKind, AnthropicFallbackCostQuote, AnthropicFallbackCostUsage,
+    AttachmentResolver, BuildError, ChatService, ClientConfigManager, ClientSnapshot,
+    CollectedResponse, DecisionError, DecisionService, FrozenPricing, LlmClient, LlmClientBuilder,
+    LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream,
+    PreparedCall, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, ReceivedCall,
+    RequestDraft, RequestOptions, ResolveError, ResponsesSession, RoutingCatalog, StreamBatch,
+    StructuredStreamError, StructuredStreamResult, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;

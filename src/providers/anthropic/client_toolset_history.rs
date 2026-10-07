@@ -114,7 +114,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                     validate_result(
                         toolset_name,
                         previous.map(|call| call.name.as_str()),
-                        *is_error,
+                        is_error.unwrap_or(false),
                         blocks.as_deref(),
                     )?;
                 }

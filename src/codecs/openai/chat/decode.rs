@@ -7,6 +7,7 @@ use crate::protocol::{
     ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
     ReportedCost, ResponseId, StopReason, ToolUseId, Usage,
 };
+use crate::response_json::{combine_text_parts, content_block, ResponseJson};
 use serde_json::Value;
 
 pub(super) fn response_with_usage_mode(
@@ -14,7 +15,8 @@ pub(super) fn response_with_usage_mode(
     separate_reasoning: bool,
     qwen_cache: bool,
 ) -> Result<ChatResponse, LlmError> {
-    let body: Value = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
+    let mut response_json = ResponseJson::parse(&resp.body, "OpenAI response is not valid JSON")?;
+    let body = response_json.value.clone();
     if !(200..300).contains(&resp.status) {
         return Err(classify_error(resp.status, &body, retry_after(resp)));
     }
@@ -42,27 +44,32 @@ pub(super) fn response_with_usage_mode(
             value,
         });
     }
-    let text = match message.get("content") {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(parts)) => parts
-            .iter()
-            .filter(|part| part["type"] == "text")
-            .filter_map(|part| part["text"].as_str())
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
+    let decoded_text = match message.get("content") {
+        Some(Value::String(text)) => {
+            Some(response_json.take_text("/choices/0/message/content", text)?)
+        }
+        Some(Value::Array(parts)) => {
+            let mut decoded_parts = Vec::new();
+            for (index, part) in parts.iter().enumerate() {
+                if part["type"] == "text" {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        decoded_parts.push(response_json.take_text(
+                            &format!("/choices/0/message/content/{index}/text"),
+                            text,
+                        )?);
+                    }
+                }
+            }
+            Some(combine_text_parts(decoded_parts.iter()))
+        }
+        _ => None,
     };
-    if !text.is_empty() {
-        content.push(ContentBlock::Text {
-            text,
-            thought_signature: None,
-        });
+    if let Some(text) = decoded_text.filter(|text| !text.text.is_empty()) {
+        content.push(content_block(text, None, None));
     }
     if let Some(text) = refusal.filter(|text| !text.is_empty()) {
-        content.push(ContentBlock::Text {
-            text: text.to_owned(),
-            thought_signature: None,
-        });
+        let text = response_json.take_text("/choices/0/message/refusal", text)?;
+        content.push(content_block(text, None, None));
     }
     for call in message
         .get("tool_calls")
@@ -96,6 +103,7 @@ pub(super) fn response_with_usage_mode(
         });
     }
 
+    response_json.finish()?;
     Ok(ChatResponse {
         inference: Default::default(),
         response_cache: None,
@@ -167,19 +175,19 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
                 return LlmError::RateLimited {
                     message: display(status, body, &message),
                     retry_after,
-                }
+                };
             }
             "invalid_prompt" => {
                 return LlmError::InvalidRequest {
                     message: display(status, body, &message),
-                }
+                };
             }
             "insufficient_quota"
             | "credit_balance_exhausted"
             | "subscription_sharing_usage_limit_exceeded" => {
                 return LlmError::QuotaExceeded {
                     message: display(status, body, &message),
-                }
+                };
             }
             "subscription_sharing_user_not_eligible"
             | "subscription_sharing_route_not_supported"
@@ -204,17 +212,17 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
                     message: display(status, body, &message),
                     limit: None,
                     actual: None,
-                }
+                };
             }
             "invalid_api_key" | "invalid_authentication" | "subscription_sharing_invalid_user" => {
                 return LlmError::Authentication {
                     message: display(status, body, &message),
-                }
+                };
             }
             "model_not_found" => {
                 return LlmError::ModelUnavailable {
                     message: display(status, body, &message),
-                }
+                };
             }
             _ => {}
         }
@@ -372,4 +380,59 @@ pub(crate) fn normalize_usage(raw: &Value, separate_reasoning: bool, qwen_cache:
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod utf16_response_tests {
+    use super::*;
+
+    #[test]
+    fn completed_chat_text_retains_lone_units_and_normalizes_pair_controls() {
+        let response = response_with_usage_mode(
+            &HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"model":"gpt-test","choices":[{"message":{"role":"assistant","content":"A\ud800B"},"finish_reason":"stop"}]}"#.as_slice().into(),
+            },
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            response.message.content.as_slice(),
+            [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        ));
+
+        let controls = response_with_usage_mode(
+            &HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"model":"gpt-test","choices":[{"message":{"role":"assistant","content":"\ufffd\ud83d\ude00"},"finish_reason":"stop"}]}"#.as_slice().into(),
+            },
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            controls.message.content.as_slice(),
+            [ContentBlock::Text { text, .. }] if text == "�😀"
+        ));
+
+        let parts = response_with_usage_mode(
+            &HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"model":"gpt-test","choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"\ud83d"},{"type":"text","text":"\ude00B"}]},"finish_reason":"stop"}]}"#.as_slice().into(),
+            },
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            parts.message.content.as_slice(),
+            [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+                if text == "😀B" && utf16_code_units == &[0xd83d, 0xde00, 0x42]
+        ));
+    }
 }
