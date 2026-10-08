@@ -659,3 +659,132 @@ fn anthropic_cache_reference_uses_the_same_exact_result_receipt() {
     assert!(bytes.contains(r#""cache_reference":"receipt1""#));
     assert!(!bytes.contains("output_json"));
 }
+
+const PNG: &str = "iVBORw0KGgoAAAANSUhEUg";
+const PDF: &str = "JVBERi0xLjcK";
+
+/// A Read-style result as the harness hands it over: `content` spells out the
+/// whole array, base64 included, and a reminder follows in the same turn.
+fn media_request(raw: &str) -> ChatRequest {
+    let mut req = request_with_result(raw);
+    let message = &mut req.messages[1];
+    if let ContentBlock::ToolResult { content, .. } = &mut message.content[0] {
+        *content = raw.into();
+    }
+    message.content.push(ContentBlock::Text {
+        text: "<reminder>".into(),
+        thought_signature: None,
+        citations: None,
+    });
+    req
+}
+
+#[test]
+fn tool_result_media_reaches_text_result_wires_as_media_parts() {
+    let raw = format!(
+        r#"[{{"type":"text","text":"Rendered frame"}},{{"type":"image","source":{{"type":"base64","data":"{PNG}","media_type":"image/png"}}}}]"#
+    );
+    let req = media_request(&raw);
+    for (family, codec) in [
+        (
+            "open_ai_chat",
+            Box::new(OpenAiChatCodec) as Box<dyn WireCodec>,
+        ),
+        ("azure_open_ai", Box::new(AzureOpenAiCodec)),
+        ("gemini_generate_content", Box::new(GeminiCodec)),
+        ("vertex_gemini", Box::new(VertexGeminiCodec)),
+        ("anthropic_messages", Box::new(AnthropicMessagesCodec)),
+    ] {
+        let p = profile(family);
+        let context = CodecContext::new(&p, "m", RequestMode::Complete);
+        let encoded = codec
+            .encode_request(EncodeRequest::new(&req), &context)
+            .unwrap_or_else(|error| panic!("{family}: {error}"));
+        let bytes = String::from_utf8(encoded.body.to_vec()).unwrap();
+        let body = parse_request_body_json(&encoded.body).unwrap().value;
+        // The image is sent once, as media, never as text in the result slot.
+        assert_eq!(bytes.matches(PNG).count(), 1, "{family}: {bytes}");
+        match family {
+            "open_ai_chat" | "azure_open_ai" => {
+                assert_eq!(
+                    body["messages"][1],
+                    json!({"role":"tool","tool_call_id":"t1","content":"Rendered frame\n(see following user message for image)"}),
+                    "{family}"
+                );
+                assert_eq!(
+                    body["messages"][2],
+                    json!({"role":"user","content":[
+                        {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{PNG}")}},
+                        {"type":"text","text":"<reminder>"},
+                    ]}),
+                    "{family}"
+                );
+            }
+            "gemini_generate_content" | "vertex_gemini" => {
+                let parts = &body["contents"][1]["parts"];
+                assert_eq!(
+                    parts[0],
+                    json!({"inlineData":{"mimeType":"image/png","data":PNG}}),
+                    "{family}"
+                );
+                assert_eq!(
+                    parts[1]["functionResponse"]["response"],
+                    json!({"result":"Rendered frame\n(image provided as a separate part)"}),
+                    "{family}"
+                );
+                assert_eq!(parts[2], json!({"text":"<reminder>"}), "{family}");
+            }
+            // Claude Code's own shape: the content array inside the tool_result.
+            _ => assert!(bytes.contains(&format!(r#""content":{raw}"#)), "{bytes}"),
+        }
+        assert_eq!(
+            codec
+                .encoded_body_len(EncodeRequest::new(&req), &context)
+                .unwrap(),
+            encoded.body.len(),
+            "{family}"
+        );
+    }
+}
+
+#[test]
+fn tool_result_media_follows_the_selected_models_input_modalities() {
+    let raw = format!(
+        r#"[{{"type":"image","source":{{"type":"base64","data":"{PNG}","media_type":"image/png"}}}},{{"type":"document","source":{{"type":"base64","data":"{PDF}","media_type":"application/pdf"}}}}]"#
+    );
+    let req = media_request(&raw);
+    let encode = |modalities: &[&str]| -> Value {
+        let mut p = profile("open_ai_chat");
+        p.models[0].metadata.input_modalities = modalities.iter().map(|m| (*m).into()).collect();
+        let context = CodecContext::new(&p, "m", RequestMode::Complete);
+        let encoded = OpenAiChatCodec
+            .encode_request(EncodeRequest::new(&req), &context)
+            .unwrap();
+        serde_json::from_slice(&encoded.body).unwrap()
+    };
+
+    let text_only = encode(&["text"]);
+    assert_eq!(
+        text_only["messages"][1]["content"],
+        "(image omitted: this model does not accept image input)\n(document omitted: this model does not accept document input)"
+    );
+    assert_eq!(
+        text_only["messages"][2],
+        json!({"role":"user","content":"<reminder>"})
+    );
+    assert!(!text_only.to_string().contains(PNG));
+
+    let multimodal = encode(&["text", "image", "pdf"]);
+    assert_eq!(
+        multimodal["messages"][1]["content"],
+        "(see following user message for image)\n(see following user message for document)"
+    );
+    assert_eq!(
+        multimodal["messages"][2]["content"],
+        json!([
+            {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{PNG}")}},
+            {"type":"file","file":{"file_data":format!("data:application/pdf;base64,{PDF}"),"filename":"document"}},
+            {"type":"text","text":"<reminder>"},
+        ])
+    );
+}

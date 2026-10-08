@@ -303,6 +303,24 @@ fn contents<'a>(
                 parts.push(part);
                 continue;
             }
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                blocks: Some(blocks),
+                ..
+            } = b
+            {
+                if let Some(pieces) = crate::codecs::tool_result_media::pieces(blocks) {
+                    let text = split_tool_result_media(&pieces, &mut parts, opts);
+                    parts.push(function_response(
+                        tool_use_id,
+                        *is_error,
+                        Value::String(text).into(),
+                        names,
+                    )?);
+                    continue;
+                }
+            }
             if let Some(part) = encode_part(b, names, profile, opts)? {
                 parts.push(part);
             }
@@ -312,6 +330,79 @@ fn contents<'a>(
         }
     }
     Ok(out)
+}
+
+/// A `functionResponse` part, keyed by the name of the call it answers.
+fn function_response<'a>(
+    tool_use_id: &ToolUseId,
+    is_error: Option<bool>,
+    result: WireValue<'a>,
+    names: &BTreeMap<ToolUseId, (String, Option<String>)>,
+) -> Result<WireValue<'a>, LlmError> {
+    let (name, provider_id) = names
+        .get(tool_use_id)
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: format!(
+                "a tool result for {tool_use_id} has no matching call in the transcript, \
+                 and this wire keys results by function name"
+            ),
+        })?;
+    let mut response = WireValue::from(json!({"name": name})).with(
+        "response",
+        WireValue::from(json!({})).with(
+            if is_error.unwrap_or(false) {
+                "error"
+            } else {
+                "result"
+            },
+            result,
+        ),
+    );
+    if let Some(id) = provider_id {
+        response["id"] = Value::String(id.clone());
+    }
+    Ok(WireValue::from(json!({})).with("functionResponse", response))
+}
+
+/// Push a tool result's media into `parts` ahead of its `functionResponse` and
+/// return the response text, which says where each media block went. Media
+/// the selected model does not accept is left out, and the text says that.
+fn split_tool_result_media<'a>(
+    pieces: &[crate::codecs::tool_result_media::Piece<'a>],
+    parts: &mut Vec<WireValue<'a>>,
+    opts: &CodecContext,
+) -> String {
+    use crate::codecs::tool_result_media::{self as tool_result_media, Image, Piece};
+    let models = &opts.profile().models;
+    let images = tool_result_media::accepts_images(models);
+    let documents = tool_result_media::accepts_documents(models);
+    let inline_data = |media_type: &str, data: &'a str| {
+        WireValue::from(json!({})).with(
+            "inlineData",
+            WireValue::from(json!({"mimeType": media_type})).with("data", WireValue::text(data)),
+        )
+    };
+    let mut notes = Vec::new();
+    for piece in pieces.iter().filter(|piece| piece.is_media()) {
+        notes.push(match piece {
+            Piece::Image(image) if images => {
+                parts.push(match image {
+                    Image::Base64 { media_type, data } => inline_data(media_type, data),
+                    Image::Url(url) => json!({"fileData": {"fileUri": url}}).into(),
+                });
+                "(image provided as a separate part)"
+            }
+            Piece::Image(_) => "(image omitted: this model does not accept image input)",
+            Piece::Document {
+                media_type, data, ..
+            } if documents => {
+                parts.push(inline_data(media_type, data));
+                "(document provided as a separate part)"
+            }
+            _ => "(document omitted: this model does not accept document input)",
+        });
+    }
+    tool_result_media::text(pieces, notes)
 }
 
 fn encode_part<'a>(
@@ -392,36 +483,12 @@ fn encode_part<'a>(
             output_json,
             ..
         } => {
-            let (name, provider_id) =
-                names
-                    .get(tool_use_id)
-                    .ok_or_else(|| LlmError::InvalidRequest {
-                        message: format!(
-                        "a tool result for {tool_use_id} has no matching call in the transcript, \
-                         and this wire keys results by function name"
-                    ),
-                    })?;
-            let mut response = WireValue::from(json!({"name": name})).with(
-                "response",
-                WireValue::from(json!({})).with(
-                    if is_error.unwrap_or(false) {
-                        "error"
-                    } else {
-                        "result"
-                    },
-                    if output_json.is_some() {
-                        WireValue::tool_output(content, blocks.as_deref(), output_json.as_deref())?
-                    } else {
-                        WireValue::text(content)
-                    },
-                ),
-            );
-            if let Some(id) = provider_id {
-                response["id"] = Value::String(id.clone());
-            }
-            return Ok(Some(
-                WireValue::from(json!({})).with("functionResponse", response),
-            ));
+            let result = if output_json.is_some() {
+                WireValue::tool_output(content, blocks.as_deref(), output_json.as_deref())?
+            } else {
+                WireValue::text(content)
+            };
+            return function_response(tool_use_id, *is_error, result, names).map(Some);
         }
         ContentBlock::Image { source } => Some(match source {
             ImageSource::Base64 { media_type, data } => {

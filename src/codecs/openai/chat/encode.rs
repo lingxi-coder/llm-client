@@ -383,6 +383,10 @@ fn encode_message<'a>(
     let mut parts: Vec<WireValue<'a>> = Vec::new();
     let mut tool_calls: Vec<Value> = Vec::new();
     let mut out: Vec<WireValue<'a>> = Vec::new();
+    // Media from tool results, sent in the user message after the last `tool`
+    // message: a `tool` message holds text, and another message cannot sit
+    // between two of them.
+    let mut tool_media: Vec<WireValue<'a>> = Vec::new();
 
     for (block_index, block) in m.content.iter().enumerate() {
         let block = wire.block(block);
@@ -513,7 +517,6 @@ fn encode_message<'a>(
                 ..
             } => {
                 crate::exact_json::validated_tool_output_json(content, blocks.as_deref(), output_json.as_deref())?;
-                let content = if blocks.is_some() { output_json.as_deref().unwrap_or(content) } else { content };
                 flush_message(
                     &mut out,
                     role,
@@ -522,22 +525,39 @@ fn encode_message<'a>(
                     &mut tool_calls,
                     &mut native_reasoning,
                 );
+                let media = blocks
+                    .as_deref()
+                    .and_then(crate::codecs::tool_result_media::pieces);
+                let tool_content = if let Some(pieces) = media {
+                    let text = split_tool_result_media(&pieces, &mut tool_media, pdf_only_files, opts);
+                    let marker = if qwen_marked {
+                        Some(json!({"type":"ephemeral"}))
+                    } else {
+                        openrouter_marker.clone()
+                    };
+                    match marker {
+                        Some(marker) => WireValue::array(vec![
+                            json!({"type":"text","text":text,"cache_control":marker}).into(),
+                        ]),
+                        None => Value::String(text).into(),
+                    }
+                } else {
+                    let content = if blocks.is_some() { output_json.as_deref().unwrap_or(content) } else { content };
+                    if qwen_marked {
+                        crate::providers::qwen::cache::text_content(content, true)
+                    } else {
+                        crate::providers::openrouter::prompt_cache::text_content(
+                            content,
+                            openrouter_marker.clone(),
+                        )
+                    }
+                };
                 out.push(
                     WireValue::from(json!({
                         "role": "tool",
                         "tool_call_id": tool_use_id,
                     }))
-                    .with(
-                        "content",
-                        if qwen_marked {
-                            crate::providers::qwen::cache::text_content(content, true)
-                        } else {
-                            crate::providers::openrouter::prompt_cache::text_content(
-                                content,
-                                openrouter_marker.clone(),
-                            )
-                        },
-                    ),
+                    .with("content", tool_content),
                 );
             }
         }
@@ -554,6 +574,9 @@ fn encode_message<'a>(
         }
     }
 
+    // Ahead of any text that followed the results, keeping the source order.
+    tool_media.append(&mut parts);
+    parts = tool_media;
     flush_message(
         &mut out,
         role,
@@ -563,6 +586,56 @@ fn encode_message<'a>(
         &mut native_reasoning,
     );
     Ok(out)
+}
+
+/// Move a tool result's media into `media` and return the `tool` message text,
+/// which says where each media block went. Media the selected model does not
+/// accept is left out, and the text says that instead.
+fn split_tool_result_media<'a>(
+    pieces: &[crate::codecs::tool_result_media::Piece<'_>],
+    media: &mut Vec<WireValue<'a>>,
+    pdf_only_files: bool,
+    opts: &CodecContext,
+) -> String {
+    use crate::codecs::tool_result_media::{self as tool_result_media, Image, Piece};
+    let models = &opts.profile().models;
+    let images = tool_result_media::accepts_images(models);
+    let documents = tool_result_media::accepts_documents(models);
+    let mut notes = Vec::new();
+    for piece in pieces.iter().filter(|piece| piece.is_media()) {
+        notes.push(match piece {
+            Piece::Image(image) if images => {
+                let url = match image {
+                    Image::Base64 { media_type, data } => {
+                        format!("data:{media_type};base64,{data}")
+                    }
+                    Image::Url(url) => (*url).to_owned(),
+                };
+                media.push(json!({"type": "image_url", "image_url": {"url": url}}).into());
+                "(see following user message for image)"
+            }
+            Piece::Image(_) => "(image omitted: this model does not accept image input)",
+            Piece::Document {
+                media_type,
+                data,
+                title,
+            } if documents && (!pdf_only_files || *media_type == "application/pdf") => {
+                media.push(
+                    json!({
+                        "type": "file",
+                        "file": {
+                            "file_data": format!("data:{media_type};base64,{data}"),
+                            "filename": title.unwrap_or("document"),
+                        },
+                    })
+                    .into(),
+                );
+                "(see following user message for document)"
+            }
+            _ => "(document omitted: this model does not accept document input)",
+        });
+    }
+    tool_result_media::text(pieces, notes)
 }
 
 /// Select the request field used for the output token limit. A profile can opt

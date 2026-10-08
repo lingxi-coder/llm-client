@@ -1786,6 +1786,17 @@ pub(crate) fn map_tool_output_raw_subtrees(
             continue;
         };
         validated_tool_output_json(content, blocks.as_deref(), Some(raw))?;
+        // These codecs send media as separate parts and leave derived text in
+        // the result slot, so no exact source subtree remains to splice there.
+        if matches!(
+            protocol,
+            P::OpenAiChat | P::AzureOpenAi | P::GeminiGenerateContent | P::VertexGemini
+        ) && blocks
+            .as_deref()
+            .is_some_and(crate::codecs::tool_result_media::has_media)
+        {
+            continue;
+        }
         let (provider_id, name) = identities
             .get(tool_use_id.as_str())
             .copied()
