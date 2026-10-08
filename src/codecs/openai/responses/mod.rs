@@ -41,6 +41,7 @@ impl WireCodec for OpenAiResponsesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::exact_json::validate_tool_input_carriers(req)?;
         if context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan {
             crate::auth::chatgpt_plan::validate_chat_request(req)?;
         }
@@ -70,13 +71,21 @@ impl WireCodec for OpenAiResponsesCodec {
         req: EncodeRequest<'_>,
         context: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        encode::request(req, context.profile(), context)?.encode()
+        let request = req.request();
+        crate::exact_json::finish_tool_input_encoding(
+            request,
+            context.profile().protocol,
+            encode::request(req, context.profile(), context)?.encode()?,
+        )
     }
     fn encoded_body_len(
         &self,
         req: EncodeRequest<'_>,
         context: &CodecContext,
     ) -> Result<usize, LlmError> {
+        if crate::exact_json::has_raw_tool_json(req.request()) {
+            return Ok(self.encode_request(req, context)?.body.len());
+        }
         encode::request(req, context.profile(), context)?.body_len()
     }
     fn decode_response(

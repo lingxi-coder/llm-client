@@ -71,10 +71,12 @@ pub(super) fn response_with_usage_mode(
         let text = response_json.take_text("/choices/0/message/refusal", text)?;
         content.push(content_block(text, None, None));
     }
-    for call in message
+    for (call_index, call) in message
         .get("tool_calls")
         .and_then(Value::as_array)
         .unwrap_or(&Vec::new())
+        .iter()
+        .enumerate()
     {
         let function = call.get("function").unwrap_or(&Value::Null);
         let arguments = function
@@ -83,7 +85,13 @@ pub(super) fn response_with_usage_mode(
             .ok_or_else(|| LlmError::InvalidRequest {
                 message: "provider tool call has no arguments string".into(),
             })?;
+        let arguments = crate::response_json::argument_fragment(response_json.take_text(
+            &format!("/choices/0/message/tool_calls/{call_index}/function/arguments"),
+            arguments,
+        )?)?;
+        let input = crate::exact_json::parse_tool_input_json(&arguments)?;
         content.push(ContentBlock::ToolUse {
+            input_json: Some(arguments.clone()),
             id: ToolUseId::new(call.get("id").and_then(Value::as_str).unwrap_or_default()),
             name: function
                 .get("name")
@@ -93,9 +101,7 @@ pub(super) fn response_with_usage_mode(
             // Arguments arrive as a JSON *string*; a provider that streamed a
             // truncated fragment leaves it unparseable, and the tool's own
             // schema validation is where that should surface.
-            input: serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
-                message: "provider returned malformed tool arguments".into(),
-            })?,
+            input,
             provider_id: None,
             caller: None,
             toolset_name: None,
@@ -195,17 +201,17 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
             | "chatpass_v2_invalid_authorization_context" => {
                 return LlmError::PermissionDenied {
                     message: display(status, body, &message),
-                }
+                };
             }
             "subscription_sharing_usage_unavailable" | "subscription_sharing_user_unavailable" => {
                 return LlmError::ProviderInternal {
                     message: display(status, body, &message),
-                }
+                };
             }
             "subscription_sharing_unsupported_capability" => {
                 return LlmError::InvalidRequest {
                     message: display(status, body, &message),
-                }
+                };
             }
             "context_length_exceeded" => {
                 return LlmError::ContextOverflow {

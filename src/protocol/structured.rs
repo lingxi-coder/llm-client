@@ -88,7 +88,9 @@ impl ChatResponse {
             .content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } => {
+                    Some(text.as_str())
+                }
                 _ => None,
             })
             .collect();

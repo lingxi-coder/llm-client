@@ -640,6 +640,7 @@ impl Pinned<'_> {
                 .append_pair("starting_after", &cursor.sequence_number.to_string());
         }
         let mut http = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: url.into(),
             headers: vec![("accept".into(), "text/event-stream".into())],

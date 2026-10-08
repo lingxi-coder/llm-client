@@ -18,6 +18,7 @@ impl WireCodec for GeminiInteractionsCodec {
         request: &ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::exact_json::validate_tool_input_carriers(request)?;
         encode::validate(request, context)
     }
     fn encode_request(
@@ -39,11 +40,34 @@ impl WireCodec for GeminiInteractionsCodec {
                 None,
             ));
         }
-        let body =
-            serde_json::from_slice(&response.body).map_err(|error| LlmError::ProviderInternal {
-                message: format!("invalid Gemini interaction JSON: {error}"),
-            })?;
-        decode::response(&body, context)
+        let mut parsed = crate::response_json::ResponseJson::parse(
+            &response.body,
+            "invalid Gemini interaction JSON",
+        )?;
+        let body = parsed.value.clone();
+        let mut response = decode::response(&body, context)?;
+        for (index, step) in body["steps"].as_array().into_iter().flatten().enumerate() {
+            if step["type"] == "function_call" {
+                let (display, raw) =
+                    parsed.take_tool_input(&format!("/steps/{index}/arguments"))?;
+                for block in &mut response.message.content {
+                    if let crate::protocol::ContentBlock::ToolUse {
+                        id,
+                        input,
+                        input_json,
+                        ..
+                    } = block
+                    {
+                        if step["id"].as_str() == Some(id.as_str()) {
+                            *input = display.clone();
+                            *input_json = raw.clone();
+                        }
+                    }
+                }
+            }
+        }
+        parsed.finish()?;
+        Ok(response)
     }
     fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder> {
         Box::new(crate::codecs::stream::SseDecoder::new(

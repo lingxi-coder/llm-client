@@ -175,6 +175,7 @@ fn get(url: String, profile: &ProviderProfile) -> HttpRequest {
     // only on completions. Credentials are refused there (`wire_extras`).
     crate::wire_options::merge_headers(profile, &mut headers);
     HttpRequest {
+        http1_header_layout: None,
         method: "GET".to_owned(),
         url,
         headers,

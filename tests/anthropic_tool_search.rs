@@ -51,6 +51,7 @@ fn tool_search(strategy: AnthropicToolSearchStrategy) -> HostedTool {
 
 fn tool(name: &str, defer_loading: bool) -> ToolSpec {
     ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: name.into(),

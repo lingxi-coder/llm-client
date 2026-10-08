@@ -290,6 +290,7 @@ impl PinnedDeferredService<'_> {
             .map_err(|_| invalid("invalid deferred result URL"))?
             .push(&reference.request_id);
         let mut http = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: url.into(),
             headers: vec![],

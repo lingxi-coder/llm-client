@@ -546,7 +546,7 @@ impl RealtimeCodec for GlmRealtimeCodec {
             // Keep that continuation under caller control in either VAD mode.
             RealtimeInput::ContinueResponse => vec![json!({ "type": "response.create" })],
             RealtimeInput::Interrupt => vec![json!({ "type": "response.cancel" })],
-            RealtimeInput::ToolResult { call_id, output } => {
+            RealtimeInput::ToolResult { call_id, output , .. } => {
                 vec![encode_function_call_output(call_id, output)?]
             }
             RealtimeInput::ToolResults { results } => encode_function_call_outputs(results)?,

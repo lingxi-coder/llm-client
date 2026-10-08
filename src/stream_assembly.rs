@@ -77,12 +77,13 @@ impl Block {
             let input = if tool.arguments.is_empty() {
                 Value::Object(Default::default())
             } else {
-                serde_json::from_str(&tool.arguments).ok()?
+                crate::exact_json::parse_tool_input_json(&tool.arguments).ok()?
             };
             return Some(ContentBlock::ToolUse {
                 id: tool.id.clone(),
                 name: tool.name.clone(),
                 input,
+                input_json: (!tool.arguments.is_empty()).then(|| tool.arguments.clone()),
                 provider_id: tool.provider_id.clone(),
                 caller: tool.caller.clone(),
                 toolset_name: tool.toolset_name.clone(),

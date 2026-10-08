@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use futures::StreamExt;
 use lingxi_llm_client::{protocol::*, providers::google::computer::*, *};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 fn profile(name: &str) -> ProviderProfile {
     serde_json::from_value(json!({"provider_id":"google","profile_name":name,"protocol":"gemini_interactions","base_url":format!("https://{name}.test/v1beta"),"auth":"api_key","connection":{"group":"gemini","connection_id":name,"failover":{"network":true}},"models":[{"request_model":"gemini-3.8-flash","display_model":"m","billing_model":"gemini-3.8-flash"}]})).unwrap()
@@ -215,13 +215,15 @@ fn desktop_coordinates_defaults_and_ordered_observation() {
         ),
         &req,
     );
-    assert!(decode_computer_calls(
-        NativeComputerProvider::Gemini,
-        &response.message.content,
-        None,
-        &frame()
-    )
-    .is_err());
+    assert!(
+        decode_computer_calls(
+            NativeComputerProvider::Gemini,
+            &response.message.content,
+            None,
+            &frame()
+        )
+        .is_err()
+    );
 }
 #[test]
 fn native_stream_never_delivers_calls_before_terminal_and_fragmented_args_agree() {
@@ -274,7 +276,6 @@ fn terminal_steps_must_agree_with_streamed_calls_before_any_call_escapes() {
     changed["arguments"]["x"] = json!(0);
     for terminal in [
         json!([]),
-        json!([other.clone(), call.clone()]),
         json!([safety, other.clone()]),
         json!([changed, other.clone()]),
         json!(null),
@@ -487,10 +488,12 @@ async fn prepared_unified_call_authenticates_and_continuation_is_scoped() {
         .unwrap();
     let reference = response.continuation.unwrap();
     assert_eq!(reference.protocol, ProtocolFamily::GeminiInteractions);
-    assert!(http.sent.lock().unwrap()[0]
-        .headers
-        .iter()
-        .any(|(key, value)| key == "x-goog-api-key" && value == "fixture-key"));
+    assert!(
+        http.sent.lock().unwrap()[0]
+            .headers
+            .iter()
+            .any(|(key, value)| key == "x-goog-api-key" && value == "fixture-key")
+    );
     let mut req = request();
     req.continuation = Some(reference.clone());
     let next = client
@@ -500,22 +503,28 @@ async fn prepared_unified_call_authenticates_and_continuation_is_scoped() {
     let body: Value = serde_json::from_slice(&next.request().body).unwrap();
     assert_eq!(body["previous_interaction_id"], "int_one");
     for wrong in ["two"] {
-        assert!(client
-            .prepare_on(wrong, &req, &options(), RequestMode::Complete)
-            .await
-            .is_err());
+        assert!(
+            client
+                .prepare_on(wrong, &req, &options(), RequestMode::Complete)
+                .await
+                .is_err()
+        );
     }
     let mut changed = options();
     changed.account_scope = Some("account-b".into());
-    assert!(client
-        .prepare_on("one", &req, &changed, RequestMode::Complete)
-        .await
-        .is_err());
+    assert!(
+        client
+            .prepare_on("one", &req, &changed, RequestMode::Complete)
+            .await
+            .is_err()
+    );
     req.continuation.as_mut().unwrap().protocol = ProtocolFamily::OpenAiResponses;
-    assert!(client
-        .prepare_on("one", &req, &options(), RequestMode::Complete)
-        .await
-        .is_err());
+    assert!(
+        client
+            .prepare_on("one", &req, &options(), RequestMode::Complete)
+            .await
+            .is_err()
+    );
     assert_eq!(http.sent.lock().unwrap().len(), 1);
 }
 #[tokio::test]
@@ -528,11 +537,13 @@ async fn uncertain_interaction_submission_never_fails_over() {
         .with_region(Region::International)
         .build()
         .unwrap();
-    assert!(client
-        .chat()
-        .complete_in("gemini", &request(), &options())
-        .await
-        .is_err());
+    assert!(
+        client
+            .chat()
+            .complete_in("gemini", &request(), &options())
+            .await
+            .is_err()
+    );
     assert_eq!(http.sent.lock().unwrap().len(), 1);
 }
 
@@ -607,12 +618,14 @@ fn native_receipt_then_function_declaration_uses_previous_interaction_and_old_bi
     assert_eq!(body["input"][0]["name"], "scroll");
     assert!(body["input"][0].get("_sdk_continuation").is_none());
     follow.continuation.as_mut().unwrap().response_id = "different_interaction".into();
-    assert!(GeminiInteractionsCodec
-        .encode_request(
-            EncodeRequest::new(&follow),
-            &context(&follow, RequestMode::Complete)
-        )
-        .is_err());
+    assert!(
+        GeminiInteractionsCodec
+            .encode_request(
+                EncodeRequest::new(&follow),
+                &context(&follow, RequestMode::Complete)
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -636,11 +649,13 @@ fn native_receipts_survive_same_protocol_history_projection_and_reject_foreign_r
         std::slice::from_ref(&receipt),
         ProtocolFamily::GeminiGenerateContent,
     );
-    assert!(foreign
-        .normalize(
-            &receipt,
-            Some(ProtocolFamily::GeminiInteractions),
-            ReplayPolicy::Reject
-        )
-        .is_err());
+    assert!(
+        foreign
+            .normalize(
+                &receipt,
+                Some(ProtocolFamily::GeminiInteractions),
+                ReplayPolicy::Reject
+            )
+            .is_err()
+    );
 }

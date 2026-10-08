@@ -41,6 +41,7 @@ impl WireCodec for AzureOpenAiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::exact_json::validate_tool_input_carriers(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
@@ -58,6 +59,7 @@ impl WireCodec for AzureOpenAiCodec {
         req: EncodeRequest<'_>,
         opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
+        let request = req.request();
         let profile = opts.profile();
         let mut http = crate::codecs::openai::chat::encode::request(req, profile, opts)?;
         let api_version = profile
@@ -82,7 +84,7 @@ impl WireCodec for AzureOpenAiCodec {
             profile.base_url.trim_end_matches('/')
         );
         strip_body_key(&mut http, "model")?;
-        http.encode()
+        crate::exact_json::finish_tool_input_encoding(request, profile.protocol, http.encode()?)
     }
 
     fn decode_response(
@@ -198,12 +200,15 @@ impl WireCodec for VertexClaudeCodec {
             .and_then(Value::as_str)
             .unwrap_or(VERTEX_ANTHROPIC_VERSION)
             .to_owned();
-        http.http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
             body.insert("anthropic_version".to_owned(), Value::String(version));
         })?;
-        http.encode()
+        crate::exact_json::finish_tool_input_encoding(
+            req.request(),
+            opts.profile().protocol,
+            http.encode()?,
+        )
     }
 
     fn decode_response(
@@ -236,6 +241,7 @@ impl WireCodec for VertexGeminiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::exact_json::validate_tool_input_carriers(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         gemini::encode::validate_audio_input(req)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
@@ -263,7 +269,11 @@ impl WireCodec for VertexGeminiCodec {
             &opts.request_model,
             opts.stream,
         );
-        gemini::encode::request_to(req, profile, &url, opts)?.encode()
+        crate::exact_json::finish_tool_input_encoding(
+            req.request(),
+            opts.profile().protocol,
+            gemini::encode::request_to(req, profile, &url, opts)?.encode()?,
+        )
     }
 
     fn decode_response(
@@ -299,10 +309,10 @@ fn strip_body_key(
 /// The Anthropic Messages body on Amazon Bedrock: signed with SigV4 and
 /// streamed as AWS event-stream frames rather than SSE.
 ///
-/// Four differences from the first-party wire, each load-bearing:
+/// Differences from the first-party wire:
 /// the model is in the URL path; `model` leaves the body; `anthropic_version`
-/// moves into the body as Bedrock's own constant; and the `anthropic-version`
-/// header is removed, because Bedrock rejects it. The endpoint action chooses
+/// is added to the body as Bedrock's own constant. The shared Messages SDK
+/// version header remains, as in native Claude Code. The endpoint action chooses
 /// streaming, so the first-party `stream` body field is removed too.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BedrockClaudeCodec;
@@ -324,6 +334,7 @@ impl WireCodec for BedrockClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::exact_json::validate_tool_input_carriers(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())
     }
@@ -344,7 +355,6 @@ impl WireCodec for BedrockClaudeCodec {
             "invoke"
         };
         http.http.url = bedrock_model_url(&profile.base_url, &opts.request_model, action)?;
-        http.http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
             // Bedrock selects streaming through the invoke-with-response-stream
@@ -356,7 +366,11 @@ impl WireCodec for BedrockClaudeCodec {
                 Value::String(BEDROCK_ANTHROPIC_VERSION.to_owned()),
             );
         })?;
-        http.encode()
+        crate::exact_json::finish_tool_input_encoding(
+            req.request(),
+            opts.profile().protocol,
+            http.encode()?,
+        )
     }
 
     fn decode_response(

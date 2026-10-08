@@ -315,6 +315,7 @@ impl WireCodec for FakeCodec {
         // shared by every profile using it.
         let base = &profile.base_url;
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "POST".to_owned(),
             url: format!("{base}/chat"),
             headers: vec![],

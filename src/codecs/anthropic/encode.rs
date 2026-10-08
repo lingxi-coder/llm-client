@@ -420,12 +420,16 @@ fn encode_block<'a>(
             id,
             name,
             input,
+            input_json,
             caller,
             toolset_name,
             ..
         } => {
             let mut block = WireValue::from(json!({"type": "tool_use", "id": id, "name": name}))
-                .with("input", WireValue::borrowed(input));
+                .with(
+                    "input",
+                    WireValue::tool_input(input, input_json.as_deref())?,
+                );
             if let Some(caller) = caller {
                 block = block.with("caller", WireValue::from(caller.clone()));
             }
@@ -440,17 +444,21 @@ fn encode_block<'a>(
             is_error,
             blocks,
             toolset_name,
+            output_json,
+            cache_reference,
+            ..
         } => {
-            let content = blocks.as_ref().map_or_else(
-                || WireValue::text(content),
-                |blocks| WireValue::array(blocks.iter().map(WireValue::borrowed).collect()),
-            );
+            let content =
+                WireValue::tool_output(content, blocks.as_deref(), output_json.as_deref())?;
             let mut v = WireValue::from(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
             }))
             .with("content", content);
             encode_optional_bool(&mut v, "is_error", *is_error);
+            if let Some(cache_reference) = cache_reference {
+                v["cache_reference"] = json!(cache_reference);
+            }
             if let Some(toolset_name) = toolset_name {
                 v["toolset_name"] = json!(toolset_name);
             }

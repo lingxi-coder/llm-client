@@ -119,6 +119,7 @@ pub(crate) fn post(endpoint: String, body: Value) -> Result<HttpRequest, LlmErro
         return Err(invalid("embedding request exceeds 64 MiB"));
     }
     Ok(HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: endpoint,
         headers: vec![("content-type".into(), "application/json".into())],

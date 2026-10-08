@@ -38,6 +38,7 @@ impl WireCodec for GeminiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::exact_json::validate_tool_input_carriers(req)?;
         crate::codecs::reject_typed_native(req, context.profile().protocol)?;
         encode::validate_audio_input(req)?;
         crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
@@ -56,13 +57,21 @@ impl WireCodec for GeminiCodec {
         req: EncodeRequest<'_>,
         context: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
-        encode::request(req, context.profile(), context)?.encode()
+        let http = encode::request(req, context.profile(), context)?.encode()?;
+        crate::exact_json::finish_tool_input_encoding(
+            req.request(),
+            context.profile().protocol,
+            http,
+        )
     }
     fn encoded_body_len(
         &self,
         req: EncodeRequest<'_>,
         context: &CodecContext,
     ) -> Result<usize, LlmError> {
+        if crate::exact_json::has_raw_tool_json(req.request()) {
+            return Ok(self.encode_request(req, context)?.body.len());
+        }
         encode::request(req, context.profile(), context)?.body_len()
     }
     fn decode_response(

@@ -372,6 +372,7 @@ impl<'a> GlmCloudAudioService<'a> {
             .and_then(|length| length.checked_add(suffix.len() as u64))
             .ok_or_else(|| invalid("multipart content length overflows"))?;
         let http_request = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: format!(
                 "{}/audio/transcriptions",
@@ -476,6 +477,7 @@ impl<'a> GlmCloudAudioService<'a> {
         let body = serde_json::to_vec(&Value::Object(body))
             .map_err(|_| invalid("could not encode hosted TTS request"))?;
         let http_request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: format!("{}/audio/speech", pinned_service.scope.region.api_base()),
             headers: vec![

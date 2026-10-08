@@ -648,6 +648,7 @@ impl<'a> VertexSpeechService<'a> {
             ));
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: self.scope.endpoint(request.model, streaming),
             headers: vec![

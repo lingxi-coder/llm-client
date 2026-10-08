@@ -499,17 +499,21 @@ fn encode_message<'a>(
                 });
             }
             ContentBlock::ToolUse {
-                id, name, input, ..
+                id, name, input, input_json, ..
             } => tool_calls.push(json!({
                 "id": id,
                 "type": "function",
-                "function": { "name": name, "arguments": input.to_string() },
+                "function": { "name": name, "arguments": crate::exact_json::validated_tool_input_json(input,input_json.as_deref())?.map(str::to_owned).unwrap_or_else(||input.to_string()) },
             })),
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                blocks,
+                output_json,
                 ..
             } => {
+                crate::exact_json::validated_tool_output_json(content, blocks.as_deref(), output_json.as_deref())?;
+                let content = if blocks.is_some() { output_json.as_deref().unwrap_or(content) } else { content };
                 flush_message(
                     &mut out,
                     role,

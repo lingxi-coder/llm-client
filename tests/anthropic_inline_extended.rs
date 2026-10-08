@@ -143,6 +143,7 @@ fn inline_tool(name: &str, input_schema: Value, strict: bool) -> ContentBlock {
 
 fn spec(name: String, input_schema: Value, strict: bool) -> ToolSpec {
     ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name,
@@ -189,6 +190,7 @@ fn programmatic_server_call() -> ContentBlock {
 
 fn programmatic_tool_call(caller_type: &str) -> ContentBlock {
     ContentBlock::ToolUse {
+        input_json: None,
         id: ToolUseId::new("toolu_inline"),
         name: "lookup".into(),
         input: json!({"id":"1"}),
@@ -207,6 +209,8 @@ fn user_tool_result() -> ConversationMessage {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("toolu_inline"),
             content: "found".into(),
             is_error: Some(false),

@@ -75,6 +75,7 @@ pub(crate) async fn post_json(
     let response = crate::transport::HttpExecutor::new(http)
         .execute_bounded(
             HttpRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url,
                 headers: vec![

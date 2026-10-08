@@ -421,6 +421,9 @@ pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    /// Exact JSON schema paired with its display value; internal to codec replay.
+    #[serde(skip)]
+    pub input_schema_json: Option<String>,
     #[serde(default)]
     pub strict: bool,
     /// Ask supported hosted tool search to load this definition only after

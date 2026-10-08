@@ -141,6 +141,8 @@ impl ReplayContext {
                             .map(|id| {
                                 let content = &value["content"];
                                 ContentBlock::ToolResult {
+                                    cache_reference: None,
+                                    output_json: None,
                                     tool_use_id: id.into(),
                                     content: content
                                         .as_str()
@@ -560,6 +562,7 @@ mod tests {
     #[test]
     fn native_tool_metadata_and_gemini_signatures_cannot_cross_families() {
         let block = ContentBlock::ToolUse {
+            input_json: None,
             id: "id".into(),
             name: "read".into(),
             input: json!({"x":1}),
@@ -577,7 +580,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            matches!(stripped, ContentBlock::ToolUse { id, name, input, provider_id:None, caller:None, toolset_name:None, thought_signature:None } if id.as_str() == "id" && name == "read" && input == json!({"x":1}))
+            matches!(stripped, ContentBlock::ToolUse { id, name, input, provider_id:None, caller:None, toolset_name:None, thought_signature:None , .. } if id.as_str() == "id" && name == "read" && input == json!({"x":1}))
         );
         let text = ContentBlock::Text {
             text: "signed text".into(),

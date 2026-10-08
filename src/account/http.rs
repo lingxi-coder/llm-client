@@ -9,6 +9,7 @@ pub(crate) async fn get_json(
     let response = crate::transport::HttpExecutor::new(http)
         .execute_bounded(
             HttpRequest {
+                http1_header_layout: None,
                 method: "GET".into(),
                 url,
                 headers,

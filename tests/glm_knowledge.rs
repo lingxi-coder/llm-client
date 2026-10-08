@@ -93,6 +93,7 @@ impl Transport for Mock {
             mut body,
             content_length,
             timeout,
+            ..
         } = request;
         self.stream_lengths.lock().unwrap().push(content_length);
         let mut collected = BytesMut::new();
@@ -109,6 +110,7 @@ impl Transport for Mock {
         assert_eq!(method, reply.method);
         assert_eq!(url, reply.url);
         self.requests.lock().unwrap().push(HttpRequest {
+            http1_header_layout: None,
             method,
             url,
             headers,

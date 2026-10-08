@@ -96,6 +96,7 @@ fn provider_tools_are_opt_in_and_coexist_with_functions() {
         let p = profile(adapter, protocol);
         let mut req = request();
         req.tools.push(ToolSpec {
+            input_schema_json: None,
             tool_type: None,
             extra: serde_json::Value::Null,
             name: "lookup_local".into(),
@@ -575,6 +576,7 @@ fn qwen_file_search_alone_honors_tool_choice_and_validates_named_functions() {
         Err(LlmError::InvalidRequest { .. })
     ));
     req.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "local_lookup".into(),

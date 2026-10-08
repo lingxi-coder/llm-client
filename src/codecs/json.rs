@@ -28,6 +28,7 @@ pub(crate) struct WireValue<'a> {
 #[derive(Clone)]
 enum Payload<'a> {
     Text(&'a str),
+    Raw(&'a serde_json::value::RawValue),
     Array(Vec<WireValue<'a>>),
     Data(&'a [u8], String),
 }
@@ -54,6 +55,40 @@ impl<'a> WireValue<'a> {
             ..Value::Null.into()
         }
     }
+    pub(crate) fn tool_input(input: &'a Value, raw: Option<&'a str>) -> Result<Self, LlmError> {
+        match crate::exact_json::validated_tool_input_json(input, raw)? {
+            Some(raw) => {
+                let raw = serde_json::from_str::<&serde_json::value::RawValue>(raw)
+                    .map_err(json_error)?;
+                Ok(Self {
+                    payload: Some(Payload::Raw(raw)),
+                    value: Cow::Borrowed(input),
+                    ..Value::Null.into()
+                })
+            }
+            None => Ok(Self::borrowed(input)),
+        }
+    }
+    pub(crate) fn tool_output(
+        content: &'a str,
+        blocks: Option<&'a [Value]>,
+        raw: Option<&'a str>,
+    ) -> Result<Self, LlmError> {
+        match crate::exact_json::validated_tool_output_json(content, blocks, raw)? {
+            Some(raw) => Ok(Self {
+                payload: Some(Payload::Raw(
+                    serde_json::from_str::<&serde_json::value::RawValue>(raw)
+                        .map_err(json_error)?,
+                )),
+                value: Cow::Owned(crate::exact_json::parse_tool_output_json(raw)?),
+                ..Value::Null.into()
+            }),
+            None => Ok(blocks.map_or_else(
+                || Self::text(content),
+                |blocks| Self::array(blocks.iter().map(Self::borrowed).collect()),
+            )),
+        }
+    }
     pub(crate) fn array(values: Vec<Self>) -> Self {
         Self {
             payload: Some(Payload::Array(values)),
@@ -68,17 +103,29 @@ impl<'a> WireValue<'a> {
     }
     fn as_value(&self) -> &Value {
         if self.payload.is_none() && self.fields.is_empty() {
-            &self.value
-        } else {
-            self.materialized
-                .get_or_init(|| serde_json::to_value(self).expect("wire values serialize as JSON"))
+            return &self.value;
         }
+        self.materialized.get_or_init(|| {
+            let mut value = match &self.payload {
+                Some(Payload::Raw(_)) => self.value.as_ref().clone(),
+                Some(Payload::Text(text)) => Value::String((*text).to_owned()),
+                Some(Payload::Array(items)) => {
+                    Value::Array(items.iter().map(|item| item.as_value().clone()).collect())
+                }
+                Some(Payload::Data(bytes, prefix)) => {
+                    Value::String(Data(bytes, prefix).to_string())
+                }
+                None => self.value.as_ref().clone(),
+            };
+            for (key, child) in &self.fields {
+                value[*key] = child.as_value().clone();
+            }
+            value
+        })
     }
     fn materialize(&mut self) {
         if self.payload.is_some() || !self.fields.is_empty() {
-            let value = self.materialized.take().unwrap_or_else(|| {
-                serde_json::to_value(&*self).expect("wire values serialize as JSON")
-            });
+            let value = self.as_value().clone();
             self.value = Cow::Owned(value);
             self.payload = None;
             self.fields.clear();
@@ -239,6 +286,7 @@ impl WireValue<'_> {
         if let Some(payload) = &self.payload {
             return match payload {
                 Payload::Text(text) => serializer.serialize_str(text),
+                Payload::Raw(raw) => raw.serialize(serializer),
                 Payload::Data(bytes, prefix) => serializer.collect_str(&Data(bytes, prefix)),
                 Payload::Array(array) => {
                     let mut seq = serializer.serialize_seq(Some(array.len()))?;
@@ -279,6 +327,7 @@ impl<'a> WireRequest<'a> {
     pub(crate) fn new(url: String, headers: Vec<(String, String)>, body: WireValue<'a>) -> Self {
         Self {
             http: HttpRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url,
                 headers,

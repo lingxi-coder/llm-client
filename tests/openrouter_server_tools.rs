@@ -56,6 +56,7 @@ fn encode(codec: &dyn WireCodec, req: &ChatRequest, profile: &ProviderProfile) -
 
 fn deferred_tool(name: &str) -> ToolSpec {
     ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: name.into(),
@@ -534,6 +535,8 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
+                output_json: None,
                 tool_use_id: ToolUseId::new(id),
                 content: "Found one record.".into(),
                 is_error: Some(false),
@@ -582,6 +585,8 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("tool_foundry"),
             content: "Found one record.".into(),
             is_error: Some(false),
@@ -596,6 +601,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
     assert_eq!(body["messages"][1]["content"][0]["caller"], caller);
 
     let non_anthropic_caller = ContentBlock::ToolUse {
+        input_json: None,
         id: ToolUseId::new("tool_direct"),
         name: "lookup".into(),
         input: json!({"query":"recent"}),

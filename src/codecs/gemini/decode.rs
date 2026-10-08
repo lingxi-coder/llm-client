@@ -63,7 +63,17 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
                 continue;
             }
         }
-        if let Some(block) = decode_part(part, protocol, &mut saw_tool_call, &mut used_ids) {
+        if let Some(mut block) = decode_part(part, protocol, &mut saw_tool_call, &mut used_ids) {
+            if let ContentBlock::ToolUse {
+                input, input_json, ..
+            } = &mut block
+            {
+                let (display, raw) = response_json.take_tool_input(&format!(
+                    "/candidates/0/content/parts/{index}/functionCall/args"
+                ))?;
+                *input = display;
+                *input_json = raw;
+            }
             content.push(block);
         }
     }
@@ -148,6 +158,7 @@ fn decode_part(
         let name = call.get("name").and_then(Value::as_str)?.to_owned();
         let (id, provider_id) = call_id(call, used_ids);
         return Some(ContentBlock::ToolUse {
+            input_json: None,
             id,
             name,
             input: call.get("args").cloned().unwrap_or(Value::Null),

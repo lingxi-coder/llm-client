@@ -10,6 +10,7 @@ use serde_json::json;
 
 fn request() -> HttpRequest {
     HttpRequest {
+        http1_header_layout: None,
         method: "POST".to_owned(),
         url: "https://x.test/v1/messages".to_owned(),
         headers: vec![("content-type".to_owned(), "application/json".to_owned())],

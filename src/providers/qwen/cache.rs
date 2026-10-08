@@ -262,7 +262,8 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
             CachePosition::System { index } => req.system.get(index).is_some_and(|s| !s.text.is_empty()),
             CachePosition::Message { index, block } => req.messages.get(index)
                 .and_then(|message| message.content.get(block)).is_some_and(|block| match block {
-                    ContentBlock::Text { text, .. } => !text.is_empty(),
+                    ContentBlock::Text { text, .. }
+                    | ContentBlock::TextJsUtf16 { text, .. } => !text.is_empty(),
                     ContentBlock::Image { .. } => true,
                     ContentBlock::ToolResult { content, .. } => !content.is_empty(),
                     _ => false,

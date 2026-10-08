@@ -224,6 +224,7 @@ pub(crate) fn post(
     headers: Vec<(String, String)>,
 ) -> Result<HttpRequest, ImageError> {
     Ok(HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: endpoint,
         headers,
@@ -428,6 +429,7 @@ pub(crate) fn task_get(url: String, task_id: &str) -> Result<HttpRequest, ImageE
         return Err(invalid("invalid provider task ID").into());
     }
     Ok(HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url,
         headers: vec![],

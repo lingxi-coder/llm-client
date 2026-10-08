@@ -326,19 +326,21 @@ fn validate_breakpoint_positions(
                 .system
                 .get(index)
                 .is_some_and(|block| !block.text.is_empty()),
-            CachePosition::Message { index, block } => req
-                .messages
-                .get(index)
-                .and_then(|message| message.content.get(block))
-                .is_some_and(|block| match block {
-                    ContentBlock::Text { text, .. } => !text.is_empty(),
-                    ContentBlock::Image { .. }
-                    | ContentBlock::Document { .. }
-                    | ContentBlock::ToolUse { .. }
-                    | ContentBlock::ToolResult { .. } => true,
-                    ContentBlock::ProviderContent { .. } => allow_native_content,
-                    _ => false,
-                }),
+            CachePosition::Message { index, block } => {
+                req.messages
+                    .get(index)
+                    .and_then(|message| message.content.get(block))
+                    .is_some_and(|block| match block {
+                        ContentBlock::Text { text, .. }
+                        | ContentBlock::TextJsUtf16 { text, .. } => !text.is_empty(),
+                        ContentBlock::Image { .. }
+                        | ContentBlock::Document { .. }
+                        | ContentBlock::ToolUse { .. }
+                        | ContentBlock::ToolResult { .. } => true,
+                        ContentBlock::ProviderContent { .. } => allow_native_content,
+                        _ => false,
+                    })
+            }
         };
         if !valid {
             return Err(invalid(

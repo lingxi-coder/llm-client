@@ -265,6 +265,7 @@ async fn builtin_transport_sends_exact_multipart_content_length() {
     let response = HttpExecutor::new(&http)
         .execute_stream_bounded(
             HttpStreamRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url: format!("http://{addr}/upload"),
                 headers: vec![("content-type".into(), "application/octet-stream".into())],

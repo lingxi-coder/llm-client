@@ -723,6 +723,7 @@ impl<'a> MiniMaxAsyncTtsService<'a> {
         }
         let deadline = Deadline::after(Some(self.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.to_owned(),
             url: url.to_string(),
             headers: vec![

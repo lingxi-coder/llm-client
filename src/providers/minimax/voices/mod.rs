@@ -765,6 +765,7 @@ impl<'a> MiniMaxVoicesService<'a> {
         let url = operation_url(&self.config.api_base_url, route)?;
         let deadline = Deadline::after(Some(self.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url,
             headers: vec![

@@ -1132,6 +1132,7 @@ impl<'a> QwenAsrService<'a> {
         let response = HttpExecutor::new(self.transport)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: "POST".into(),
                     url: format!("{}{}", self.scope.api_base(), SUBMIT_PATH),
                     headers: vec![
@@ -1216,6 +1217,7 @@ impl<'a> QwenAsrService<'a> {
         let response = HttpExecutor::new(pinned_service.transport)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: "GET".into(),
                     url: format!(
                         "{}{}{}",
@@ -1278,6 +1280,7 @@ impl<'a> QwenAsrService<'a> {
         let response = HttpExecutor::new(pinned_service.transport)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: "GET".into(),
                     url: result.url.clone(),
                     headers: vec![("accept".into(), "application/json".into())],

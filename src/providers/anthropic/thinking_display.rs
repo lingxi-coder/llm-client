@@ -48,6 +48,47 @@ pub fn connector_mode(
     }
 }
 
+/// Main print display admission, independent of response presentation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThinkingDisplayPolicy {
+    pub explicit: Option<String>,
+    /// Native `bco`: text, or JSON without verbose, suppresses default display.
+    pub omit_default: bool,
+}
+impl ThinkingDisplayPolicy {
+    pub fn selected_display(&self) -> Option<&str> {
+        self.explicit
+            .as_deref()
+            .filter(|display| !display.is_empty())
+            .or(self.omit_default.then_some("omitted"))
+    }
+    pub fn is_explicit(&self) -> bool {
+        self.explicit
+            .as_ref()
+            .is_some_and(|display| !display.is_empty())
+    }
+}
+
+/// Preserve a preexisting provider display unless the host supplied an explicit
+/// main display. Call before native extra-body spread and connector selection.
+pub fn apply_display_policy(body: &mut Value, policy: &ThinkingDisplayPolicy) -> bool {
+    let Some(display) = policy.selected_display() else {
+        return false;
+    };
+    let Some(thinking) = body.get_mut("thinking").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    if !matches!(
+        thinking.get("type").and_then(Value::as_str),
+        Some("enabled" | "adaptive")
+    ) || (!policy.is_explicit() && thinking.contains_key("display"))
+    {
+        return false;
+    }
+    thinking.insert("display".into(), Value::String(display.into()));
+    true
+}
+
 /// Native host/process budget Ajt/Pjt, separate from ordinary API retries.
 #[derive(Debug, Clone, Default)]
 pub struct DisplayProbeBudget(Arc<AtomicU32>);
@@ -442,5 +483,33 @@ mod tests {
                 "{case}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod main_display_policy_tests {
+    use super::*;
+    #[test]
+    fn main_omitted_default_prevents_updates_without_overriding_explicit_display() {
+        let policy = ThinkingDisplayPolicy {
+            omit_default: true,
+            ..Default::default()
+        };
+        let mut body = serde_json::json!({"thinking":{"type":"adaptive"}});
+        assert!(apply_display_policy(&mut body, &policy));
+        assert_eq!(body["thinking"]["display"], "omitted");
+        assert_eq!(
+            connector_mode(Some("omitted"), false, false, true),
+            ConnectorMode::None
+        );
+        body["thinking"]["display"] = "highlights".into();
+        assert!(!apply_display_policy(&mut body, &policy));
+        let explicit = ThinkingDisplayPolicy {
+            explicit: Some("summarized".into()),
+            omit_default: true,
+        };
+        assert!(apply_display_policy(&mut body, &explicit));
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(ThinkingDisplayPolicy::default().selected_display(), None);
     }
 }

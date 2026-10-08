@@ -20,17 +20,30 @@ pub(crate) struct DecodedText {
 pub(crate) struct ResponseJson {
     pub(crate) value: Value,
     exact_strings: BTreeMap<String, Vec<u16>>,
+    exact_keys: BTreeMap<(String, String), Vec<u16>>,
+    source: String,
+    raw_ranges: BTreeMap<String, (usize, usize)>,
 }
 
 impl ResponseJson {
     pub(crate) fn parse(input: &[u8], invalid_message: &str) -> Result<Self, LlmError> {
-        if let Ok(value) = serde_json::from_slice(input) {
-            return Ok(Self {
-                value,
-                exact_strings: BTreeMap::new(),
-            });
+        // Ordinary text/usage frames keep the existing single-parse path.
+        // Only object-valued tool arguments need lexical subtree boundaries.
+        if let Ok(value) = serde_json::from_slice::<Value>(input) {
+            if !needs_tool_subtree_ranges(&value) {
+                return Ok(Self {
+                    value,
+                    exact_strings: BTreeMap::new(),
+                    exact_keys: BTreeMap::new(),
+                    source: String::from_utf8(input.to_vec()).map_err(|_| {
+                        LlmError::InvalidRequest {
+                            message: invalid_message.to_owned(),
+                        }
+                    })?,
+                    raw_ranges: BTreeMap::new(),
+                });
+            }
         }
-
         let source = std::str::from_utf8(input).map_err(|_| LlmError::InvalidRequest {
             message: invalid_message.to_owned(),
         })?;
@@ -54,6 +67,9 @@ impl ResponseJson {
         Ok(Self {
             value,
             exact_strings: parsed.exact_strings,
+            exact_keys: parsed.exact_keys,
+            source: source.to_owned(),
+            raw_ranges: parsed.raw_ranges,
         })
     }
 
@@ -80,9 +96,31 @@ impl ResponseJson {
         })
     }
 
+    /// Consume a tool-owned JSON subtree, preserving its original number,
+    /// string and key tokens. The returned display has a standalone namespace.
+    pub(crate) fn take_tool_input(
+        &mut self,
+        pointer: &str,
+    ) -> Result<(Value, Option<String>), LlmError> {
+        let Some(&(start, end)) = self.raw_ranges.get(pointer) else {
+            return Ok((
+                self.value.pointer(pointer).cloned().unwrap_or(Value::Null),
+                None,
+            ));
+        };
+        let raw = self.source[start..end].to_owned();
+        let display = parse_tool_input_json(&raw)?;
+        let prefix = format!("{pointer}/");
+        self.exact_strings
+            .retain(|path, _| path != pointer && !path.starts_with(&prefix));
+        self.exact_keys
+            .retain(|(path, _), _| path != pointer && !path.starts_with(&prefix));
+        Ok((display, Some(raw)))
+    }
+
     /// Reject strings in provider-owned or otherwise unsupported locations.
     pub(crate) fn finish(self) -> Result<Value, LlmError> {
-        if self.exact_strings.is_empty() {
+        if self.exact_strings.is_empty() && self.exact_keys.is_empty() {
             Ok(self.value)
         } else {
             Err(LlmError::UnsupportedCapability {
@@ -92,6 +130,43 @@ impl ResponseJson {
             })
         }
     }
+}
+
+fn needs_tool_subtree_ranges(value: &Value) -> bool {
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::Object(object) => {
+                if matches!(
+                    object.get("type").and_then(Value::as_str),
+                    Some("tool_result" | "function_call_output" | "function_result")
+                ) || object.get("role").and_then(Value::as_str) == Some("tool")
+                    || object.contains_key("functionResponse")
+                    || (object.get("name").is_some_and(Value::is_string)
+                        && ["input_schema", "parameters", "parametersJsonSchema"]
+                            .iter()
+                            .any(|field| object.contains_key(*field)))
+                    || (object.get("type").and_then(Value::as_str) == Some("tool_use")
+                        && object.contains_key("input"))
+                    || (object.get("type").and_then(Value::as_str) == Some("function_call")
+                        && object
+                            .get("arguments")
+                            .is_some_and(|value| !value.is_string()))
+                    || (object
+                        .get("arguments")
+                        .is_some_and(|value| !value.is_string()))
+                    || (object.get("name").is_some_and(Value::is_string)
+                        && object.contains_key("args"))
+                {
+                    return true;
+                }
+                pending.extend(object.values());
+            }
+            Value::Array(array) => pending.extend(array),
+            _ => {}
+        }
+    }
+    false
 }
 
 pub(crate) fn combine_text_parts<'a>(
@@ -182,6 +257,8 @@ struct Frame {
 struct FlatDocument {
     sanitized: Vec<u8>,
     exact_strings: BTreeMap<String, Vec<u16>>,
+    exact_keys: BTreeMap<(String, String), Vec<u16>>,
+    raw_ranges: BTreeMap<String, (usize, usize)>,
 }
 
 struct ResponseJsonParser<'a> {
@@ -190,6 +267,10 @@ struct ResponseJsonParser<'a> {
     nodes: Vec<FlatNode>,
     path: Vec<String>,
     exact_strings: BTreeMap<String, Vec<u16>>,
+    exact_keys: BTreeMap<(String, String), Vec<u16>>,
+    raw_ranges: BTreeMap<String, (usize, usize)>,
+    node_starts: Vec<usize>,
+    next_key: u64,
 }
 
 enum WriteJson<'a> {
@@ -206,6 +287,10 @@ impl<'a> ResponseJsonParser<'a> {
             nodes: Vec::new(),
             path: Vec::new(),
             exact_strings: BTreeMap::new(),
+            exact_keys: BTreeMap::new(),
+            raw_ranges: BTreeMap::new(),
+            node_starts: Vec::new(),
+            next_key: 0,
         }
     }
 
@@ -281,10 +366,44 @@ impl<'a> ResponseJsonParser<'a> {
         Ok(FlatDocument {
             sanitized,
             exact_strings: self.exact_strings,
+            exact_keys: self.exact_keys,
+            raw_ranges: self.raw_ranges,
         })
     }
 
     fn value(&mut self) -> Result<(usize, Option<FrameState>), String> {
+        self.whitespace();
+        let start = self.offset;
+        let result = self.parse_value()?;
+        self.node_starts[result.0] = start;
+        if result.1.is_none() {
+            self.record_raw(start);
+        }
+        Ok(result)
+    }
+    fn record_raw(&mut self, start: usize) {
+        let pointer = self.current_pointer();
+        if pointer.is_empty()
+            || self.path.last().is_some_and(|key| {
+                matches!(
+                    key.as_str(),
+                    "input"
+                        | "args"
+                        | "arguments"
+                        | "content"
+                        | "output"
+                        | "result"
+                        | "error"
+                        | "input_schema"
+                        | "parameters"
+                        | "parametersJsonSchema"
+                )
+            })
+        {
+            self.raw_ranges.insert(pointer, (start, self.offset));
+        }
+    }
+    fn parse_value(&mut self) -> Result<(usize, Option<FrameState>), String> {
         self.whitespace();
         match self.peek() {
             Some(b'{') => {
@@ -343,9 +462,38 @@ impl<'a> ResponseJsonParser<'a> {
         if self.peek() != Some(b'"') {
             return Err("expected a JSON object key".into());
         }
-        let (key, exact) = self.string(true)?;
-        if exact.is_some() {
-            return Err("unpaired UTF-16 units in JSON object keys are unsupported".into());
+        let (mut key, exact) = self.string(true)?;
+        let parent = self.current_pointer();
+        let node = stack.last().ok_or("missing JSON parser frame")?.node;
+        if let Some(units) = exact {
+            if let Some(((_, old), _)) = self
+                .exact_keys
+                .iter()
+                .find(|((path, _), value)| path == &parent && **value == units)
+            {
+                key = old.clone();
+            } else {
+                key = self.fresh_key(node, None);
+                self.exact_keys.insert((parent, key.clone()), units);
+            }
+        } else if self.exact_keys.contains_key(&(parent.clone(), key.clone())) {
+            let replacement = self.fresh_key(node, Some(&key));
+            let units = self
+                .exact_keys
+                .remove(&(parent.clone(), key.clone()))
+                .unwrap();
+            self.exact_keys
+                .insert((parent.clone(), replacement.clone()), units);
+            if let FlatNode::Object(fields) = &mut self.nodes[node] {
+                for (old, _) in fields {
+                    if old == &key {
+                        *old = replacement.clone();
+                    }
+                }
+            }
+            let old = self.pointer_with_child(&key);
+            let new = self.pointer_with_child(&replacement);
+            self.rebase_sidecars(&old, &new);
         }
         let frame = stack.last_mut().ok_or("missing JSON parser frame")?;
         frame.key = Some(key);
@@ -394,6 +542,7 @@ impl<'a> ResponseJsonParser<'a> {
 
     fn pop_frame(&mut self, stack: &mut Vec<Frame>) -> Result<(), String> {
         let frame = stack.pop().ok_or("missing JSON parser frame")?;
+        self.record_raw(self.node_starts[frame.node]);
         if frame.path_component.is_some() {
             self.path.pop().ok_or("missing JSON path component")?;
         }
@@ -515,9 +664,7 @@ impl<'a> ResponseJsonParser<'a> {
         if let Ok(display) = String::from_utf16(&units) {
             return Ok((display, None));
         }
-        if is_key {
-            return Err("unpaired UTF-16 units in JSON object keys are unsupported".into());
-        }
+        let _ = is_key;
         let display = normalize_lone_units(&units);
         Ok((display, Some(units)))
     }
@@ -543,9 +690,42 @@ impl<'a> ResponseJsonParser<'a> {
     fn push_node(&mut self, node: FlatNode) -> usize {
         let id = self.nodes.len();
         self.nodes.push(node);
+        self.node_starts.push(0);
         id
     }
 
+    fn fresh_key(&mut self, node: usize, forbidden: Option<&str>) -> String {
+        loop {
+            self.next_key += 1;
+            let key = format!("__llmClientUtf16KeyV1_{}__", self.next_key);
+            if forbidden != Some(key.as_str())
+                && !matches!(&self.nodes[node],FlatNode::Object(fields) if fields.iter().any(|(old,_)| old == &key))
+            {
+                return key;
+            }
+        }
+    }
+    fn rebase_sidecars(&mut self, old: &str, new: &str) {
+        let rebase = |path: String| {
+            if path == old || path.starts_with(&format!("{old}/")) {
+                format!("{new}{}", &path[old.len()..])
+            } else {
+                path
+            }
+        };
+        self.exact_strings = std::mem::take(&mut self.exact_strings)
+            .into_iter()
+            .map(|(p, v)| (rebase(p), v))
+            .collect();
+        self.exact_keys = std::mem::take(&mut self.exact_keys)
+            .into_iter()
+            .map(|((p, k), v)| ((rebase(p), k), v))
+            .collect();
+        self.raw_ranges = std::mem::take(&mut self.raw_ranges)
+            .into_iter()
+            .map(|(p, v)| (rebase(p), v))
+            .collect();
+    }
     fn current_pointer(&self) -> String {
         let mut pointer = String::new();
         for segment in &self.path {
@@ -561,6 +741,11 @@ impl<'a> ResponseJsonParser<'a> {
     }
 
     fn clear_replaced_subtree(&mut self, pointer: &str) {
+        let prefix = format!("{pointer}/");
+        self.exact_keys
+            .retain(|(path, _), _| path != pointer && !path.starts_with(&prefix));
+        self.raw_ranges
+            .retain(|path, _| path != pointer && !path.starts_with(&prefix));
         let descendant_prefix = format!("{pointer}/");
         self.exact_strings
             .retain(|existing, _| existing != pointer && !existing.starts_with(&descendant_prefix));
@@ -716,7 +901,10 @@ mod tests {
 
     #[test]
     fn rejects_unpaired_keys_and_unconsumed_opaque_text() {
-        assert!(ResponseJson::parse(br#"{"\ud800":"value"}"#, INVALID).is_err());
+        assert!(ResponseJson::parse(br#"{"\ud800":"value"}"#, INVALID)
+            .unwrap()
+            .finish()
+            .is_err());
         let parsed = ResponseJson::parse(br#"{"opaque":{"text":"\ud800"}}"#, INVALID).unwrap();
         assert!(matches!(
             parsed.finish(),
@@ -789,5 +977,306 @@ control"}"#
             assert!(parsed.exact_strings.is_empty());
             assert!(parsed.finish().is_ok());
         }
+    }
+}
+
+/// Validate raw argument JSON and produce a Rust-safe display projection.
+/// This consumes exactly one complete JSON value; trailing data is rejected.
+pub(crate) fn parse_tool_input_json(raw: &str) -> Result<Value, LlmError> {
+    serde_json::from_str::<&serde_json::value::RawValue>(raw).map_err(|_| {
+        LlmError::InvalidRequest {
+            message: "tool input raw JSON is not one complete JSON value".into(),
+        }
+    })?;
+    Ok(ResponseJson::parse(raw.as_bytes(), "tool input raw JSON is invalid")?.value)
+}
+
+pub(crate) fn request_projection(
+    input: &[u8],
+) -> Result<crate::exact_json::RequestJsonProjection, LlmError> {
+    let mut parsed = ResponseJson::parse(input, "request body is not valid JSON")?;
+    let candidates: Vec<_> = parsed
+        .raw_ranges
+        .keys()
+        .filter(|pointer| !pointer.is_empty())
+        .cloned()
+        .collect();
+    let mut raw_subtrees = BTreeMap::new();
+    for pointer in candidates {
+        let Some((parent, field)) = pointer.rsplit_once('/') else {
+            continue;
+        };
+        let Some(object) = parsed.value.pointer(parent) else {
+            continue;
+        };
+        let supported = (field == "input" && object["type"] == "tool_use")
+            || (field == "args" && object.get("name").is_some())
+            || (field == "arguments"
+                && object["type"] == "function_call"
+                && !object[field].is_string())
+            || (field == "content"
+                && (object["type"] == "tool_result" || object["role"] == "tool"))
+            || (field == "output" && object["type"] == "function_call_output")
+            || (field == "result" && object["type"] == "function_result")
+            || (matches!(
+                field,
+                "input_schema" | "parameters" | "parametersJsonSchema"
+            ) && pointer.starts_with("/tools/")
+                && object.get("name").is_some())
+            || (matches!(field, "result" | "error")
+                && parent.ends_with("/functionResponse/response"));
+        if !supported
+            || raw_subtrees
+                .keys()
+                .any(|prior: &String| pointer.starts_with(&format!("{prior}/")))
+        {
+            continue;
+        }
+        let (value, raw) = parsed.take_tool_input(&pointer)?;
+        if let Some(raw) = raw {
+            if let Some(slot) = parsed.value.pointer_mut(&pointer) {
+                *slot = value;
+            }
+            raw_subtrees.insert(pointer, raw);
+        }
+    }
+    if !parsed.exact_keys.is_empty() {
+        return Err(LlmError::UnsupportedCapability {
+            message: "request contains exact object keys outside a supported tool input subtree"
+                .into(),
+        });
+    }
+    Ok(crate::exact_json::RequestJsonProjection {
+        value: parsed.value,
+        string_overrides: parsed.exact_strings,
+        raw_subtrees,
+    })
+}
+
+/// Syntax state belongs to one argument stream, across every SSE fragment.
+/// Canonicalizing a literal UTF-16 unit is safe only inside an unescaped string.
+#[derive(Debug, Default)]
+pub(crate) struct ArgumentJsonDecoder {
+    in_string: bool,
+    escaped: bool,
+    unicode_remaining: u8,
+}
+impl ArgumentJsonDecoder {
+    pub(crate) fn push(&mut self, text: DecodedText) -> Result<String, LlmError> {
+        let units = text
+            .utf16_code_units
+            .unwrap_or_else(|| text.text.encode_utf16().collect());
+        let mut output = String::new();
+        for decoded in char::decode_utf16(units) {
+            let character = decoded.as_ref().ok().copied();
+            let malformed = || LlmError::InvalidRequest {
+                message: "tool argument JSON contains an invalid string escape".into(),
+            };
+            if self.unicode_remaining > 0 {
+                if !character.is_some_and(|ch| ch.is_ascii_hexdigit()) {
+                    return Err(malformed());
+                }
+                self.unicode_remaining -= 1;
+            } else if self.escaped {
+                match character {
+                    Some('u') => self.unicode_remaining = 4,
+                    Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => {}
+                    _ => return Err(malformed()),
+                }
+                self.escaped = false;
+            } else if self.in_string {
+                match character {
+                    Some('"') => self.in_string = false,
+                    Some('\\') => self.escaped = true,
+                    Some(ch) if ch < '\u{20}' => return Err(malformed()),
+                    _ => {}
+                }
+            } else {
+                match character {
+                    Some('"') => self.in_string = true,
+                    Some(_) => {}
+                    None => return Err(malformed()),
+                }
+            }
+            match decoded {
+                Ok(ch) => output.push(ch),
+                Err(error) => output.push_str(&format!("\\u{:04x}", error.unpaired_surrogate())),
+            }
+        }
+        Ok(output)
+    }
+}
+
+pub(crate) fn argument_fragment(text: DecodedText) -> Result<String, LlmError> {
+    ArgumentJsonDecoder::default().push(text)
+}
+
+pub(crate) fn tool_input_json_equal(left: &str, right: &str) -> Result<bool, LlmError> {
+    let left = ResponseJson::parse(left.as_bytes(), "tool input JSON is invalid")?;
+    let right = ResponseJson::parse(right.as_bytes(), "tool input JSON is invalid")?;
+    let mut pending = vec![(&left.value, String::new(), &right.value, String::new())];
+    let join =
+        |path: &str, key: &str| format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+    while let Some((a, ap, b, bp)) = pending.pop() {
+        match (a, b) {
+            (Value::String(at), Value::String(bt)) => {
+                let au = left
+                    .exact_strings
+                    .get(&ap)
+                    .cloned()
+                    .unwrap_or_else(|| at.encode_utf16().collect());
+                let bu = right
+                    .exact_strings
+                    .get(&bp)
+                    .cloned()
+                    .unwrap_or_else(|| bt.encode_utf16().collect());
+                if au != bu {
+                    return Ok(false);
+                }
+            }
+            (Value::Number(a), Value::Number(b)) => {
+                if !crate::exact_json::json_numbers_equal(a, b) {
+                    return Ok(false);
+                }
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                if a.len() != b.len() {
+                    return Ok(false);
+                }
+                for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                    pending.push((a, format!("{ap}/{index}"), b, format!("{bp}/{index}")));
+                }
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                if a.len() != b.len() {
+                    return Ok(false);
+                }
+                let mut candidates: BTreeMap<Vec<u16>, (&Value, String)> = b
+                    .iter()
+                    .map(|(key, value)| {
+                        let units = right
+                            .exact_keys
+                            .get(&(bp.clone(), key.clone()))
+                            .cloned()
+                            .unwrap_or_else(|| key.encode_utf16().collect());
+                        (units, (value, join(&bp, key)))
+                    })
+                    .collect();
+                for (key, value) in a {
+                    let units = left
+                        .exact_keys
+                        .get(&(ap.clone(), key.clone()))
+                        .cloned()
+                        .unwrap_or_else(|| key.encode_utf16().collect());
+                    let Some((other, other_path)) = candidates.remove(&units) else {
+                        return Ok(false);
+                    };
+                    pending.push((value, join(&ap, key), other, other_path));
+                }
+            }
+            _ => {
+                if a != b {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tool_input_tests {
+    use super::*;
+    #[test]
+    fn reconciliation_compares_exact_units_instead_of_lossy_display() {
+        assert!(!tool_input_json_equal(r#"{"x":"\ud800"}"#, r#"{"x":"\ud801"}"#).unwrap());
+        assert!(!tool_input_json_equal(r#"{"\ud800":1}"#, r#"{"\ud801":1}"#).unwrap());
+        assert!(
+            tool_input_json_equal(r#"{"\ud800":1,"\ud801":2}"#, r#"{"\ud801":2,"\ud800":1}"#)
+                .unwrap()
+        );
+        assert!(tool_input_json_equal(r#"{"x":1.0}"#, r#"{"x":1}"#).unwrap());
+    }
+    #[test]
+    fn integer_reconciliation_does_not_round_away_source_changes() {
+        assert!(
+            !tool_input_json_equal(r#"{"n":9007199254740993}"#, r#"{"n":9007199254740992}"#)
+                .unwrap()
+        );
+        assert!(!tool_input_json_equal(
+            r#"{"n":18446744073709551615}"#,
+            r#"{"n":18446744073709551614}"#
+        )
+        .unwrap());
+        assert!(
+            !tool_input_json_equal(r#"{"n":9007199254740993}"#, r#"{"n":9007199254740992.0}"#)
+                .unwrap()
+        );
+    }
+    #[test]
+    fn argument_escape_state_is_preserved_across_fragments() {
+        let exact = |units: Vec<u16>| DecodedText {
+            text: String::from_utf16_lossy(&units),
+            utf16_code_units: Some(units),
+        };
+        let mut decoder = ArgumentJsonDecoder::default();
+        decoder
+            .push(DecodedText {
+                text: "{\"x\":\"\\".into(),
+                utf16_code_units: None,
+            })
+            .unwrap();
+        assert!(decoder.push(exact(vec![0xd800])).is_err());
+        assert!(
+            argument_fragment(exact(vec![b'"' as u16, b'\\' as u16, 0xd800, b'"' as u16])).is_err()
+        );
+        let mut decoder = ArgumentJsonDecoder::default();
+        let mut raw = decoder
+            .push(DecodedText {
+                text: "{\"x\":\"".into(),
+                utf16_code_units: None,
+            })
+            .unwrap();
+        raw.push_str(&decoder.push(exact(vec![0xd800])).unwrap());
+        raw.push_str(
+            &decoder
+                .push(DecodedText {
+                    text: "\"}".into(),
+                    utf16_code_units: None,
+                })
+                .unwrap(),
+        );
+        assert_eq!(raw, r#"{"x":"\ud800"}"#);
+        assert!(parse_tool_input_json(&raw).is_ok());
+        // A split valid escaped backslash does not consume the following unit.
+        let mut decoder = ArgumentJsonDecoder::default();
+        decoder
+            .push(DecodedText {
+                text: "\"\\".into(),
+                utf16_code_units: None,
+            })
+            .unwrap();
+        assert!(decoder
+            .push(exact(vec![b'\\' as u16, 0xd800, b'"' as u16]))
+            .is_ok());
+        let mut decoder = ArgumentJsonDecoder::default();
+        decoder
+            .push(DecodedText {
+                text: "\"\\uD8".into(),
+                utf16_code_units: None,
+            })
+            .unwrap();
+        assert!(decoder.push(exact(vec![0xd800])).is_err());
+    }
+    #[test]
+    fn supported_tool_input_consumes_keys_but_opaque_values_remain_rejected() {
+        let mut parsed = ResponseJson::parse(
+            br#"{"content":[{"type":"tool_use","input":{"\ud800":"\ud801"}}],"opaque":"\ud802"}"#,
+            "invalid",
+        )
+        .unwrap();
+        let (_, raw) = parsed.take_tool_input("/content/0/input").unwrap();
+        assert_eq!(raw.as_deref(), Some(r#"{"\ud800":"\ud801"}"#));
+        assert!(parsed.finish().is_err());
     }
 }

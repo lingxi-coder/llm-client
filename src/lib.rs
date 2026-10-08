@@ -99,8 +99,8 @@ pub use presets::{
     builtin as builtin_providers, builtin_catalog, merge as merge_providers, PresetError,
 };
 pub use transport::{
-    Clock, HttpExecutor, HttpRequest, HttpResponse, HttpStreamRequest, HttpTransport,
-    StreamResponse, SystemClock, Transport,
+    Clock, Http1HeaderLayout, HttpExecutor, HttpRequest, HttpResponse, HttpStreamRequest,
+    HttpTransport, StreamResponse, SystemClock, Transport,
 };
 
 pub mod embeddings;

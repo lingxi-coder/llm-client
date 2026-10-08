@@ -1,17 +1,17 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    HttpRequest, LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport,
     protocol::{
         AuthStrategy, ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole,
         ProviderProfile, Region, Secret, UsageState,
     },
+    HttpRequest, LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport,
 };
 use serde_json::json;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 
 struct ResponseTransport {
@@ -214,18 +214,14 @@ async fn exact_counting_uses_count_endpoint_and_never_generates() {
     );
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert!(
-        requests[0]
-            .url
-            .ends_with("/v1/messages/count_tokens?beta=true")
-    );
-    assert!(
-        requests[0]
-            .headers
-            .iter()
-            .any(|(key, value)| key.eq_ignore_ascii_case("anthropic-beta")
-                && value == "token-counting-2024-11-01")
-    );
+    assert!(requests[0]
+        .url
+        .ends_with("/v1/messages/count_tokens?beta=true"));
+    assert!(requests[0]
+        .headers
+        .iter()
+        .any(|(key, value)| key.eq_ignore_ascii_case("anthropic-beta")
+            && value == "token-counting-2024-11-01"));
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert!(body.get("max_tokens").is_none());
     assert!(body.get("stream").is_none());
@@ -371,17 +367,13 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
     overrides.insert("/metadata/annotation".into(), vec![0xd802]);
     overrides.insert("/max_output_tokens".into(), vec![0xd803]);
     overrides.insert("/top_p/annotation".into(), vec![0xd804]);
-    assert!(
-        !draft
-            .message_json_string_overrides()
-            .contains_key("/instructions")
-    );
+    assert!(!draft
+        .message_json_string_overrides()
+        .contains_key("/instructions"));
     draft.set_json_body(body, &overrides).unwrap();
-    assert!(
-        !draft
-            .message_json_string_overrides()
-            .contains_key("/metadata/annotation")
-    );
+    assert!(!draft
+        .message_json_string_overrides()
+        .contains_key("/metadata/annotation"));
     assert_eq!(
         draft
             .request_json_string_overrides()
@@ -404,13 +396,12 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
     for removed in ["max_output_tokens", "temperature", "top_p"] {
         assert!(!wire.contains(removed), "{wire}");
     }
-    assert!(
-        call.request()
-            .headers
-            .iter()
-            .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
-                && value == "Bearer synthetic-chatgpt-token")
-    );
+    assert!(call
+        .request()
+        .headers
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
+            && value == "Bearer synthetic-chatgpt-token"));
 }
 
 #[tokio::test]
@@ -676,17 +667,15 @@ async fn group_names_cannot_masquerade_as_selected_connections() {
         .with_region(Region::International)
         .build()
         .unwrap();
-    assert!(
-        client
-            .prepare_on(
-                "test",
-                &request(),
-                &RequestOptions::default(),
-                RequestMode::Complete
-            )
-            .await
-            .is_err()
-    );
+    assert!(client
+        .prepare_on(
+            "test",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete
+        )
+        .await
+        .is_err());
     assert_eq!(http.sends.load(Ordering::SeqCst), 0);
 }
 
@@ -764,13 +753,11 @@ async fn draft_is_signed_only_after_final_exact_bytes_and_dispatch_marker_can_re
         )
         .await
         .unwrap();
-    assert!(
-        !draft
-            .request()
-            .headers
-            .iter()
-            .any(|(k, _)| k == "signed-body")
-    );
+    assert!(!draft
+        .request()
+        .headers
+        .iter()
+        .any(|(k, _)| k == "signed-body"));
     let bytes = lingxi_llm_client::exact_json::serialize(
         &json!({"text":"display"}),
         &[("/text".into(), vec![0xd800, 65, 0xd83d, 0xde00])]
@@ -851,14 +838,12 @@ async fn finalizer_runs_before_authentication_and_exact_override_rejects_wrong_l
     .await
     .unwrap();
     assert_eq!(http.sends.load(Ordering::SeqCst), 1);
-    assert!(
-        lingxi_llm_client::exact_json::serialize(
-            &json!({"x":1}),
-            &[("/x".into(), vec![65])].into_iter().collect(),
-            lingxi_llm_client::exact_json::JsonEncoding::JavaScript,
-        )
-        .is_err()
-    );
+    assert!(lingxi_llm_client::exact_json::serialize(
+        &json!({"x":1}),
+        &[("/x".into(), vec![65])].into_iter().collect(),
+        lingxi_llm_client::exact_json::JsonEncoding::JavaScript,
+    )
+    .is_err());
 }
 
 #[test]
@@ -917,16 +902,14 @@ async fn final_body_controls_and_exact_utf16_cannot_silently_price_fast_as_stand
         received.inference_report().requested_service_tier,
         Some(lingxi_llm_client::protocol::ServiceTier::Fast)
     );
-    assert!(
-        received
-            .pricing_snapshot()
-            .estimate(
-                received.usage_report(),
-                received.inference_report(),
-                lingxi_llm_client::protocol::Submission::Interactive
-            )
-            .is_err()
-    );
+    assert!(received
+        .pricing_snapshot()
+        .estimate(
+            received.usage_report(),
+            received.inference_report(),
+            lingxi_llm_client::protocol::Submission::Interactive
+        )
+        .is_err());
 }
 
 #[tokio::test]
@@ -1295,13 +1278,11 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
             .unwrap();
     let mut request = request();
     request.controls.top_p = Some(0.7);
-    request.tools = vec![
-        serde_json::from_value(json!({
-            "name":"computer","tool_type":"computer_20250124","description":"desktop",
-            "input_schema":{},"extra":{"display_width_px":1024,"display_height_px":768}
-        }))
-        .unwrap(),
-    ];
+    request.tools = vec![serde_json::from_value(json!({
+        "name":"computer","tool_type":"computer_20250124","description":"desktop",
+        "input_schema":{},"extra":{"display_width_px":1024,"display_height_px":768}
+    }))
+    .unwrap()];
     let call = client
         .prepare_on(
             "primary",
@@ -1316,10 +1297,114 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
     assert_eq!(body["tools"][0]["type"], "computer_20250124");
     assert_eq!(body["tools"][0]["display_width_px"], 1024);
     assert!(body["tools"][0].get("input_schema").is_none());
-    assert!(
-        call.request().headers.iter().any(
-            |(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")
-        )
-    );
+    assert!(call
+        .request()
+        .headers
+        .iter()
+        .any(|(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")));
     assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn draft_body_reorder_retains_exact_arguments_by_call_identity() {
+    let transport = http(200, "{}", false);
+    let client = LlmClientBuilder::with_transport(transport, &profiles("anthropic_messages"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut input = request();
+    input.messages.push(ConversationMessage::assistant(
+        [
+            ("first", r#"{"x":"\ud800"}"#),
+            ("second", r#"{"x":"\ud801"}"#),
+        ]
+        .into_iter()
+        .map(|(id, raw)| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "read".into(),
+            input: lingxi_llm_client::exact_json::parse_tool_input_json(raw).unwrap(),
+            input_json: Some(raw.into()),
+            provider_id: None,
+            caller: None,
+            toolset_name: None,
+            thought_signature: None,
+        })
+        .collect(),
+    ));
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &input,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    let mut body = draft.semantic_body_json().unwrap();
+    body["messages"][0]["content"]
+        .as_array_mut()
+        .unwrap()
+        .swap(0, 1);
+    draft.set_json_body(body, &Default::default()).unwrap();
+    let projection =
+        lingxi_llm_client::exact_json::parse_request_body_json(&draft.request().body).unwrap();
+    assert_eq!(
+        projection.value["messages"][0]["content"][0]["id"],
+        "second"
+    );
+    assert_eq!(
+        projection.raw_subtrees["/messages/0/content/0/input"],
+        r#"{"x":"\ud801"}"#
+    );
+    assert_eq!(
+        projection.raw_subtrees["/messages/0/content/1/input"],
+        r#"{"x":"\ud800"}"#
+    );
+    let mut ambiguous = projection.value.clone();
+    ambiguous["messages"][0]["content"][0]["id"] = json!("first");
+    assert!(draft.set_json_body(ambiguous, &Default::default()).is_err());
+    let mut replaced = projection.value;
+    replaced["messages"][0]["content"][0]["id"] = json!("third");
+    assert!(draft.set_json_body(replaced, &Default::default()).is_err());
+}
+
+#[tokio::test]
+async fn draft_body_reorder_retains_exact_schemas_by_tool_name() {
+    let transport = http(200, "{}", false);
+    let client = LlmClientBuilder::with_transport(transport, &profiles("anthropic_messages"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut input = request();
+    for (name, raw) in [
+        (
+            "first",
+            r#"{"type":"object","properties":{"x":{"description":"\ud800"}}}"#,
+        ),
+        (
+            "second",
+            r#"{"type":"object","properties":{"x":{"description":"\ud801"}}}"#,
+        ),
+    ] {
+        let mut tool: lingxi_llm_client::protocol::ToolSpec = serde_json::from_value(json!({"name":name,"description":"tool","input_schema":lingxi_llm_client::exact_json::parse_tool_input_json(raw).unwrap()})).unwrap();
+        tool.input_schema_json = Some(raw.into());
+        input.tools.push(tool);
+    }
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &input,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    let mut body = draft.semantic_body_json().unwrap();
+    body["tools"].as_array_mut().unwrap().swap(0, 1);
+    draft.set_json_body(body, &Default::default()).unwrap();
+    let projection =
+        lingxi_llm_client::exact_json::parse_request_body_json(&draft.request().body).unwrap();
+    assert_eq!(projection.value["tools"][0]["name"], "second");
+    assert!(projection.raw_subtrees["/tools/0/input_schema"].contains("\\ud801"));
+    assert!(projection.raw_subtrees["/tools/1/input_schema"].contains("\\ud800"));
 }

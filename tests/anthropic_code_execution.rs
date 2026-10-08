@@ -156,6 +156,7 @@ fn programmatic_tool_call(caller: Value) -> Value {
 
 fn programmatic_tool() -> ToolSpec {
     ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "lookup".into(),
@@ -573,6 +574,7 @@ fn ambiguous_raw_controls_duplicate_tools_and_function_name_collisions_fail() {
     ));
     request.hosted_tools.pop();
     request.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "code_execution".into(),
@@ -716,6 +718,7 @@ fn programmatic_callers_encode_and_preflight_documented_combinations() {
                 value: programmatic_server_call(),
             },
             ContentBlock::ToolUse {
+                input_json: None,
                 id: ToolUseId::new("toolu_programmatic"),
                 name: "lookup".into(),
                 input: json!({"query":"latest records"}),
@@ -777,6 +780,8 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("toolu_programmatic"),
             content: "42".into(),
             is_error: Some(false),
@@ -829,6 +834,7 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
                 value: programmatic_server_call(),
             },
             ContentBlock::ToolUse {
+                input_json: None,
                 id: ToolUseId::new("toolu_programmatic"),
                 name: "lookup".into(),
                 input: json!({"query":"latest records"}),
@@ -858,6 +864,7 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
             value: programmatic_server_call(),
         },
         ContentBlock::ToolUse {
+            input_json: None,
             id: ToolUseId::new("toolu_programmatic"),
             name: "lookup".into(),
             input: json!({"query":"latest records"}),
@@ -871,6 +878,8 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("toolu_programmatic"),
             content: "42".into(),
             is_error: Some(false),

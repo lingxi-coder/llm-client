@@ -5,6 +5,22 @@ mod http;
 pub(crate) mod websocket;
 pub use http::HttpTransport;
 
+/// Canonical HTTP backend used by the configurable built-in transport. Hosts
+/// configuring TLS must use these types, rather than a separately sourced reqwest.
+pub use reqwest as http_backend;
+
+/// An explicit HTTP/1 serialization policy. No policy is inferred from a URL,
+/// credentials, provider name, or header value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Http1HeaderLayout {
+    /// Preserve the caller's ordered field occurrences and original spelling.
+    Preserve,
+    /// Native fetch layout: ASCII-sort explicitly provided field names and
+    /// append missing Connection, Host, Accept-Encoding and Content-Length.
+    /// Enables the actual gzip, deflate, Brotli and Zstandard response decoders.
+    NativeFetch,
+}
+
 use crate::protocol::LlmError;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -41,6 +57,7 @@ pub struct HttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
+    pub http1_header_layout: Option<Http1HeaderLayout>,
     pub body: Bytes,
     pub timeout: Option<Duration>,
 }
@@ -53,6 +70,7 @@ pub struct HttpStreamRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
+    pub http1_header_layout: Option<Http1HeaderLayout>,
     pub body: BoxStream<'static, Result<Bytes, LlmError>>,
     pub content_length: u64,
     pub timeout: Option<Duration>,
@@ -72,6 +90,7 @@ impl std::fmt::Debug for HttpStreamRequest {
                     .collect::<Vec<_>>(),
             )
             .field("content_length", &self.content_length)
+            .field("http1_header_layout", &self.http1_header_layout)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -91,6 +110,7 @@ impl std::fmt::Debug for HttpRequest {
                     .collect::<Vec<_>>(),
             )
             .field("body_bytes", &self.body.len())
+            .field("http1_header_layout", &self.http1_header_layout)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -408,6 +428,7 @@ mod dispatch_tests {
         let transport = CountingTransport(AtomicUsize::new(0));
         let expired = std::time::Instant::now() - Duration::from_secs(1);
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: "https://example.test/decision".into(),
             headers: vec![],

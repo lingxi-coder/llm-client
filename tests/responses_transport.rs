@@ -5,8 +5,24 @@ use lingxi_llm_client::{HttpRequest, HttpTransport, Transport};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
+async fn read_headers(stream: &mut tokio::net::TcpStream) {
+    use tokio::io::AsyncReadExt;
+    let mut received = Vec::new();
+    let mut chunk = [0; 512];
+    while !received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let count = stream.read(&mut chunk).await.unwrap();
+        assert!(count > 0, "handshake ended before complete request headers");
+        received.extend_from_slice(&chunk[..count]);
+        assert!(
+            received.len() <= 16_384,
+            "fixture request headers exceeded bound"
+        );
+    }
+}
+
 fn request(url: String) -> HttpRequest {
     HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url,
         headers: vec![("Authorization".into(), "Bearer private-token".into())],
@@ -15,6 +31,8 @@ fn request(url: String) -> HttpRequest {
     }
 }
 #[tokio::test]
+// Tungstenite fixes the callback error type; this trait cannot return a box.
+#[allow(clippy::result_large_err)]
 async fn responses_reuse_terminal_connection_without_replaying() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/responses", listener.local_addr().unwrap());
@@ -86,7 +104,7 @@ async fn dropping_incomplete_body_discards_socket() {
 }
 #[tokio::test]
 async fn rejects_bad_accept_and_redacts_query() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!(
         "http://{}/responses?secret=private-query",
@@ -94,8 +112,7 @@ async fn rejects_bad_accept_and_redacts_query() {
     );
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buffer = vec![0; 4096];
-        stream.read(&mut buffer).await.unwrap();
+        read_headers(&mut stream).await;
         stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: wrong\r\n\r\n").await.unwrap();
     });
     let error = HttpTransport::new()
@@ -109,6 +126,8 @@ async fn rejects_bad_accept_and_redacts_query() {
     server.await.unwrap();
 }
 #[tokio::test]
+// Tungstenite fixes the callback error type; this trait cannot return a box.
+#[allow(clippy::result_large_err)]
 async fn configured_http_proxy_is_used_for_websocket() {
     // The endpoint intentionally cannot resolve. A successful handshake proves
     // WebSockets use the configured HTTP proxy instead of an independent socket.
@@ -191,14 +210,13 @@ async fn configured_idle_timeout_bounds_silent_responses() {
 }
 #[tokio::test]
 async fn handshake_rejections_are_classified_without_echoing_provider_secrets() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     for status in [401, 403, 426, 429, 503] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/responses", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0; 4096];
-            stream.read(&mut buf).await.unwrap();
+            read_headers(&mut stream).await;
             stream.write_all(format!("HTTP/1.1 {status} Rejected\r\nRetry-After: 3\r\nContent-Length: 7\r\n\r\nprivate").as_bytes()).await.unwrap();
         });
         let error = HttpTransport::new()

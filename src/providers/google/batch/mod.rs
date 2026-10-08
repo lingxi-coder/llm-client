@@ -931,6 +931,7 @@ impl<'a> GeminiBatchService<'a> {
             ),
         ];
         let start_request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: upload_url.into(),
             headers: start_headers,
@@ -952,6 +953,7 @@ impl<'a> GeminiBatchService<'a> {
             })?;
 
         let request = crate::transport::HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: session_url.to_owned(),
             headers: vec![
@@ -1288,6 +1290,7 @@ impl<'a> GeminiBatchService<'a> {
             encode_path_segment(&file.file_id)
         ))?;
         let mut request = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: url.into(),
             headers: Vec::new(),
@@ -1488,6 +1491,7 @@ impl<'a> GeminiBatchService<'a> {
         }
         self.send_raw(
             HttpRequest {
+                http1_header_layout: None,
                 method: method.into(),
                 url: url.into(),
                 headers,

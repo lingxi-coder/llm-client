@@ -662,7 +662,7 @@ fn preflight_input(input: &RealtimeInput, max: usize) -> Result<(), RealtimeErro
             item_id.len()
         }
         RealtimeInput::TruncateAudio { item_id, .. } => item_id.len(),
-        RealtimeInput::ToolResult { call_id, output } => call_id.len() + output.to_string().len(),
+        RealtimeInput::ToolResult { call_id, output , .. } => call_id.len() + output.to_string().len(),
         RealtimeInput::ToolResults { results } => {
             if results.is_empty() {
                 return Err(RealtimeError::InvalidInput {

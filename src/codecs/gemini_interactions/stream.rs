@@ -4,8 +4,10 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 struct Step {
+    arguments_decoder: crate::response_json::ArgumentJsonDecoder,
     value: Value,
     arguments: String,
+    input_json: Option<String>,
     stopped: bool,
 }
 pub(super) struct InteractionsDecoder {
@@ -51,9 +53,46 @@ impl EventDecoder for InteractionsDecoder {
                 "Interactions stream ended without interaction.completed",
             ));
         }
-        let event: Value = serde_json::from_slice(frame).map_err(|error| {
-            Self::interrupted(format!("invalid Interactions stream JSON: {error}"))
-        })?;
+        let mut parsed =
+            crate::response_json::ResponseJson::parse(frame, "invalid Interactions stream JSON")?;
+        let mut event = parsed.value.clone();
+        let mut start_raw = None;
+        if event["step"]["type"] == "function_call" && event["step"].get("arguments").is_some() {
+            let (display, raw) = parsed.take_tool_input("/step/arguments")?;
+            event["step"]["arguments"] = display;
+            start_raw = raw;
+        }
+        let mut delta_raw = None;
+        if event["event_type"] == "step.delta"
+            && self
+                .steps
+                .get(&Self::index(&event)?)
+                .is_some_and(|step| step.value["type"] == "function_call")
+            && event["delta"]
+                .get("arguments")
+                .is_some_and(|value| !value.is_string())
+        {
+            let (display, raw) = parsed.take_tool_input("/delta/arguments")?;
+            event["delta"]["arguments"] = display;
+            delta_raw = raw;
+        }
+        let mut terminal_raw = std::collections::BTreeMap::new();
+        if let Some(steps) = event
+            .pointer_mut("/interaction/steps")
+            .and_then(Value::as_array_mut)
+        {
+            for (index, step) in steps.iter_mut().enumerate() {
+                if step["type"] == "function_call" {
+                    let (display, raw) =
+                        parsed.take_tool_input(&format!("/interaction/steps/{index}/arguments"))?;
+                    step["arguments"] = display;
+                    if let Some(raw) = raw {
+                        terminal_raw
+                            .insert(step["id"].as_str().unwrap_or_default().to_owned(), raw);
+                    }
+                }
+            }
+        }
         let kind = event["event_type"]
             .as_str()
             .ok_or_else(|| Self::interrupted("Interactions event is missing event_type"))?;
@@ -61,7 +100,7 @@ impl EventDecoder for InteractionsDecoder {
         if self.buffered > 16 * 1024 * 1024 {
             return Err(Self::interrupted("Interactions response exceeds 16 MiB"));
         }
-        match kind {
+        let result = match kind {
             "interaction.created" => {
                 if self.started {
                     return Err(Self::interrupted("duplicate Interactions start"));
@@ -97,8 +136,10 @@ impl EventDecoder for InteractionsDecoder {
                 self.steps.insert(
                     index,
                     Step {
+                        arguments_decoder: Default::default(),
                         value,
                         arguments: String::new(),
+                        input_json: start_raw,
                         stopped: false,
                     },
                 );
@@ -116,7 +157,10 @@ impl EventDecoder for InteractionsDecoder {
                         let fragment = delta["arguments"].as_str().ok_or_else(|| {
                             Self::interrupted("Interactions argument delta must be a string")
                         })?;
-                        step.arguments.push_str(fragment);
+                        let fragment = step
+                            .arguments_decoder
+                            .push(parsed.take_text("/delta/arguments", fragment)?)?;
+                        step.arguments.push_str(&fragment);
                     }
                     Some("text") if step.value["type"] == "model_output" => {
                         let text = delta["text"].as_str().ok_or_else(|| {
@@ -162,6 +206,35 @@ impl EventDecoder for InteractionsDecoder {
                                 "Interactions step delta must be an object",
                             ));
                         }
+                        if step.value["type"] == "function_call" {
+                            for key in ["id", "name"] {
+                                if step.value[key]
+                                    .as_str()
+                                    .is_some_and(|value| !value.is_empty())
+                                    && delta
+                                        .get(key)
+                                        .is_some_and(|value| value != &step.value[key])
+                                {
+                                    return Err(Self::interrupted(
+                                        "Interactions delta changes function call identity",
+                                    ));
+                                }
+                            }
+                            if delta.get("arguments").is_some() {
+                                if delta["arguments"].is_string() {
+                                    return Err(Self::interrupted(
+                                        "Interactions argument snapshot must be a JSON value",
+                                    ));
+                                }
+                                step.input_json = Some(
+                                    delta_raw
+                                        .clone()
+                                        .unwrap_or_else(|| delta["arguments"].to_string()),
+                                );
+                                step.arguments.clear();
+                                step.arguments_decoder = Default::default();
+                            }
+                        }
                         for (key, value) in delta.as_object().unwrap() {
                             if key != "type" {
                                 step.value[key] = value.clone();
@@ -178,12 +251,17 @@ impl EventDecoder for InteractionsDecoder {
                     .filter(|step| !step.stopped)
                     .ok_or_else(|| Self::interrupted("Interactions stop has no open step"))?;
                 if step.value["type"] == "function_call" && !step.arguments.is_empty() {
-                    step.value["arguments"] =
-                        serde_json::from_str(&step.arguments).map_err(|error| {
-                            Self::interrupted(format!(
-                                "invalid completed Interactions function arguments: {error}"
-                            ))
-                        })?;
+                    step.value["arguments"] = crate::exact_json::parse_tool_input_json(
+                        &step.arguments,
+                    )
+                    .map_err(|error| {
+                        Self::interrupted(format!(
+                            "invalid completed Interactions function arguments: {error}"
+                        ))
+                    })?;
+                }
+                if !step.arguments.is_empty() {
+                    step.input_json = Some(step.arguments.clone());
                 }
                 step.stopped = true;
                 Ok(vec![])
@@ -206,18 +284,73 @@ impl EventDecoder for InteractionsDecoder {
                     let terminal = terminal.as_array().ok_or_else(|| {
                         Self::interrupted("Interactions terminal steps must be an array")
                     })?;
-                    if terminal.len() != streamed.len()
-                        || terminal
-                            .iter()
-                            .zip(&streamed)
-                            .any(|(final_step, streamed_step)| {
-                                final_step["type"] != streamed_step["type"]
-                                    || (streamed_step["type"] == "function_call"
-                                        && final_step != streamed_step)
-                            })
+                    if terminal.len() != streamed.len() {
+                        return Err(Self::interrupted(
+                            "Interactions terminal steps differ from completed streamed steps",
+                        ));
+                    }
+                    let mut confirmed = std::collections::BTreeSet::new();
+                    for (index, final_step) in terminal.iter().enumerate() {
+                        if final_step["type"] != "function_call" {
+                            if final_step["type"] != streamed[index]["type"] {
+                                return Err(Self::interrupted(
+                                    "Interactions terminal steps differ from completed streamed steps",
+                                ));
+                            }
+                            continue;
+                        }
+                        let id = final_step["id"].as_str().ok_or_else(|| {
+                            Self::interrupted("Interactions terminal call has no id")
+                        })?;
+                        if !confirmed.insert(id) {
+                            return Err(Self::interrupted(
+                                "Interactions terminal repeated a function call id",
+                            ));
+                        }
+                        let mut candidates = self.steps.values().filter(|step| {
+                            step.value["type"] == "function_call"
+                                && step.value["id"].as_str() == Some(id)
+                        });
+                        let step = candidates.next().ok_or_else(|| {
+                            Self::interrupted("Interactions terminal call has no streamed identity")
+                        })?;
+                        if candidates.next().is_some() {
+                            return Err(Self::interrupted(
+                                "Interactions stream repeated a function call id",
+                            ));
+                        }
+                        let mut final_identity = final_step.clone();
+                        let mut streamed_identity = step.value.clone();
+                        final_identity.as_object_mut().unwrap().remove("arguments");
+                        streamed_identity
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("arguments");
+                        let final_raw = terminal_raw
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| final_step["arguments"].to_string());
+                        let streamed_raw = step
+                            .input_json
+                            .clone()
+                            .unwrap_or_else(|| step.value["arguments"].to_string());
+                        if final_identity != streamed_identity
+                            || !crate::exact_json::tool_input_json_equal(&final_raw, &streamed_raw)?
+                        {
+                            return Err(Self::interrupted(
+                                "Interactions terminal calls differ from completed streamed steps",
+                            ));
+                        }
+                    }
+                    if confirmed.len()
+                        != self
+                            .steps
+                            .values()
+                            .filter(|step| step.value["type"] == "function_call")
+                            .count()
                     {
                         return Err(Self::interrupted(
-                            "Interactions terminal calls differ from completed streamed steps",
+                            "Interactions terminal omitted a streamed function call",
                         ));
                     }
                 } else {
@@ -225,7 +358,27 @@ impl EventDecoder for InteractionsDecoder {
                 }
                 // Validation is atomic: no function/native call escapes if a later
                 // member, duplicate ID or terminal status is malformed.
-                let response = super::decode::response(&body, &self.context)?;
+                let mut response = super::decode::response(&body, &self.context)?;
+                for block in &mut response.message.content {
+                    if let ContentBlock::ToolUse {
+                        id,
+                        input,
+                        input_json,
+                        ..
+                    } = block
+                    {
+                        let raw = terminal_raw.get(id.as_str()).cloned().or_else(|| {
+                            self.steps
+                                .values()
+                                .find(|step| step.value["id"].as_str() == Some(id.as_str()))
+                                .and_then(|step| step.input_json.clone())
+                        });
+                        if let Some(raw) = raw {
+                            *input = crate::exact_json::parse_tool_input_json(&raw)?;
+                            *input_json = Some(raw);
+                        }
+                    }
+                }
                 let mut events = vec![];
                 for (block, content) in response.message.content.into_iter().enumerate() {
                     events.push(match content {
@@ -234,6 +387,7 @@ impl EventDecoder for InteractionsDecoder {
                             id,
                             name,
                             input,
+                            input_json,
                             provider_id,
                             caller,
                             toolset_name,
@@ -245,7 +399,7 @@ impl EventDecoder for InteractionsDecoder {
                             provider_id,
                             caller,
                             toolset_name,
-                            arguments_fragment: input.to_string(),
+                            arguments_fragment: input_json.unwrap_or_else(|| input.to_string()),
                         },
                         ContentBlock::Native { value } => StreamEvent::Native { block, value },
                         ContentBlock::ProviderContent { protocol, value } => {
@@ -256,7 +410,7 @@ impl EventDecoder for InteractionsDecoder {
                             }
                         }
                         _ => {
-                            return Err(Self::interrupted("unexpected Interactions decoded block"))
+                            return Err(Self::interrupted("unexpected Interactions decoded block"));
                         }
                     });
                     events.push(StreamEvent::BlockEnd { block });
@@ -277,13 +431,17 @@ impl EventDecoder for InteractionsDecoder {
                 protocol: ProtocolFamily::GeminiInteractions,
                 payload: event,
             }]),
-        }
+        };
+        parsed.finish()?;
+        result
     }
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
         if self.ended {
             Ok(vec![])
         } else {
-            Err(Self::interrupted("Interactions stream interrupted before terminal; submission outcome may be unknown"))
+            Err(Self::interrupted(
+                "Interactions stream interrupted before terminal; submission outcome may be unknown",
+            ))
         }
     }
     fn usage_report(&self) -> UsageReport {

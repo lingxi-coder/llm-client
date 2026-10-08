@@ -284,6 +284,7 @@ fn encode_gemini_multimodal(
         return Err(invalid("Gemini embedding request exceeds 64 MiB"));
     }
     Ok(HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: endpoint,
         headers: vec![("content-type".into(), "application/json".into())],
@@ -453,6 +454,7 @@ pub(crate) async fn list_gemini_models(
         options.total_timeout.unwrap_or(Duration::from_secs(120)),
     ));
     let mut request = HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url: url.into(),
         headers: vec![("accept".into(), "application/json".into())],
@@ -562,6 +564,7 @@ pub(crate) async fn get_gemini_model(
         options.total_timeout.unwrap_or(Duration::from_secs(120)),
     ));
     let mut request = HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url: url.into(),
         headers: vec![("accept".into(), "application/json".into())],

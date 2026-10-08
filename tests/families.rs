@@ -134,6 +134,7 @@ fn the_conversation_is_a_flat_list_of_items() {
             native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
+                input_json: None,
                 id: ToolUseId::new("call-1"),
                 name: "read".to_owned(),
                 input: json!({"path": "a"}),
@@ -147,6 +148,8 @@ fn the_conversation_is_a_flat_list_of_items() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
+                output_json: None,
                 tool_use_id: ToolUseId::new("call-1"),
                 content: "contents".to_owned(),
                 is_error: Some(false),
@@ -1277,6 +1280,8 @@ fn responses_reasoning_round_trips_before_tool_outputs() {
                 native_options: Vec::new(),
                 role: MessageRole::User,
                 content: vec![ContentBlock::ToolResult {
+                    cache_reference: None,
+                    output_json: None,
                     tool_use_id: ToolUseId::new("call_1"),
                     content: "result".into(),
                     is_error: Some(false),
@@ -1363,6 +1368,8 @@ fn responses_tool_results_preserve_structured_and_text_outputs() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
+                output_json: None,
                 tool_use_id: ToolUseId::new("call_1"),
                 content: "fallback".into(),
                 is_error: Some(false),

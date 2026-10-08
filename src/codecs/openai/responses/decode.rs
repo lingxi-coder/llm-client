@@ -112,7 +112,9 @@ pub(crate) fn response_with_approval_support(
                     });
                 }
             }
-            if serde_json::from_str::<Value>(item["arguments"].as_str().unwrap()).is_err() {
+            if crate::exact_json::parse_tool_input_json(item["arguments"].as_str().unwrap())
+                .is_err()
+            {
                 if body["status"].as_str() == Some("incomplete") {
                     content.push(ContentBlock::ProviderContent {
                         protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
@@ -253,6 +255,26 @@ fn decode_item_with_json(
         }
         return Ok(());
     }
+    if item["type"] == "function_call" {
+        let display = item["arguments"].as_str().unwrap_or("{}");
+        let raw = crate::response_json::argument_fragment(
+            response_json.take_text(&format!("/output/{item_index}/arguments"), display)?,
+        )?;
+        let input = crate::exact_json::parse_tool_input_json(&raw)?;
+        let mut copy = item.clone();
+        copy["arguments"] = Value::String(raw.clone());
+        decode_item(&copy, out, saw_tool_call);
+        if let Some(ContentBlock::ToolUse {
+            input: slot,
+            input_json,
+            ..
+        }) = out.last_mut()
+        {
+            *slot = input;
+            *input_json = Some(raw);
+        }
+        return Ok(());
+    }
     decode_item(item, out, saw_tool_call);
     Ok(())
 }
@@ -286,6 +308,7 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
             out.push(ContentBlock::ToolUse {
+                input_json: Some(arguments.to_owned()),
                 id: ToolUseId::new(
                     item.get("call_id")
                         .and_then(Value::as_str)
@@ -296,7 +319,7 @@ pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mu
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                input: serde_json::from_str(arguments).unwrap_or(Value::Null),
+                input: crate::exact_json::parse_tool_input_json(arguments).unwrap_or(Value::Null),
                 provider_id: None,
                 caller: None,
                 toolset_name: None,

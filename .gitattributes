@@ -1,0 +1,4 @@
+# Unified diff context lines and upstream license bytes are intentional.
+vendor/http1-header-layout.patch whitespace=-blank-at-eol
+vendor/lingxi-hyper-rustls/LICENSE whitespace=-blank-at-eof
+vendor/lingxi-reqwest/LICENSE-MIT whitespace=-blank-at-eof

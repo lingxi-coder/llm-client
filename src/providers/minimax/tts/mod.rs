@@ -831,6 +831,7 @@ impl<'a> MiniMaxTtsService<'a> {
             .map_err(|_| invalid("request cannot be serialized"))?;
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let http = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: pinned_service.config.endpoint.clone(),
             headers: vec![
@@ -915,6 +916,7 @@ impl<'a> MiniMaxTtsService<'a> {
         let response = HttpExecutor::new(pinned_service.transport)
             .with_deadline(deadline)
             .send(HttpRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url: pinned_service.config.endpoint.clone(),
                 headers: vec![

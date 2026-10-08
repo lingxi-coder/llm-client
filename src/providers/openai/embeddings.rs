@@ -162,6 +162,7 @@ pub(crate) async fn list_openai_models(
         options.total_timeout.unwrap_or(Duration::from_secs(120)),
     ));
     let mut request = HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url: endpoint.into(),
         headers: vec![("accept".into(), "application/json".into())],

@@ -346,7 +346,27 @@ pub(super) fn request(
             body[key] = value.clone();
         }
     }
-    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
+    let mut raw = crate::exact_json::map_tool_input_raw_subtrees(
+        req,
+        ProtocolFamily::GeminiInteractions,
+        &body,
+    )?;
+    raw.extend(crate::exact_json::map_tool_schema_raw_subtrees(
+        req, &mut body,
+    )?);
+    raw.extend(crate::exact_json::map_tool_output_raw_subtrees(
+        req,
+        ProtocolFamily::GeminiInteractions,
+        &mut body,
+    )?);
+    let encoded = crate::exact_json::serialize_for_request_with_raw_subtrees(
+        &body,
+        &BTreeMap::new(),
+        &raw,
+        crate::exact_json::JsonEncoding::Serde,
+        Some(ProtocolFamily::GeminiInteractions),
+        crate::providers::anthropic::request_policy::AnthropicRequestKind::default(),
+    )?;
     if encoded.len() > 100 * 1024 * 1024 {
         return Err(LlmError::RequestTooLarge {
             message: "Interactions request exceeds 100 MiB".into(),
@@ -354,6 +374,7 @@ pub(super) fn request(
     }
     let base = context.profile().base_url.trim_end_matches('/');
     Ok(HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: if base.ends_with("/interactions") {
             base.into()

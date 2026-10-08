@@ -1530,6 +1530,7 @@ impl<'a> QwenKnowledgeService<'a> {
             headers.push(("content-type".into(), "application/json".into()));
         }
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: url.to_string(),
             headers,

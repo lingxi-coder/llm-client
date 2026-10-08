@@ -435,6 +435,7 @@ fn encode_message<'a>(
                 id,
                 name,
                 input: args,
+                input_json,
                 ..
             } => {
                 flush(role, &mut parts, input);
@@ -445,7 +446,7 @@ fn encode_message<'a>(
                         "name": name,
                         // Arguments go on the wire as a JSON string, as on the
                         // Chat wire.
-                        "arguments": args.to_string(),
+                        "arguments": crate::exact_json::validated_tool_input_json(args,input_json.as_deref())?.map(str::to_owned).unwrap_or_else(||args.to_string()),
                     }))
                     .into(),
                 );

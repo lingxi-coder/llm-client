@@ -173,12 +173,9 @@ fn apply_generation_body_policies(
         return Ok(());
     }
 
-    let mut body: serde_json::Value =
-        serde_json::from_slice(&http.body).map_err(|error| LlmError::InvalidRequest {
-            message: format!(
-                "encoded request body is not JSON for generation body policy: {error}"
-            ),
-        })?;
+    let projection = crate::exact_json::parse_request_body_json(&http.body)?;
+    let raw_subtrees = projection.raw_subtrees;
+    let mut body = projection.value;
     let mut changed = false;
     if apply_chatgpt_policy && body.get("model").is_some() && body.get("input").is_some() {
         crate::auth::header_policy::chatgpt_body(&mut body);
@@ -193,11 +190,15 @@ fn apply_generation_body_policies(
         }
     }
     if changed {
-        http.body = serde_json::to_vec(&body)
-            .map_err(|error| LlmError::InvalidRequest {
-                message: format!("could not serialize final generation body: {error}"),
-            })?
-            .into();
+        http.body = crate::exact_json::serialize_for_request_with_raw_subtrees(
+            &body,
+            &std::collections::BTreeMap::new(),
+            &raw_subtrees,
+            crate::exact_json::JsonEncoding::for_protocol(profile.protocol),
+            Some(profile.protocol),
+            options.anthropic_request_kind,
+        )?
+        .into();
     }
     Ok(())
 }
@@ -227,9 +228,20 @@ pub(super) fn encode_request_text_utf16_body(
         body,
         &options.message_text_utf16_overrides,
     )?;
-    let encoded = crate::exact_json::serialize_for_request(
+    let mut raw_subtrees =
+        crate::exact_json::map_tool_input_raw_subtrees(request, profile.protocol, body)?;
+    raw_subtrees.extend(crate::exact_json::map_tool_schema_raw_subtrees(
+        request, body,
+    )?);
+    raw_subtrees.extend(crate::exact_json::map_tool_output_raw_subtrees(
+        request,
+        profile.protocol,
+        body,
+    )?);
+    let encoded = crate::exact_json::serialize_for_request_with_raw_subtrees(
         body,
         &overrides,
+        &raw_subtrees,
         crate::exact_json::JsonEncoding::for_protocol(profile.protocol),
         Some(profile.protocol),
         options.anthropic_request_kind,

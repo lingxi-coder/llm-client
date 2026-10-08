@@ -368,12 +368,13 @@ fn encode_part<'a>(
         ContentBlock::ToolUse {
             name,
             input,
+            input_json,
             provider_id,
             thought_signature,
             ..
         } => {
-            let mut call =
-                WireValue::from(json!({"name": name})).with("args", WireValue::borrowed(input));
+            let mut call = WireValue::from(json!({"name": name}))
+                .with("args", WireValue::tool_input(input, input_json.as_deref())?);
             if let Some(id) = provider_id {
                 call["id"] = Value::String(id.clone());
             }
@@ -387,6 +388,8 @@ fn encode_part<'a>(
             tool_use_id,
             content,
             is_error,
+            blocks,
+            output_json,
             ..
         } => {
             let (name, provider_id) =
@@ -406,7 +409,11 @@ fn encode_part<'a>(
                     } else {
                         "result"
                     },
-                    WireValue::text(content),
+                    if output_json.is_some() {
+                        WireValue::tool_output(content, blocks.as_deref(), output_json.as_deref())?
+                    } else {
+                        WireValue::text(content)
+                    },
                 ),
             );
             if let Some(id) = provider_id {

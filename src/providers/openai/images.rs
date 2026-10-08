@@ -67,6 +67,7 @@ fn openai_edit(
     }
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     Ok(HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: format!("{}/images/edits", route.base_url.trim_end_matches('/')),
         headers: vec![(

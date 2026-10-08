@@ -1,7 +1,5 @@
 //! Gemini Interactions API: independent model/agent turns and stored references.
 mod result;
-pub(crate) use result::encode_result_block;
-
 mod stream;
 use crate::{
     client::RequestOptions,
@@ -11,6 +9,7 @@ use crate::{
     runtime::{ClientSnapshot, ClientSource},
     transport::{HttpExecutor, HttpRequest, HttpResponse},
 };
+pub(crate) use result::encode_result_block;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -557,6 +556,7 @@ impl Pinned<'_> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url,
             headers: vec![

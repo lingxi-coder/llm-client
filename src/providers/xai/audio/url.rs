@@ -278,6 +278,7 @@ impl<'a> XaiAudioService<'a> {
         body.extend_from_slice(&suffix);
         let deadline = Deadline::after(Some(self.config.request_timeout));
         let http = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: self.route_url("stt")?,
             headers: vec![

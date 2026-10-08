@@ -69,6 +69,7 @@ impl<'a> XaiAudioService<'a> {
 
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: url.into(),
             headers: vec![(
@@ -140,6 +141,7 @@ impl<'a> XaiAudioService<'a> {
         let response = HttpExecutor::new(pinned_service.transport)
             .with_deadline(deadline)
             .send(HttpRequest {
+                http1_header_layout: None,
                 method: "GET".into(),
                 url: url.into(),
                 headers: vec![(

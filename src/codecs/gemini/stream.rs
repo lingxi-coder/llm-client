@@ -8,6 +8,7 @@ use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
 use crate::protocol::{LlmError, ProtocolFamily, StopReason, StreamEvent};
+use crate::response_json::{text_delta, ResponseJson};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -44,15 +45,16 @@ impl EventDecoder for GeminiStreamDecoder {
         if data.is_empty() {
             return Ok(vec![]);
         }
-        let root: Value = serde_json::from_str(data).map_err(|_| LlmError::InvalidRequest {
-            message: "stream frame is not valid JSON".to_owned(),
-        })?;
+        let mut response_json =
+            ResponseJson::parse(data.as_bytes(), "stream frame is not valid JSON")?;
+        let root = response_json.value.clone();
 
         if let Some(u) = root.get("usageMetadata").filter(|v| !v.is_null()) {
             self.usage_raw = Some(u.clone());
         }
 
         if root.get("error").is_some_and(|error| !error.is_null()) {
+            response_json.finish()?;
             return Err(decode::classify_error(500, &root, None));
         }
 
@@ -83,6 +85,7 @@ impl EventDecoder for GeminiStreamDecoder {
             .and_then(Value::as_array)
             .and_then(|c| c.first())
         else {
+            response_json.finish()?;
             return Ok(out);
         };
 
@@ -98,7 +101,7 @@ impl EventDecoder for GeminiStreamDecoder {
         self.used_call_ids.extend(decode::provider_call_ids(parts));
         let mut saw_text_part_in_frame = false;
         let mut saw_reasoning_part_in_frame = false;
-        for part in parts {
+        for (part_index, part) in parts.iter().enumerate() {
             let signature = part
                 .get("thoughtSignature")
                 .and_then(Value::as_str)
@@ -124,11 +127,12 @@ impl EventDecoder for GeminiStreamDecoder {
                     caller: None,
                     toolset_name: None,
                     name,
-                    arguments_fragment: call
-                        .get("args")
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                        .to_string(),
+                    arguments_fragment: {
+                        let (display, raw) = response_json.take_tool_input(&format!(
+                            "/candidates/0/content/parts/{part_index}/functionCall/args"
+                        ))?;
+                        raw.unwrap_or_else(|| display.to_string())
+                    },
                 });
                 if let Some(signature) = signature {
                     out.push(StreamEvent::ThoughtSignature { block, signature });
@@ -188,10 +192,11 @@ impl EventDecoder for GeminiStreamDecoder {
                     self.next_block += 1;
                     b
                 });
-                out.push(StreamEvent::TextDelta {
-                    block,
-                    text: text.to_owned(),
-                });
+                let decoded = response_json.take_text(
+                    &format!("/candidates/0/content/parts/{part_index}/text"),
+                    text,
+                )?;
+                out.push(text_delta(block, decoded));
                 if let Some(signature) = signature {
                     out.push(StreamEvent::ThoughtSignature { block, signature });
                     self.text_block = None;
@@ -206,6 +211,7 @@ impl EventDecoder for GeminiStreamDecoder {
         {
             self.stop = Some(decode::stop_reason(Some(f)));
         }
+        response_json.finish()?;
         Ok(out)
     }
 
@@ -253,5 +259,25 @@ impl GeminiStreamDecoder {
             protocol: Some(context.profile().protocol),
             ..Self::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod utf16_stream_tests {
+    use super::*;
+
+    #[test]
+    fn stream_text_part_retains_lone_units() {
+        let mut decoder = GeminiStreamDecoder::default();
+        let events = decoder
+            .decode_frame(
+                br#"{"modelVersion":"gemini-test","candidates":[{"content":{"parts":[{"text":"A\ud800B"}]}}]}"#,
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::TextDeltaJsUtf16 { text, utf16_code_units, .. }
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        )));
     }
 }

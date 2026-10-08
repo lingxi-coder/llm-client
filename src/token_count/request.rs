@@ -203,6 +203,7 @@ impl<'a> Accumulator<'a> {
                 caller,
                 toolset_name,
                 thought_signature,
+                ..
             } => {
                 self.add_text(id.as_str())?;
                 self.add_text(name)?;
@@ -413,6 +414,7 @@ mod tests {
             messages: vec![
                 ConversationMessage::user_text("hello world"),
                 ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+                    input_json: None,
                     id: "call-1".into(),
                     name: "lookup".to_owned(),
                     input: json!({"query": "local token count"}),
@@ -426,6 +428,8 @@ mod tests {
                     role: MessageRole::User,
                     content: vec![
                         ContentBlock::ToolResult {
+                            cache_reference: None,
+                            output_json: None,
                             tool_use_id: "call-1".into(),
                             content: "found a result".to_owned(),
                             is_error: Some(false),
@@ -472,6 +476,7 @@ mod tests {
                 },
             ],
             tools: vec![ToolSpec {
+                input_schema_json: None,
                 tool_type: None,
                 extra: serde_json::Value::Null,
                 name: "lookup".to_owned(),

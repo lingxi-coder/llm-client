@@ -124,6 +124,7 @@ mod policy_tests {
 
     fn request() -> HttpRequest {
         HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: "https://openrouter.ai/api/v1/chat/completions".into(),
             headers: vec![],

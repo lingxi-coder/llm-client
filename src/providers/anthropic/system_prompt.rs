@@ -218,6 +218,203 @@ impl SystemPromptInput {
     }
 }
 
+/// Explicit host opt-in for Native's system protocol envelope. The identity is
+/// supplied by the embedding product; the SDK never inserts another brand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeSystemPrefix {
+    pub compatibility_version: String,
+    pub entrypoint: String,
+    pub host_identity: PromptText,
+    pub attribution_enabled: bool,
+    pub assume_first_party_base_url: bool,
+}
+
+/// Trusted query facts captured before preparation. No provider payload can
+/// supply these values or turn an ordinary request into a subagent request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePromptAttribution {
+    pub first_user_text: PromptText,
+    pub is_subagent: bool,
+    pub workload: Option<String>,
+    pub previous_request_id: Option<String>,
+    pub prompt_id: Option<String>,
+    pub turn_origin: Option<String>,
+    pub turn_position: Option<(u32, u32)>,
+}
+
+/// Native `AJo`/`cE`: sample JS string indices, then SHA-256 the complete
+/// UTF-16 string's UTF-8 encoding. Selected surrogate fragments can pair at
+/// their new adjacency; missing indices use the string "0", while NUL remains
+/// a truthy one-unit JS string. This fingerprint is not a security digest.
+pub fn native_prompt_fingerprint(first_user_text: &PromptText, version: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut units: Vec<u16> = "59cf53e54c78".encode_utf16().collect();
+    for index in [4, 7, 20] {
+        units.push(
+            first_user_text
+                .utf16_code_units()
+                .get(index)
+                .copied()
+                .unwrap_or(u16::from(b'0')),
+        );
+    }
+    units.extend(version.encode_utf16());
+    let digest = Sha256::digest(String::from_utf16_lossy(&units).as_bytes());
+    format!("{:02x}{:x}", digest[0], digest[1] >> 4)
+}
+
+impl NativeSystemPrefix {
+    /// Native `pi`: explicit first-party assumption or the selected configured
+    /// base URL's host, including non-default ports, matching the official host.
+    /// Route identity is separate and required; compatible gateways stay neutral.
+    pub fn checksum_placeholder_enabled(&self, profile: &ProviderProfile) -> bool {
+        profile.provider_id.as_str() == "anthropic"
+            && profile.protocol == ProtocolFamily::AnthropicMessages
+            && (self.assume_first_party_base_url
+                || url::Url::parse(&profile.base_url).is_ok_and(|url| {
+                    url.host_str() == Some(FIRST_PARTY_API_HOST) && url.port().is_none()
+                }))
+    }
+
+    /// Native `wio` field order and validation. The source declares the literal
+    /// checksum placeholder; no final-wire checksum algorithm is invented here.
+    pub fn billing_header(
+        &self,
+        context: &NativePromptAttribution,
+        profile: &ProviderProfile,
+    ) -> Option<PromptText> {
+        if !self.attribution_enabled {
+            return None;
+        }
+        let mut text = format!(
+            "x-anthropic-billing-header: cc_version={}.{}; cc_entrypoint={};",
+            self.compatibility_version,
+            native_prompt_fingerprint(&context.first_user_text, &self.compatibility_version),
+            self.entrypoint
+        );
+        let official = self.checksum_placeholder_enabled(profile);
+        if official || profile.protocol == ProtocolFamily::VertexClaude {
+            text.push_str(" cch=00000;");
+        }
+        if let Some(workload) = context
+            .workload
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            text.push_str(&format!(" cc_workload={workload};"));
+        }
+        if context.is_subagent {
+            text.push_str(" cc_is_subagent=true;");
+        }
+        if official {
+            if let Some(id) = context.previous_request_id.as_deref().filter(|value| {
+                value.strip_prefix("req_").is_some_and(|suffix| {
+                    (1..=36).contains(&suffix.len())
+                        && suffix
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                })
+            }) {
+                text.push_str(&format!(" cc_prev_req={id};"));
+            }
+            if let Some(id) = context
+                .prompt_id
+                .as_deref()
+                .filter(|value| valid_prompt_uuid(value))
+            {
+                text.push_str(&format!(" cc_prompt_id={id};"));
+            }
+            if let Some(origin) = context.turn_origin.as_deref().filter(|value| {
+                (1..=32).contains(&value.len())
+                    && value.as_bytes()[0].is_ascii_lowercase()
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+            }) {
+                text.push_str(&format!(" cc_turn_origin={origin};"));
+            }
+            if let Some((prompt, turn)) = context
+                .turn_position
+                .filter(|(prompt, turn)| *prompt <= 10_000_000 && (1..=10_000_000).contains(turn))
+            {
+                text.push_str(&format!(" cc_prompt_index={prompt}; cc_turn_index={turn};"));
+            }
+        }
+        Some(PromptText::from_string(text))
+    }
+}
+fn valid_prompt_uuid(value: &str) -> bool {
+    let parts: Vec<_> = value.split('-').collect();
+    parts.len() == 5
+        && parts.iter().zip([8, 4, 4, 4, 12]).all(|(part, len)| {
+            part.len() == len && part.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// Native `GYo`: prepend protocol attribution and the real embedding identity
+/// even for a custom prompt. Original source members and dynamic context remain
+/// exact; the same SDK block/cache projector consumes the completed vector.
+pub fn prepend_native_system_prefix(
+    source: Option<&SystemPromptInput>,
+    prefix: &NativeSystemPrefix,
+    context: &NativePromptAttribution,
+    profile: &ProviderProfile,
+) -> SystemPromptInput {
+    prepend_native_prefix_inner(source, prefix, context, profile, true)
+}
+/// Native iN side-query envelope adds attribution without inventing an identity.
+pub fn prepend_native_attribution(
+    source: Option<&SystemPromptInput>,
+    prefix: &NativeSystemPrefix,
+    context: &NativePromptAttribution,
+    profile: &ProviderProfile,
+) -> SystemPromptInput {
+    prepend_native_prefix_inner(source, prefix, context, profile, false)
+}
+fn prepend_native_prefix_inner(
+    source: Option<&SystemPromptInput>,
+    prefix: &NativeSystemPrefix,
+    context: &NativePromptAttribution,
+    profile: &ProviderProfile,
+    include_identity: bool,
+) -> SystemPromptInput {
+    let mut elements = Vec::new();
+    if let Some(billing) = prefix.billing_header(context, profile) {
+        elements.push(billing);
+    }
+    if include_identity && !prefix.host_identity.is_empty() {
+        elements.push(prefix.host_identity.clone());
+    }
+    let mut dynamic_context = None;
+    if let Some(source) = source {
+        match source {
+            SystemPromptInput::SourceVector {
+                elements: original,
+                dynamic_context: dynamic,
+                ..
+            } => {
+                elements.extend(original.clone());
+                dynamic_context = dynamic.clone();
+            }
+            SystemPromptInput::CustomPrompt { text } => elements.push(text.clone()),
+            SystemPromptInput::NativeCustomPrompt {
+                source_elements, ..
+            } => elements.extend(source_elements.clone()),
+        }
+    }
+    SystemPromptInput::source_vector(
+        elements,
+        dynamic_context,
+        if include_identity {
+            Some(prefix.host_identity.clone())
+        } else {
+            source
+                .and_then(SystemPromptInput::host_branding_identity)
+                .cloned()
+        },
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Source-prompt caching group used by Native's system-prompt composer.
 pub enum SectionScope {
@@ -2332,5 +2529,155 @@ mod tests {
                 .map(|breakpoint| breakpoint.ttl),
             Some(CacheTtl::OneHour)
         );
+    }
+}
+
+#[cfg(test)]
+mod native_prefix_tests {
+    use super::*;
+    fn profile(base_url: &str) -> ProviderProfile {
+        serde_json::from_value(serde_json::json!({"provider_id":"anthropic","profile_name":"native","base_url":base_url,"protocol":"anthropic_messages","auth":"none","regions":["international"],"models":[]})).unwrap()
+    }
+    fn prefix() -> NativeSystemPrefix {
+        NativeSystemPrefix {
+            compatibility_version: "2.1.293".into(),
+            entrypoint: "sdk-cli".into(),
+            host_identity: PromptText::from_string(
+                "You are LingXi, an agentic command-line coding assistant.",
+            ),
+            attribution_enabled: true,
+            assume_first_party_base_url: false,
+        }
+    }
+    fn attribution() -> NativePromptAttribution {
+        NativePromptAttribution {
+            first_user_text: PromptText::from_string("Return HEADLESS_LOCAL_RESPONSE."),
+            is_subagent: false,
+            workload: None,
+            previous_request_id: None,
+            prompt_id: None,
+            turn_origin: None,
+            turn_position: None,
+        }
+    }
+    #[test]
+    fn raw_utf16_fingerprint_matches_native_indexing_and_utf8_hashing() {
+        assert_eq!(
+            native_prompt_fingerprint(&attribution().first_user_text, "2.1.293"),
+            "7c5"
+        );
+        assert_eq!(
+            native_prompt_fingerprint(&PromptText::from_string(""), "2.1.293"),
+            "9b8"
+        );
+        assert_eq!(
+            native_prompt_fingerprint(&PromptText::from_utf16(vec![0; 21]), "2.1.293"),
+            "16c"
+        );
+        let mut units = vec![u16::from(b'a'); 21];
+        units[4] = 0xD83D;
+        units[7] = 0xDE00;
+        units[20] = 0xD800;
+        assert_eq!(
+            native_prompt_fingerprint(&PromptText::from_utf16(units), "2.1.293"),
+            "834"
+        );
+    }
+    #[test]
+    fn loopback_prefix_preserves_custom_source_real_identity_and_cache_slots() {
+        let prefix = prefix();
+        let route = profile("http://localhost:1234");
+        let original =
+            SystemPromptInput::custom_prompt(PromptText::from_utf16(vec![0xD800, u16::from(b'x')]));
+        let output = prepend_native_system_prefix(Some(&original), &prefix, &attribution(), &route);
+        let SystemPromptInput::SourceVector {
+            elements,
+            host_branding_identity,
+            ..
+        } = &output
+        else {
+            panic!()
+        };
+        assert_eq!(
+            elements[0].display_text(),
+            "x-anthropic-billing-header: cc_version=2.1.293.7c5; cc_entrypoint=sdk-cli;"
+        );
+        assert_eq!(elements[1], prefix.host_identity);
+        assert_eq!(host_branding_identity.as_ref(), Some(&prefix.host_identity));
+        assert_eq!(elements[2].utf16_code_units(), &[0xD800, u16::from(b'x')]);
+        let blocks = project_native_source_vector(
+            &output.source_elements(),
+            true,
+            false,
+            false,
+            false,
+            output.host_branding_identity(),
+        );
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].cache_breakpoint, None);
+        assert!(blocks[1].cache_breakpoint.is_some());
+        assert!(blocks[2].cache_breakpoint.is_some());
+        assert!(!output.display_text().contains("Claude agent"));
+    }
+    #[test]
+    fn source_boundaries_opt_out_and_subagent_flag_keep_native_conditions() {
+        let mut prefix = prefix();
+        let mut context = attribution();
+        context.is_subagent = true;
+        context.workload = Some("integration".into());
+        context.previous_request_id = Some("req_saved".into());
+        context.prompt_id = Some("11111111-2222-3333-4444-555555555555".into());
+        context.turn_origin = Some("human".into());
+        context.turn_position = Some((0, 1));
+        let official = prefix
+            .billing_header(&context, &profile("https://api.anthropic.com"))
+            .unwrap();
+        assert_eq!(official.display_text(),"x-anthropic-billing-header: cc_version=2.1.293.7c5; cc_entrypoint=sdk-cli; cch=00000; cc_workload=integration; cc_is_subagent=true; cc_prev_req=req_saved; cc_prompt_id=11111111-2222-3333-4444-555555555555; cc_turn_origin=human; cc_prompt_index=0; cc_turn_index=1;");
+        let loopback = prefix
+            .billing_header(&context, &profile("http://127.0.0.1:4321"))
+            .unwrap();
+        assert!(!loopback.display_text().contains("cch="));
+        assert!(!loopback.display_text().contains("cc_prev_req"));
+        assert!(loopback.display_text().ends_with(" cc_is_subagent=true;"));
+        let source = SystemPromptInput::source_vector(
+            vec!["shared".into(), DYNAMIC_BOUNDARY.into()],
+            Some("dynamic".into()),
+            None,
+        );
+        prefix.attribution_enabled = false;
+        let output = prepend_native_system_prefix(
+            Some(&source),
+            &prefix,
+            &context,
+            &profile("http://localhost:1234"),
+        );
+        let SystemPromptInput::SourceVector {
+            elements,
+            dynamic_context,
+            ..
+        } = output
+        else {
+            panic!()
+        };
+        assert_eq!(
+            elements,
+            vec![
+                prefix.host_identity.clone(),
+                "shared".into(),
+                DYNAMIC_BOUNDARY.into()
+            ]
+        );
+        assert_eq!(dynamic_context, Some("dynamic".into()));
+        prefix.attribution_enabled = true;
+        let side = prepend_native_attribution(
+            Some(&source),
+            &prefix,
+            &context,
+            &profile("http://localhost:1234"),
+        );
+        assert!(!side.display_text().contains("You are LingXi"));
+        assert!(!prefix.checksum_placeholder_enabled(&profile("https://api.anthropic.com:8443")));
+        prefix.assume_first_party_base_url = true;
+        assert!(prefix.checksum_placeholder_enabled(&profile("http://localhost:1234")));
     }
 }

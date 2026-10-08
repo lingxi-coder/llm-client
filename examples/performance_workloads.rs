@@ -216,6 +216,7 @@ fn main() {
         req = base_request();
         req.tools = (0..count)
             .map(|i| ToolSpec {
+                input_schema_json: None,
                 tool_type: None,
                 extra: serde_json::Value::Null,
                 name: format!("tool_{i}"),

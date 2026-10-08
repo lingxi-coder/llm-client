@@ -803,6 +803,7 @@ impl<'a> QwenTtsService<'a> {
             headers.push(("X-DashScope-SSE".into(), "enable".into()));
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: self.scope.region.endpoint().into(),
             headers,

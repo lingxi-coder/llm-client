@@ -608,6 +608,8 @@ fn thinking_config_turns_the_budget_into_the_wire_shape() {
 fn a_tool_result_carries_its_error_flag() {
     let body = encode(
         &request(vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("toolu_1"),
             content: "no such file".to_owned(),
             is_error: Some(true),
@@ -857,6 +859,7 @@ fn strict_tools_are_enabled_only_when_requested() {
     for strict in [true, false] {
         let mut req = request(vec![]);
         req.tools.push(lingxi_llm_client::protocol::ToolSpec {
+            input_schema_json: None,
             tool_type: None,
             extra: serde_json::Value::Null,
             name: "lookup".into(),

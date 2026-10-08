@@ -428,6 +428,7 @@ impl<'a> AnthropicSkillsService<'a> {
             )
             .await?;
         let stream_request = HttpStreamRequest {
+            http1_header_layout: None,
             method: request.method,
             url: request.url,
             headers: request.headers,
@@ -610,6 +611,7 @@ impl<'a> AnthropicSkillsService<'a> {
             ))
             .execute_stream_bounded(
                 HttpStreamRequest {
+                    http1_header_layout: None,
                     method: request.method,
                     url: request.url,
                     headers: request.headers,
@@ -828,6 +830,7 @@ impl<'a> AnthropicSkillsService<'a> {
             headers.push(("Content-Type".into(), content_type));
         }
         let mut request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url,
             headers,

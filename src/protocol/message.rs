@@ -85,6 +85,10 @@ pub enum ContentBlock {
         id: ToolUseId,
         name: String,
         input: Value,
+        /// Exact JSON subtree for lossless provider replay. Runtime metadata,
+        /// never a provider field; clear or replace it when changing `input`.
+        #[serde(skip)]
+        input_json: Option<String>,
         /// Provider-issued call ID, if one exists. The local `id` also pairs
         /// calls with results when an older provider omits this field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,6 +124,13 @@ pub enum ContentBlock {
         /// images or resources). Sent verbatim when present.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blocks: Option<Vec<Value>>,
+        /// Exact JSON string or content array paired with `content`/`blocks`.
+        /// Clear or replace this carrier whenever changing the displayed output.
+        #[serde(skip)]
+        output_json: Option<String>,
+        /// Anthropic cache reference for this exact result receipt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_reference: Option<String>,
         /// Anthropic client-toolset family of the paired call, echoed on
         /// Browser/Computer member results.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -435,6 +446,8 @@ mod tests {
     #[test]
     fn tool_result_round_trips_with_and_without_blocks() {
         let b = ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("toolu_1"),
             content: "ok".into(),
             is_error: Some(false),
@@ -533,6 +546,7 @@ mod tests {
     #[test]
     fn client_toolset_names_round_trip_and_null_decodes_as_absent() {
         let use_block = ContentBlock::ToolUse {
+            input_json: None,
             id: ToolUseId::new("toolu_browser"),
             name: "screenshot".into(),
             input: serde_json::json!({"tab_id": "1"}),
@@ -549,6 +563,8 @@ mod tests {
         );
 
         let result_block = ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("toolu_browser"),
             content: "done".into(),
             is_error: Some(false),
@@ -594,6 +610,7 @@ mod tests {
     #[test]
     fn tool_uses_exposes_toolset_name_with_member_name() {
         let message = ConversationMessage::assistant(vec![ContentBlock::ToolUse {
+            input_json: None,
             id: ToolUseId::new("toolu_browser"),
             name: "screenshot".into(),
             input: serde_json::json!({"tab_id": "1"}),

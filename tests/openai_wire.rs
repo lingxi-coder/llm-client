@@ -243,6 +243,7 @@ fn a_tool_result_becomes_its_own_message() {
         native_options: Vec::new(),
         role: MessageRole::Assistant,
         content: vec![ContentBlock::ToolUse {
+            input_json: None,
             id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             name: "read".to_owned(),
             input: json!({"path": "a"}),
@@ -256,6 +257,8 @@ fn a_tool_result_becomes_its_own_message() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             content: "contents".to_owned(),
             is_error: Some(false),
@@ -600,6 +603,7 @@ fn with_tools(choice: ToolChoice) -> ChatRequest {
     let mut req = request();
     req.tool_choice = choice;
     req.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "read".to_owned(),
@@ -944,6 +948,7 @@ fn chat_preserves_explicit_tool_strictness() {
     for strict in [true, false] {
         let mut req = request();
         req.tools.push(ToolSpec {
+            input_schema_json: None,
             tool_type: None,
             extra: serde_json::Value::Null,
             name: "lookup".into(),
@@ -1117,6 +1122,7 @@ fn streaming_chat_reasoning_preserves_detail_chunks_and_emits_native_data_once()
                 } => Some((
                     *block,
                     ContentBlock::ToolUse {
+                        input_json: None,
                         id: id.clone(),
                         name: name.clone(),
                         input: serde_json::from_str(arguments_fragment).unwrap(),

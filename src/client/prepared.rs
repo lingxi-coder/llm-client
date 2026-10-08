@@ -137,13 +137,13 @@ impl ClientSnapshot {
                 std::collections::BTreeMap::new()
             } else {
                 let body: serde_json::Value =
-                    serde_json::from_slice(&prepared.http.body).map_err(|error| {
-                        LlmError::InvalidRequest {
+                    crate::exact_json::parse_request_body_json(&prepared.http.body)
+                        .map(|projection| projection.value)
+                        .map_err(|error| LlmError::InvalidRequest {
                             message: format!(
                                 "encoded request body is not JSON for UTF-16 text mapping: {error}"
                             ),
-                        }
-                    })?;
+                        })?;
                 crate::exact_json::map_message_text_overrides(
                     request.request,
                     selected.profile.protocol,
@@ -243,11 +243,7 @@ impl RequestDraft {
                 return Ok(value.clone());
             }
         }
-        serde_json::from_slice(&self.call.prepared.http.body).map_err(|error| {
-            LlmError::InvalidRequest {
-                message: format!("prepared request body has no semantic JSON view: {error}"),
-            }
-        })
+        Ok(crate::exact_json::parse_request_body_json(&self.call.prepared.http.body)?.value)
     }
 
     /// Select a provider auth strategy whose generation-body policy must be
@@ -322,6 +318,12 @@ impl RequestDraft {
             .connect_websocket_request(handshake, transport.unwrap_or(self.call.http.as_ref()))
             .await
     }
+    /// Select HTTP/1 field serialization explicitly. The transport resolves the
+    /// layout against the final authenticated headers at dispatch time.
+    pub fn set_http1_header_layout(&mut self, layout: Option<crate::Http1HeaderLayout>) {
+        self.call.prepared.http.http1_header_layout = layout;
+    }
+
     pub fn request(&self) -> &HttpRequest {
         &self.call.prepared.http
     }
@@ -344,9 +346,29 @@ impl RequestDraft {
         value: serde_json::Value,
         overrides: &std::collections::BTreeMap<String, Vec<u16>>,
     ) -> Result<(), LlmError> {
-        let bytes: bytes::Bytes = crate::exact_json::serialize_for_request(
+        let old = crate::exact_json::parse_request_body_json(&self.call.prepared.http.body)?;
+        let raw_subtrees = crate::exact_json::remap_tool_input_raw_subtrees(&old, &value)?;
+        self.set_json_body_with_raw_subtrees(value, overrides, &raw_subtrees)
+    }
+
+    pub fn request_tool_input_raw_subtrees(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, LlmError> {
+        Ok(crate::exact_json::parse_request_body_json(&self.call.prepared.http.body)?.raw_subtrees)
+    }
+
+    /// Set a complete semantic body and its validated exact tool-input map.
+    /// Pass an empty map when intentionally replacing all raw input carriers.
+    pub fn set_json_body_with_raw_subtrees(
+        &mut self,
+        value: serde_json::Value,
+        overrides: &std::collections::BTreeMap<String, Vec<u16>>,
+        raw_subtrees: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), LlmError> {
+        let bytes: bytes::Bytes = crate::exact_json::serialize_for_request_with_raw_subtrees(
             &value,
             overrides,
+            raw_subtrees,
             crate::exact_json::JsonEncoding::for_protocol(self.call.profile.protocol),
             Some(self.call.profile.protocol),
             self.call.anthropic_request_kind,
@@ -374,10 +396,14 @@ impl RequestDraft {
             .is_some_and(|(paired_body, _)| paired_body == &self.call.prepared.http.body)
             && self.call.prepared.http.body == body;
         let policy_image_unchanged = self.auth_body_policy_applied && paired_current_image;
-        let parsed_body = serde_json::from_slice::<serde_json::Value>(&body).ok();
-        let expected = crate::exact_json::serialize_for_request(
+        let parsed_body = crate::exact_json::parse_request_body_json(&body)
+            .map(|projection| projection.value)
+            .ok();
+        let raw_subtrees = self.request_tool_input_raw_subtrees().unwrap_or_default();
+        let expected = crate::exact_json::serialize_for_request_with_raw_subtrees(
             &semantic_value,
             &self.request_json_string_overrides,
+            &raw_subtrees,
             crate::exact_json::JsonEncoding::for_protocol(self.call.profile.protocol),
             Some(self.call.profile.protocol),
             self.call.anthropic_request_kind,
@@ -455,12 +481,14 @@ impl RequestDraft {
             && self.semantic_body.is_none()
             && !self.request_json_string_overrides.is_empty()
         {
-            let body: serde_json::Value = serde_json::from_slice(&self.call.prepared.http.body)
-                .map_err(|error| LlmError::InvalidRequest {
-                    message: format!(
-                        "prepared request body is not JSON for UTF-16 text encoding: {error}"
-                    ),
-                })?;
+            let body: serde_json::Value =
+                crate::exact_json::parse_request_body_json(&self.call.prepared.http.body)
+                    .map(|projection| projection.value)
+                    .map_err(|error| LlmError::InvalidRequest {
+                        message: format!(
+                            "prepared request body is not JSON for UTF-16 text encoding: {error}"
+                        ),
+                    })?;
             let overrides = self.request_json_string_overrides.clone();
             self.set_json_body(body, &overrides)?;
         }

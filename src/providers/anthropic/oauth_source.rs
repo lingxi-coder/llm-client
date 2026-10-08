@@ -40,14 +40,11 @@ fn scopes(value: Option<&str>, fallback: &[&str]) -> Vec<String> {
         parsed
     }
 }
-/// Parsed environment token first, then descriptor/store precedence from vK.
+/// Raw nonempty environment token first, then descriptor/store precedence.
+/// Native 2.1.293 m$ preserves token bytes; scopes retain their JS split rules.
 /// This selects supplied snapshots; it performs no descriptor or store I/O.
 pub fn select_oauth_source(input: OAuthSourceInputs<'_>) -> Option<OAuthSelection<'_>> {
-    if let Some(token) = input
-        .environment_token
-        .map(|value| value.trim_matches(whitespace))
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(token) = input.environment_token.filter(|value| !value.is_empty()) {
         return Some(OAuthSelection {
             access_token: token,
             scopes: Cow::Owned(scopes(input.environment_scopes, &["user:inference"])),

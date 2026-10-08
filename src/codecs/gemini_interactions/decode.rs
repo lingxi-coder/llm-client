@@ -87,6 +87,7 @@ pub(crate) fn step_blocks(
                 }]);
             }
             Ok(vec![ContentBlock::ToolUse {
+                input_json: None,
                 id: id.into(),
                 name: name.into(),
                 input: step["arguments"].clone(),

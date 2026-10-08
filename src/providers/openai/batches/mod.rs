@@ -1041,6 +1041,7 @@ impl<'a> PinnedBatchService<'a> {
             }
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: url.into(),
             headers,
@@ -1112,6 +1113,7 @@ impl<'a> PinnedBatchService<'a> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: url.into(),
             headers,

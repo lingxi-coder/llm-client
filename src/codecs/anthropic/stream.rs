@@ -9,10 +9,12 @@
 //! blocks are delayed until block_stop before they become replayable content.
 
 use super::decode;
+use crate::codecs::EventDecoder;
 use crate::codecs::usage;
 use crate::codecs::web_search_decode;
-use crate::codecs::EventDecoder;
 use crate::protocol::{ContentBlock, LlmError, ProtocolFamily, StopReason, StreamEvent, ToolUseId};
+use crate::providers::anthropic::fallback_response;
+use crate::response_json::{DecodedText, ResponseJson};
 use serde_json::Value;
 
 /// Pending native blocks and cited text are held only until content_block_stop.
@@ -34,8 +36,11 @@ struct PendingNativeBlock {
 struct PendingCitedTextBlock {
     value: Value,
     text: String,
+    utf16_code_units: Option<Vec<u16>>,
     citations: Vec<Value>,
     has_citations: bool,
+    citations_present: bool,
+    opaque: bool,
     incomplete: bool,
     observing: bool,
     buffered_frames: Vec<Value>,
@@ -45,6 +50,7 @@ struct PendingCitedTextBlock {
 
 #[derive(Debug)]
 struct PendingToolCall {
+    arguments_decoder: crate::response_json::ArgumentJsonDecoder,
     index: usize,
     id: ToolUseId,
     name: String,
@@ -83,6 +89,7 @@ pub struct AnthropicStreamDecoder {
     stop: Option<StopReason>,
     done: bool,
     search_blocks: Vec<usize>,
+    fallback_blocks: Vec<f64>,
 }
 
 impl EventDecoder for AnthropicStreamDecoder {
@@ -94,12 +101,43 @@ impl EventDecoder for AnthropicStreamDecoder {
         if data.is_empty() {
             return Ok(vec![]);
         }
-        let root: Value = serde_json::from_str(data).map_err(|_| LlmError::InvalidRequest {
-            message: "stream frame is not valid JSON".to_owned(),
-        })?;
+        let mut response_json =
+            ResponseJson::parse(data.as_bytes(), "stream frame is not valid JSON")?;
+        let root = response_json.value.clone();
 
         let mut out = Vec::new();
         self.inference.observe(&root, &mut out);
+        if let Some(index) =
+            fallback_response::control_index(&root).and_then(|index| index.as_f64())
+        {
+            if !self.fallback_blocks.contains(&index) {
+                self.fallback_blocks.push(index);
+            }
+            // Controls (including malformed controls) remain observations and
+            // never become replayable provider content or executable tool input.
+            self.push_provider_event(&root, &mut out);
+            if let Some(start) = fallback_response::stream_start(&root) {
+                out.push(StreamEvent::NativeControl {
+                    protocol: ProtocolFamily::AnthropicMessages,
+                    control: crate::protocol::NativeExtension::from_typed(
+                        fallback_response::FallbackControl::Start { start },
+                    )
+                    .expect("fallback start contains JSON data"),
+                });
+            }
+            response_json.finish()?;
+            return Ok(out);
+        }
+        if matches!(
+            root["type"].as_str(),
+            Some("content_block_delta" | "content_block_stop")
+        ) && root["index"]
+            .as_f64()
+            .is_some_and(|index| self.fallback_blocks.contains(&index))
+        {
+            response_json.finish()?;
+            return Ok(out);
+        }
         match root.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 let message = root.get("message").unwrap_or(&Value::Null);
@@ -130,8 +168,12 @@ impl EventDecoder for AnthropicStreamDecoder {
                         .map(crate::protocol::ResponseId::new),
                 });
             }
-            Some("content_block_start") => self.block_start(&root, data.as_bytes(), &mut out)?,
-            Some("content_block_delta") => self.block_delta(&root, data.as_bytes(), &mut out)?,
+            Some("content_block_start") => {
+                self.block_start(&root, &mut response_json, data.as_bytes(), &mut out)?
+            }
+            Some("content_block_delta") => {
+                self.block_delta(&root, &mut response_json, data.as_bytes(), &mut out)?
+            }
             Some("content_block_stop") => {
                 self.block_stop(&root, data.as_bytes(), &mut out)?;
                 out.push(StreamEvent::BlockEnd {
@@ -139,15 +181,47 @@ impl EventDecoder for AnthropicStreamDecoder {
                 });
             }
             Some("message_delta") => {
+                if !self.fallback_blocks.is_empty()
+                    || root
+                        .get("usage")
+                        .and_then(|usage| usage.get("iterations"))
+                        .is_some_and(Value::is_array)
+                {
+                    out.push(StreamEvent::NativeControl {
+                        protocol: ProtocolFamily::AnthropicMessages,
+                        control: crate::protocol::NativeExtension::from_typed(
+                            fallback_response::FallbackControl::Boundary {
+                                stop_reason: root["delta"]["stop_reason"]
+                                    .as_str()
+                                    .map(str::to_owned),
+                                iterations: fallback_response::usage_iterations(&root["usage"]),
+                                iterations_present: root
+                                    .get("usage")
+                                    .and_then(|usage| usage.get("iterations"))
+                                    .is_some_and(Value::is_array),
+                            },
+                        )
+                        .expect("fallback boundary contains JSON data"),
+                    });
+                }
                 if root
                     .get("delta")
-                    .and_then(|delta| delta.get("stop_details"))
+                    .and_then(|delta| delta.get("stop_reason"))
+                    .and_then(Value::as_str)
                     .is_some()
+                    || root
+                        .get("delta")
+                        .and_then(|delta| delta.get("stop_details"))
+                        .is_some()
                     || self.retain_anthropic_container
                         && (crate::providers::anthropic::code_execution::stream_container(&root)
                             .is_some()
                             || crate::providers::anthropic::code_execution::stream_usage(&root)
                                 .is_some())
+                    || root
+                        .get("usage")
+                        .and_then(|usage| usage.get("iterations"))
+                        .is_some_and(Value::is_array)
                 {
                     self.push_provider_event(&root, &mut out);
                 }
@@ -188,7 +262,20 @@ impl EventDecoder for AnthropicStreamDecoder {
             }
             // A keep-alive carries nothing.
             Some("ping") => {}
-            Some("error") => return Err(decode::classify_error(500, &root, None)),
+            Some("error") => {
+                let mut error = decode::classify_error(500, &root, None);
+                if let LlmError::ProviderTimeout { status, message } = &mut error {
+                    // An SSE error has no HTTP error status.
+                    *status = None;
+                    *message = root
+                        .get("error")
+                        .and_then(|error| error.get("message"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| root.to_string());
+                }
+                return Err(error);
+            }
             // Tolerating an unknown type is part of this wire's contract: the
             // provider adds event types and a client must not break on them.
             _ => out.push(StreamEvent::ProviderEvent {
@@ -196,6 +283,7 @@ impl EventDecoder for AnthropicStreamDecoder {
                 payload: root.clone(),
             }),
         }
+        response_json.finish()?;
         Ok(out)
     }
 
@@ -249,6 +337,7 @@ impl AnthropicStreamDecoder {
         index: usize,
         block: &Value,
         root: &Value,
+        response_json: &mut ResponseJson,
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), LlmError> {
         if self
@@ -262,20 +351,41 @@ impl AnthropicStreamDecoder {
         }
 
         let initial_text = block.get("text").and_then(Value::as_str);
-        let text = initial_text.unwrap_or_default().to_owned();
+        let decoded_text = match initial_text {
+            Some(text) => Some(response_json.take_text("/content_block/text", text)?),
+            None => None,
+        };
+        let text = decoded_text
+            .as_ref()
+            .map(|decoded| decoded.text.clone())
+            .unwrap_or_default();
+        let utf16_code_units = decoded_text
+            .as_ref()
+            .and_then(|decoded| decoded.utf16_code_units.clone());
         let citations_field = block.get("citations");
         let citations = citations_field
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
         let has_citations = !citations.is_empty();
+        let citations_present = citations_field.is_some();
+        let opaque = !decode::has_only_known_text_fields(block);
+        if opaque
+            && decoded_text
+                .as_ref()
+                .is_some_and(|text| text.utf16_code_units.is_some())
+        {
+            return Err(LlmError::UnsupportedCapability {
+                message: "Anthropic opaque text blocks with lone UTF-16 units cannot be replayed losslessly".into(),
+            });
+        }
         let citations_well_formed = match citations_field {
             None | Some(Value::Null) => true,
             Some(Value::Array(_)) => citations.iter().all(Value::is_object),
             Some(_) => false,
         };
         let incomplete = initial_text.is_none() || !citations_well_formed;
-        let observing = has_citations || incomplete;
+        let observing = has_citations || citations_present || opaque || incomplete;
         let mut retained_bytes = serialized_value_size(block)?
             .checked_add(text.len())
             .ok_or_else(native_block_limit_error)?;
@@ -299,8 +409,11 @@ impl AnthropicStreamDecoder {
             PendingCitedTextBlock {
                 value: block.clone(),
                 text,
+                utf16_code_units,
                 citations,
                 has_citations,
+                citations_present,
+                opaque,
                 incomplete,
                 observing,
                 buffered_frames: if observing {
@@ -315,11 +428,8 @@ impl AnthropicStreamDecoder {
         if observing {
             self.push_provider_event(root, out);
         }
-        if let Some(text) = initial_text.filter(|text| !text.is_empty()) {
-            out.push(StreamEvent::TextDelta {
-                block: index,
-                text: text.to_owned(),
-            });
+        if let Some(decoded) = decoded_text.filter(|decoded| !decoded.text.is_empty()) {
+            out.push(text_delta(index, decoded));
         }
         Ok(())
     }
@@ -327,6 +437,7 @@ impl AnthropicStreamDecoder {
     fn block_start(
         &mut self,
         root: &Value,
+        response_json: &mut ResponseJson,
         _frame: &[u8],
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), LlmError> {
@@ -337,7 +448,7 @@ impl AnthropicStreamDecoder {
         let block = root.get("content_block").unwrap_or(&Value::Null);
         let block_type = block.get("type").and_then(Value::as_str);
         if block_type == Some("text") {
-            self.start_cited_text_block(index, block, root, out)?;
+            self.start_cited_text_block(index, block, root, response_json, out)?;
         } else if is_native_output_block(block_type) {
             if self
                 .pending_native
@@ -404,6 +515,7 @@ impl AnthropicStreamDecoder {
             // The opening frame is the only one carrying the id and the name;
             // every argument fragment after it refers to this index alone.
             self.tools.push(PendingToolCall {
+                arguments_decoder: Default::default(),
                 index,
                 id: id.clone(),
                 name: name.clone(),
@@ -417,7 +529,16 @@ impl AnthropicStreamDecoder {
                 caller,
                 toolset_name,
                 name,
-                arguments_fragment: String::new(),
+                arguments_fragment: {
+                    let (display, raw) = response_json.take_tool_input("/content_block/input")?;
+                    if display.as_object().is_some_and(|value| value.is_empty())
+                        || display.is_null()
+                    {
+                        String::new()
+                    } else {
+                        raw.unwrap_or_else(|| display.to_string())
+                    }
+                },
             });
         }
         Ok(())
@@ -426,6 +547,7 @@ impl AnthropicStreamDecoder {
     fn block_delta(
         &mut self,
         root: &Value,
+        response_json: &mut ResponseJson,
         _frame: &[u8],
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), LlmError> {
@@ -459,7 +581,7 @@ impl AnthropicStreamDecoder {
             .iter()
             .position(|(pending_index, _)| *pending_index == index)
         {
-            return self.cited_text_delta(position, index, root, delta, out);
+            return self.cited_text_delta(position, index, root, delta, response_json, out);
         }
 
         if let Some(position) = self
@@ -487,14 +609,16 @@ impl AnthropicStreamDecoder {
         }
 
         match delta.get("type").and_then(Value::as_str) {
-            Some("text_delta") => out.push(StreamEvent::TextDelta {
-                block: index,
-                text: delta
+            Some("text_delta") => {
+                let text = delta
                     .get("text")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            }),
+                    .unwrap_or_default();
+                let decoded = response_json.take_text("/delta/text", text)?;
+                if !decoded.text.is_empty() {
+                    out.push(text_delta(index, decoded));
+                }
+            }
             Some("thinking_delta") => out.push(StreamEvent::ReasoningDelta {
                 block: index,
                 text: delta
@@ -518,7 +642,7 @@ impl AnthropicStreamDecoder {
                 self.push_provider_event(root, out);
             }
             Some("input_json_delta") => {
-                let Some(call) = self.tools.iter().find(|call| call.index == index) else {
+                let Some(call) = self.tools.iter_mut().find(|call| call.index == index) else {
                     self.push_provider_event(root, out);
                     return Ok(());
                 };
@@ -529,11 +653,15 @@ impl AnthropicStreamDecoder {
                     caller: call.caller.clone(),
                     toolset_name: call.toolset_name.clone(),
                     name: call.name.clone(),
-                    arguments_fragment: delta
-                        .get("partial_json")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
+                    arguments_fragment: call.arguments_decoder.push(
+                        response_json.take_text(
+                            "/delta/partial_json",
+                            delta
+                                .get("partial_json")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
+                        )?,
+                    )?,
                 });
                 return Ok(());
             }
@@ -557,6 +685,7 @@ impl AnthropicStreamDecoder {
         index: usize,
         root: &Value,
         delta: &Value,
+        response_json: &mut ResponseJson,
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), LlmError> {
         match delta.get("type").and_then(Value::as_str) {
@@ -565,14 +694,20 @@ impl AnthropicStreamDecoder {
                     return self.mark_cited_text_incomplete(position, root, out);
                 };
                 self.reserve_native_bytes(text.len())?;
+                let decoded = response_json.take_text("/delta/text", text)?;
+                if self.pending_cited_text[position].1.opaque && decoded.utf16_code_units.is_some()
+                {
+                    return Err(LlmError::UnsupportedCapability {
+                        message: "Anthropic opaque text blocks with lone UTF-16 units cannot be replayed losslessly".into(),
+                    });
+                }
                 let pending = &mut self.pending_cited_text[position].1;
                 pending.retained_bytes += text.len();
-                pending.text.push_str(text);
+                append_text_units(pending, &decoded);
                 self.retain_cited_text_frame(position, root, out)?;
-                out.push(StreamEvent::TextDelta {
-                    block: index,
-                    text: text.to_owned(),
-                });
+                if !decoded.text.is_empty() {
+                    out.push(text_delta(index, decoded));
+                }
             }
             Some("citations_delta") => {
                 let Some(citation) = delta.get("citation").filter(|value| value.is_object()) else {
@@ -585,6 +720,7 @@ impl AnthropicStreamDecoder {
                 pending.retained_bytes += citation_bytes;
                 pending.citations.push(citation.clone());
                 pending.has_citations = true;
+                pending.citations_present = true;
                 self.retain_cited_text_frame(position, root, out)?;
                 if !was_observing {
                     self.observe_cited_text_frames(position, out);
@@ -721,14 +857,18 @@ impl AnthropicStreamDecoder {
         self.pending_native_bytes = self
             .pending_native_bytes
             .saturating_sub(pending.retained_bytes);
-        if !pending.has_citations || pending.incomplete {
+        if pending.incomplete || (!pending.citations_present && !pending.opaque) {
             return;
         }
         let Some(object) = pending.value.as_object_mut() else {
             return;
         };
         object.insert("text".to_owned(), Value::String(pending.text));
-        object.insert("citations".to_owned(), Value::Array(pending.citations));
+        if pending.citations_present
+            && (pending.has_citations || object.get("citations").is_some_and(Value::is_array))
+        {
+            object.insert("citations".to_owned(), Value::Array(pending.citations));
+        }
         out.push(StreamEvent::ProviderContent {
             block: index,
             protocol: ProtocolFamily::AnthropicMessages,
@@ -796,8 +936,86 @@ fn native_block_limit_error() -> LlmError {
     }
 }
 
+fn text_delta(block: usize, text: DecodedText) -> StreamEvent {
+    match text.utf16_code_units {
+        Some(utf16_code_units) => StreamEvent::TextDeltaJsUtf16 {
+            block,
+            text: text.text,
+            utf16_code_units,
+        },
+        None => StreamEvent::TextDelta {
+            block,
+            text: text.text,
+        },
+    }
+}
+
+fn append_text_units(pending: &mut PendingCitedTextBlock, fragment: &DecodedText) {
+    if pending.utf16_code_units.is_none() && fragment.utf16_code_units.is_some() {
+        pending.utf16_code_units = Some(pending.text.encode_utf16().collect());
+    }
+    if let Some(units) = &mut pending.utf16_code_units {
+        match &fragment.utf16_code_units {
+            Some(fragment_units) => units.extend(fragment_units),
+            None => units.extend(fragment.text.encode_utf16()),
+        }
+        pending.text = String::from_utf16_lossy(units);
+    } else {
+        pending.text.push_str(&fragment.text);
+    }
+}
+
 fn serialized_value_size(value: &Value) -> Result<usize, LlmError> {
     serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .map_err(|_| native_block_limit_error())
+}
+
+#[cfg(test)]
+mod stop_delta_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn stop_delta_is_observable_before_stop_or_a_subsequent_error() {
+        for reason in ["end_turn", "tool_use", "max_tokens", "refusal"] {
+            for with_usage in [false, true] {
+                let mut frame = json!({"type":"message_delta","delta":{"stop_reason":reason}});
+                if with_usage {
+                    frame["usage"] = json!({"output_tokens":2});
+                }
+                for error in ["api_error", "timeout_error"] {
+                    let mut decoder = AnthropicStreamDecoder::default();
+                    let events = decoder
+                        .decode_frame(&serde_json::to_vec(&frame).unwrap())
+                        .unwrap();
+                    assert_eq!(events.iter().filter(|e|matches!(e,StreamEvent::ProviderEvent {payload,..} if *payload==frame)).count(),1);
+                    assert!(!events.iter().any(|e| matches!(e, StreamEvent::End { .. })));
+                    let failure = decoder
+                        .decode_frame(
+                            &serde_json::to_vec(
+                                &json!({"type":"error","error":{"type":error,"message":"fixture"}}),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap_err();
+                    assert!(matches!(
+                        failure,
+                        LlmError::ProviderInternal { .. } | LlmError::ProviderTimeout { .. }
+                    ));
+                }
+                let mut decoder = AnthropicStreamDecoder::default();
+                decoder
+                    .decode_frame(&serde_json::to_vec(&frame).unwrap())
+                    .unwrap();
+                let events = decoder.decode_frame(br#"{"type":"message_stop"}"#).unwrap();
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|e| matches!(e, StreamEvent::End { .. }))
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
 }

@@ -1156,6 +1156,7 @@ impl<'a> GeminiVoicesService<'a> {
         operation: &'static str,
     ) -> Result<HttpResponse, GeminiVoicesError> {
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: url.into(),
             headers: {

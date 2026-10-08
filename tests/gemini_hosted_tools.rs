@@ -137,6 +137,7 @@ fn gemini_3_functions_and_google_search_use_tool_context_circulation() {
         lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into(),
     ];
     request.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "get_weather".into(),
@@ -170,6 +171,7 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
         .hosted_tools
         .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     request.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "f".into(),

@@ -46,8 +46,14 @@ impl HttpTransport {
         read_timeout: Option<Duration>,
         configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
     ) -> Result<Self, LlmError> {
-        let mut builder =
-            configure(reqwest::Client::builder().connect_timeout(Duration::from_secs(30)));
+        let mut builder = configure(
+            reqwest::Client::builder()
+                .no_gzip()
+                .no_brotli()
+                .no_zstd()
+                .no_deflate()
+                .connect_timeout(Duration::from_secs(30)),
+        );
         if let Some(timeout) = read_timeout {
             builder = builder.read_timeout(timeout);
         }
@@ -73,21 +79,23 @@ impl HttpTransport {
         if !matches!(url.scheme(), "http" | "https") {
             return Err(invalid());
         }
-        let mut headers = reqwest::header::HeaderMap::new();
-        for (name, value) in req.headers {
-            let name =
-                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
-            let mut value =
-                reqwest::header::HeaderValue::from_str(&value).map_err(|_| invalid())?;
-            // Custom authenticators may use any header for secrets.
-            value.set_sensitive(true);
-            headers.append(name, value);
-        }
+        let prepared = prepare_request_headers(
+            req.headers,
+            req.http1_header_layout,
+            req.body.len() as u64,
+            false,
+        )?;
         let mut request = self
             .client
             .request(method, url)
-            .headers(headers)
+            .headers(prepared.headers)
             .body(req.body);
+        if let Some(layout) = prepared.layout {
+            request = request.http1_header_layout(layout);
+        }
+        if prepared.decompress {
+            request = request.http1_response_decompression();
+        }
         if let Some(timeout) = req.timeout {
             request = request.timeout(timeout);
         }
@@ -109,39 +117,23 @@ impl HttpTransport {
         if !matches!(url.scheme(), "http" | "https") {
             return Err(invalid());
         }
-        let mut headers = reqwest::header::HeaderMap::new();
-        let mut saw_content_length = false;
-        for (name, value) in req.headers {
-            let name =
-                reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?;
-            if name == reqwest::header::TRANSFER_ENCODING {
-                return Err(invalid());
-            }
-            if name == reqwest::header::CONTENT_LENGTH {
-                // Resumable provider uploads include their exact byte count in
-                // both places. Normalize an agreeing header; reject ambiguous
-                // framing before polling the single-use body.
-                if saw_content_length || value != req.content_length.to_string() {
-                    return Err(invalid());
-                }
-                saw_content_length = true;
-                continue;
-            }
-            let mut value =
-                reqwest::header::HeaderValue::from_str(&value).map_err(|_| invalid())?;
-            value.set_sensitive(true);
-            headers.append(name, value);
-        }
-        headers.insert(
-            reqwest::header::CONTENT_LENGTH,
-            reqwest::header::HeaderValue::from_str(&req.content_length.to_string())
-                .map_err(|_| invalid())?,
-        );
+        let prepared = prepare_request_headers(
+            req.headers,
+            req.http1_header_layout,
+            req.content_length,
+            true,
+        )?;
         let mut request = self
             .client
             .request(method, url)
-            .headers(headers)
+            .headers(prepared.headers)
             .body(reqwest::Body::wrap_stream(req.body));
+        if let Some(layout) = prepared.layout {
+            request = request.http1_header_layout(layout);
+        }
+        if prepared.decompress {
+            request = request.http1_response_decompression();
+        }
         if let Some(timeout) = req.timeout {
             request = request.timeout(timeout);
         }
@@ -212,6 +204,116 @@ pub(super) fn network_error(err: reqwest::Error, streaming_body: bool) -> LlmErr
             .into(),
         }
     }
+}
+
+struct PreparedHeaders {
+    headers: reqwest::header::HeaderMap,
+    layout: Option<reqwest::Http1HeaderLayout>,
+    decompress: bool,
+}
+
+fn prepare_request_headers(
+    mut fields: Vec<(String, String)>,
+    policy: Option<super::Http1HeaderLayout>,
+    content_length: u64,
+    streamed: bool,
+) -> Result<PreparedHeaders, LlmError> {
+    use super::Http1HeaderLayout;
+    use reqwest::header::{
+        HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, HOST, TRANSFER_ENCODING,
+    };
+    let invalid = || LlmError::InvalidRequest {
+        message: "invalid HTTP headers or body framing".into(),
+    };
+    let native = policy == Some(Http1HeaderLayout::NativeFetch);
+    if native {
+        // Stable sorting uses the caller's original spelling, not HeaderName's
+        // lowercased representation. Values move with their own occurrences.
+        fields.sort_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+    }
+    let mut headers = HeaderMap::new();
+    let mut layout = policy.map(|_| reqwest::Http1HeaderLayout::new());
+    let mut saw_content_length = false;
+    let mut saw_host = false;
+    for (spelling, value) in fields {
+        let name = HeaderName::from_bytes(spelling.as_bytes()).map_err(|_| invalid())?;
+        if streamed || policy.is_some() {
+            if name == TRANSFER_ENCODING {
+                // Both transport entrypoints have an exact length. Never let
+                // Hyper repair conflicting caller framing or replay a body.
+                return Err(invalid());
+            }
+            if name == CONTENT_LENGTH {
+                if saw_content_length || value != content_length.to_string() {
+                    return Err(invalid());
+                }
+                saw_content_length = true;
+                if policy.is_none() {
+                    // Preserve the original streaming transport's normalized
+                    // single Content-Length when no layout was requested.
+                    continue;
+                }
+            }
+        }
+        if policy.is_some() && name == HOST {
+            if saw_host {
+                return Err(invalid());
+            }
+            saw_host = true;
+        }
+        let mut value = HeaderValue::from_str(&value).map_err(|_| invalid())?;
+        value.set_sensitive(true);
+        headers.append(name, value);
+        if let Some(layout) = &mut layout {
+            layout.push(&spelling).map_err(|_| invalid())?;
+        }
+    }
+    if let Some(layout) = &mut layout {
+        if native && !headers.contains_key(reqwest::header::CONNECTION) {
+            headers.insert(
+                reqwest::header::CONNECTION,
+                HeaderValue::from_static("keep-alive"),
+            );
+            layout.push("Connection").map_err(|_| invalid())?;
+        }
+        if !headers.contains_key(HOST) {
+            // The connector supplies the authoritative host, including port
+            // and IPv6 syntax, after proxy/request-target resolution.
+            layout
+                .push_optional(if native { "Host" } else { "host" })
+                .map_err(|_| invalid())?;
+        }
+        if native && !headers.contains_key(reqwest::header::ACCEPT_ENCODING) {
+            headers.insert(
+                reqwest::header::ACCEPT_ENCODING,
+                HeaderValue::from_static("gzip, deflate, br, zstd"),
+            );
+            layout.push("Accept-Encoding").map_err(|_| invalid())?;
+        }
+        if !headers.contains_key(CONTENT_LENGTH) {
+            headers.insert(
+                CONTENT_LENGTH,
+                HeaderValue::from_str(&content_length.to_string()).map_err(|_| invalid())?,
+            );
+            layout
+                .push(if native {
+                    "Content-Length"
+                } else {
+                    "content-length"
+                })
+                .map_err(|_| invalid())?;
+        }
+    } else if streamed {
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from_str(&content_length.to_string()).map_err(|_| invalid())?,
+        );
+    }
+    Ok(PreparedHeaders {
+        headers,
+        layout,
+        decompress: native,
+    })
 }
 
 #[async_trait]

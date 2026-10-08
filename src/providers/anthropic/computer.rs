@@ -389,6 +389,8 @@ pub fn encode_receipt(
         ));
     }
     Ok(ContentBlock::ToolResult {
+        cache_reference: None,
+        output_json: None,
         tool_use_id: id,
         content,
         is_error: Some(is_error),

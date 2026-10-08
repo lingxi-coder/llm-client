@@ -37,7 +37,7 @@ sha2 = "0.10"
 toml = "0.8"
 url = "2"
 rustls = { version = "0.23", default-features = false, features = ["std"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { package = "lingxi-reqwest", path = "vendor/lingxi-reqwest", version = "=0.12.28", default-features = false, features = ["rustls-tls", "stream", "json", "http1-header-layout", "gzip", "brotli", "zstd", "deflate"] }
 tokio = { version = "1", features = ["rt", "time"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-webpki-roots"], optional = true }
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"], optional = true }

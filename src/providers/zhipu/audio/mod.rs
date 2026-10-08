@@ -323,6 +323,7 @@ impl<'a> GlmAsrService<'a> {
             "max_tokens": 1024
         });
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: pinned_service.route.chat_completions_url(),
             headers: vec![

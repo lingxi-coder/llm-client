@@ -135,20 +135,9 @@ pub fn apply_credential(
             else {
                 return Err(mismatch());
             };
-            // Only Responses generation bodies have this restriction. File and
-            // resource operations may be binary and must keep their exact bytes.
-            if profile.protocol == ProtocolFamily::OpenAiResponses && !request.body.is_empty() {
-                if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(&request.body) {
-                    if body.get("model").is_some() && body.get("input").is_some() {
-                        header_policy::chatgpt_body(&mut body);
-                        request.body = serde_json::to_vec(&body)
-                            .map_err(|_| LlmError::InvalidRequest {
-                                message: "could not encode authenticated request".into(),
-                            })?
-                            .into();
-                    }
-                }
-            }
+            // Generation-body normalization runs on the SDK's semantic JSON
+            // before exact UTF-16 serialization. Authentication only attaches
+            // headers so it cannot parse away lone-surrogate message values.
             header_policy::chatgpt(&mut headers, access_token, account_id, fedramp);
         }
         strategy => {
@@ -212,6 +201,7 @@ mod tests {
     }
     fn request(body: &[u8]) -> HttpRequest {
         HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: "https://example.com/model/m/invoke".into(),
             headers: vec![],
@@ -295,6 +285,59 @@ mod tests {
         .unwrap();
         assert_eq!(&req.body[..], &[0, 255, 4]);
     }
+
+    #[test]
+    fn chatgpt_authentication_does_not_apply_generation_policy_to_embedding_json() {
+        let body = br#"{"model":"text-embedding-3-large","input":"query"}"#;
+        let mut req = request(body);
+        apply_credential(
+            &mut req,
+            &profile("chat_gpt_o_auth", "open_ai_responses"),
+            CredentialRef::ChatGpt {
+                access_token: "token",
+                account_id: Some("account"),
+                fedramp: false,
+            },
+            identity(),
+            SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        assert_eq!(&req.body[..], body);
+        assert!(!std::str::from_utf8(&req.body)
+            .unwrap()
+            .contains("\"store\""));
+        assert!(!std::str::from_utf8(&req.body)
+            .unwrap()
+            .contains("\"instructions\""));
+    }
+
+    #[test]
+    fn chatgpt_authentication_preserves_final_responses_bytes() {
+        let body = br#"{"model":"o3","input":[{"content":[{"text":"\ud800"}]}],"store":false,"instructions":""}"#;
+        let mut req = request(body);
+        apply_credential(
+            &mut req,
+            &profile("chat_gpt_o_auth", "open_ai_responses"),
+            CredentialRef::ChatGpt {
+                access_token: "token",
+                account_id: Some("account"),
+                fedramp: false,
+            },
+            identity(),
+            SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        assert_eq!(&req.body[..], body);
+        assert!(req
+            .headers
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
+                && value == "Bearer token"));
+        assert!(req.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("chatgpt-account-id") && value == "account"
+        }));
+    }
+
     #[test]
     fn chatgpt_sets_account_and_removes_stale_api_key() {
         let mut req = request(b"{}");
@@ -399,6 +442,7 @@ mod copilot_contract_tests {
     #[test]
     fn injects_copilot_headers_and_strips_x_api_key() {
         let mut request = crate::HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: "https://api.githubcopilot.com/chat/completions".into(),
             headers: vec![("x-api-key".into(), "leftover".into())],

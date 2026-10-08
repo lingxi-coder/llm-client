@@ -919,6 +919,7 @@ impl<'a> QwenKnowledgeService<'a> {
         let body = request.to_body()?;
         let url = pinned_service.operation_url(KNOWLEDGE_CHAT_PATH, &[])?;
         let http_request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: url.to_string(),
             headers: vec![

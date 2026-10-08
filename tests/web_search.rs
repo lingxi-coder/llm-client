@@ -59,6 +59,7 @@ fn encode(req: &ChatRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
 }
 fn client_tool() -> ToolSpec {
     ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "lookup_local".into(),

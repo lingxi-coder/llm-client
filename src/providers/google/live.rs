@@ -435,7 +435,7 @@ impl RealtimeCodec for GeminiLiveCodec {
                     "Gemini Live activityStart requires automatic activity detection to be disabled"
                         .into(),
             }),
-            RealtimeInput::ToolResult { call_id, output } => {
+            RealtimeInput::ToolResult { call_id, output , .. } => {
                 let name = self
                     .tool_names
                     .lock()

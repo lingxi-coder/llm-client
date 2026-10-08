@@ -766,6 +766,7 @@ impl<'a> QwenAudioGenerationService<'a> {
             .into());
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: self.scope.endpoint(),
             headers: vec![

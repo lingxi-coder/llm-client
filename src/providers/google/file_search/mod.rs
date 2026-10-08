@@ -703,6 +703,7 @@ impl Pinned<'_> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let start = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: start_url.to_string(),
             headers: vec![
@@ -744,6 +745,7 @@ impl Pinned<'_> {
             .map_err(|message| bad(message, response_native.clone()))?;
 
         let finalize = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: upload_url.to_string(),
             headers: vec![
@@ -901,6 +903,7 @@ impl Pinned<'_> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: url.into(),
             headers: vec![

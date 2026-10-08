@@ -34,6 +34,7 @@ fn profile() -> ProviderProfile {
 
 fn request(body: Value) -> HttpRequest {
     HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: "https://api.openai.com/v1/responses".into(),
         headers: vec![],

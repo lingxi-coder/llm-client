@@ -128,7 +128,7 @@ pub fn serialize(
         }
     }
     let mut out = Vec::new();
-    write_json_value_with_overrides(&mut out, value, overrides, "", encoding)?;
+    write_json_value_with_overrides(&mut out, value, overrides, &BTreeMap::new(), "", encoding)?;
     Ok(out)
 }
 
@@ -483,9 +483,9 @@ fn encoded_text_fields(
     fields
 }
 
-pub(crate) fn canonical_string_pointer(mut value: &Value, pointer: &str) -> bool {
+fn canonical_value_pointer(mut value: &Value, pointer: &str) -> bool {
     if pointer.is_empty() {
-        return value.is_string();
+        return true;
     }
     let Some(tokens) = pointer.strip_prefix('/') else {
         return false;
@@ -517,16 +517,25 @@ pub(crate) fn canonical_string_pointer(mut value: &Value, pointer: &str) -> bool
             _ => return false,
         };
     }
-    value.is_string()
+    true
+}
+
+pub(crate) fn canonical_string_pointer(value: &Value, pointer: &str) -> bool {
+    canonical_value_pointer(value, pointer) && value.pointer(pointer).is_some_and(Value::is_string)
 }
 
 fn write_json_value_with_overrides(
     out: &mut Vec<u8>,
     value: &Value,
     overrides: &BTreeMap<String, Vec<u16>>,
+    raw_subtrees: &BTreeMap<String, String>,
     pointer: &str,
     encoding: JsonEncoding,
 ) -> Result<(), LlmError> {
+    if let Some(raw) = raw_subtrees.get(pointer) {
+        out.extend_from_slice(raw.as_bytes());
+        return Ok(());
+    }
     match value {
         Value::Number(number) if encoding == JsonEncoding::JavaScript => {
             out.extend_from_slice(
@@ -555,7 +564,14 @@ fn write_json_value_with_overrides(
                     out.push(b',');
                 }
                 let child_pointer = format!("{pointer}/{index}");
-                write_json_value_with_overrides(out, item, overrides, &child_pointer, encoding)?;
+                write_json_value_with_overrides(
+                    out,
+                    item,
+                    overrides,
+                    raw_subtrees,
+                    &child_pointer,
+                    encoding,
+                )?;
             }
             out.push(b']');
             Ok(())
@@ -571,7 +587,14 @@ fn write_json_value_with_overrides(
                 })?;
                 out.push(b':');
                 let child_pointer = format!("{pointer}/{}", escape_json_pointer_token(key));
-                write_json_value_with_overrides(out, item, overrides, &child_pointer, encoding)?;
+                write_json_value_with_overrides(
+                    out,
+                    item,
+                    overrides,
+                    raw_subtrees,
+                    &child_pointer,
+                    encoding,
+                )?;
             }
             out.push(b'}');
             Ok(())
@@ -1213,4 +1236,804 @@ mod tests {
             "raw ProviderContent values stay intact: {serialized}"
         );
     }
+}
+
+/// Parse exact tool argument JSON into its Rust-safe display value. Surrogate
+/// object keys receive collision-free placeholders; the raw JSON remains the
+/// authority for replay and must be retained beside this display value.
+pub fn parse_tool_input_json(raw: &str) -> Result<Value, LlmError> {
+    crate::response_json::parse_tool_input_json(raw)
+}
+
+pub(crate) fn validated_tool_input_json<'a>(
+    input: &Value,
+    raw: Option<&'a str>,
+) -> Result<Option<&'a str>, LlmError> {
+    let Some(raw) = raw else { return Ok(None) };
+    if !tool_input_display_matches(&parse_tool_input_json(raw)?, input) {
+        return Err(LlmError::InvalidRequest{message:"tool input raw JSON does not match its display input; clear or replace input_json when changing input".into()});
+    }
+    Ok(Some(raw))
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestJsonProjection {
+    pub value: Value,
+    pub string_overrides: BTreeMap<String, Vec<u16>>,
+    pub raw_subtrees: BTreeMap<String, String>,
+}
+
+/// Decode the semantic request view without losing exact tool argument JSON.
+pub fn parse_request_body_json(input: &[u8]) -> Result<RequestJsonProjection, LlmError> {
+    crate::response_json::request_projection(input)
+}
+
+/// Encode a body whose tool inputs retain exact JSON. Subtrees are validated
+/// against their display values and cannot overlap any other override.
+pub fn serialize_for_request_with_raw_subtrees(
+    value: &Value,
+    overrides: &BTreeMap<String, Vec<u16>>,
+    raw_subtrees: &BTreeMap<String, String>,
+    encoding: JsonEncoding,
+    protocol: Option<crate::protocol::ProtocolFamily>,
+    request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
+) -> Result<Vec<u8>, LlmError> {
+    for pointer in overrides.keys() {
+        if !canonical_string_pointer(value, pointer) {
+            return Err(LlmError::InvalidRequest {
+                message: format!("UTF-16 override is not a string leaf: {pointer}"),
+            });
+        }
+    }
+    for (pointer, raw) in raw_subtrees {
+        if !canonical_value_pointer(value, pointer) {
+            return Err(LlmError::InvalidRequest {
+                message: format!("raw tool input pointer is not canonical: {pointer}"),
+            });
+        }
+        let target = value
+            .pointer(pointer)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: format!("raw tool input pointer is absent: {pointer}"),
+            })?;
+        validated_tool_input_json(target, Some(raw))?;
+        let prefix = format!("{pointer}/");
+        if overrides
+            .keys()
+            .any(|key| key == pointer || key.starts_with(&prefix))
+            || raw_subtrees
+                .keys()
+                .any(|key| key != pointer && key.starts_with(&prefix))
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "raw tool input overrides cannot overlap".into(),
+            });
+        }
+    }
+    let normalized;
+    let overrides = if protocol == Some(crate::protocol::ProtocolFamily::AnthropicMessages)
+        && request_kind
+            == crate::providers::anthropic::request_policy::AnthropicRequestKind::HookPrompt
+    {
+        normalized = overrides
+            .iter()
+            .map(|(path, units)| (path.clone(), to_well_formed_utf16(units)))
+            .collect();
+        &normalized
+    } else {
+        overrides
+    };
+    let mut output = Vec::new();
+    write_json_value_with_overrides(&mut output, value, overrides, raw_subtrees, "", encoding)?;
+    Ok(output)
+}
+
+pub(crate) fn map_tool_input_raw_subtrees(
+    request: &crate::protocol::ChatRequest,
+    protocol: crate::protocol::ProtocolFamily,
+    body: &Value,
+) -> Result<BTreeMap<String, String>, LlmError> {
+    use crate::protocol::{ContentBlock, ProtocolFamily as P};
+    let mut sources: BTreeMap<String, Vec<(&Value, Option<&str>)>> = BTreeMap::new();
+    for message in &request.messages {
+        for block in &message.content {
+            if let ContentBlock::ToolUse {
+                name,
+                input,
+                input_json,
+                ..
+            } = block
+            {
+                sources
+                    .entry(name.clone())
+                    .or_default()
+                    .push((input, input_json.as_deref()));
+            }
+        }
+    }
+    if !sources.values().flatten().any(|(_, raw)| raw.is_some()) {
+        return Ok(BTreeMap::new());
+    }
+    let mut targets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut add = |call: &Value, pointer: String| {
+        if let Some(name) = call.get("name").and_then(Value::as_str) {
+            targets.entry(name.to_owned()).or_default().push(pointer);
+        }
+    };
+    match protocol {
+        P::AnthropicMessages | P::BedrockClaude | P::VertexClaude | P::FoundryClaude => {
+            for (mi, message) in body["messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                for (bi, block) in message["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    if block["type"] == "tool_use" {
+                        add(block, format!("/messages/{mi}/content/{bi}/input"));
+                    }
+                }
+            }
+        }
+        P::GeminiGenerateContent | P::VertexGemini => {
+            for (mi, message) in body["contents"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                for (bi, part) in message["parts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    if let Some(call) = part.get("functionCall") {
+                        add(call, format!("/contents/{mi}/parts/{bi}/functionCall/args"));
+                    }
+                }
+            }
+        }
+        P::GeminiInteractions => {
+            for (index, step) in body["input"].as_array().into_iter().flatten().enumerate() {
+                if step["type"] == "function_call" {
+                    add(step, format!("/input/{index}/arguments"));
+                }
+            }
+        }
+        P::OpenAiChat | P::OpenAiResponses | P::AzureOpenAi => return Ok(BTreeMap::new()),
+    }
+    let mut mapped = BTreeMap::new();
+    for (name, calls) in sources {
+        if !calls.iter().any(|(_, raw)| raw.is_some()) {
+            continue;
+        }
+        let found = targets.remove(&name).unwrap_or_default();
+        if found.len() != calls.len() {
+            return Err(LlmError::InvalidRequest {
+                message: format!(
+                    "exact tool input does not map unambiguously onto encoded calls for {name}"
+                ),
+            });
+        }
+        for ((input, raw), pointer) in calls.into_iter().zip(found) {
+            if let Some(raw) = validated_tool_input_json(input, raw)? {
+                let target = body
+                    .pointer(&pointer)
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "encoded tool call has no input subtree".into(),
+                    })?;
+                validated_tool_input_json(target, Some(raw))?;
+                mapped.insert(pointer, raw.to_owned());
+            }
+        }
+    }
+    Ok(mapped)
+}
+
+pub(crate) fn finish_tool_input_encoding(
+    request: &crate::protocol::ChatRequest,
+    protocol: crate::protocol::ProtocolFamily,
+    mut http: crate::transport::HttpRequest,
+) -> Result<crate::transport::HttpRequest, LlmError> {
+    if !has_raw_tool_json(request) {
+        return Ok(http);
+    }
+    let mut projection = parse_request_body_json(&http.body)?;
+    let mut raw = map_tool_input_raw_subtrees(request, protocol, &projection.value)?;
+    raw.extend(map_tool_schema_raw_subtrees(
+        request,
+        &mut projection.value,
+    )?);
+    raw.extend(map_tool_output_raw_subtrees(
+        request,
+        protocol,
+        &mut projection.value,
+    )?);
+    http.body = serialize_for_request_with_raw_subtrees(
+        &projection.value,
+        &projection.string_overrides,
+        &raw,
+        JsonEncoding::for_protocol(protocol),
+        Some(protocol),
+        crate::providers::anthropic::request_policy::AnthropicRequestKind::default(),
+    )?
+    .into();
+    Ok(http)
+}
+
+pub(crate) fn tool_input_json_equal(left: &str, right: &str) -> Result<bool, LlmError> {
+    crate::response_json::tool_input_json_equal(left, right)
+}
+
+pub(crate) fn validate_tool_input_carriers(
+    request: &crate::protocol::ChatRequest,
+) -> Result<(), LlmError> {
+    for tool in &request.tools {
+        validated_tool_input_json(&tool.input_schema, tool.input_schema_json.as_deref())?;
+        if tool.input_schema_json.is_some() && !tool.input_schema.is_object() {
+            return Err(LlmError::InvalidRequest {
+                message: "exact tool schema must be a JSON object".into(),
+            });
+        }
+    }
+    for block in request.messages.iter().flat_map(|message| &message.content) {
+        if let crate::protocol::ContentBlock::ToolUse {
+            input, input_json, ..
+        } = block
+        {
+            validated_tool_input_json(input, input_json.as_deref())?;
+        }
+        if let crate::protocol::ContentBlock::ToolResult {
+            content,
+            blocks,
+            output_json,
+            ..
+        } = block
+        {
+            validated_tool_output_json(content, blocks.as_deref(), output_json.as_deref())?;
+        }
+    }
+    Ok(())
+}
+
+fn tool_input_display_matches(source: &Value, display: &Value) -> bool {
+    let mut pending = vec![(source, display)];
+    while let Some((source, display)) = pending.pop() {
+        match (source, display) {
+            (Value::Number(source), Value::Number(display)) => {
+                if !json_numbers_equal(source, display) {
+                    return false;
+                }
+            }
+            (Value::Array(source), Value::Array(display)) => {
+                if source.len() != display.len() {
+                    return false;
+                }
+                pending.extend(source.iter().zip(display));
+            }
+            (Value::Object(source), Value::Object(display)) => {
+                if source.len() != display.len() {
+                    return false;
+                }
+                for (key, value) in source {
+                    let Some(other) = display.get(key) else {
+                        return false;
+                    };
+                    pending.push((value, other));
+                }
+            }
+            _ => {
+                if source != display {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Integer source carriers never lose precision through a floating-point comparison.
+pub(crate) fn json_numbers_equal(a: &serde_json::Number, b: &serde_json::Number) -> bool {
+    let integer = |n: &serde_json::Number| {
+        n.as_u64()
+            .map(i128::from)
+            .or_else(|| n.as_i64().map(i128::from))
+    };
+    let exact_float = |integer: i128, number: &serde_json::Number| {
+        number.as_f64().is_some_and(|float| {
+            float.is_finite()
+                && float.fract() == 0.0
+                && float as i128 == integer
+                && integer as f64 == float
+        })
+    };
+    match (integer(a), integer(b)) {
+        (Some(a), Some(b)) => a == b,
+        (Some(a), None) => exact_float(a, b),
+        (None, Some(b)) => exact_float(b, a),
+        (None, None) => a.as_f64() == b.as_f64(),
+    }
+}
+
+/// Rebind preserved argument subtrees to the same call after a body edit.
+/// Display strings alone cannot identify calls containing lone UTF-16 units.
+pub(crate) fn remap_tool_input_raw_subtrees(
+    old: &RequestJsonProjection,
+    value: &Value,
+) -> Result<BTreeMap<String, String>, LlmError> {
+    if old.raw_subtrees.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let invalid = || {
+        LlmError::InvalidRequest { message: "body edit cannot unambiguously retain exact tool input ownership; supply an explicit raw subtree map".into() }
+    };
+    let mut calls = Vec::new();
+    let mut pending = vec![(value, String::new())];
+    while let Some((node, path)) = pending.pop() {
+        match node {
+            Value::Object(object) => {
+                if object.get("name").is_some_and(Value::is_string) || call_identity(node).is_some()
+                {
+                    for field in [
+                        "input",
+                        "args",
+                        "arguments",
+                        "content",
+                        "output",
+                        "result",
+                        "input_schema",
+                        "parameters",
+                        "parametersJsonSchema",
+                    ] {
+                        if object.get(field).is_some() {
+                            calls.push((node, format!("{path}/{field}"), field));
+                        }
+                    }
+                }
+                for (key, child) in object {
+                    pending.push((
+                        child,
+                        format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
+                    ));
+                }
+            }
+            Value::Array(array) => {
+                for (index, child) in array.iter().enumerate() {
+                    pending.push((child, format!("{path}/{index}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut result = BTreeMap::new();
+    for (pointer, raw) in &old.raw_subtrees {
+        let (parent, field) = pointer.rsplit_once('/').ok_or_else(invalid)?;
+        let source = old.value.pointer(parent).ok_or_else(invalid)?;
+        let id = call_identity(source);
+        let target = if let Some(id) = id {
+            let candidates: Vec<_> = calls
+                .iter()
+                .filter(|(call, _, target_field)| {
+                    *target_field == field && call_identity(call) == Some(id)
+                })
+                .collect();
+            if candidates.len() != 1 {
+                return Err(invalid());
+            }
+            let (call, path, _) = candidates[0];
+            if call["name"] != source["name"] || call["type"] != source["type"] {
+                return Err(invalid());
+            }
+            path.clone()
+        } else if matches!(
+            field,
+            "input_schema" | "parameters" | "parametersJsonSchema"
+        ) {
+            let matching: Vec<_> = calls
+                .iter()
+                .filter(|(call, _, target_field)| {
+                    *target_field == field && call["name"] == source["name"]
+                })
+                .collect();
+            if matching.len() != 1 {
+                return Err(invalid());
+            }
+            matching[0].1.clone()
+        } else {
+            // Wires without call IDs may retain an unchanged call container,
+            // but a reordered or replaced container requires explicit ownership.
+            let mut container = parent;
+            while let Some((ancestor, token)) = container.rsplit_once('/') {
+                if token.parse::<usize>().is_ok() {
+                    container = ancestor;
+                    break;
+                }
+                container = ancestor;
+            }
+            if old.value.pointer(container) != value.pointer(container) {
+                return Err(invalid());
+            }
+            pointer.clone()
+        };
+        let display = value.pointer(&target).ok_or_else(invalid)?;
+        validated_tool_input_json(display, Some(raw))?;
+        if result.insert(target, raw.clone()).is_some() {
+            return Err(invalid());
+        }
+    }
+    Ok(result)
+}
+
+/// Decode an exact tool result string or content array into its display view.
+pub fn parse_tool_output_json(raw: &str) -> Result<Value, LlmError> {
+    let value = parse_tool_input_json(raw)?;
+    if value.is_string() || value.is_array() {
+        Ok(value)
+    } else {
+        Err(LlmError::InvalidRequest {
+            message: "tool output raw JSON must be a string or content array".into(),
+        })
+    }
+}
+pub(crate) fn validated_tool_output_json<'a>(
+    content: &str,
+    blocks: Option<&[Value]>,
+    raw: Option<&'a str>,
+) -> Result<Option<&'a str>, LlmError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let display = blocks.map_or_else(
+        || Value::String(content.into()),
+        |blocks| Value::Array(blocks.to_vec()),
+    );
+    if !tool_input_display_matches(&parse_tool_output_json(raw)?, &display) {
+        return Err(LlmError::InvalidRequest { message: "tool output raw JSON does not match content/blocks; clear or replace output_json when changing output".into() });
+    }
+    Ok(Some(raw))
+}
+
+fn call_identity(call: &Value) -> Option<&str> {
+    ["id", "tool_use_id", "call_id", "tool_call_id"]
+        .into_iter()
+        .find_map(|key| call[key].as_str().filter(|id| !id.is_empty()))
+}
+
+pub(crate) fn map_tool_output_raw_subtrees(
+    request: &crate::protocol::ChatRequest,
+    protocol: crate::protocol::ProtocolFamily,
+    body: &mut Value,
+) -> Result<BTreeMap<String, String>, LlmError> {
+    use crate::protocol::{ContentBlock, ProtocolFamily as P};
+    let mut identities = BTreeMap::new();
+    for block in request.messages.iter().flat_map(|message| &message.content) {
+        if let ContentBlock::ToolUse {
+            id,
+            provider_id,
+            name,
+            ..
+        } = block
+        {
+            identities.insert(
+                id.as_str(),
+                (provider_id.as_deref().unwrap_or(id.as_str()), name.as_str()),
+            );
+        }
+    }
+    let mut targets = Vec::new();
+    let mut pending = vec![(&*body, String::new())];
+    while let Some((node, path)) = pending.pop() {
+        match node {
+            Value::Object(object) => {
+                let field = match protocol {
+                    P::AnthropicMessages
+                    | P::BedrockClaude
+                    | P::VertexClaude
+                    | P::FoundryClaude
+                        if node["type"] == "tool_result" =>
+                    {
+                        Some("content")
+                    }
+                    P::OpenAiChat | P::AzureOpenAi if node["role"] == "tool" => Some("content"),
+                    P::OpenAiResponses if node["type"] == "function_call_output" => Some("output"),
+                    P::GeminiInteractions if node["type"] == "function_result" => Some("result"),
+                    P::GeminiGenerateContent | P::VertexGemini
+                        if path.ends_with("/functionResponse") =>
+                    {
+                        let key = if node["response"].get("error").is_some() {
+                            "error"
+                        } else {
+                            "result"
+                        };
+                        targets.push((node.clone(), format!("{path}/response/{key}")));
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    targets.push((node.clone(), format!("{path}/{field}")));
+                }
+                for (key, child) in object {
+                    pending.push((
+                        child,
+                        format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
+                    ));
+                }
+            }
+            Value::Array(array) => {
+                for (index, child) in array.iter().enumerate() {
+                    pending.push((child, format!("{path}/{index}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut result = BTreeMap::new();
+    for block in request.messages.iter().flat_map(|message| &message.content) {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            blocks,
+            output_json: Some(raw),
+            is_error,
+            ..
+        } = block
+        else {
+            continue;
+        };
+        validated_tool_output_json(content, blocks.as_deref(), Some(raw))?;
+        let (provider_id, name) = identities
+            .get(tool_use_id.as_str())
+            .copied()
+            .unwrap_or((tool_use_id.as_str(), ""));
+        let matching: Vec<_> = targets
+            .iter()
+            .filter(|(call, _)| {
+                let expected = if matches!(
+                    protocol,
+                    P::GeminiGenerateContent | P::VertexGemini | P::GeminiInteractions
+                ) {
+                    provider_id
+                } else {
+                    tool_use_id.as_str()
+                };
+                call_identity(call).is_some_and(|id| id == expected)
+                    || (matches!(protocol, P::GeminiGenerateContent | P::VertexGemini)
+                        && call_identity(call).is_none()
+                        && call["name"].as_str() == Some(name))
+            })
+            .collect();
+        if matching.len() != 1 {
+            return Err(LlmError::InvalidRequest {
+                message: "exact tool output does not map unambiguously to its call id".into(),
+            });
+        }
+        let (_, pointer) = matching[0];
+        let target = body
+            .pointer(pointer)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "encoded tool result has no output".into(),
+            })?;
+        let rendered = render_tool_output(
+            raw,
+            target,
+            protocol,
+            *is_error == Some(true),
+            blocks.is_some(),
+        )?;
+        *body.pointer_mut(pointer).unwrap() = parse_tool_input_json(&rendered)?;
+        if result.insert(pointer.clone(), rendered).is_some() {
+            return Err(LlmError::InvalidRequest {
+                message: "duplicate exact tool result call id".into(),
+            });
+        }
+    }
+    Ok(result)
+}
+
+fn render_tool_output(
+    raw: &str,
+    target: &Value,
+    protocol: crate::protocol::ProtocolFamily,
+    is_error: bool,
+    has_blocks: bool,
+) -> Result<String, LlmError> {
+    use crate::protocol::ProtocolFamily as P;
+    let source = parse_tool_output_json(raw)?;
+    let invalid = || LlmError::InvalidRequest {
+        message: "encoded tool output differs from its exact source carrier".into(),
+    };
+    if matches!(protocol, P::OpenAiChat | P::AzureOpenAi) && has_blocks {
+        if target.as_str() != Some(raw) {
+            return Err(invalid());
+        }
+        return serde_json::to_string(raw).map_err(|_| invalid());
+    }
+    if tool_input_display_matches(&source, target) {
+        return Ok(raw.into());
+    }
+    if source.is_string() {
+        let parts = target
+            .as_array()
+            .filter(|parts| parts.len() == 1)
+            .ok_or_else(invalid)?;
+        let part = parts[0].as_object().ok_or_else(invalid)?;
+        let prefix = if protocol == P::GeminiInteractions && is_error {
+            "Tool failed: "
+        } else {
+            ""
+        };
+        if part.get("text").and_then(Value::as_str)
+            != Some(format!("{prefix}{}", source.as_str().unwrap()).as_str())
+        {
+            return Err(invalid());
+        }
+        let literal: &serde_json::value::RawValue =
+            serde_json::from_str(raw).map_err(|_| invalid())?;
+        let literal = literal.get().trim();
+        let mut encoded = String::from("{");
+        for (index, (key, value)) in part.iter().enumerate() {
+            if index != 0 {
+                encoded.push(',');
+            }
+            encoded.push_str(&serde_json::to_string(key).map_err(|_| invalid())?);
+            encoded.push(':');
+            if key == "text" {
+                encoded.push('"');
+                encoded.push_str(prefix);
+                encoded.push_str(&literal[1..literal.len() - 1]);
+                encoded.push('"');
+            } else {
+                encoded.push_str(&serde_json::to_string(value).map_err(|_| invalid())?);
+            }
+        }
+        encoded.push('}');
+        return Ok(format!("[{encoded}]"));
+    }
+    let source_parts = source.as_array().unwrap();
+    let target_parts = target
+        .as_array()
+        .filter(|parts| parts.len() == source_parts.len())
+        .ok_or_else(invalid)?;
+    let raw_parts: Vec<Box<serde_json::value::RawValue>> =
+        serde_json::from_str(raw).map_err(|_| invalid())?;
+    let mut output = Vec::new();
+    for ((source, target), raw) in source_parts.iter().zip(target_parts).zip(raw_parts) {
+        if tool_input_display_matches(source, target) {
+            output.push(raw.get().to_owned());
+            continue;
+        }
+        if protocol == P::GeminiInteractions
+            && source["type"] == "image"
+            && source.get("source").is_some()
+        {
+            // This existing translation validates URI/data and MIME type. Opaque
+            // UTF-16 units cannot be silently discarded during the shape change.
+            serde_json::from_str::<Value>(raw.get()).map_err(|_| invalid())?;
+            output.push(serde_json::to_string(target).map_err(|_| invalid())?);
+            continue;
+        }
+        let source_object = source.as_object().ok_or_else(invalid)?;
+        let target_object = target.as_object().ok_or_else(invalid)?;
+        if !source_object.iter().all(|(key, value)| {
+            target_object
+                .get(key)
+                .is_some_and(|target| tool_input_display_matches(value, target))
+        }) {
+            return Err(invalid());
+        }
+        let extras: serde_json::Map<String, Value> = target_object
+            .iter()
+            .filter(|(key, _)| !source_object.contains_key(*key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let extras = serde_json::to_string(&extras).map_err(|_| invalid())?;
+        let mut encoded = raw.get().trim().to_owned();
+        encoded.pop();
+        if !source_object.is_empty() && extras.len() > 2 {
+            encoded.push(',');
+        }
+        encoded.push_str(&extras[1..]);
+        output.push(encoded);
+    }
+    Ok(format!("[{}]", output.join(",")))
+}
+
+pub(crate) fn map_tool_schema_raw_subtrees(
+    request: &crate::protocol::ChatRequest,
+    body: &mut Value,
+) -> Result<BTreeMap<String, String>, LlmError> {
+    let mut targets = BTreeMap::<String, Vec<String>>::new();
+    let mut pending = vec![(&*body, String::new())];
+    while let Some((node, path)) = pending.pop() {
+        match node {
+            Value::Object(object) => {
+                if path.starts_with("/tools/") {
+                    if let Some(name) = node["name"].as_str() {
+                        for field in ["input_schema", "parameters", "parametersJsonSchema"] {
+                            if node.get(field).is_some() {
+                                targets
+                                    .entry(name.into())
+                                    .or_default()
+                                    .push(format!("{path}/{field}"));
+                            }
+                        }
+                    }
+                }
+                for (key, child) in object {
+                    pending.push((
+                        child,
+                        format!("{path}/{}", key.replace('~', "~0").replace('/', "~1")),
+                    ));
+                }
+            }
+            Value::Array(array) => {
+                for (index, child) in array.iter().enumerate() {
+                    pending.push((child, format!("{path}/{index}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut mapped = BTreeMap::new();
+    for tool in &request.tools {
+        let Some(raw) =
+            validated_tool_input_json(&tool.input_schema, tool.input_schema_json.as_deref())?
+        else {
+            continue;
+        };
+        if !tool.input_schema.is_object() {
+            return Err(LlmError::InvalidRequest {
+                message: "exact tool schema must be a JSON object".into(),
+            });
+        }
+        let targets = targets
+            .get(&tool.name)
+            .filter(|targets| targets.len() == 1)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "exact tool schema does not map unambiguously by tool name".into(),
+            })?;
+        let pointer = &targets[0];
+        validated_tool_input_json(
+            body.pointer(pointer)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "tool schema target is missing".into(),
+                })?,
+            Some(raw),
+        )?;
+        *body.pointer_mut(pointer).unwrap() = parse_tool_input_json(raw)?;
+        if mapped.insert(pointer.clone(), raw.into()).is_some() {
+            return Err(LlmError::InvalidRequest {
+                message: "duplicate exact tool schema name".into(),
+            });
+        }
+    }
+    Ok(mapped)
+}
+
+pub(crate) fn has_raw_tool_json(request: &crate::protocol::ChatRequest) -> bool {
+    request
+        .tools
+        .iter()
+        .any(|tool| tool.input_schema_json.is_some())
+        || request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| {
+                matches!(
+                    block,
+                    crate::protocol::ContentBlock::ToolUse {
+                        input_json: Some(_),
+                        ..
+                    } | crate::protocol::ContentBlock::ToolResult {
+                        output_json: Some(_),
+                        ..
+                    }
+                )
+            })
 }

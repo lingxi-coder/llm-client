@@ -78,6 +78,7 @@ fn container_scope(profile: &ProviderProfile) -> AnthropicContainerScope {
 
 fn programmatic_tool() -> ToolSpec {
     ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "lookup".into(),

@@ -130,6 +130,7 @@ pub(crate) async fn list_models(
         options.total_timeout.unwrap_or(Duration::from_secs(120)),
     ));
     let mut request = HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url: url.into(),
         headers: vec![("accept".into(), "application/json".into())],

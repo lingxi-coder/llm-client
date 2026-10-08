@@ -369,6 +369,7 @@ impl<'a> FileService<'a> {
         }
         let parts = stream_batch_body(prefix, body, size_bytes, suffix);
         let request = crate::transport::HttpStreamRequest {
+            http1_header_layout: None,
             method: request.method,
             url: request.url,
             headers: request.headers,
@@ -648,6 +649,7 @@ impl<'a> FileService<'a> {
         }
         request.timeout = deadline.remaining()?;
         let request = crate::transport::HttpStreamRequest {
+            http1_header_layout: None,
             method: request.method,
             url: request.url,
             headers: request.headers,
@@ -1104,6 +1106,7 @@ impl<'a> FileService<'a> {
             headers.push(("anthropic-version".into(), version.to_owned()));
         }
         let mut request = HttpRequest {
+            http1_header_layout: None,
             method: method.to_owned(),
             url,
             headers,

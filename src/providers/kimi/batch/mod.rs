@@ -941,6 +941,7 @@ impl<'a> KimiBatchService<'a> {
             headers.push(("Content-Type".into(), "application/json".into()));
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: format!("{API_BASE_URL}{path}"),
             headers,

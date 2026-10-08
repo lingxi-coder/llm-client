@@ -221,7 +221,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                 .get(index)
                 .and_then(|message| message.content.get(block))
                 .is_some_and(|content| {
-                    matches!(content, ContentBlock::Text { text, .. } if !text.is_empty())
+                    matches!(content, ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } if !text.is_empty())
                 }),
         };
         if !valid {

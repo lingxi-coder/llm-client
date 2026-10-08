@@ -8,6 +8,7 @@ pub(crate) mod client_toolsets;
 pub(crate) mod code_execution;
 pub mod computer;
 pub(crate) mod conversation;
+pub use conversation::supports_per_message_effort;
 pub mod fast_mode;
 pub mod fetch_sources;
 pub(crate) mod files;

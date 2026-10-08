@@ -173,6 +173,7 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             native_options: Vec::new(),
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
+                input_json: None,
                 id: ToolUseId::new("call-1"),
                 name: "read_file".to_owned(),
                 input: json!({"path": "a"}),
@@ -186,6 +187,8 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
+                output_json: None,
                 tool_use_id: ToolUseId::new("call-1"),
                 content: "contents".to_owned(),
                 is_error: Some(false),
@@ -218,6 +221,8 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
+            output_json: None,
             tool_use_id: ToolUseId::new("orphan"),
             content: "x".to_owned(),
             is_error: Some(false),
@@ -273,6 +278,7 @@ fn the_system_prompt_is_a_system_instruction() {
 fn tools_are_wrapped_in_function_declarations() {
     let mut req = request(vec![user("hi")]);
     req.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "read".to_owned(),
@@ -626,6 +632,8 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
         content: calls
             .iter()
             .map(|id| ContentBlock::ToolResult {
+                cache_reference: None,
+                output_json: None,
                 tool_use_id: id.clone(),
                 content: "ok".into(),
                 is_error: Some(false),

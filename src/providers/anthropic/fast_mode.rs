@@ -81,6 +81,7 @@ pub async fn fetch_status(
     let response = HttpExecutor::new(transport)
         .execute_bounded(
             HttpRequest {
+                http1_header_layout: None,
                 method: "GET".into(),
                 url: url.into(),
                 headers,

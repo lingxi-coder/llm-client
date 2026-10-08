@@ -87,6 +87,7 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
 
     req.messages.clear();
     req.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "json_tool".into(),
@@ -263,6 +264,7 @@ fn qwen_strict_schema_subset_exception_is_output_only_and_model_scoped() {
     // the existing OpenAI Chat encoding behavior.
     req.output_format = OutputFormat::Text;
     req.tools.push(ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "capture_person".into(),
@@ -492,6 +494,7 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
         .push(ConversationMessage::user_text("continue"));
     req.tools = (0..21)
         .map(|index| ToolSpec {
+            input_schema_json: None,
             tool_type: None,
             extra: serde_json::Value::Null,
             name: format!("tool_{index}"),
@@ -582,6 +585,7 @@ fn claude_strict_tool_schemas_are_checked_for_text_output_and_non_strict_tools_a
     p.provider_id = "anthropic".into();
     let mut req = request(OutputFormat::Text);
     req.tools = vec![ToolSpec {
+        input_schema_json: None,
         tool_type: None,
         extra: serde_json::Value::Null,
         name: "strict_tool".into(),

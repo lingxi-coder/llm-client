@@ -189,6 +189,20 @@ fn decode_response_block(
     value: &Value,
     pointer: &str,
 ) -> Result<Option<ContentBlock>, LlmError> {
+    if value["type"] == "tool_use" {
+        let Some(mut block) = decode_block(value) else {
+            return Ok(None);
+        };
+        let (display, raw) = response_json.take_tool_input(&format!("{pointer}/input"))?;
+        if let ContentBlock::ToolUse {
+            input, input_json, ..
+        } = &mut block
+        {
+            *input = display;
+            *input_json = raw;
+        }
+        return Ok(Some(block));
+    }
     if value.get("type").and_then(Value::as_str) != Some("text")
         || !has_only_known_text_fields(value)
     {
@@ -282,6 +296,7 @@ pub fn decode_block(v: &Value) -> Option<ContentBlock> {
             data: v.get("data").and_then(Value::as_str)?.to_owned(),
         }),
         Some("tool_use") => Some(ContentBlock::ToolUse {
+            input_json: None,
             id: ToolUseId::new(v.get("id").and_then(Value::as_str)?),
             name: v.get("name").and_then(Value::as_str)?.to_owned(),
             input: v.get("input").cloned().unwrap_or(Value::Null),

@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_error_is_interruption_only_after_exposed_events_for_both_pull_apis() {
+    async fn transport_error_preserves_its_cause_after_exposed_events_for_both_pull_apis() {
         for batches in [false, true] {
             for started in [false, true] {
                 let mut frames = Vec::new();
@@ -126,17 +126,10 @@ mod tests {
                         }
                     }
                 };
-                if started {
-                    assert!(successful > 0);
-                    assert!(
-                        matches!(error, LlmError::StreamInterrupted { message } if message == "disconnected")
-                    );
-                } else {
-                    assert_eq!(successful, 0);
-                    assert!(
-                        matches!(error, LlmError::Transport { message } if message == "disconnected")
-                    );
-                }
+                assert_eq!(successful > 0, started);
+                assert!(
+                    matches!(error, LlmError::Transport { message } if message == "disconnected")
+                );
                 assert!(stream.next_batch().await.is_none());
             }
         }
@@ -196,7 +189,7 @@ mod tests {
         let result = stream_for(
             stream::iter(vec![
                 Ok(Bytes::from(payload)),
-                Err(LlmError::StreamInterrupted {
+                Err(LlmError::Transport {
                     message: "disconnected".into(),
                 }),
             ])
@@ -214,7 +207,7 @@ mod tests {
             Some("test")
         );
         assert!(
-            matches!(result.source, LlmError::StreamInterrupted { message } if message == "disconnected")
+            matches!(result.source, LlmError::Transport { message } if message == "disconnected")
         );
     }
 

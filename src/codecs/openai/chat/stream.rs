@@ -10,6 +10,7 @@ use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
 use crate::protocol::{LlmError, ProtocolFamily, ResponseId, StopReason, StreamEvent, ToolUseId};
+use crate::response_json::{text_delta, ResponseJson};
 use serde_json::Value;
 
 #[derive(Debug, Default)]
@@ -46,6 +47,7 @@ pub struct OpenAiStreamDecoder {
 
 #[derive(Debug)]
 struct ToolStream {
+    arguments_decoder: crate::response_json::ArgumentJsonDecoder,
     wire_index: u64,
     block: usize,
     id: ToolUseId,
@@ -69,9 +71,9 @@ impl EventDecoder for OpenAiStreamDecoder {
             return Ok(out);
         }
 
-        let root: Value = serde_json::from_str(data).map_err(|_| LlmError::InvalidRequest {
-            message: "OpenAI stream frame is not valid JSON".to_owned(),
-        })?;
+        let mut response_json =
+            ResponseJson::parse(data.as_bytes(), "OpenAI stream frame is not valid JSON")?;
+        let root = response_json.value.clone();
 
         if let Some(u) = root.get("usage").filter(|v| !v.is_null()) {
             self.usage_raw = Some(decode::normalize_usage(
@@ -82,6 +84,7 @@ impl EventDecoder for OpenAiStreamDecoder {
         }
 
         if root.get("error").is_some_and(|error| !error.is_null()) {
+            response_json.finish()?;
             return Err(decode::classify_error(500, &root, None));
         }
 
@@ -123,6 +126,7 @@ impl EventDecoder for OpenAiStreamDecoder {
             .and_then(Value::as_array)
             .and_then(|c| c.first())
         else {
+            response_json.finish()?;
             return Ok(out);
         };
 
@@ -141,30 +145,26 @@ impl EventDecoder for OpenAiStreamDecoder {
                 }
             }
             if let Some(t) = delta.get("content").and_then(Value::as_str) {
-                if !t.is_empty() {
+                let decoded = response_json.take_text("/choices/0/delta/content", t)?;
+                if !decoded.text.is_empty() {
                     let block = *self.text_block.get_or_insert_with(|| {
                         let b = self.next_block;
                         self.next_block += 1;
                         b
                     });
-                    out.push(StreamEvent::TextDelta {
-                        block,
-                        text: t.to_owned(),
-                    });
+                    out.push(text_delta(block, decoded));
                 }
             }
             if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
                 self.saw_refusal = true;
                 if !refusal.is_empty() {
+                    let decoded = response_json.take_text("/choices/0/delta/refusal", refusal)?;
                     let block = *self.text_block.get_or_insert_with(|| {
                         let b = self.next_block;
                         self.next_block += 1;
                         b
                     });
-                    out.push(StreamEvent::TextDelta {
-                        block,
-                        text: refusal.to_owned(),
-                    });
+                    out.push(text_delta(block, decoded));
                 }
             }
             if let Some(audio) = delta.get("audio").filter(|value| !value.is_null()) {
@@ -191,8 +191,16 @@ impl EventDecoder for OpenAiStreamDecoder {
                 });
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                for call in calls {
-                    self.tool_fragment(call, &mut out);
+                for (index, call) in calls.iter().enumerate() {
+                    let arguments = call
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let decoded = response_json.take_text(
+                        &format!("/choices/0/delta/tool_calls/{index}/function/arguments"),
+                        arguments,
+                    )?;
+                    self.tool_fragment(call, decoded, &mut out)?;
                 }
             }
         }
@@ -200,6 +208,7 @@ impl EventDecoder for OpenAiStreamDecoder {
         if let Some(f) = choice.get("finish_reason").and_then(Value::as_str) {
             self.stop = Some(decode::stop_reason(Some(f)));
         }
+        response_json.finish()?;
         Ok(out)
     }
 
@@ -239,7 +248,12 @@ impl OpenAiStreamDecoder {
             ..Default::default()
         }
     }
-    fn tool_fragment(&mut self, call: &Value, out: &mut Vec<StreamEvent>) {
+    fn tool_fragment(
+        &mut self,
+        call: &Value,
+        arguments: crate::response_json::DecodedText,
+        out: &mut Vec<StreamEvent>,
+    ) -> Result<(), LlmError> {
         let wire_index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
         let function = call.get("function").unwrap_or(&Value::Null);
         let id = call.get("id").and_then(Value::as_str);
@@ -249,6 +263,7 @@ impl OpenAiStreamDecoder {
             let block = self.next_block;
             self.next_block += 1;
             self.tools.push(ToolStream {
+                arguments_decoder: Default::default(),
                 wire_index,
                 block,
                 id: ToolUseId::new(id.unwrap_or_default()),
@@ -256,7 +271,7 @@ impl OpenAiStreamDecoder {
             });
         }
         let Some(slot) = self.tools.iter_mut().find(|t| t.wire_index == wire_index) else {
-            return;
+            return Ok(());
         };
         // Later fragments may still be the first to carry the id or the name.
         if let Some(id) = id {
@@ -269,19 +284,17 @@ impl OpenAiStreamDecoder {
                 slot.name = name.to_owned();
             }
         }
-        let fragment = function
-            .get("arguments")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let fragment = slot.arguments_decoder.push(arguments)?;
         out.push(StreamEvent::ToolCallDelta {
             block: slot.block,
             id: slot.id.clone(),
             caller: None,
             toolset_name: None,
             name: slot.name.clone(),
-            arguments_fragment: fragment.to_owned(),
+            arguments_fragment: fragment,
             provider_id: None,
         });
+        Ok(())
     }
 
     /// `[DONE]` and the end of the byte stream are two ways to reach the same
@@ -309,5 +322,46 @@ impl OpenAiStreamDecoder {
             usage: self.usage_report(),
             inference: self.inference.report.clone(),
         });
+    }
+}
+
+#[cfg(test)]
+mod utf16_stream_tests {
+    use super::*;
+
+    #[test]
+    fn stream_text_delta_retains_lone_units() {
+        let mut decoder = OpenAiStreamDecoder::default();
+        let events = decoder
+            .decode_frame(
+                br#"{"model":"gpt-test","choices":[{"index":0,"delta":{"content":"A\ud800B"},"finish_reason":null}]}"#,
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::TextDeltaJsUtf16 { text, utf16_code_units, .. }
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        )));
+    }
+
+    #[test]
+    fn adjacent_stream_frames_recombine_surrogate_halves() {
+        let mut decoder = OpenAiStreamDecoder::default();
+        let mut accumulator = crate::stream_assembly::StreamAccumulator::new();
+        for frame in [
+            br#"{"model":"gpt-test","choices":[{"index":0,"delta":{"content":"\ud83d"},"finish_reason":null}]}"#.as_slice(),
+            br#"{"model":"gpt-test","choices":[{"index":0,"delta":{"content":"\ude00"},"finish_reason":"stop"}]}"#.as_slice(),
+            b"[DONE]",
+        ] {
+            for event in decoder.decode_frame(frame).unwrap() {
+                accumulator.observe(&event);
+            }
+        }
+        let response = accumulator.finish().unwrap().response;
+        assert!(matches!(
+            response.message.content.as_slice(),
+            [crate::protocol::ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+                if text == "😀" && utf16_code_units == &[0xd83d, 0xde00]
+        ));
     }
 }

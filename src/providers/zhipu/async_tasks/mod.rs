@@ -393,6 +393,7 @@ impl<'a> GlmAsyncService<'a> {
         }
 
         let http_request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: async_chat_endpoint(pinned_service.config.region)?,
             headers: json_headers(credentials),
@@ -481,6 +482,7 @@ impl<'a> GlmAsyncService<'a> {
         credentials.validate(&pinned_service.config.credential_scope)?;
         pinned_service.validate_reference(reference)?;
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: async_result_endpoint(pinned_service.config.region, &reference.task_id)?,
             headers: auth_header(credentials),
