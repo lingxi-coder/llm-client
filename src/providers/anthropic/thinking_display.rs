@@ -2,6 +2,7 @@
 //! The host supplies routing/admission facts and owns conversation lifetimes;
 //! payload mutation and provider request policy remain in the SDK.
 use super::beta_repair::{Beta, ConversationBetaState};
+use crate::protocol::{JsonPayload, LlmError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -95,7 +96,7 @@ pub struct DisplayProbe {
 /// First-party Gft is unknown rather than an inferred model refusal.
 pub fn probe_admission(
     status: u16,
-    body: &Value,
+    body: &JsonPayload,
     header_sent: bool,
     trusted_first_party_endpoint: bool,
     recognition: super::error_recognition::RecognitionContext<'_>,
@@ -105,7 +106,7 @@ pub fn probe_admission(
         super::error_recognition::recognized(status, body, recognition, identity);
     ProbeAdmission {
         header_sent,
-        billing_error: body["error"]["type"] == "billing_error",
+        billing_error: body.string_at("/error/type").as_deref() == Some("billing_error"),
         recognized_error,
         // pF blocks admission; only IR suppresses failed-trial accounting.
         policy_denied: super::error_recognition::policy_denied(status, body, false),
@@ -174,12 +175,12 @@ impl DisplayProbe {
 /// Explicit extra thinking and simulated proxy usage suppress this automatic
 /// field. Inserting display preserves the existing thinking property order.
 pub fn apply_updates(
-    body: &mut Value,
+    body: &mut JsonPayload,
     betas: &mut Vec<String>,
     admission: UpdatesAdmission,
     conversation: &ConversationBetaState,
     probe: &DisplayProbe,
-) -> bool {
+) -> Result<bool, LlmError> {
     if admission.mode != ConnectorMode::ConnectorText
         || !admission.supports_interleaved
         || admission.extra_has_thinking
@@ -187,35 +188,43 @@ pub fn apply_updates(
         || conversation.rejected(Beta::ThinkingDisplayUpdates)
         || probe.suppress_updates()
     {
-        return false;
+        return Ok(false);
     }
-    let Some(thinking) = body.get_mut("thinking").and_then(Value::as_object_mut) else {
-        return false;
+    let Some(thinking) = body.payload_at("/thinking") else {
+        return Ok(false);
     };
     if !matches!(
-        thinking.get("type").and_then(Value::as_str),
+        thinking.string_at("/type").as_deref(),
         Some("adaptive" | "enabled")
     ) {
-        return false;
+        return Ok(false);
     }
-    thinking.insert("display".into(), Value::String("updates".into()));
+    let display = JsonPayload::string("updates");
+    let thinking = super::beta_repair::update_source_object_fields(
+        &thinking,
+        &[("display", Some(display.as_json_source()))],
+    )?;
+    *body = super::beta_repair::update_source_object_fields(
+        body,
+        &[("thinking", Some(thinking.as_json_source()))],
+    )?;
     if !betas.iter().any(|beta| beta == UPDATES_BETA) {
         betas.push(UPDATES_BETA.into());
     }
     betas.retain(|beta| beta != "redact-thinking-2026-02-12");
-    true
+    Ok(true)
 }
 
 /// Apply the display field and coupled beta to a prepared Messages request.
 /// Hosts call before spreading explicit extra body and before signing/sealing.
 pub fn apply_request_updates(
-    body: &mut Value,
+    body: &mut JsonPayload,
     headers: &mut BTreeMap<String, String>,
     string_overrides: &mut BTreeMap<String, Vec<u16>>,
     admission: UpdatesAdmission,
     conversation: &ConversationBetaState,
     probe: &DisplayProbe,
-) -> bool {
+) -> Result<bool, LlmError> {
     let mut betas: Vec<String> = headers
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
@@ -227,18 +236,21 @@ pub fn apply_request_updates(
                 .collect()
         })
         .unwrap_or_default();
-    if !apply_updates(body, &mut betas, admission, conversation, probe) {
-        return false;
+    if !apply_updates(body, &mut betas, admission, conversation, probe)? {
+        return Ok(false);
     }
     string_overrides
         .retain(|path, _| path != "/thinking/display" && !path.starts_with("/thinking/display/"));
     super::request_policy::set_header(headers, "anthropic-beta", &betas.join(","));
-    true
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn source(value: &Value) -> JsonPayload {
+        JsonPayload::from_generated_value(value).unwrap()
+    }
     fn fixture() -> Value {
         serde_json::from_str(include_str!(
             "../../../tests/fixtures/thinking_display_2_1_288.json"
@@ -272,7 +284,9 @@ mod tests {
         for case in fixture()["knownErrorCases"].as_array().unwrap() {
             let admission = probe_admission(
                 case["status"].as_u64().unwrap() as u16,
-                &serde_json::json!({"error":{"type":"invalid_request_error","message":case["message"]}}),
+                &source(
+                    &serde_json::json!({"error":{"type":"invalid_request_error","message":case["message"]}}),
+                ),
                 true,
                 false,
                 super::super::error_recognition::RecognitionContext::default(),
@@ -298,7 +312,10 @@ mod tests {
 
     #[test]
     fn automatic_request_field_replaces_only_its_owned_exact_string() {
-        let mut body = serde_json::json!({"thinking":{"type":"adaptive","display":"omitted"}});
+        let mut body = JsonPayload::parse(
+            r#"{"prefix":"\ud800","thinking":{"display":"omitted","type":"adaptive","extra":{"surrogate":"\ud801"}},"tail":true}"#,
+        )
+        .unwrap();
         let mut headers = BTreeMap::from([(
             "Anthropic-Beta".into(),
             "base-beta,redact-thinking-2026-02-12".into(),
@@ -319,8 +336,17 @@ mod tests {
             },
             &ConversationBetaState::default(),
             &DisplayProbe::default(),
-        ));
-        assert_eq!(body["thinking"]["display"], "updates");
+        )
+        .unwrap());
+        assert_eq!(
+            body.string_at("/thinking/display").as_deref(),
+            Some("updates")
+        );
+        let source = body.as_json_source();
+        assert!(source.contains(r#""prefix":"\ud800""#));
+        assert!(source.contains(r#""surrogate":"\ud801""#));
+        assert!(source.find("prefix").unwrap() < source.find("thinking").unwrap());
+        assert!(source.find("thinking").unwrap() < source.find("tail").unwrap());
         assert_eq!(
             headers["anthropic-beta"],
             format!("base-beta,{UPDATES_BETA}")
@@ -404,7 +430,7 @@ mod tests {
         let cases = fixture["wireCases"].as_array().unwrap();
         assert_eq!(cases.len(), 192);
         for case in cases {
-            let mut body = case["body"].clone();
+            let mut body = JsonPayload::from_generated_value(&case["body"]).unwrap();
             let mut betas: Vec<String> = serde_json::from_value(case["betas"].clone()).unwrap();
             let conversation = ConversationBetaState::default();
             if case["disabled"].as_bool().unwrap() {
@@ -424,10 +450,18 @@ mod tests {
                 },
                 &conversation,
                 &probe,
-            );
-            assert_eq!(body["thinking"], case["expected"]["thinking"], "{case}");
+            )
+            .unwrap();
+            let body_value: Value = serde_json::from_str(body.as_json_source()).unwrap();
             assert_eq!(
-                serde_json::to_string(&body["thinking"]).unwrap(),
+                body_value["thinking"], case["expected"]["thinking"],
+                "{case}"
+            );
+            assert_eq!(
+                body.payload_at("/thinking")
+                    .unwrap()
+                    .canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                    .unwrap(),
                 case["thinkingBytes"].as_str().unwrap(),
                 "{case}"
             );

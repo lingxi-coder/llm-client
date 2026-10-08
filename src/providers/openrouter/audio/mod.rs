@@ -1038,11 +1038,15 @@ fn provider_error(status: u16, body: &[u8], generation_id: Option<String>) -> Op
 }
 
 fn map_transport_error(source: LlmError) -> OpenRouterAudioError {
-    match source {
+    if matches!(
+        source.classification_source(),
         LlmError::UnsupportedCapability { .. }
-        | LlmError::InvalidRequest { .. }
-        | LlmError::RequestTooLarge { .. } => OpenRouterAudioError::Llm(source),
-        source => OpenRouterAudioError::OutcomeUnknown { source },
+            | LlmError::InvalidRequest { .. }
+            | LlmError::RequestTooLarge { .. }
+    ) {
+        OpenRouterAudioError::Llm(source)
+    } else {
+        OpenRouterAudioError::OutcomeUnknown { source }
     }
 }
 

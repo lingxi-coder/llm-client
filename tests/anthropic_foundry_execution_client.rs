@@ -93,13 +93,19 @@ async fn selected_hosting_is_used_and_complete_stream_preserve_execution_metadat
         let allowed = request("enabled");
         let response = client.chat().complete(&allowed, &options).await.unwrap();
         assert_eq!(
-            response.anthropic_container().unwrap().envelope["future_field"],
+            serde_json::from_str::<Value>(
+                response
+                    .anthropic_container()
+                    .unwrap()
+                    .envelope
+                    .as_json_source()
+            )
+            .unwrap()["future_field"],
             "preserve"
         );
-        assert_eq!(
-            response.anthropic_usage().unwrap()["server_tool_use"]["code_execution_requests"],
-            1
-        );
+        let usage: Value =
+            serde_json::from_str(response.anthropic_usage().unwrap().as_json_source()).unwrap();
+        assert_eq!(usage["server_tool_use"]["code_execution_requests"], 1);
         let mut stream = client.chat().stream(&allowed, &options).await.unwrap();
         let mut ended = false;
         while let Some(event) = stream.next().await {
@@ -107,13 +113,19 @@ async fn selected_hosting_is_used_and_complete_stream_preserve_execution_metadat
         }
         assert!(ended);
         assert_eq!(
-            stream.anthropic_container().unwrap().envelope["id"],
+            serde_json::from_str::<Value>(
+                stream
+                    .anthropic_container()
+                    .unwrap()
+                    .envelope
+                    .as_json_source()
+            )
+            .unwrap()["id"],
             "container_foundry"
         );
-        assert_eq!(
-            stream.anthropic_usage().unwrap()["server_tool_use"]["code_execution_requests"],
-            1
-        );
+        let usage: Value =
+            serde_json::from_str(stream.anthropic_usage().unwrap().as_json_source()).unwrap();
+        assert_eq!(usage["server_tool_use"]["code_execution_requests"], 1);
         let sent = transport.requests.lock().unwrap();
         assert_eq!(sent.len(), 2);
         for wire in sent.iter() {

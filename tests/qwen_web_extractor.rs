@@ -11,6 +11,9 @@ use lingxi_llm_client::{
     HttpResponse, LlmClientBuilder, RequestOptions,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 use std::sync::Arc;
 
 mod support;
@@ -188,7 +191,7 @@ fn response_preserves_qwen_call_and_extractor_usage_count() {
         response.message.content,
         vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: item,
+            value: json_payload_fixture::generated(&item),
         }]
     );
     assert_eq!(
@@ -254,7 +257,7 @@ fn stream_preserves_extractor_output_and_usage() {
     );
 
     assert!(events.iter().any(|event| matches!(event,
-        StreamEvent::ProviderContent { value, .. } if value == &item
+        StreamEvent::ProviderContent { value, .. } if json_payload_fixture::source_matches(value, &item)
     )));
     assert!(events.iter().any(|event| matches!(event,
         StreamEvent::End { usage, .. }

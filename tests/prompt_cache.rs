@@ -1,6 +1,9 @@
 use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{protocol::*, *};
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 fn req() -> ChatRequest {
     serde_json::from_value(json!({"model":"test","system":[{"text":"system"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"name":"f","description":"f","input_schema":{"type":"object"}}]})).unwrap()
 }
@@ -193,14 +196,14 @@ fn anthropic_native_and_typed_message_cache_controls_are_deduplicated_and_preser
         .push(anthropic_mcp(AnthropicMcpCacheTtl::OneHour));
     request.messages[0].content[0] = ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: json!({
+        value: json_payload_fixture::generated(&json!({
             "type":"mcp_tool_use",
             "id":"mcptoolu_1",
             "name":"read_doc",
             "server_name":"server",
             "input":{},
             "cache_control":{"type":"ephemeral","ttl":"5m"}
-        }),
+        })),
     };
     request.prompt_cache.breakpoints = vec![CacheBreakpoint {
         scope: None,

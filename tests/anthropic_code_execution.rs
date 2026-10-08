@@ -3,8 +3,9 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::protocol::{
     AttachmentRef, AuthStrategy, ChatRequest, ConnectionSpec, ContentBlock, ConversationMessage,
-    DocumentSource, FailoverTriggers, LlmError, MessageRole, ProtocolFamily, ProviderFileSource,
-    ProviderProfile, Region, Secret, StopReason, StreamEvent, ToolChoice, ToolSpec, ToolUseId,
+    DocumentSource, FailoverTriggers, JsonPayload, LlmError, MessageRole, ProtocolFamily,
+    ProviderFileSource, ProviderProfile, Region, Secret, StopReason, StreamEvent, ToolChoice,
+    ToolSpec, ToolUseId,
 };
 use lingxi_llm_client::providers::anthropic::types::{
     AnthropicCodeExecutionConfig, AnthropicContainerMetadata, AnthropicContainerRef,
@@ -19,6 +20,9 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 
 #[path = "support/wire_api.rs"]
 mod wire_api;
@@ -157,10 +161,13 @@ fn programmatic_tool_call(caller: Value) -> Value {
 fn programmatic_tool() -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "lookup".into(),
-        description: "Look up records".into(),
-        input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("Look up records"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: vec![lingxi_llm_client::protocol::NativeExtension::from_typed(
@@ -469,7 +476,9 @@ fn uploaded_files_preserve_user_order_and_accept_sandbox_file_types() {
         .content
         .push(ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({"type":"text","text":"Keep this native context","future":{"x":1}}),
+            value: json_payload_fixture::generated(
+                &json!({"type":"text","text":"Keep this native context","future":{"x":1}}),
+            ),
         });
     execution(&mut request).files = vec![
         file("file_csv", "text/csv"),
@@ -531,7 +540,9 @@ fn uploaded_file_scope_role_and_duplicate_validation_cannot_be_bypassed() {
         .content
         .push(ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({"type":"container_upload","file_id":"file_csv"}),
+            value: json_payload_fixture::generated(
+                &json!({"type":"container_upload","file_id":"file_csv"}),
+            ),
         });
     assert!(matches!(
         encode(&request, &context(&profile())),
@@ -574,10 +585,13 @@ fn ambiguous_raw_controls_duplicate_tools_and_function_name_collisions_fail() {
     request.hosted_tools.pop();
     request.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "code_execution".into(),
-        description: "collision".into(),
-        input_schema: json!({"type":"object"}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("collision"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object"}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
@@ -652,11 +666,13 @@ fn programmatic_callers_encode_and_preflight_documented_combinations() {
     ));
 
     let mut recursive = request.clone();
-    recursive.tools[0].input_schema = json!({
-        "type":"object",
-        "$defs":{"Node":{"type":"object","properties":{"next":{"$ref":"#/$defs/Node"}}}},
-        "properties":{"root":{"$ref":"#/$defs/Node"}}
-    });
+    recursive.tools[0].input_schema =
+        lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
+            "type":"object",
+            "$defs":{"Node":{"type":"object","properties":{"next":{"$ref":"#/$defs/Node"}}}},
+            "properties":{"root":{"$ref":"#/$defs/Node"}}
+        }))
+        .unwrap();
     assert!(matches!(
         encode(&recursive, &context(&profile)),
         Err(LlmError::UnsupportedCapability { .. })
@@ -713,17 +729,26 @@ fn programmatic_callers_encode_and_preflight_documented_combinations() {
         .push(ConversationMessage::assistant(vec![
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: programmatic_server_call(),
+                value: json_payload_fixture::generated(&programmatic_server_call()),
             },
             ContentBlock::ToolUse {
                 id: ToolUseId::new("toolu_programmatic"),
                 name: "lookup".into(),
-                input: json!({"query":"latest records"}),
+                input: lingxi_llm_client::protocol::JsonPayload::parse(
+                    &json!({"query":"latest records"}).to_string(),
+                )
+                .unwrap(),
                 provider_id: None,
-                caller: Some(json!({
-                    "type":"code_execution_20260120",
-                    "tool_id":"srvtoolu_programmatic"
-                })),
+                caller: Some(
+                    lingxi_llm_client::protocol::JsonPayload::parse(
+                        &json!({
+                            "type":"code_execution_20260120",
+                            "tool_id":"srvtoolu_programmatic"
+                        })
+                        .to_string(),
+                    )
+                    .unwrap(),
+                ),
                 toolset_name: None,
                 thought_signature: None,
             },
@@ -756,11 +781,11 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
     assert!(matches!(
         &response.message.content[0],
         ContentBlock::ProviderContent { value, .. }
-            if value == &programmatic_server_call()
+            if json_payload_fixture::source_matches(value, &programmatic_server_call())
     ));
     assert!(matches!(
         &response.message.content[1],
-        ContentBlock::ToolUse { caller: Some(actual), .. } if actual == &caller
+        ContentBlock::ToolUse { caller: Some(actual), .. } if actual.as_json_source() == caller.to_string()
     ));
 
     let mut replay_request = request();
@@ -808,7 +833,7 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
         .unwrap();
     assert!(matches!(
         &malformed_response.message.content[1],
-        ContentBlock::ToolUse { caller: Some(actual), .. } if actual == &malformed
+        ContentBlock::ToolUse { caller: Some(actual), .. } if actual.as_json_source() == malformed.to_string()
     ));
     let mut malformed_replay = request();
     malformed_replay.tools.push(programmatic_tool());
@@ -826,14 +851,19 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
         .push(ConversationMessage::assistant(vec![
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: programmatic_server_call(),
+                value: json_payload_fixture::generated(&programmatic_server_call()),
             },
             ContentBlock::ToolUse {
                 id: ToolUseId::new("toolu_programmatic"),
                 name: "lookup".into(),
-                input: json!({"query":"latest records"}),
+                input: lingxi_llm_client::protocol::JsonPayload::parse(
+                    &json!({"query":"latest records"}).to_string(),
+                )
+                .unwrap(),
                 provider_id: None,
-                caller: Some(caller),
+                caller: Some(
+                    lingxi_llm_client::protocol::JsonPayload::parse(&caller.to_string()).unwrap(),
+                ),
                 toolset_name: None,
                 thought_signature: None,
             },
@@ -855,14 +885,19 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
     request.messages.push(ConversationMessage::assistant(vec![
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: programmatic_server_call(),
+            value: json_payload_fixture::generated(&programmatic_server_call()),
         },
         ContentBlock::ToolUse {
             id: ToolUseId::new("toolu_programmatic"),
             name: "lookup".into(),
-            input: json!({"query":"latest records"}),
+            input: lingxi_llm_client::protocol::JsonPayload::parse(
+                &json!({"query":"latest records"}).to_string(),
+            )
+            .unwrap(),
             provider_id: None,
-            caller: Some(caller.clone()),
+            caller: Some(
+                lingxi_llm_client::protocol::JsonPayload::parse(&caller.to_string()).unwrap(),
+            ),
             toolset_name: None,
             thought_signature: None,
         },
@@ -881,11 +916,11 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
     request.messages.push(ConversationMessage::assistant(vec![
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"code_execution_tool_result",
                 "tool_use_id":"srvtoolu_programmatic",
                 "content":{"type":"code_execution_result","stdout":"42","stderr":"","return_code":0,"content":[]}
-            }),
+            })),
         },
     ]));
     request
@@ -906,13 +941,19 @@ fn synchronous_container_metadata_usage_and_paused_native_content_round_trip() {
             &context(&profile()),
         )
         .unwrap();
+    let response_wire = serde_json::to_string(&response).unwrap();
     let response: lingxi_llm_client::protocol::ChatResponse =
-        serde_json::from_value(serde_json::to_value(&response).unwrap()).unwrap();
-    assert_eq!(response.anthropic_container().unwrap().envelope, envelope);
-    assert!(response.openrouter_container().is_none());
+        serde_json::from_str(&response_wire).unwrap();
     assert_eq!(
-        response.anthropic_usage().unwrap(),
-        &json!({
+        response.anthropic_container().unwrap().envelope,
+        JsonPayload::from_generated_value(&envelope).unwrap()
+    );
+    assert!(response.openrouter_container().is_none());
+    let usage: Value =
+        serde_json::from_str(response.anthropic_usage().unwrap().as_json_source()).unwrap();
+    assert_eq!(
+        usage,
+        json!({
             "input_tokens":5,"output_tokens":7,"server_tool_use":{"code_execution_requests":1}
         })
     );
@@ -954,10 +995,17 @@ fn metadata_import_rejects_missing_or_invalid_container_ids() {
         json!({"id":""}),
         json!({"id":"bad\nid"}),
     ] {
-        assert!(AnthropicContainerMetadata { envelope }
-            .reference_for(scope())
-            .is_err());
+        assert!(AnthropicContainerMetadata {
+            envelope: JsonPayload::from_generated_value(&envelope).unwrap(),
+        }
+        .reference_for(scope())
+        .is_err());
     }
+    assert!(AnthropicContainerMetadata {
+        envelope: JsonPayload::parse(r#"{"id":"\ud800"}"#).unwrap(),
+    }
+    .reference_for(scope())
+    .is_err());
 }
 
 fn execution_frames(final_container: Value) -> Vec<Value> {
@@ -983,10 +1031,10 @@ fn streaming_emits_native_blocks_and_both_container_envelopes_without_client_cal
         events.extend(wire_api::decode_frame(&mut *decoder, frame.to_string().as_bytes()).unwrap());
     }
     events.extend(wire_api::finish(&mut *decoder).unwrap());
-    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderEvent { payload, .. } if payload["message"]["container"]["id"] == "container_initial")));
-    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderEvent { payload, .. } if payload["delta"]["container"] == final_container)));
-    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderContent { block:0, value, .. } if value["input"] == json!({"command":"pwd"}))));
-    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderContent { block:1, value, .. } if *value == native_result())));
+    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderEvent { payload, .. } if json_payload_fixture::source_string_at(payload, "/message/container/id").as_deref() == Some("container_initial"))));
+    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderEvent { payload, .. } if json_payload_fixture::source_value_at(payload, "/delta/container").as_ref() == Some(&final_container))));
+    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderContent { block:0, value, .. } if json_payload_fixture::source_matches(value, &json!({"type":"server_tool_use","id":"srvtoolu_1","name":"bash_code_execution","input":{"command":"pwd"}})))));
+    assert!(events.iter().any(|event| matches!(event, StreamEvent::ProviderContent { block:1, value, .. } if json_payload_fixture::source_matches(value, &native_result()))));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
@@ -1030,9 +1078,9 @@ fn streaming_programmatic_tool_call_exposes_caller_once_and_keeps_server_executi
         })
         .collect::<Vec<_>>();
     assert_eq!(tool_deltas.len(), 2);
-    assert!(tool_deltas
-        .iter()
-        .all(|(id, actual)| { *id == "toolu_programmatic" && *actual == &caller }));
+    assert!(tool_deltas.iter().all(|(id, actual)| {
+        *id == "toolu_programmatic" && actual.as_json_source() == caller.to_string()
+    }));
     let unique_calls = tool_deltas
         .iter()
         .map(|(id, _)| *id)
@@ -1041,12 +1089,12 @@ fn streaming_programmatic_tool_call_exposes_caller_once_and_keeps_server_executi
     assert!(events.iter().any(|event| matches!(
         event,
         StreamEvent::ProviderContent { value, .. }
-            if value == &programmatic_server_call()
+            if json_payload_fixture::source_matches(value, &programmatic_server_call())
     )));
     assert!(!events.iter().any(|event| matches!(
         event,
         StreamEvent::ProviderContent { value, .. }
-            if value["type"] == "tool_use"
+            if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("tool_use")
     )));
     let encoded = serde_json::to_value(
         events
@@ -1142,14 +1190,16 @@ async fn high_level_stream_observes_replaced_null_and_interrupted_container_meta
         assert_eq!(
             model_stream
                 .anthropic_container()
-                .map(|metadata| metadata.envelope.clone()),
-            (!latest.is_null()).then_some(latest)
+                .map(|metadata| metadata.envelope.as_json_source().to_owned()),
+            (!latest.is_null()).then(|| serde_json::to_string(&latest).unwrap())
         );
+        let usage: Value =
+            serde_json::from_str(model_stream.anthropic_usage().unwrap().as_json_source()).unwrap();
         assert_eq!(
-            model_stream.anthropic_usage(),
-            Some(&json!({
+            usage,
+            json!({
                 "input_tokens":5,"output_tokens":7,"server_tool_use":{"code_execution_requests":1}
-            }))
+            })
         );
     }
     let mut chunks = sse(execution_frames(Value::Null).into_iter().take(1).collect());
@@ -1174,7 +1224,14 @@ async fn high_level_stream_observes_replaced_null_and_interrupted_container_meta
     }
     assert!(saw_error);
     assert_eq!(
-        model_stream.anthropic_container().unwrap().envelope["id"],
+        serde_json::from_str::<Value>(
+            model_stream
+                .anthropic_container()
+                .unwrap()
+                .envelope
+                .as_json_source()
+        )
+        .unwrap()["id"],
         "container_initial"
     );
     assert_eq!(transport.requests.lock().unwrap().len(), 1);
@@ -1371,9 +1428,9 @@ fn custom_skill_workspace_binding_checks_the_effective_chat_header() {
     let wire = AnthropicMessagesCodec
         .encode_request(EncodeRequest::new(&request), &context(&configured_profile))
         .unwrap();
-    assert!(wire.headers.iter().any(|(name, value)| name
-        .eq_ignore_ascii_case("anthropic-workspace-id")
-        && value == "wrkspc_a"));
+    assert!(wire.headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("anthropic-workspace-id") && value == "wrkspc_a"
+    }));
     for headers in [
         json!({"anthropic-workspace-id":"wrkspc_b"}),
         json!({"anthropic-workspace-id":"wrkspc_a", "Anthropic-Workspace-Id":"wrkspc_a"}),

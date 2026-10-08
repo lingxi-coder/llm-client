@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 /// Validate typed inline audio before attachments or provider dispatch.
 pub(crate) fn validate_audio_input(req: &ChatRequest) -> Result<(), LlmError> {
-    if req.metadata.get("openrouter_chat_audio").is_some() {
+    if req.metadata.payload_at("/openrouter_chat_audio").is_some() {
         return Err(LlmError::UnsupportedCapability {
             message: "OpenRouter Chat audio output settings cannot be used with Gemini".into(),
         });
@@ -206,8 +206,8 @@ pub(crate) fn request_to<'a>(
     body.remove("service_tier");
     crate::wire_options::merge_headers(profile, &mut headers);
 
-    let mut body =
-        WireValue::from(Value::Object(body)).with("contents", WireValue::array(contents));
+    let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?
+        .with("contents", WireValue::array(contents));
     if !req.tools.is_empty() {
         body = body.map_array_field("tools", |index, tool| {
             let tool = WireValue::from(tool);
@@ -215,10 +215,15 @@ pub(crate) fn request_to<'a>(
                 return tool;
             }
             tool.map_array_field("functionDeclarations", |index, function| {
-                WireValue::from(function).with(
-                    "parameters",
-                    WireValue::borrowed(&req.tools[index].input_schema),
-                )
+                WireValue::from(function)
+                    .with(
+                        "description",
+                        WireValue::raw_json(&req.tools[index].description),
+                    )
+                    .with(
+                        "parameters",
+                        WireValue::raw_json(&req.tools[index].input_schema),
+                    )
             })
         });
     }
@@ -231,7 +236,8 @@ pub(crate) fn request_to<'a>(
                     req.system
                         .iter()
                         .map(|block| {
-                            WireValue::from(json!({})).with("text", WireValue::text(&block.text))
+                            WireValue::from(json!({}))
+                                .with("text", WireValue::raw_json(block.text_payload()))
                         })
                         .collect(),
                 ),
@@ -338,7 +344,7 @@ fn encode_part<'a>(
                     message: "native content is not a replayable Gemini hosted-tool Part for this protocol".to_owned(),
                 });
             }
-            return Ok(Some(WireValue::from(value.clone())));
+            return Ok(Some(WireValue::raw_json(value)));
         }
         ContentBlock::Text {
             text,
@@ -373,7 +379,7 @@ fn encode_part<'a>(
             ..
         } => {
             let mut call =
-                WireValue::from(json!({"name": name})).with("args", WireValue::borrowed(input));
+                WireValue::from(json!({"name": name})).with("args", WireValue::raw_json(input));
             if let Some(id) = provider_id {
                 call["id"] = Value::String(id.clone());
             }
@@ -387,8 +393,18 @@ fn encode_part<'a>(
             tool_use_id,
             content,
             is_error,
-            ..
+            blocks,
+            toolset_name,
         } => {
+            if toolset_name.is_some() {
+                return Err(LlmError::UnsupportedCapability {
+                    message: "Anthropic client toolsets and toolset_name require first-party Anthropic Messages or Vertex Claude".into(),
+                });
+            }
+            content.validate_root_string("tool result content")?;
+            if let Some(blocks) = blocks {
+                blocks.validate_root_array("tool result blocks")?;
+            }
             let (name, provider_id) =
                 names
                     .get(tool_use_id)
@@ -406,7 +422,7 @@ fn encode_part<'a>(
                     } else {
                         "result"
                     },
-                    WireValue::text(content),
+                    WireValue::raw_json(content),
                 ),
             );
             if let Some(id) = provider_id {
@@ -534,7 +550,7 @@ fn encode_part<'a>(
 fn encode_tool(t: &ToolSpec) -> Value {
     json!({
         "name": t.name,
-        "description": t.description,
+        "description": Value::Null,
         "parameters": Value::Null,
     })
 }

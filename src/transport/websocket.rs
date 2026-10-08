@@ -110,7 +110,10 @@ pub(crate) async fn connect(
                         .and_then(|v| v.parse::<u64>().ok())
                         .map(Duration::from_secs),
                 },
-                529 => LlmError::Overloaded { message },
+                529 => LlmError::Overloaded {
+                    message,
+                    native_retry_base_eligible: false,
+                },
                 500..=599 => LlmError::ProviderInternal { message },
                 // Preserve 426 for the session's explicit pre-dispatch HTTP fallback.
                 _ => LlmError::Transport { message },

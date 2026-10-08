@@ -2,11 +2,11 @@
 
 use crate::codecs::openai::chat::classify_error as chat_classify;
 use crate::protocol::{
-    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ResponseId, StopReason,
-    ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, JsonPayload, JsonPayloadFragment, LlmError,
+    MessageRole, ResponseId, StopReason, ToolUseId, Usage,
 };
 use crate::providers::openai::computer::OpenAiComputerCall;
-use crate::response_json::{content_block, ResponseJson};
+use crate::response_json::{content_block, ResponseJson, ResponseJsonScanner};
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
@@ -17,34 +17,94 @@ pub(crate) fn response_with_approval_support(
     openai_tool_search_semantics: bool,
     chatgpt_plan: bool,
 ) -> Result<ChatResponse, LlmError> {
-    if !(200..300).contains(&resp.status) {
-        let body: Value = serde_json::from_slice(&resp.body).unwrap_or_else(|_| {
-            if chatgpt_plan {
-                Value::String(String::from_utf8_lossy(&resp.body).into_owned())
-            } else {
-                Value::Null
+    if chatgpt_plan {
+        let body: Value = serde_json::from_slice(&resp.body)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&resp.body).into_owned()));
+        let status = if !(200..300).contains(&resp.status) {
+            Some(resp.status)
+        } else if body.get("status").and_then(Value::as_str) == Some("failed") {
+            Some(500)
+        } else {
+            None
+        };
+        if let Some(status) = status {
+            let retry_after = retry_after(resp);
+            let classified = classify_error(status, &body, retry_after, false);
+            return Err(plan_provider_error(
+                resp,
+                body,
+                classified.kind(),
+                retry_after,
+            ));
+        }
+    }
+    let scanner =
+        match ResponseJsonScanner::parse(&resp.body, "OpenAI Responses body is not valid JSON") {
+            Ok(scanner) => scanner,
+            Err(_error) if !(200..300).contains(&resp.status) => {
+                let (body, provider_text) = ResponseJson::raw_http_error(resp.status, &resp.body);
+                return Err(classify_error(resp.status, &body, retry_after(resp), false)
+                    .with_provider_error_text(provider_text));
             }
-        });
-        let retry_after = retry_after(resp);
-        let classified = classify_error(resp.status, &body, retry_after);
-        return Err(if chatgpt_plan {
-            plan_provider_error(resp, body, classified.kind(), retry_after)
-        } else {
-            classified
-        });
+            Err(error) => return Err(error),
+        };
+    if !(200..300).contains(&resp.status) {
+        let selected_text = scanner.provider_error_text_at("/error/message", Some(resp.status))?;
+        let provider_text = match &selected_text {
+            Some(text) => text.clone(),
+            None => scanner.provider_error_text_or_body_at("/error/message", Some(resp.status))?,
+        };
+        let body = scanner.provider_error_classification_body(
+            "/error",
+            &["message", "code", "type"],
+            selected_text.as_ref(),
+        );
+        return Err(classify_error(resp.status, &body, retry_after(resp), false)
+            .with_provider_error_text(provider_text));
     }
-    let mut response_json =
-        ResponseJson::parse(&resp.body, "OpenAI Responses body is not valid JSON")?;
+    if scanner.string_at("/status") == Some("failed") {
+        let selected_text = scanner.provider_error_text_at("/error/message", Some(500))?;
+        let provider_text = match &selected_text {
+            Some(text) => text.clone(),
+            None => scanner.provider_error_text_or_body_at("/error/message", Some(500))?,
+        };
+        let body = scanner.provider_error_classification_body(
+            "/error",
+            &["message", "code", "type"],
+            selected_text.as_ref(),
+        );
+        return Err(classify_error(500, &body, None, false).with_provider_error_text(provider_text));
+    }
+    let provider_source = scanner
+        .raw_source_at("")
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "OpenAI Responses source was not retained".into(),
+        })?;
+    let provider_payload =
+        JsonPayload::parse(provider_source).map_err(|error| LlmError::InvalidRequest {
+            message: format!("OpenAI Responses source is invalid JSON: {error}"),
+        })?;
+    let mut opaque_paths = Vec::new();
+    for index in 0..scanner.array_len("/output").unwrap_or(0) {
+        let item = format!("/output/{index}");
+        match scanner.string_at(&format!("{item}/type")) {
+            Some("web_search_call" | "file_search_call") => opaque_paths.push(item),
+            Some("message") => {
+                for content_index in 0..scanner.array_len(&format!("{item}/content")).unwrap_or(0) {
+                    let annotations = format!("{item}/content/{content_index}/annotations");
+                    if scanner.raw_source_at(&annotations).is_some() {
+                        opaque_paths.push(annotations);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut response_json = scanner.into_response_json_with_opaque_paths(&opaque_paths)?;
+    for pointer in &opaque_paths {
+        let _ = response_json.take_raw_json_source_at(pointer)?;
+    }
     let body = response_json.value.clone();
-    if body.get("status").and_then(Value::as_str) == Some("failed") {
-        response_json.finish()?;
-        let classified = classify_error(500, &body, None);
-        return Err(if chatgpt_plan {
-            plan_provider_error(resp, body, classified.kind(), None)
-        } else {
-            classified
-        });
-    }
     if !body.get("output").is_some_and(Value::is_array) {
         return Err(LlmError::ProviderInternal {
             message: "provider response has no valid output array".to_owned(),
@@ -99,24 +159,66 @@ pub(crate) fn response_with_approval_support(
                 // not expose it as a typed call that a caller might dispatch.
                 content.push(ContentBlock::ProviderContent {
                     protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                    value: item.clone(),
+                    value: JsonPayload::from_generated_value(item).map_err(|error| {
+                        LlmError::InvalidRequest {
+                            message: format!("cannot retain provider item: {error}"),
+                        }
+                    })?,
                 });
             }
             continue;
         }
+        if item.is_null() {
+            let source = response_json
+                .take_raw_json_source_at(&format!("/output/{item_index}"))?
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "opaque Responses output item source was not retained".into(),
+                })?;
+            content.push(ContentBlock::ProviderContent {
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                value: JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("opaque Responses output item is invalid JSON: {error}"),
+                })?,
+            });
+            continue;
+        }
         if item["type"].as_str() == Some("function_call") {
             for key in ["call_id", "name", "arguments"] {
-                if item.get(key).and_then(Value::as_str).is_none() {
+                let pointer = format!("/output/{item_index}/{key}");
+                if provider_payload.kind_at(&pointer)
+                    != Some(crate::response_json::FlatJsonKind::String)
+                    || provider_payload
+                        .string_units_at(&pointer)
+                        .and_then(|units| String::from_utf16(&units).ok())
+                        .is_none()
+                {
                     return Err(LlmError::InvalidRequest {
                         message: format!("provider function call has no {key} string"),
                     });
                 }
             }
-            if serde_json::from_str::<Value>(item["arguments"].as_str().unwrap()).is_err() {
+            let arguments = JsonPayloadFragment::from_utf16_code_units(
+                provider_payload
+                    .string_units_at(&format!("/output/{item_index}/arguments"))
+                    .expect("function-call argument string was checked"),
+            );
+            if JsonPayload::parse_fragments([&arguments]).is_err() {
                 if body["status"].as_str() == Some("incomplete") {
+                    let source = response_json
+                        .take_raw_json_source_at(&format!("/output/{item_index}"))?
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "incomplete Responses function call source was not retained"
+                                .into(),
+                        })?;
                     content.push(ContentBlock::ProviderContent {
                         protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                        value: item.clone(),
+                        value: JsonPayload::parse(source).map_err(|error| {
+                            LlmError::InvalidRequest {
+                                message: format!(
+                                    "incomplete function call source is invalid JSON: {error}"
+                                ),
+                            }
+                        })?,
                     });
                     continue;
                 }
@@ -137,11 +239,14 @@ pub(crate) fn response_with_approval_support(
     Ok(ChatResponse {
         inference: Default::default(),
         response_cache: None,
-        web_search: crate::codecs::web_search_decode::with_usage(
-            crate::codecs::web_search_decode::responses(&body),
-            body.get("usage"),
+        web_search: crate::codecs::web_search_decode::with_usage_payload(
+            crate::codecs::web_search_decode::responses_payload(&provider_payload),
+            provider_payload
+                .raw_source_at("/usage")
+                .and_then(|source| JsonPayload::parse(&source).ok())
+                .as_ref(),
         ),
-        file_search: crate::codecs::file_search_decode::responses(&body),
+        file_search: crate::codecs::file_search_decode::responses_payload(&provider_payload),
         native_metadata: Vec::new(),
         message: ConversationMessage {
             native_options: Vec::new(),
@@ -177,6 +282,7 @@ pub(crate) fn response_with_approval_support(
             usage,
             true,
         ),
+        native_resume_context_exhausted: None,
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -253,83 +359,149 @@ fn decode_item_with_json(
         }
         return Ok(());
     }
-    decode_item(item, out, saw_tool_call);
-    Ok(())
-}
-
-/// An output item is a message, a function call, or something this codec does
-/// not model; only `output_text` parts carry model text, so a refusal part is
-/// skipped rather than shown as the answer.
-pub fn decode_item(item: &Value, out: &mut Vec<ContentBlock>, saw_tool_call: &mut bool) {
-    match item.get("type").and_then(Value::as_str) {
-        Some("message") => {
-            for part in item
-                .get("content")
-                .and_then(Value::as_array)
-                .unwrap_or(&Vec::new())
-            {
-                if part.get("type").and_then(Value::as_str) == Some("output_text") {
-                    if let Some(text) = part.get("text").and_then(Value::as_str) {
-                        out.push(ContentBlock::Text {
-                            text: text.to_owned(),
-                            thought_signature: None,
-                            citations: None,
-                        });
-                    }
+    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+        let arguments = item["arguments"].as_str().unwrap_or_default();
+        let arguments =
+            response_json.take_text(&format!("/output/{item_index}/arguments"), arguments)?;
+        let arguments_fragment =
+            JsonPayloadFragment::from_decoded_text(&arguments.text, arguments.utf16_code_units)
+                .map_err(|message| LlmError::InvalidRequest {
+                    message: message.into(),
+                })?;
+        let input = JsonPayload::parse_fragments([&arguments_fragment]).map_err(|_| {
+            LlmError::InvalidRequest {
+                message: "provider returned malformed tool arguments".into(),
+            }
+        })?;
+        let call_id = response_json.take_text(
+            &format!("/output/{item_index}/call_id"),
+            item["call_id"].as_str().unwrap_or_default(),
+        )?;
+        let call_id_units = call_id
+            .utf16_code_units
+            .unwrap_or_else(|| call_id.text.encode_utf16().collect());
+        let call_id = String::from_utf16(&call_id_units).map_err(|_| LlmError::InvalidRequest {
+            message: "provider function call id contains an unpaired UTF-16 unit".into(),
+        })?;
+        let name = response_json.take_text(
+            &format!("/output/{item_index}/name"),
+            item["name"].as_str().unwrap_or_default(),
+        )?;
+        let name_units = name
+            .utf16_code_units
+            .unwrap_or_else(|| name.text.encode_utf16().collect());
+        let name = String::from_utf16(&name_units).map_err(|_| LlmError::InvalidRequest {
+            message: "provider function name contains an unpaired UTF-16 unit".into(),
+        })?;
+        *saw_tool_call = true;
+        out.push(ContentBlock::ToolUse {
+            id: ToolUseId::new(call_id),
+            name,
+            input,
+            provider_id: None,
+            caller: None,
+            toolset_name: None,
+            thought_signature: None,
+        });
+    } else if item.get("type").and_then(Value::as_str) == Some("reasoning") {
+        if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+            for (part_index, part) in summary.iter().enumerate() {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    let decoded = response_json.take_text(
+                        &format!("/output/{item_index}/summary/{part_index}/text"),
+                        text,
+                    )?;
+                    out.push(ContentBlock::Thinking {
+                        text: decoded.text,
+                        signature: None,
+                    });
                 }
             }
         }
-        Some("function_call") => {
-            *saw_tool_call = true;
-            let arguments = item
-                .get("arguments")
-                .and_then(Value::as_str)
-                .unwrap_or("{}");
-            out.push(ContentBlock::ToolUse {
-                id: ToolUseId::new(
-                    item.get("call_id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                ),
-                name: item
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                input: serde_json::from_str(arguments).unwrap_or(Value::Null),
-                provider_id: None,
-                caller: None,
-                toolset_name: None,
-                thought_signature: None,
-            });
-        }
-        Some("reasoning") => {
-            out.push(ContentBlock::ProviderContent {
-                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                value: item.clone(),
-            });
-            if let Some(summary) = item.get("summary").and_then(Value::as_array) {
-                for part in summary {
-                    if let Some(text) = part.get("text").and_then(Value::as_str) {
-                        out.push(ContentBlock::Thinking {
-                            text: text.to_owned(),
-                            signature: None,
-                        });
-                    }
-                }
-            }
-        }
-        Some(_) => out.push(ContentBlock::ProviderContent {
+        let source = response_json
+            .take_raw_json_source_at(&format!("/output/{item_index}"))?
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Responses reasoning source was not retained".into(),
+            })?;
+        out.push(ContentBlock::ProviderContent {
             protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-            value: item.clone(),
-        }),
-        None => {}
+            value: JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                message: format!("Responses reasoning source is invalid JSON: {error}"),
+            })?,
+        });
+    } else if item.get("type").and_then(Value::as_str).is_some() {
+        let source = response_json
+            .take_raw_json_source_at(&format!("/output/{item_index}"))?
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Responses native item source was not retained".into(),
+            })?;
+        out.push(ContentBlock::ProviderContent {
+            protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+            value: JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                message: format!("Responses native item is invalid JSON: {error}"),
+            })?,
+        });
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod utf16_response_tests {
     use super::*;
+
+    #[test]
+    fn html_http_error_body_reaches_the_current_error_carrier() {
+        let body = b"<!DOCTYPE html><html><body>proxy</body></html>";
+        let error = response_with_approval_support(
+            &crate::transport::HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: body.as_slice().into(),
+            },
+            false,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(
+            text.display(),
+            format!("400 {}", String::from_utf8_lossy(body))
+        );
+        assert_eq!(
+            text.utf16_code_units(),
+            text.display().encode_utf16().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn failed_response_status_keeps_exact_provider_units() {
+        let error = response_with_approval_support(
+            &crate::transport::HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"status":"failed","error":{"message":"bad\ud800","code":"invalid_prompt"}}"#.as_slice().into(),
+            },
+            false,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(text.display(), "500 bad�");
+        assert_eq!(
+            text.utf16_code_units(),
+            &[53, 48, 48, 32, 98, 97, 100, 0xd800]
+        );
+    }
 
     #[test]
     fn completed_response_text_retains_lone_units() {
@@ -371,8 +543,13 @@ pub(super) fn has_refusal(item: &Value) -> bool {
 
 /// The error envelope is the Chat wire's, so the classification is shared —
 /// including the 413 context-window split (gate 31).
-pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) -> LlmError {
-    chat_classify(status, body, retry_after)
+pub fn classify_error(
+    status: u16,
+    body: &Value,
+    retry_after: Option<Duration>,
+    native_retry_base_eligible: bool,
+) -> LlmError {
+    chat_classify(status, body, retry_after, native_retry_base_eligible)
 }
 
 /// `incomplete` carries the reason in its own object; `completed` is an end of

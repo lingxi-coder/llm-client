@@ -84,11 +84,14 @@ pub fn decode(
             continue;
         }
         if caller.as_ref().is_some_and(|caller| {
-            !caller.is_null() && caller.get("type").and_then(Value::as_str) != Some("direct")
+            caller.kind_at("") != Some(crate::response_json::FlatJsonKind::Null)
+                && caller.string_at("/type").as_deref() != Some("direct")
         }) {
             return Err(invalid("Claude computer members require a direct caller"));
         }
-        let operations = normalize(name, input)?;
+        let input_value: Value = serde_json::from_str(input.as_json_source())
+            .map_err(|error| invalid(format!("invalid Claude computer member input: {error}")))?;
+        let operations = normalize(name, &input_value)?;
         for operation in &operations {
             operation.validate(frame)?;
         }
@@ -344,15 +347,27 @@ pub fn encode_receipt(
         .iter()
         .all(|r| r.status == NativeExecutionStatus::Skipped);
     let content = if skipped {
-        SKIPPED_COMPUTER_ACTION.into()
+        JsonPayload::string(SKIPPED_COMPUTER_ACTION)
     } else {
-        input
+        let mut code_units = Vec::new();
+        let mut has_content = false;
+        for result in input
             .results
             .iter()
-            .filter(|r| r.status != NativeExecutionStatus::Skipped)
-            .map(|r| r.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+            .filter(|result| result.status != NativeExecutionStatus::Skipped)
+        {
+            if has_content {
+                code_units.push(u16::from(b'\n'));
+            }
+            code_units.extend(
+                result
+                    .content
+                    .string_units_at("")
+                    .expect("validated native result text is a root string"),
+            );
+            has_content = true;
+        }
+        JsonPayload::string_from_utf16_code_units(&code_units)
     };
     let mut blocks = Vec::new();
     if !skipped {
@@ -361,20 +376,34 @@ pub fn encode_receipt(
                 continue;
             }
             if let Some(values) = &result.blocks {
-                for value in values {
-                    match value.get("type").and_then(Value::as_str) {
-                        Some("text") if value.get("text").is_some_and(Value::is_string) => {}
-                        Some("image") => validate_image(value)?,
+                let length = values
+                    .array_len("")
+                    .expect("validated native result blocks are a root array");
+                for index in 0..length {
+                    let value = values
+                        .array_item(index)
+                        .expect("native result array item exists");
+                    match value.string_at("/type").as_deref() {
+                        Some("text") if value.string_at("/text").is_some() => {}
+                        Some("image") => validate_image(&value)?,
                         _ => {
                             return Err(invalid(
                                 "Claude computer results accept only text and image blocks",
                             ))
                         }
                     }
-                    blocks.push(value.clone());
+                    blocks.push(value);
                 }
-            } else if !result.content.is_empty() {
-                blocks.push(serde_json::json!({"type":"text","text":result.content}));
+            } else if result
+                .content
+                .string_units_at("")
+                .is_some_and(|units| !units.is_empty())
+            {
+                let block =
+                    JsonPayload::parse(r#"{"type":"text","text":null}"#).map_err(|error| {
+                        invalid(format!("invalid Claude text result template: {error}"))
+                    })?;
+                blocks.push(block.with_object_field("text", &result.content)?);
             }
         }
     }
@@ -382,27 +411,41 @@ pub fn encode_receipt(
         && call.requires_screenshot
         && !blocks
             .iter()
-            .any(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+            .any(|block| block.string_at("/type").as_deref() == Some("image"))
     {
         return Err(invalid(
             "Claude screenshot/zoom receipt requires a final model-visible image",
         ));
     }
+    let blocks = if skipped || blocks.is_empty() {
+        None
+    } else {
+        Some(array_payload_from_sources(&blocks)?)
+    };
     Ok(ContentBlock::ToolResult {
         tool_use_id: id,
         content,
         is_error: Some(is_error),
-        blocks: if skipped || blocks.is_empty() {
-            None
-        } else {
-            Some(blocks)
-        },
+        blocks,
         toolset_name: Some("computer".into()),
     })
 }
 
-fn validate_image(value: &Value) -> Result<(), LlmError> {
-    let block: ContentBlock = serde_json::from_value(value.clone())
+fn array_payload_from_sources(items: &[JsonPayload]) -> Result<JsonPayload, LlmError> {
+    let mut source = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            source.push(',');
+        }
+        source.push_str(item.as_json_source());
+    }
+    source.push(']');
+    JsonPayload::parse(&source)
+        .map_err(|error| invalid(format!("invalid Claude computer result array: {error}")))
+}
+
+fn validate_image(value: &JsonPayload) -> Result<(), LlmError> {
+    let block: ContentBlock = serde_json::from_str(value.as_json_source())
         .map_err(|error| invalid(format!("invalid Claude computer result image: {error}")))?;
     match block {
         ContentBlock::Image {

@@ -486,11 +486,17 @@ impl Pinned<'_> {
             .with_deadline(deadline)
             .send(http)
             .await
-            .map_err(|source| match source {
-                LlmError::Transport { .. }
-                | LlmError::TransportTimeout { .. }
-                | LlmError::StreamInterrupted { .. } => AudioError::OutcomeUnknown { source },
-                other => AudioError::Llm(other),
+            .map_err(|source| {
+                if matches!(
+                    source.classification_source(),
+                    LlmError::Transport { .. }
+                        | LlmError::TransportTimeout { .. }
+                        | LlmError::StreamInterrupted { .. }
+                ) {
+                    AudioError::OutcomeUnknown { source }
+                } else {
+                    AudioError::Llm(source)
+                }
             })?;
         if !(200..300).contains(&response.status) {
             let response =

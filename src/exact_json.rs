@@ -7,6 +7,222 @@ use serde::{
 use serde_json::{Map, Value};
 use std::{collections::BTreeMap, io::Write};
 
+/// Canonicalize a validated flat source node using the selected SDK wire's current number,
+/// object-key, and UTF-16 string semantics. The scanner owns the only parsed node graph; this
+/// writer uses an explicit stack so deeply nested provider input does not recurse.
+pub(crate) fn serialize_json_node<'a>(
+    root: crate::response_json::JsonNodeRef<'a>,
+    encoding: JsonEncoding,
+) -> Result<String, LlmError> {
+    serialize_json_node_with_fields(root, encoding, &[])
+}
+
+/// Serialize a flat JSON object while replacing/appending selected shallow fields.
+/// The replacement source values must already be validated JSON strings.
+pub(crate) fn serialize_json_node_with_fields<'a>(
+    root: crate::response_json::JsonNodeRef<'a>,
+    encoding: JsonEncoding,
+    fields: &[(&str, &str)],
+) -> Result<String, LlmError> {
+    serialize_json_node_with_policy(root, encoding, fields, &BTreeMap::new(), false)
+}
+
+fn serialize_json_node_with_policy<'a>(
+    root: crate::response_json::JsonNodeRef<'a>,
+    encoding: JsonEncoding,
+    fields: &[(&str, &str)],
+    string_overrides: &BTreeMap<usize, Vec<u16>>,
+    normalize_string_values: bool,
+) -> Result<String, LlmError> {
+    if !fields.is_empty() && root.kind() != crate::response_json::FlatJsonKind::Object {
+        return Err(LlmError::InvalidRequest {
+            message: "JSON field overlays require an object payload".into(),
+        });
+    }
+    enum Work<'a> {
+        Node(crate::response_json::JsonNodeRef<'a>),
+        Byte(u8),
+        String(Vec<u16>),
+        Raw(Vec<u8>),
+    }
+
+    let mut overrides = fields
+        .iter()
+        .map(|(key, source)| (String::from(*key), source.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    let mut out = Vec::new();
+    let mut stack = vec![Work::Node(root)];
+    while let Some(work) = stack.pop() {
+        match work {
+            Work::Byte(byte) => out.push(byte),
+            Work::String(units) => write_json_string_from_utf16(&mut out, &units),
+            Work::Raw(source) => out.extend_from_slice(&source),
+            Work::Node(node) => match node.kind() {
+                crate::response_json::FlatJsonKind::Null => out.extend_from_slice(b"null"),
+                crate::response_json::FlatJsonKind::Boolean => {
+                    let primitive =
+                        node.primitive_source()
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "flat JSON boolean has no source token".into(),
+                            })?;
+                    out.extend_from_slice(primitive.as_bytes());
+                }
+                crate::response_json::FlatJsonKind::Number => {
+                    let source = node
+                        .number_source()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "flat JSON number has no source token".into(),
+                        })?;
+                    match encoding {
+                        JsonEncoding::Serde => {
+                            let number: serde_json::Number = serde_json::from_str(source).map_err(
+                                |error| LlmError::InvalidRequest {
+                                    message: format!("JSON number cannot be represented by the SDK codec: {error}"),
+                                },
+                            )?;
+                            serde_json::to_writer(&mut out, &number).map_err(|error| {
+                                LlmError::InvalidRequest {
+                                    message: format!("failed to encode JSON number: {error}"),
+                                }
+                            })?;
+                        }
+                        JsonEncoding::JavaScript => {
+                            let number = source.parse::<f64>().map_err(|error| {
+                                LlmError::InvalidRequest {
+                                    message: format!("JSON number cannot be converted to a JavaScript number: {error}"),
+                                }
+                            })?;
+                            if number.is_finite() {
+                                out.extend_from_slice(javascript_number(number).as_bytes());
+                            } else {
+                                // JSON.parse accepts an overflowing exponent as Infinity; native
+                                // JSON.stringify writes non-finite numbers as null.
+                                out.extend_from_slice(b"null");
+                            }
+                        }
+                    }
+                }
+                crate::response_json::FlatJsonKind::String => {
+                    let units = node
+                        .string_units()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "flat JSON string has no decoded UTF-16 units".into(),
+                        })?;
+                    let units = string_overrides.get(&node.identity()).unwrap_or(&units);
+                    if normalize_string_values {
+                        write_json_string_from_utf16(&mut out, &to_well_formed_utf16(units));
+                    } else {
+                        write_json_string_from_utf16(&mut out, units);
+                    }
+                }
+                crate::response_json::FlatJsonKind::Array => {
+                    let len = node.array_len().ok_or_else(|| LlmError::InvalidRequest {
+                        message: "flat JSON array has no child list".into(),
+                    })?;
+                    stack.push(Work::Byte(b']'));
+                    for index in (0..len).rev() {
+                        let child =
+                            node.array_item(index)
+                                .ok_or_else(|| LlmError::InvalidRequest {
+                                    message: "flat JSON array child index disappeared".into(),
+                                })?;
+                        stack.push(Work::Node(child));
+                        if index > 0 {
+                            stack.push(Work::Byte(b','));
+                        }
+                    }
+                    stack.push(Work::Byte(b'['));
+                }
+                crate::response_json::FlatJsonKind::Object => {
+                    let scanned_entries =
+                        node.object_entries()
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "flat JSON object has no child list".into(),
+                            })?;
+                    let original_len = scanned_entries.len();
+                    let mut entries = scanned_entries
+                        .into_iter()
+                        .enumerate()
+                        .map(|(position, entry)| {
+                            let exact_key = String::from_utf16(entry.key_units).ok();
+                            let replacement = exact_key.as_deref().and_then(|key| {
+                                overrides
+                                    .iter()
+                                    .position(|(candidate, _)| candidate == key)
+                                    .map(|index| {
+                                        let (_, source) = overrides.remove(index);
+                                        source
+                                    })
+                            });
+                            (
+                                position,
+                                entry.key_units.to_vec(),
+                                Some(entry.value),
+                                replacement,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    for (position, (key, source)) in overrides.drain(..).enumerate() {
+                        entries.push((
+                            original_len + position,
+                            key.encode_utf16().collect(),
+                            // Appended field has no scanner node. It is emitted as a raw token.
+                            None,
+                            Some(source),
+                        ));
+                    }
+                    if encoding == JsonEncoding::JavaScript {
+                        entries.sort_by_key(|(position, key, _, _)| {
+                            javascript_array_index(key)
+                                .map(|index| (0_u8, index, *position))
+                                .unwrap_or((1_u8, 0, *position))
+                        });
+                    }
+                    stack.push(Work::Byte(b'}'));
+                    for (index, (_, key_units, value, replacement)) in
+                        entries.into_iter().enumerate().rev()
+                    {
+                        if let Some(source) = replacement {
+                            stack.push(Work::Raw(source));
+                        } else {
+                            stack.push(Work::Node(value.ok_or_else(|| {
+                                LlmError::InvalidRequest {
+                                    message: "raw JSON overlay lost its source value".into(),
+                                }
+                            })?));
+                        }
+                        stack.push(Work::Byte(b':'));
+                        stack.push(Work::String(key_units));
+                        if index > 0 {
+                            stack.push(Work::Byte(b','));
+                        }
+                    }
+                    stack.push(Work::Byte(b'{'));
+                }
+            },
+        }
+    }
+    String::from_utf8(out).map_err(|error| LlmError::InvalidRequest {
+        message: format!("canonical JSON output is not UTF-8: {error}"),
+    })
+}
+
+pub(crate) fn javascript_array_index(key: &[u16]) -> Option<u32> {
+    if key.is_empty() || key.len() > 10 || (key.len() > 1 && key[0] == u16::from(b'0')) {
+        return None;
+    }
+    let mut index = 0_u64;
+    for unit in key {
+        if !(u16::from(b'0')..=u16::from(b'9')).contains(unit) {
+            return None;
+        }
+        index = index
+            .checked_mul(10)?
+            .checked_add(u64::from(*unit - u16::from(b'0')))?;
+    }
+    (index < u64::from(u32::MAX)).then_some(index as u32)
+}
+
 /// The route's JSON number and object-enumeration semantics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JsonEncoding {
@@ -132,30 +348,91 @@ pub fn serialize(
     Ok(out)
 }
 
-/// Serialize a prepared provider request at the final SDK body boundary.
-/// Native's pinned `hook_prompt` path normalizes lone UTF-16 units in the
-/// fully assembled Anthropic Messages body immediately before dispatch. Keep
-/// the exact carrier intact until this call so intermediate host APIs retain
-/// their original units.
-pub fn serialize_for_request(
-    value: &Value,
+/// Serialize a source-backed request, replacing selected string value leaves.
+/// Provider source stays flat and exact through draft/host modifications. Native
+/// request sanitation belongs to the final dispatch boundary, before signing.
+pub fn serialize_json_payload_with_overrides(
+    value: &crate::protocol::JsonPayload,
     overrides: &BTreeMap<String, Vec<u16>>,
     encoding: JsonEncoding,
-    protocol: Option<crate::protocol::ProtocolFamily>,
-    request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
 ) -> Result<Vec<u8>, LlmError> {
-    use crate::providers::anthropic::request_policy::AnthropicRequestKind;
-    if protocol != Some(crate::protocol::ProtocolFamily::AnthropicMessages)
-        || request_kind != AnthropicRequestKind::HookPrompt
-    {
-        return serialize(value, overrides, encoding);
+    let scanner = value.scanner()?;
+    let mut by_node = BTreeMap::new();
+    for (pointer, units) in overrides {
+        let node = scanner
+            .node_ref_at(pointer)
+            .filter(|node| node.kind() == crate::response_json::FlatJsonKind::String)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: format!("UTF-16 JSON override does not target a string leaf: {pointer}"),
+            })?;
+        by_node.insert(node.identity(), units.clone());
     }
+    serialize_json_node_with_policy(scanner.root_node(), encoding, &[], &by_node, false)
+        .map(String::into_bytes)
+}
 
-    let normalized = overrides
-        .iter()
-        .map(|(pointer, units)| (pointer.clone(), to_well_formed_utf16(units)))
-        .collect();
-    serialize(value, &normalized, encoding)
+/// Native VNe walks values in the assembled generation request. It ignores
+/// object keys and leaves drafts and non-Claude provider protocols unchanged.
+/// None means the native detector found no malformed string value, so the
+/// current body byte image can remain untouched.
+pub(crate) fn normalize_native_generation_json_body(
+    body: &[u8],
+    protocol: crate::protocol::ProtocolFamily,
+) -> Result<Option<Vec<u8>>, LlmError> {
+    use crate::protocol::ProtocolFamily;
+    use crate::response_json::FlatJsonKind;
+    if !matches!(
+        protocol,
+        ProtocolFamily::AnthropicMessages
+            | ProtocolFamily::FoundryClaude
+            | ProtocolFamily::BedrockClaude
+            | ProtocolFamily::VertexClaude
+    ) {
+        return Ok(None);
+    }
+    let scanner = crate::response_json::ResponseJsonScanner::parse(
+        body,
+        "final request body is invalid JSON",
+    )?;
+    let root = scanner.root_node();
+    if !matches!(root.kind(), FlatJsonKind::Array | FlatJsonKind::Object) {
+        return Ok(None);
+    }
+    let mut pending = vec![root];
+    let mut malformed = false;
+    while let Some(node) = pending.pop() {
+        match node.kind() {
+            FlatJsonKind::String => {
+                let units = node
+                    .string_units()
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "flat JSON string has no decoded UTF-16 units".into(),
+                    })?;
+                if String::from_utf16(&units).is_err() {
+                    malformed = true;
+                    break;
+                }
+            }
+            FlatJsonKind::Array => {
+                for index in 0..node.array_len().unwrap_or(0) {
+                    if let Some(child) = node.array_item(index) {
+                        pending.push(child);
+                    }
+                }
+            }
+            FlatJsonKind::Object => {
+                for entry in node.object_entries().unwrap_or_default() {
+                    pending.push(entry.value);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !malformed {
+        return Ok(None);
+    }
+    serialize_json_node_with_policy(root, JsonEncoding::JavaScript, &[], &BTreeMap::new(), true)
+        .map(|source| Some(source.into_bytes()))
 }
 
 fn to_well_formed_utf16(units: &[u16]) -> Vec<u16> {
@@ -188,7 +465,7 @@ fn to_well_formed_utf16(units: &[u16]) -> Vec<u16> {
 pub fn map_message_text_overrides(
     request: &crate::protocol::ChatRequest,
     protocol: crate::protocol::ProtocolFamily,
-    body: &Value,
+    body: &crate::protocol::JsonPayload,
     overrides: &BTreeMap<String, Vec<u16>>,
 ) -> Result<BTreeMap<String, Vec<u16>>, LlmError> {
     let family = crate::replay::native_family(protocol);
@@ -275,7 +552,8 @@ pub fn map_message_text_overrides(
         });
     }
 
-    let targets = encoded_text_fields(body, family);
+    let body_scanner = body.scanner()?;
+    let targets = encoded_text_fields(&body_scanner, family);
     for ((role, text), source_texts) in source_texts {
         if !source_texts.iter().any(|(_, _, units)| units.is_some()) {
             continue;
@@ -304,7 +582,7 @@ pub fn map_message_text_overrides(
 
     for (pointer, units) in passthrough {
         if family != crate::protocol::ProtocolFamily::AnthropicMessages
-            || body.pointer(&pointer).and_then(Value::as_str).is_none()
+            || body_scanner.kind_at(&pointer) != Some(crate::response_json::FlatJsonKind::String)
         {
             return Err(LlmError::InvalidRequest {
                 message: format!(
@@ -323,20 +601,22 @@ pub fn map_message_text_overrides(
 fn source_text_contributor_text(
     block: &crate::protocol::ContentBlock,
     family: crate::protocol::ProtocolFamily,
-) -> Option<&str> {
+) -> Option<String> {
     use crate::protocol::{ContentBlock, ProtocolFamily};
 
     match block {
-        ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } => Some(text),
+        ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } => {
+            Some(text.clone())
+        }
         ContentBlock::Thinking { text, .. } if family == ProtocolFamily::GeminiGenerateContent => {
-            Some(text)
+            Some(text.clone())
         }
         ContentBlock::ProviderContent { protocol, value }
             if family == ProtocolFamily::AnthropicMessages
                 && *protocol == ProtocolFamily::AnthropicMessages
-                && value["type"].as_str() == Some("text") =>
+                && value.string_at("/type").as_deref() == Some("text") =>
         {
-            value["text"].as_str()
+            value.string_at("/text")
         }
         _ => None,
     }
@@ -369,62 +649,51 @@ fn input_text_role(
 }
 
 fn encoded_text_fields(
-    body: &Value,
+    body: &crate::response_json::ResponseJsonScanner,
     family: crate::protocol::ProtocolFamily,
 ) -> Vec<(String, String, String)> {
+    use crate::response_json::FlatJsonKind;
+
     let mut fields = Vec::new();
-    let mut add = |role: &str, text: &Value, pointer: String| {
-        if let Some(text) = text.as_str() {
+    let mut add = |role: &str, pointer: String| {
+        if let Some(text) = body.string_at(&pointer) {
             fields.push((role.to_owned(), text.to_owned(), pointer));
         }
     };
     match family {
         crate::protocol::ProtocolFamily::AnthropicMessages => {
-            for (message_index, message) in body["messages"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                let role = message["role"].as_str().unwrap_or_default();
-                for (block_index, block) in message["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
+            for message_index in 0..body.array_len("/messages").unwrap_or(0) {
+                let message_pointer = format!("/messages/{message_index}");
+                let role = body
+                    .string_at(&format!("{message_pointer}/role"))
+                    .unwrap_or_default();
+                for block_index in 0..body
+                    .array_len(&format!("{message_pointer}/content"))
+                    .unwrap_or(0)
                 {
-                    if block["type"].as_str() == Some("text") {
-                        add(
-                            role,
-                            &block["text"],
-                            format!("/messages/{message_index}/content/{block_index}/text"),
-                        );
+                    let block_pointer = format!("{message_pointer}/content/{block_index}");
+                    if body.string_at(&format!("{block_pointer}/type")) == Some("text") {
+                        let text_pointer = format!("{block_pointer}/text");
+                        add(role, text_pointer);
                     }
                 }
             }
         }
         crate::protocol::ProtocolFamily::OpenAiChat => {
-            for (message_index, message) in body["messages"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                let role = message["role"].as_str().unwrap_or_default();
-                match &message["content"] {
-                    Value::String(_) => add(
-                        role,
-                        &message["content"],
-                        format!("/messages/{message_index}/content"),
-                    ),
-                    Value::Array(parts) => {
-                        for (part_index, part) in parts.iter().enumerate() {
-                            if part["type"].as_str() == Some("text") {
-                                add(
-                                    role,
-                                    &part["text"],
-                                    format!("/messages/{message_index}/content/{part_index}/text"),
-                                );
+            for message_index in 0..body.array_len("/messages").unwrap_or(0) {
+                let message_pointer = format!("/messages/{message_index}");
+                let role = body
+                    .string_at(&format!("{message_pointer}/role"))
+                    .unwrap_or_default();
+                let content_pointer = format!("{message_pointer}/content");
+                match body.kind_at(&content_pointer) {
+                    Some(FlatJsonKind::String) => add(role, content_pointer),
+                    Some(FlatJsonKind::Array) => {
+                        for part_index in 0..body.array_len(&content_pointer).unwrap_or(0) {
+                            let part_pointer = format!("{content_pointer}/{part_index}");
+                            if body.string_at(&format!("{part_pointer}/type")) == Some("text") {
+                                let text_pointer = format!("{part_pointer}/text");
+                                add(role, text_pointer);
                             }
                         }
                     }
@@ -433,48 +702,37 @@ fn encoded_text_fields(
             }
         }
         crate::protocol::ProtocolFamily::OpenAiResponses => {
-            for (message_index, message) in
-                body["input"].as_array().into_iter().flatten().enumerate()
-            {
-                if message["type"].as_str() != Some("message") {
+            for message_index in 0..body.array_len("/input").unwrap_or(0) {
+                let message_pointer = format!("/input/{message_index}");
+                if body.string_at(&format!("{message_pointer}/type")) != Some("message") {
                     continue;
                 }
-                let role = message["role"].as_str().unwrap_or_default();
-                for (part_index, part) in message["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                {
-                    if matches!(part["type"].as_str(), Some("input_text" | "output_text")) {
-                        add(
-                            role,
-                            &part["text"],
-                            format!("/input/{message_index}/content/{part_index}/text"),
-                        );
+                let role = body
+                    .string_at(&format!("{message_pointer}/role"))
+                    .unwrap_or_default();
+                let content_pointer = format!("{message_pointer}/content");
+                for part_index in 0..body.array_len(&content_pointer).unwrap_or(0) {
+                    let part_pointer = format!("{content_pointer}/{part_index}");
+                    if matches!(
+                        body.string_at(&format!("{part_pointer}/type")),
+                        Some("input_text" | "output_text")
+                    ) {
+                        let text_pointer = format!("{part_pointer}/text");
+                        add(role, text_pointer);
                     }
                 }
             }
         }
         crate::protocol::ProtocolFamily::GeminiGenerateContent => {
-            for (message_index, message) in body["contents"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                let role = message["role"].as_str().unwrap_or_default();
-                for (part_index, part) in message["parts"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                {
-                    add(
-                        role,
-                        &part["text"],
-                        format!("/contents/{message_index}/parts/{part_index}/text"),
-                    );
+            for message_index in 0..body.array_len("/contents").unwrap_or(0) {
+                let message_pointer = format!("/contents/{message_index}");
+                let role = body
+                    .string_at(&format!("{message_pointer}/role"))
+                    .unwrap_or_default();
+                let parts_pointer = format!("{message_pointer}/parts");
+                for part_index in 0..body.array_len(&parts_pointer).unwrap_or(0) {
+                    let text_pointer = format!("{parts_pointer}/{part_index}/text");
+                    add(role, text_pointer);
                 }
             }
         }
@@ -649,6 +907,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn map_message_text_overrides_from_fixture(
+        request: &crate::protocol::ChatRequest,
+        protocol: crate::protocol::ProtocolFamily,
+        body: &Value,
+        overrides: &BTreeMap<String, Vec<u16>>,
+    ) -> Result<BTreeMap<String, Vec<u16>>, LlmError> {
+        let body = crate::protocol::JsonPayload::from_generated_value(body)
+            .expect("bounded JSON test fixture converts to JsonPayload");
+        super::map_message_text_overrides(request, protocol, &body, overrides)
+    }
+
     #[test]
     fn native_ieee754_json_bytes_and_numeric_key_enumeration_match_reference() {
         let fixture: Value =
@@ -726,53 +995,116 @@ mod tests {
     }
 
     #[test]
-    fn hook_prompt_policy_is_applied_only_by_the_final_anthropic_sdk_serializer() {
+    fn native_final_body_normalizes_values_after_source_projection_and_keeps_keys() {
+        use crate::protocol::{JsonPayload, ProtocolFamily};
+        let body = JsonPayload::parse(r#"{"system":[{"type":"text","text":"\ud800Ω\udc00"}],"messages":[{"role":"user","content":[{"type":"text","text":"display"}]}],"\ud800":{"nested":["x\udc00","\ud83d\ude03",null]},"10":10,"2":2}"#).unwrap();
+        let overrides = BTreeMap::from([(
+            "/messages/0/content/0/text".into(),
+            vec![0xd800, b'x' as u16, 0xd83d, 0xde03, 0xdc00],
+        )]);
+        let draft =
+            serialize_json_payload_with_overrides(&body, &overrides, JsonEncoding::JavaScript)
+                .unwrap();
+        assert!(String::from_utf8(draft.clone())
+            .unwrap()
+            .contains("\\ud800Ω\\udc00"));
+        for protocol in [
+            ProtocolFamily::AnthropicMessages,
+            ProtocolFamily::FoundryClaude,
+            ProtocolFamily::BedrockClaude,
+            ProtocolFamily::VertexClaude,
+        ] {
+            let wire = normalize_native_generation_json_body(&draft, protocol)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(wire).unwrap(),
+                r#"{"2":2,"10":10,"system":[{"type":"text","text":"�Ω�"}],"messages":[{"role":"user","content":[{"type":"text","text":"�x😃�"}]}],"\ud800":{"nested":["x�","😃",null]}}"#
+            );
+        }
+        assert!(
+            normalize_native_generation_json_body(&draft, ProtocolFamily::OpenAiChat)
+                .unwrap()
+                .is_none()
+        );
+        assert!(body.as_json_source().contains("\\ud800Ω\\udc00"));
+    }
+
+    #[test]
+    fn native_final_body_normalizes_tool_result_text_after_anthropic_encoding() {
+        use crate::codecs::{CodecContext, EncodeRequest, RequestMode, WireCodec};
+        use crate::protocol::{
+            ChatRequest, ContentBlock, ConversationMessage, JsonPayload, MessageRole,
+            ProtocolFamily, ProviderProfile, ToolUseId,
+        };
+
+        let mut request = ChatRequest::new("text-contributor-model");
+        request.messages.push(ConversationMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: ToolUseId::new("toolu_utf16"),
+                content: JsonPayload::string_from_utf16_code_units(&[0xD800]),
+                is_error: Some(false),
+                blocks: None,
+                toolset_name: None,
+            }],
+            native_options: Vec::new(),
+        });
+        let profile: ProviderProfile = serde_json::from_value(json!({
+            "provider_id": "tool-result-normalization-test",
+            "profile_name": "tool-result-normalization-test",
+            "base_url": "https://tool-result-normalization.invalid",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "text-contributor-model",
+                "request_model": "text-contributor-model",
+                "billing_model": "text-contributor-model"
+            }]
+        }))
+        .unwrap();
+        let context = CodecContext::new(&profile, "text-contributor-model", RequestMode::Complete);
+        let draft = crate::codecs::anthropic::AnthropicMessagesCodec
+            .encode_request(EncodeRequest::new(&request), &context)
+            .unwrap();
+        let draft_source = std::str::from_utf8(&draft.body).unwrap();
+        assert!(draft_source.contains(r#""content":"\ud800""#));
+        assert_eq!(
+            JsonPayload::parse(draft_source)
+                .unwrap()
+                .string_units_at("/messages/0/content/0/content"),
+            Some(vec![0xD800])
+        );
+
+        let wire =
+            normalize_native_generation_json_body(&draft.body, ProtocolFamily::AnthropicMessages)
+                .unwrap()
+                .expect("native request sealing normalizes malformed string values");
+        let wire_source = std::str::from_utf8(&wire).unwrap();
+        assert!(wire_source.contains("\"content\":\"�\""));
+        assert_eq!(
+            JsonPayload::parse(wire_source)
+                .unwrap()
+                .string_units_at("/messages/0/content/0/content"),
+            Some(vec![0xFFFD])
+        );
+    }
+
+    #[test]
+    fn native_final_detector_ignores_lone_keys_and_preserves_well_formed_body_bytes() {
         use crate::protocol::ProtocolFamily;
-        use crate::providers::anthropic::request_policy::AnthropicRequestKind as Kind;
-
-        let body = json!({"messages":[{"content":[{"text":"display"}]}]});
-        let units = vec![0xD800, b'x' as u16, 0xD83D, 0xDE03, 0xDC00];
-        let overrides = BTreeMap::from([("/messages/0/content/0/text".into(), units)]);
-
-        let native_hook = String::from_utf8(
-            serialize_for_request(
-                &body,
-                &overrides,
-                JsonEncoding::JavaScript,
-                Some(ProtocolFamily::AnthropicMessages),
-                Kind::HookPrompt,
-            )
-            .unwrap(),
+        let body = br#"{ "\ud800" : ["\ud83d\ude03", -0, 1.00] }"#;
+        assert!(
+            normalize_native_generation_json_body(body, ProtocolFamily::AnthropicMessages)
+                .unwrap()
+                .is_none()
+        );
+        assert!(normalize_native_generation_json_body(
+            br#""\ud800""#,
+            ProtocolFamily::AnthropicMessages
         )
-        .unwrap();
-        assert!(native_hook.contains("\u{fffd}x😃\u{fffd}"));
-        assert!(!native_hook.contains("\\ud800"));
-
-        let ordinary = String::from_utf8(
-            serialize_for_request(
-                &body,
-                &overrides,
-                JsonEncoding::JavaScript,
-                Some(ProtocolFamily::AnthropicMessages),
-                Kind::SideQuery,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(ordinary.contains("\\ud800x😃\\udc00"));
-
-        let other_protocol = String::from_utf8(
-            serialize_for_request(
-                &body,
-                &overrides,
-                JsonEncoding::JavaScript,
-                Some(ProtocolFamily::OpenAiChat),
-                Kind::HookPrompt,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(other_protocol.contains("\\ud800x😃\\udc00"));
+        .unwrap()
+        .is_none());
     }
 
     #[test]
@@ -785,7 +1117,7 @@ mod tests {
         request.messages.push(ConversationMessage {
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
-                text: "\u{fffd}".into(),
+                text: "�".into(),
                 thought_signature: None,
                 citations: None,
             }],
@@ -795,55 +1127,80 @@ mod tests {
         let cases = [
             (
                 P::AnthropicMessages,
-                json!({"messages":[{"role":"user","content":[{"type":"text","text":"\u{fffd}"}]}]}),
+                json!({"messages":[{"role":"user","content":[{"type":"text","text":"�"}]}]}),
                 "/messages/0/content/0/text",
             ),
             (
                 P::OpenAiChat,
-                json!({"messages":[{"role":"user","content":"\u{fffd}"}]}),
+                json!({"messages":[{"role":"user","content":"�"}]}),
                 "/messages/0/content",
             ),
             (
                 P::OpenAiResponses,
-                json!({"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"\u{fffd}"}]}]}),
+                json!({"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"�"}]}]}),
                 "/input/0/content/0/text",
             ),
             (
                 P::GeminiGenerateContent,
-                json!({"contents":[{"role":"user","parts":[{"text":"\u{fffd}"}]}]}),
+                json!({"contents":[{"role":"user","parts":[{"text":"�"}]}]}),
                 "/contents/0/parts/0/text",
             ),
             (
                 P::VertexClaude,
-                json!({"messages":[{"role":"user","content":[{"type":"text","text":"\u{fffd}"}]}]}),
+                json!({"messages":[{"role":"user","content":[{"type":"text","text":"�"}]}]}),
                 "/messages/0/content/0/text",
             ),
             (
                 P::VertexGemini,
-                json!({"contents":[{"role":"user","parts":[{"text":"\u{fffd}"}]}]}),
+                json!({"contents":[{"role":"user","parts":[{"text":"�"}]}]}),
                 "/contents/0/parts/0/text",
             ),
             (
                 P::BedrockClaude,
-                json!({"messages":[{"role":"user","content":[{"type":"text","text":"\u{fffd}"}]}]}),
+                json!({"messages":[{"role":"user","content":[{"type":"text","text":"�"}]}]}),
                 "/messages/0/content/0/text",
             ),
             (
                 P::AzureOpenAi,
-                json!({"messages":[{"role":"user","content":"\u{fffd}"}]}),
+                json!({"messages":[{"role":"user","content":"�"}]}),
                 "/messages/0/content",
             ),
             (
                 P::FoundryClaude,
-                json!({"messages":[{"role":"user","content":[{"type":"text","text":"\u{fffd}"}]}]}),
+                json!({"messages":[{"role":"user","content":[{"type":"text","text":"�"}]}]}),
                 "/messages/0/content/0/text",
             ),
         ];
         for (protocol, body, expected) in cases {
-            let mapped = map_message_text_overrides(&request, protocol, &body, &source)
-                .unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
+            let mapped =
+                map_message_text_overrides_from_fixture(&request, protocol, &body, &source)
+                    .unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
             assert_eq!(mapped.get(expected), Some(&vec![0xD800]), "{protocol:?}");
         }
+    }
+
+    #[test]
+    fn canonical_text_override_rejects_mismatched_display_text() {
+        use crate::protocol::{
+            ChatRequest, ContentBlock, ConversationMessage, MessageRole, ProtocolFamily,
+        };
+        let mut request = ChatRequest::new("model");
+        request.messages.push(ConversationMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text {
+                text: "display".into(),
+                thought_signature: None,
+                citations: None,
+            }],
+            native_options: Vec::new(),
+        });
+        let overrides = BTreeMap::from([("/messages/0/content/0/text".into(), vec![0xD800])]);
+        let body =
+            json!({"messages":[{"role":"user","content":[{"type":"text","text":"display"}]}]});
+        assert!(matches!(
+            map_message_text_overrides_from_fixture(&request, ProtocolFamily::AnthropicMessages, &body, &overrides),
+            Err(LlmError::InvalidRequest { message }) if message == "UTF-16 block units do not match the text display string"
+        ));
     }
 
     #[test]
@@ -867,10 +1224,13 @@ mod tests {
             {"role":"user","content":"display"},
             {"role":"user","content":"display"}
         ]});
-        assert!(
-            map_message_text_overrides(&request, ProtocolFamily::OpenAiChat, &body, &source,)
-                .is_err()
-        );
+        assert!(map_message_text_overrides_from_fixture(
+            &request,
+            ProtocolFamily::OpenAiChat,
+            &body,
+            &source,
+        )
+        .is_err());
     }
 
     #[test]
@@ -906,9 +1266,13 @@ mod tests {
                 format!("/messages/0/content/{source_index}/text"),
                 vec![0xD800],
             )]);
-            let mapped =
-                map_message_text_overrides(&request, ProtocolFamily::OpenAiChat, &body, &source)
-                    .unwrap();
+            let mapped = map_message_text_overrides_from_fixture(
+                &request,
+                ProtocolFamily::OpenAiChat,
+                &body,
+                &source,
+            )
+            .unwrap();
             let expected = format!("/messages/0/content/{source_index}/text");
             assert_eq!(mapped.get(&expected), Some(&vec![0xD800]));
             assert_eq!(mapped.len(), 1);
@@ -991,11 +1355,15 @@ mod tests {
     fn native_anthropic_text(display: &str, marker: &str) -> crate::protocol::ContentBlock {
         crate::protocol::ContentBlock::ProviderContent {
             protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-            value: json!({
-                "type": "text",
-                "text": display,
-                "provider_metadata": {"raw_marker": marker}
-            }),
+            value: crate::protocol::JsonPayload::parse(
+                &json!({
+                    "type": "text",
+                    "text": display,
+                    "provider_metadata": {"raw_marker": marker}
+                })
+                .to_string(),
+            )
+            .unwrap(),
         }
     }
 
@@ -1029,10 +1397,11 @@ mod tests {
                     vec![0xD800],
                 )]);
                 let expected_pointer = format!("/contents/0/parts/{typed_index}/text");
-                let mapped = map_message_text_overrides(&request, protocol, &body, &source)
-                    .unwrap_or_else(|error| {
-                        panic!("{protocol:?}, typed_first={typed_first}: {error}")
-                    });
+                let mapped =
+                    map_message_text_overrides_from_fixture(&request, protocol, &body, &source)
+                        .unwrap_or_else(|error| {
+                            panic!("{protocol:?}, typed_first={typed_first}: {error}")
+                        });
                 assert_eq!(
                     mapped,
                     BTreeMap::from([(expected_pointer.clone(), vec![0xD800])])
@@ -1053,9 +1422,13 @@ mod tests {
                     .as_array_mut()
                     .unwrap()
                     .push(json!({"text":"�"}));
-                assert!(
-                    map_message_text_overrides(&request, protocol, &extra_target, &source).is_err()
-                );
+                assert!(map_message_text_overrides_from_fixture(
+                    &request,
+                    protocol,
+                    &extra_target,
+                    &source
+                )
+                .is_err());
             }
         }
     }
@@ -1078,8 +1451,9 @@ mod tests {
             let parts = body["contents"][0]["parts"].as_array().unwrap();
             assert_eq!(parts.len(), 3, "{protocol:?}");
             assert_eq!(parts[1]["thought"], true, "{protocol:?}");
-            let mapped = map_message_text_overrides(&request, protocol, &body, &source)
-                .unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
+            let mapped =
+                map_message_text_overrides_from_fixture(&request, protocol, &body, &source)
+                    .unwrap_or_else(|error| panic!("{protocol:?}: {error}"));
             assert_eq!(mapped.len(), 2, "{protocol:?}");
             assert_eq!(mapped.get("/contents/0/parts/0/text"), Some(&vec![0xD800]));
             assert_eq!(mapped.get("/contents/0/parts/2/text"), Some(&vec![0xD801]));
@@ -1095,9 +1469,13 @@ mod tests {
                 .as_array_mut()
                 .unwrap()
                 .push(json!({"text":"�"}));
-            assert!(
-                map_message_text_overrides(&request, protocol, &extra_target, &source).is_err()
-            );
+            assert!(map_message_text_overrides_from_fixture(
+                &request,
+                protocol,
+                &extra_target,
+                &source
+            )
+            .is_err());
         }
     }
 
@@ -1138,10 +1516,11 @@ mod tests {
                     vec![0xD800],
                 )]);
                 let expected_pointer = format!("/messages/0/content/{typed_index}/text");
-                let mapped = map_message_text_overrides(&request, protocol, &body, &source)
-                    .unwrap_or_else(|error| {
-                        panic!("{protocol:?}, typed_first={typed_first}: {error}")
-                    });
+                let mapped =
+                    map_message_text_overrides_from_fixture(&request, protocol, &body, &source)
+                        .unwrap_or_else(|error| {
+                            panic!("{protocol:?}, typed_first={typed_first}: {error}")
+                        });
                 assert_eq!(mapped, BTreeMap::from([(expected_pointer, vec![0xD800])]));
 
                 let serialized = serialized_overrides(&body, &mapped);
@@ -1159,9 +1538,13 @@ mod tests {
                     .as_array_mut()
                     .unwrap()
                     .push(json!({"type":"text","text":"�","provider_metadata":{"raw_marker":"unattributed"}}));
-                assert!(
-                    map_message_text_overrides(&request, protocol, &extra_target, &source).is_err()
-                );
+                assert!(map_message_text_overrides_from_fixture(
+                    &request,
+                    protocol,
+                    &extra_target,
+                    &source
+                )
+                .is_err());
             }
         }
     }
@@ -1189,9 +1572,13 @@ mod tests {
         assert_eq!(blocks[0]["provider_metadata"]["raw_marker"], "raw-a");
         assert_eq!(blocks[2]["provider_metadata"]["raw_marker"], "raw-b");
 
-        let mapped =
-            map_message_text_overrides(&request, ProtocolFamily::AnthropicMessages, &body, &source)
-                .unwrap();
+        let mapped = map_message_text_overrides_from_fixture(
+            &request,
+            ProtocolFamily::AnthropicMessages,
+            &body,
+            &source,
+        )
+        .unwrap();
         assert_eq!(mapped.len(), 2);
         assert_eq!(
             mapped.get("/messages/0/content/1/text"),

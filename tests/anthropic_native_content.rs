@@ -1,11 +1,14 @@
 use lingxi_llm_client::protocol::{
-    ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
-    ProviderProfile, StreamEvent, ToolChoice,
+    ChatRequest, ContentBlock, ConversationMessage, JsonPayload, LlmError, MessageRole,
+    ProtocolFamily, ProviderProfile, StreamEvent, ToolChoice,
 };
 use lingxi_llm_client::{
     AnthropicMessagesCodec, CodecContext, EncodeRequest, HttpResponse, RequestMode, WireCodec,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 
 #[path = "support/wire_api.rs"]
 mod wire_api;
@@ -45,7 +48,7 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
@@ -131,10 +134,30 @@ fn normal_and_sse_text_preserve_utf16_units_and_pair_across_frames() {
         accumulator.observe(event);
     }
     let completed = accumulator.finish().unwrap();
+    let [block] = completed.response.message.content.as_slice() else {
+        panic!("paired UTF-16 text should complete as one content block");
+    };
+    let (text, units, citations) = match block {
+        ContentBlock::Text {
+            text, citations, ..
+        } => (
+            text.as_str(),
+            text.encode_utf16().collect::<Vec<_>>(),
+            citations,
+        ),
+        ContentBlock::TextJsUtf16 {
+            text,
+            utf16_code_units,
+            citations,
+            ..
+        } => (text.as_str(), utf16_code_units.clone(), citations),
+        _ => panic!("paired UTF-16 content should remain text"),
+    };
+    assert_eq!(text, "😀");
+    assert_eq!(units, [0xd83d, 0xde00]);
     assert!(matches!(
-        completed.response.message.content.as_slice(),
-        [ContentBlock::TextJsUtf16 { text, utf16_code_units, citations: Some(Some(citations)), .. }]
-            if text == "😀" && utf16_code_units == &[0xd83d, 0xde00] && citations == &json!([])
+        citations,
+        Some(Some(citations)) if citations.as_json_source() == "[]"
     ));
 }
 
@@ -163,7 +186,7 @@ fn lone_units_in_opaque_native_text_are_rejected_instead_of_lost() {
     ));
 }
 
-fn provider_events(events: &[StreamEvent]) -> Vec<&Value> {
+fn provider_events(events: &[StreamEvent]) -> Vec<&JsonPayload> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -174,6 +197,14 @@ fn provider_events(events: &[StreamEvent]) -> Vec<&Value> {
             _ => None,
         })
         .collect()
+}
+
+fn provider_events_match(actual: &[&JsonPayload], expected: &[Value]) -> bool {
+    actual.len() == expected.len()
+        && actual
+            .iter()
+            .zip(expected)
+            .all(|(actual, expected)| json_payload_fixture::source_matches(actual, expected))
 }
 
 #[test]
@@ -223,13 +254,16 @@ fn native_server_results_and_future_blocks_decode_and_replay_unchanged() {
         .cloned()
         .map(|value| ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value,
+            value: json_payload_fixture::generated(&value),
         })
         .collect::<Vec<_>>();
     expected.push(ContentBlock::Text {
         text: "A cited answer".into(),
         thought_signature: None,
-        citations: Some(Some(native[3]["citations"].clone())),
+        citations: Some(Some(
+            lingxi_llm_client::protocol::JsonPayload::parse(&native[3]["citations"].to_string())
+                .unwrap(),
+        )),
     });
     assert_eq!(response.message.content, expected);
 
@@ -289,7 +323,7 @@ fn mcp_tool_use_result_and_listing_decode_and_replay_as_native_blocks() {
             .cloned()
             .map(|value| ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value,
+                value: json_payload_fixture::generated(&value),
             })
             .collect::<Vec<_>>()
     );
@@ -335,28 +369,43 @@ fn streamed_server_tool_input_is_assembled_without_becoming_a_client_tool_call()
         } => Some(value),
         _ => None,
     });
-    assert_eq!(
-        native,
-        Some(&json!({
+    assert!(json_payload_fixture::source_matches(
+        native.unwrap(),
+        &json!({
             "type":"server_tool_use",
             "id":"srvtoolu_web_fetch_1",
             "name":"web_fetch",
             "input":{"url":"https://example.test"},
             "provider_extension":{"kept":true}
-        }))
-    );
+        })
+    ));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
 
     let observed = provider_events(&events);
-    assert_eq!(observed[0], &start);
-    assert_eq!(observed[1], &empty_delta);
-    assert_eq!(observed[2], &empty_delta);
-    assert_eq!(observed[5]["type"], "content_block_stop");
+    assert!(json_payload_fixture::source_matches(observed[0], &start));
+    assert!(json_payload_fixture::source_matches(
+        observed[1],
+        &empty_delta
+    ));
+    assert!(json_payload_fixture::source_matches(
+        observed[2],
+        &empty_delta
+    ));
+    assert_eq!(
+        json_payload_fixture::source_string_at(observed[5], "/type").as_deref(),
+        Some("content_block_stop")
+    );
     assert_eq!(observed.len(), 7, "repeated frames remain repeated");
-    assert_eq!(observed[6]["type"], "message_delta");
-    assert_eq!(observed[6]["delta"]["stop_reason"], "end_turn");
+    assert_eq!(
+        json_payload_fixture::source_string_at(observed[6], "/type").as_deref(),
+        Some("message_delta")
+    );
+    assert_eq!(
+        json_payload_fixture::source_string_at(observed[6], "/delta/stop_reason").as_deref(),
+        Some("end_turn")
+    );
 }
 
 #[test]
@@ -391,34 +440,50 @@ fn streamed_mcp_tool_input_is_assembled_with_its_server_identity() {
     ];
     let events = decode_stream(&frames).unwrap();
 
-    assert_eq!(
-        events.iter().find_map(|event| match event {
-            StreamEvent::ProviderContent {
-                block: 12, value, ..
-            } => Some(value),
-            _ => None,
-        }),
-        Some(&json!({
+    let native = events.iter().find_map(|event| match event {
+        StreamEvent::ProviderContent {
+            block: 12, value, ..
+        } => Some(value),
+        _ => None,
+    });
+    assert!(json_payload_fixture::source_matches(
+        native.unwrap(),
+        &json!({
             "type":"mcp_tool_use",
             "id":"mcptoolu_calendar_1",
             "name":"find_event",
             "server_name":"calendar",
             "input":{"query":"release planning"},
             "provider_extension":{"kept":true}
-        }))
-    );
+        })
+    ));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
 
     let observed = provider_events(&events);
-    assert_eq!(observed[0], &start);
-    assert_eq!(observed[1], &empty_delta);
-    assert_eq!(observed[2], &empty_delta);
-    assert_eq!(observed[5]["type"], "content_block_stop");
+    assert!(json_payload_fixture::source_matches(observed[0], &start));
+    assert!(json_payload_fixture::source_matches(
+        observed[1],
+        &empty_delta
+    ));
+    assert!(json_payload_fixture::source_matches(
+        observed[2],
+        &empty_delta
+    ));
+    assert_eq!(
+        json_payload_fixture::source_string_at(observed[5], "/type").as_deref(),
+        Some("content_block_stop")
+    );
     assert_eq!(observed.len(), 7, "repeated input frames remain repeated");
-    assert_eq!(observed[6]["type"], "message_delta");
-    assert_eq!(observed[6]["delta"]["stop_reason"], "end_turn");
+    assert_eq!(
+        json_payload_fixture::source_string_at(observed[6], "/type").as_deref(),
+        Some("message_delta")
+    );
+    assert_eq!(
+        json_payload_fixture::source_string_at(observed[6], "/delta/stop_reason").as_deref(),
+        Some("end_turn")
+    );
 }
 
 #[test]
@@ -452,7 +517,10 @@ fn unknown_block_deltas_remain_events_and_suppress_incomplete_replay() {
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
     let observed = provider_events(&events);
-    assert_eq!(&observed[..4], &[&start, &delta, &delta, &stop]);
+    assert!(provider_events_match(
+        &observed[..4],
+        &[start, delta.clone(), delta, stop]
+    ));
 }
 
 #[test]
@@ -469,15 +537,16 @@ fn complete_unknown_stream_blocks_are_replayable_only_after_block_stop() {
         json!({"type":"message_stop"}),
     ])
     .unwrap();
-    assert_eq!(
-        events.iter().find_map(|event| match event {
-            StreamEvent::ProviderContent {
-                block: 2, value, ..
-            } => Some(value),
-            _ => None,
-        }),
-        Some(&block)
-    );
+    let actual = events.iter().find_map(|event| match event {
+        StreamEvent::ProviderContent {
+            block: 2, value, ..
+        } => Some(value),
+        _ => None,
+    });
+    assert!(json_payload_fixture::source_matches(
+        actual.unwrap(),
+        &block
+    ));
 }
 
 #[test]
@@ -502,7 +571,8 @@ fn unknown_events_are_observational_and_native_citation_frames_remain_available(
     assert!(events.iter().any(|event| matches!(
         event,
         StreamEvent::ProviderEvent { payload, .. }
-            if payload["type"] == "provider_event_added_later"
+            if json_payload_fixture::source_string_at(payload, "/type").as_deref()
+                == Some("provider_event_added_later")
     )));
     assert!(events.iter().any(|event| matches!(
         event,
@@ -510,7 +580,8 @@ fn unknown_events_are_observational_and_native_citation_frames_remain_available(
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        StreamEvent::ProviderEvent { payload, .. } if payload == &citation
+        StreamEvent::ProviderEvent { payload, .. }
+            if json_payload_fixture::source_matches(payload, &citation)
     )));
     assert!(events
         .iter()
@@ -602,7 +673,11 @@ fn empty_or_non_object_server_tool_json_is_not_replayed_as_complete_input() {
             StreamEvent::ProviderContent { block, .. } if *block == index
         )));
         assert!(provider_events(&events).iter().any(|payload| {
-            payload["type"] == "content_block_delta" && payload["index"] == index
+            json_payload_fixture::source_string_at(payload, "/type").as_deref()
+                == Some("content_block_delta")
+                && json_payload_fixture::source_value_at(payload, "/index")
+                    .and_then(|value| value.as_u64())
+                    == Some(index as u64)
         }));
     }
 }
@@ -641,10 +716,10 @@ fn malformed_and_unknown_mcp_input_deltas_suppress_replay_but_keep_frames() {
         )));
         assert!(provider_events(&events)
             .iter()
-            .any(|payload| { *payload == &start }));
+            .any(|payload| json_payload_fixture::source_matches(payload, &start)));
         assert!(provider_events(&events)
             .iter()
-            .any(|payload| { *payload == &delta }));
+            .any(|payload| json_payload_fixture::source_matches(payload, &delta)));
         assert!(!events
             .iter()
             .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
@@ -679,10 +754,10 @@ fn malformed_and_unknown_mcp_input_deltas_suppress_replay_but_keep_frames() {
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ProviderContent { block: 23, .. })));
-    assert_eq!(
+    assert!(provider_events_match(
         &provider_events(&events)[..3],
-        &[&start, &unknown_delta, &stop]
-    );
+        &[start, unknown_delta, stop]
+    ));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
@@ -719,7 +794,10 @@ fn mcp_input_delta_without_a_string_fragment_suppresses_replay() {
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ProviderContent { block: 24, .. })));
-    assert_eq!(&provider_events(&events)[..2], &[&start, &malformed_delta]);
+    assert!(provider_events_match(
+        &provider_events(&events)[..2],
+        &[start, malformed_delta]
+    ));
 }
 
 #[test]
@@ -799,20 +877,21 @@ fn citations_arriving_midstream_reconstruct_the_complete_text_block() {
         text.concat(),
         "According to the report, this result follows."
     );
-    assert_eq!(
-        events.iter().find_map(|event| match event {
-            StreamEvent::ProviderContent {
-                block: 3, value, ..
-            } => Some(value),
-            _ => None,
-        }),
-        Some(&json!({
+    let native = events.iter().find_map(|event| match event {
+        StreamEvent::ProviderContent {
+            block: 3, value, ..
+        } => Some(value),
+        _ => None,
+    });
+    assert!(json_payload_fixture::source_matches(
+        native.unwrap(),
+        &json!({
             "type":"text",
             "text":"According to the report, this result follows.",
             "citations":[first_citation, second_citation],
             "provider_metadata":{"keep":"this"}
-        }))
-    );
+        })
+    ));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::WebSearch { .. })));
@@ -821,16 +900,16 @@ fn citations_arriving_midstream_reconstruct_the_complete_text_block() {
     assert_eq!(
         observed
             .iter()
-            .map(|frame| frame["type"].as_str().unwrap())
+            .map(|frame| json_payload_fixture::source_string_at(frame, "/type").unwrap())
             .collect::<Vec<_>>(),
-        [
-            "content_block_start",
-            "content_block_delta",
-            "content_block_delta",
-            "content_block_delta",
-            "content_block_delta",
-            "content_block_stop",
-            "message_delta"
+        vec![
+            "content_block_start".to_owned(),
+            "content_block_delta".to_owned(),
+            "content_block_delta".to_owned(),
+            "content_block_delta".to_owned(),
+            "content_block_delta".to_owned(),
+            "content_block_stop".to_owned(),
+            "message_delta".to_owned()
         ]
     );
 }
@@ -849,18 +928,22 @@ fn explicit_null_and_empty_citations_complete_as_native_text_blocks() {
             json!({"type":"message_stop"}),
         ])
         .unwrap();
+        let observed = events.iter().find_map(|event| match event {
+            StreamEvent::ProviderContent {
+                block: 25, value, ..
+            } => Some(value.as_json_source().to_owned()),
+            _ => None,
+        });
         assert_eq!(
-            events.iter().find_map(|event| match event {
-                StreamEvent::ProviderContent {
-                    block: 25, value, ..
-                } => Some(value),
-                _ => None,
-            }),
-            Some(&json!({
-                "type":"text",
-                "text":"answer tail",
-                "citations":citations
-            }))
+            observed,
+            Some(
+                json!({
+                    "type":"text",
+                    "text":"answer tail",
+                    "citations":citations
+                })
+                .to_string()
+            )
         );
     }
 }
@@ -878,19 +961,20 @@ fn unknown_top_level_text_fields_stay_in_one_complete_native_block() {
         json!({"type":"message_stop"}),
     ])
     .unwrap();
-    assert_eq!(
-        events.iter().find_map(|event| match event {
-            StreamEvent::ProviderContent {
-                block: 26, value, ..
-            } => Some(value),
-            _ => None,
-        }),
-        Some(&json!({
+    let native = events.iter().find_map(|event| match event {
+        StreamEvent::ProviderContent {
+            block: 26, value, ..
+        } => Some(value),
+        _ => None,
+    });
+    assert!(json_payload_fixture::source_matches(
+        native.unwrap(),
+        &json!({
             "type":"text",
             "text":"answer tail",
             "future_annotation":{"opaque":true}
-        }))
-    );
+        })
+    ));
 }
 
 #[test]
@@ -955,16 +1039,10 @@ fn malformed_citations_and_unknown_text_deltas_preserve_frames_without_replay() 
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ProviderContent { block: 5, .. })));
-    assert_eq!(
+    assert!(provider_events_match(
         &provider_events(&events)[..5],
-        &[
-            &start,
-            &text_delta,
-            &malformed_citation,
-            &unknown_delta,
-            &stop
-        ]
-    );
+        &[start, text_delta, malformed_citation, unknown_delta, stop]
+    ));
 }
 
 #[test]
@@ -988,9 +1066,10 @@ fn malformed_initial_citation_text_is_observed_but_not_replayed() {
             event,
             StreamEvent::ProviderContent { block, .. } if *block == index
         )));
-        assert!(provider_events(&events)
-            .iter()
-            .any(|frame| frame["type"] == "content_block_start"));
+        assert!(provider_events(&events).iter().any(|frame| {
+            json_payload_fixture::source_string_at(frame, "/type").as_deref()
+                == Some("content_block_start")
+        }));
     }
 }
 

@@ -217,10 +217,15 @@ fn main() {
         req.tools = (0..count)
             .map(|i| ToolSpec {
                 tool_type: None,
-                extra: serde_json::Value::Null,
+                extra: lingxi_llm_client::protocol::JsonPayload::default(),
                 name: format!("tool_{i}"),
-                description: "Tool description ".repeat(32),
-                input_schema: schema(20),
+                description: lingxi_llm_client::protocol::JsonPayload::string(
+                    &"Tool description ".repeat(32),
+                ),
+                input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                    &schema(20),
+                )
+                .unwrap(),
                 strict: true,
                 defer_loading: false,
                 native_options: Vec::new(),
@@ -233,7 +238,7 @@ fn main() {
         let spec = schema(count);
         req.output_format = OutputFormat::JsonSchema {
             name: "result".into(),
-            schema: spec.clone(),
+            schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&spec).unwrap(),
             strict: true,
         };
         bench_request(&format!("schema_{count}_prepare"), &req, n);

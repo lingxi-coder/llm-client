@@ -360,7 +360,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     };
     let options = RequestOptions {
         file_account_scope: Some("account-2".into()),

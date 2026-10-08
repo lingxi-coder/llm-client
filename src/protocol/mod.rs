@@ -19,6 +19,10 @@ pub use decision::{
     DecisionModelListing, DecisionOption, DecisionQuestion, DecisionRequest, DecisionResult,
     DecisionSupport,
 };
+mod json_payload;
+mod model_complete;
+mod model_complete_catalog;
+pub use json_payload::{JsonPayload, JsonPayloadFragment};
 mod native;
 pub use native::{NativeExtension, NativeType};
 pub mod ids;
@@ -39,14 +43,21 @@ pub use ids::{ProviderId, ResponseId, ToolUseId};
 pub use image::*;
 pub use llm::{
     CapabilitySupport, ChatRequest, ChatResponse, FileSearchHit, FileSearchResult, HostedTool,
-    LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing, ProviderListing,
-    ReportedCost, ResponseCacheObservation, ResponseCacheStatus, ServerToolUsage, StopReason,
-    StreamEvent, SystemBlock, ToolChoice, ToolSpec, Usage, WebCitation, WebSearchConfig,
-    WebSearchResult,
+    LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing,
+    NativeAnthropicErrorFacts, ProviderErrorText, ProviderListing, ReportedCost,
+    ResponseCacheObservation, ResponseCacheStatus, ServerToolUsage, StopReason, StreamEvent,
+    SystemBlock, ToolChoice, ToolSpec, Usage, WebCitation, WebSearchConfig, WebSearchResult,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,
     ProviderFileSource, VideoSource,
+};
+pub use model_complete::{
+    model_complete_cache_decision, native_model_identity, native_model_response_compatible,
+    native_served_models_latch_key, ModelCompleteInput, ModelCompleteTextBlock,
+    NativeModelCacheDecision, NativeModelCacheGate, NativeModelEnvironmentSnapshot,
+    NativeModelGateIdentity, NativeModelObservation, NativeModelProvider,
+    NativeModelRegistrySnapshot, NativeModelSettingsSnapshot, NativeServedCatalogFamilies,
 };
 pub use provider::{
     AuthStrategy, AzureConfig, BatchPricing, BillingMode, ConnectionSpec, CredentialConfig,

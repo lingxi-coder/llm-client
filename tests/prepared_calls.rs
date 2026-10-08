@@ -1,17 +1,17 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use lingxi_llm_client::{
-    HttpRequest, LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport,
     protocol::{
-        AuthStrategy, ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole,
-        ProviderProfile, Region, Secret, UsageState,
+        AuthStrategy, ChatRequest, ContentBlock, ConversationMessage, JsonPayload, LlmError,
+        MessageRole, ProviderProfile, Region, Secret, UsageState,
     },
+    HttpRequest, LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport,
 };
 use serde_json::json;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 
 struct ResponseTransport {
@@ -70,6 +70,36 @@ fn request_with_lone_surrogate() -> ChatRequest {
     request
 }
 
+fn append_test_root_fields(source: &JsonPayload, fields: &serde_json::Value) -> JsonPayload {
+    let object = fields
+        .as_object()
+        .expect("test additions are a JSON object");
+    assert!(object.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "instructions" | "metadata" | "max_output_tokens" | "temperature" | "top_p"
+        )
+    }));
+    let source = source.as_json_source();
+    let generated = serde_json::to_string(fields).unwrap();
+    assert!(source.starts_with('{') && generated.starts_with('{'));
+    assert!(generated.ends_with('}'));
+    let close = source.trim_end().len() - 1;
+    assert_eq!(source.as_bytes()[close], b'}');
+    let generated_members = &generated[1..generated.len() - 1];
+    if generated_members.is_empty() {
+        return JsonPayload::parse(source).unwrap();
+    }
+    let existing_members = source[1..close].trim();
+    let separator = if existing_members.is_empty() { "" } else { "," };
+    let mut combined = String::with_capacity(source.len() + generated.len());
+    combined.push_str(&source[..close]);
+    combined.push_str(separator);
+    combined.push_str(generated_members);
+    combined.push_str(&source[close..]);
+    JsonPayload::parse(&combined).unwrap()
+}
+
 fn assert_exact_text_request(http: &ResponseTransport, expected_count: usize) {
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests.len(), expected_count);
@@ -96,8 +126,8 @@ async fn sdk_carried_utf16_replays_on_prepared_and_normal_generation_paths() {
             .with_region(Region::International)
             .build()
             .unwrap();
-        let prepared = client
-            .prepare_on(
+        let draft = client
+            .prepare_draft_on(
                 "primary",
                 &request,
                 &RequestOptions::default(),
@@ -105,11 +135,36 @@ async fn sdk_carried_utf16_replays_on_prepared_and_normal_generation_paths() {
             )
             .await
             .unwrap();
-        let prepared_body = std::str::from_utf8(&prepared.request().body).unwrap();
+        let draft_body = std::str::from_utf8(&draft.request().body).unwrap();
         assert!(
-            prepared_body.contains("\\ud800"),
-            "{protocol}: {prepared_body}"
+            draft_body.contains("\\ud800"),
+            "{protocol} draft: {draft_body}"
         );
+        assert!(
+            !draft_body.contains("utf16_code_units"),
+            "{protocol} draft: {draft_body}"
+        );
+        assert!(
+            !draft_body.contains("text_js_utf16"),
+            "{protocol} draft: {draft_body}"
+        );
+        let prepared = draft.seal().await.unwrap();
+        let prepared_body = std::str::from_utf8(&prepared.request().body).unwrap();
+        if protocol == "anthropic_messages" {
+            assert!(
+                prepared_body.contains('�'),
+                "Claude final body must replace lone UTF-16 units: {prepared_body}"
+            );
+            assert!(
+                !prepared_body.contains("\\ud800"),
+                "Claude final body must not retain the lone surrogate: {prepared_body}"
+            );
+        } else {
+            assert!(
+                prepared_body.contains("\\ud800"),
+                "{protocol}: {prepared_body}"
+            );
+        }
         assert!(
             !prepared_body.contains("utf16_code_units"),
             "{protocol}: {prepared_body}"
@@ -172,8 +227,8 @@ async fn decoded_anthropic_text_replays_with_exact_units_on_the_next_request() {
     ));
 
     first_request.messages.push(response.message);
-    let prepared = client
-        .prepare_on(
+    let draft = client
+        .prepare_draft_on(
             "primary",
             &first_request,
             &RequestOptions::default(),
@@ -181,8 +236,15 @@ async fn decoded_anthropic_text_replays_with_exact_units_on_the_next_request() {
         )
         .await
         .unwrap();
+    let draft_body = std::str::from_utf8(&draft.request().body).unwrap();
+    assert_eq!(draft_body.matches("\\ud800").count(), 2, "{draft_body}");
+    assert!(!draft_body.contains("utf16_code_units"), "{draft_body}");
+    assert!(!draft_body.contains("text_js_utf16"), "{draft_body}");
+
+    let prepared = draft.seal().await.unwrap();
     let body = std::str::from_utf8(&prepared.request().body).unwrap();
-    assert_eq!(body.matches("\\ud800").count(), 2, "{body}");
+    assert_eq!(body.matches('�').count(), 2, "{body}");
+    assert!(!body.contains("\\ud800"), "{body}");
     assert!(!body.contains("utf16_code_units"), "{body}");
     assert!(!body.contains("text_js_utf16"), "{body}");
 }
@@ -214,18 +276,14 @@ async fn exact_counting_uses_count_endpoint_and_never_generates() {
     );
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
-    assert!(
-        requests[0]
-            .url
-            .ends_with("/v1/messages/count_tokens?beta=true")
-    );
-    assert!(
-        requests[0]
-            .headers
-            .iter()
-            .any(|(key, value)| key.eq_ignore_ascii_case("anthropic-beta")
-                && value == "token-counting-2024-11-01")
-    );
+    assert!(requests[0]
+        .url
+        .ends_with("/v1/messages/count_tokens?beta=true"));
+    assert!(requests[0]
+        .headers
+        .iter()
+        .any(|(key, value)| key.eq_ignore_ascii_case("anthropic-beta")
+            && value == "token-counting-2024-11-01"));
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert!(body.get("max_tokens").is_none());
     assert!(body.get("stream").is_none());
@@ -304,7 +362,7 @@ async fn sdk_dispatch_preserves_hook_prompt_kind_override_on_non_anthropic_codec
     }))
     .unwrap();
     let options = RequestOptions {
-        anthropic_request_kind:
+            anthropic_request_kind:
             lingxi_llm_client::providers::anthropic::request_policy::AnthropicRequestKind::HookPrompt,
         message_text_utf16_overrides: [("/messages/0/content/0/text".into(), vec![0xd800])]
             .into_iter()
@@ -360,28 +418,28 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
         .await
         .unwrap();
     let mut overrides = draft.message_json_string_overrides().clone();
-    let mut body = draft.semantic_body_json().unwrap();
+    let body = append_test_root_fields(
+        &draft.semantic_body_source().unwrap(),
+        &json!({
+            "instructions":"�",
+            "metadata":{"annotation":"�"},
+            "max_output_tokens":"discarded exact field",
+            "temperature":0.4,
+            "top_p":{"annotation":"discarded exact descendant"}
+        }),
+    );
     // Simulate the final host body policy after request preparation.
-    body["instructions"] = json!("�");
-    body["metadata"] = json!({"annotation":"�"});
-    body["max_output_tokens"] = json!("discarded exact field");
-    body["temperature"] = json!(0.4);
-    body["top_p"] = json!({"annotation":"discarded exact descendant"});
     overrides.insert("/instructions".into(), vec![0xd801]);
     overrides.insert("/metadata/annotation".into(), vec![0xd802]);
     overrides.insert("/max_output_tokens".into(), vec![0xd803]);
     overrides.insert("/top_p/annotation".into(), vec![0xd804]);
-    assert!(
-        !draft
-            .message_json_string_overrides()
-            .contains_key("/instructions")
-    );
+    assert!(!draft
+        .message_json_string_overrides()
+        .contains_key("/instructions"));
     draft.set_json_body(body, &overrides).unwrap();
-    assert!(
-        !draft
-            .message_json_string_overrides()
-            .contains_key("/metadata/annotation")
-    );
+    assert!(!draft
+        .message_json_string_overrides()
+        .contains_key("/metadata/annotation"));
     assert_eq!(
         draft
             .request_json_string_overrides()
@@ -389,8 +447,7 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
         Some(&vec![0xd802])
     );
     let exact_body = draft.request().body.clone();
-    let semantic_body = draft.semantic_body_json().unwrap();
-    draft.set_body_bytes(exact_body, semantic_body);
+    draft.set_body_bytes(exact_body);
     let call = draft.seal().await.unwrap();
 
     let bytes = &call.request().body;
@@ -404,13 +461,12 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
     for removed in ["max_output_tokens", "temperature", "top_p"] {
         assert!(!wire.contains(removed), "{wire}");
     }
-    assert!(
-        call.request()
-            .headers
-            .iter()
-            .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
-                && value == "Bearer synthetic-chatgpt-token")
-    );
+    assert!(call
+        .request()
+        .headers
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("authorization")
+            && value == "Bearer synthetic-chatgpt-token"));
 }
 
 #[tokio::test]
@@ -534,9 +590,10 @@ async fn prepare_sends_nothing_and_failed_dispatch_never_fails_over() {
     let received = prepared.dispatch_once().await.unwrap();
     assert_eq!(received.status(), 429);
     let response = received.collect().await.unwrap();
+    let decode_error = response.decode().unwrap_err();
     assert!(matches!(
-        response.decode(),
-        Err(LlmError::RateLimited { .. })
+        decode_error.classification_source(),
+        LlmError::RateLimited { .. }
     ));
     assert_eq!(http.sends.load(Ordering::SeqCst), 1);
 }
@@ -676,17 +733,15 @@ async fn group_names_cannot_masquerade_as_selected_connections() {
         .with_region(Region::International)
         .build()
         .unwrap();
-    assert!(
-        client
-            .prepare_on(
-                "test",
-                &request(),
-                &RequestOptions::default(),
-                RequestMode::Complete
-            )
-            .await
-            .is_err()
-    );
+    assert!(client
+        .prepare_on(
+            "test",
+            &request(),
+            &RequestOptions::default(),
+            RequestMode::Complete
+        )
+        .await
+        .is_err());
     assert_eq!(http.sends.load(Ordering::SeqCst), 0);
 }
 
@@ -764,13 +819,11 @@ async fn draft_is_signed_only_after_final_exact_bytes_and_dispatch_marker_can_re
         )
         .await
         .unwrap();
-    assert!(
-        !draft
-            .request()
-            .headers
-            .iter()
-            .any(|(k, _)| k == "signed-body")
-    );
+    assert!(!draft
+        .request()
+        .headers
+        .iter()
+        .any(|(k, _)| k == "signed-body"));
     let bytes = lingxi_llm_client::exact_json::serialize(
         &json!({"text":"display"}),
         &[("/text".into(), vec![0xd800, 65, 0xd83d, 0xde00])]
@@ -851,14 +904,12 @@ async fn finalizer_runs_before_authentication_and_exact_override_rejects_wrong_l
     .await
     .unwrap();
     assert_eq!(http.sends.load(Ordering::SeqCst), 1);
-    assert!(
-        lingxi_llm_client::exact_json::serialize(
-            &json!({"x":1}),
-            &[("/x".into(), vec![65])].into_iter().collect(),
-            lingxi_llm_client::exact_json::JsonEncoding::JavaScript,
-        )
-        .is_err()
-    );
+    assert!(lingxi_llm_client::exact_json::serialize(
+        &json!({"x":1}),
+        &[("/x".into(), vec![65])].into_iter().collect(),
+        lingxi_llm_client::exact_json::JsonEncoding::JavaScript,
+    )
+    .is_err());
 }
 
 #[test]
@@ -899,7 +950,10 @@ async fn final_body_controls_and_exact_utf16_cannot_silently_price_fast_as_stand
         .unwrap();
     draft
         .set_json_body(
-            json!({"model":"wire","service_tier":"priority","text":"display"}),
+            JsonPayload::from_generated_value(&json!({
+                "model":"wire","service_tier":"priority","text":"display"
+            }))
+            .unwrap(),
             &[("/text".into(), vec![0xd800])].into_iter().collect(),
         )
         .unwrap();
@@ -917,16 +971,14 @@ async fn final_body_controls_and_exact_utf16_cannot_silently_price_fast_as_stand
         received.inference_report().requested_service_tier,
         Some(lingxi_llm_client::protocol::ServiceTier::Fast)
     );
-    assert!(
-        received
-            .pricing_snapshot()
-            .estimate(
-                received.usage_report(),
-                received.inference_report(),
-                lingxi_llm_client::protocol::Submission::Interactive
-            )
-            .is_err()
-    );
+    assert!(received
+        .pricing_snapshot()
+        .estimate(
+            received.usage_report(),
+            received.inference_report(),
+            lingxi_llm_client::protocol::Submission::Interactive
+        )
+        .is_err());
 }
 
 #[tokio::test]
@@ -1295,13 +1347,11 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
             .unwrap();
     let mut request = request();
     request.controls.top_p = Some(0.7);
-    request.tools = vec![
-        serde_json::from_value(json!({
-            "name":"computer","tool_type":"computer_20250124","description":"desktop",
-            "input_schema":{},"extra":{"display_width_px":1024,"display_height_px":768}
-        }))
-        .unwrap(),
-    ];
+    request.tools = vec![serde_json::from_value(json!({
+        "name":"computer","tool_type":"computer_20250124","description":"desktop",
+        "input_schema":{},"extra":{"display_width_px":1024,"display_height_px":768}
+    }))
+    .unwrap()];
     let call = client
         .prepare_on(
             "primary",
@@ -1316,10 +1366,10 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
     assert_eq!(body["tools"][0]["type"], "computer_20250124");
     assert_eq!(body["tools"][0]["display_width_px"], 1024);
     assert!(body["tools"][0].get("input_schema").is_none());
-    assert!(
-        call.request().headers.iter().any(
-            |(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")
-        )
-    );
+    assert!(call
+        .request()
+        .headers
+        .iter()
+        .any(|(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")));
     assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
 }

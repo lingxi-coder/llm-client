@@ -263,13 +263,17 @@ impl Pinned<'_> {
             .with_deadline(deadline)
             .execute_bounded(http, MAX_BODY)
             .await
-            .map_err(|source| match source {
-                LlmError::Transport { .. }
-                | LlmError::TransportTimeout { .. }
-                | LlmError::StreamInterrupted { .. } => {
+            .map_err(|source| {
+                if matches!(
+                    source.classification_source(),
+                    LlmError::Transport { .. }
+                        | LlmError::TransportTimeout { .. }
+                        | LlmError::StreamInterrupted { .. }
+                ) {
                     BackgroundError::SubmitOutcomeUnknown { source }
+                } else {
+                    BackgroundError::Llm(source)
                 }
-                other => BackgroundError::Llm(other),
             })?;
         let native = parse_json(&response)?;
         if !(200..300).contains(&response.status) {
@@ -316,7 +320,7 @@ impl Pinned<'_> {
             .map_err(|source| {
                 if cancel
                     && matches!(
-                        source,
+                        source.classification_source(),
                         LlmError::Transport { .. }
                             | LlmError::TransportTimeout { .. }
                             | LlmError::StreamInterrupted { .. }
@@ -413,7 +417,7 @@ impl Pinned<'_> {
                 return Err(BackgroundError::InvalidResponse {
                     message: "missing or unknown response status".into(),
                     native,
-                })
+                });
             }
         };
         let decoded = if matches!(
@@ -582,7 +586,9 @@ pub fn validate_route(profile: &ProviderProfile, route: &BackgroundRoute) -> Res
         || profile.protocol != ProtocolFamily::OpenAiResponses
         || route.auth != ServiceAuth::Bearer
     {
-        return Err(invalid("background route requires a first-party OpenAI Responses profile and bearer authentication"));
+        return Err(invalid(
+            "background route requires a first-party OpenAI Responses profile and bearer authentication",
+        ));
     }
     let endpoint =
         url::Url::parse(&route.endpoint).map_err(|_| invalid("invalid background endpoint"))?;

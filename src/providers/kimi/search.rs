@@ -35,7 +35,7 @@ pub(crate) fn apply(
                 "include".into(),
                 serde_json::json!(["web_search_call.action.sources"]),
             );
-            Ok(Some(web_search::responses_tool(search)))
+            Ok(Some(web_search::responses_tool(search)?))
         },
     )
 }

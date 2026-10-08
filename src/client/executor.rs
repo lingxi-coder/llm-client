@@ -22,6 +22,25 @@ use std::{future::Future, time::Duration};
 
 use crate::providers::dispatch::{self, ChatBackend};
 
+fn request_authority(request_url: &str) -> Option<String> {
+    let url = url::Url::parse(request_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    let host = if host.starts_with('[') && host.ends_with(']') {
+        host.to_owned()
+    } else if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
 /// Check caller-supplied file lifetimes independently of route preparation so
 /// an already-expired reference cannot trigger attachment reads or uploads.
 pub(super) fn request_file_expirations(req: &ChatRequest) -> Vec<String> {
@@ -97,7 +116,12 @@ fn is_attachment_capability_fallback(
     has_attachments: bool,
     error: &LlmError,
 ) -> bool {
-    attempt_index > 0 && has_attachments && matches!(error, LlmError::UnsupportedCapability { .. })
+    attempt_index > 0
+        && has_attachments
+        && matches!(
+            error.classification_source(),
+            LlmError::UnsupportedCapability { .. }
+        )
 }
 
 fn ephemeral_file_scope() -> String {
@@ -168,36 +192,38 @@ fn apply_generation_body_policies(
 ) -> Result<(), LlmError> {
     let apply_chatgpt_policy = authenticate
         && super::prepared::chatgpt_body_policy_applies(profile.auth, profile.protocol, mode);
-    let apply_utf16_text = authenticate && request_has_text_utf16(request, options);
+    // Exact string projection belongs to draft construction, independently
+    // from authentication. Native value sanitation runs only after the host
+    // has finished request policy and the final generation body is known.
+    let apply_utf16_text = request_has_text_utf16(request, options);
     if !apply_chatgpt_policy && !apply_utf16_text {
         return Ok(());
     }
 
-    let mut body: serde_json::Value =
-        serde_json::from_slice(&http.body).map_err(|error| LlmError::InvalidRequest {
+    let source = std::str::from_utf8(&http.body).map_err(|error| LlmError::InvalidRequest {
+        message: format!("encoded request body is not UTF-8 JSON: {error}"),
+    })?;
+    let mut body =
+        crate::protocol::JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
             message: format!(
                 "encoded request body is not JSON for generation body policy: {error}"
             ),
         })?;
     let mut changed = false;
-    if apply_chatgpt_policy && body.get("model").is_some() && body.get("input").is_some() {
-        crate::auth::header_policy::chatgpt_body(&mut body);
+    if apply_chatgpt_policy && body.kind_at("/model").is_some() && body.kind_at("/input").is_some()
+    {
+        body = crate::auth::header_policy::chatgpt_source_body(&body)?;
         changed = true;
     }
 
     if apply_utf16_text {
-        if let Some(encoded) = encode_request_text_utf16_body(request, profile, options, &mut body)?
-        {
+        if let Some(encoded) = encode_request_text_utf16_body(request, profile, options, &body)? {
             http.body = encoded;
             return Ok(());
         }
     }
     if changed {
-        http.body = serde_json::to_vec(&body)
-            .map_err(|error| LlmError::InvalidRequest {
-                message: format!("could not serialize final generation body: {error}"),
-            })?
-            .into();
+        http.body = body.as_json_source().as_bytes().to_vec().into();
     }
     Ok(())
 }
@@ -216,7 +242,7 @@ pub(super) fn encode_request_text_utf16_body(
     request: &ChatRequest,
     profile: &ProviderProfile,
     options: &RequestOptions,
-    body: &mut serde_json::Value,
+    body: &crate::protocol::JsonPayload,
 ) -> Result<Option<bytes::Bytes>, LlmError> {
     if !request_has_text_utf16(request, options) {
         return Ok(None);
@@ -227,12 +253,10 @@ pub(super) fn encode_request_text_utf16_body(
         body,
         &options.message_text_utf16_overrides,
     )?;
-    let encoded = crate::exact_json::serialize_for_request(
+    let encoded = crate::exact_json::serialize_json_payload_with_overrides(
         body,
         &overrides,
         crate::exact_json::JsonEncoding::for_protocol(profile.protocol),
-        Some(profile.protocol),
-        options.anthropic_request_kind,
     )?;
     Ok(Some(bytes::Bytes::from(encoded)))
 }
@@ -544,10 +568,48 @@ impl<'client> RequestExecutor<'client> {
     ) -> Result<PreparedAttempt, LlmError> {
         let (mode, authenticate, decision) = preparation;
         let profile = attempt.profile;
+        let is_anthropic_model_protocol = matches!(
+            profile.protocol,
+            ProtocolFamily::AnthropicMessages
+                | ProtocolFamily::VertexClaude
+                | ProtocolFamily::BedrockClaude
+                | ProtocolFamily::FoundryClaude
+        );
+        let model_complete_cache_decision = opts.model_complete_cache_gate.as_ref().map(|gate| {
+            crate::protocol::NativeModelProvider::for_profile(profile)
+                .map(|provider| gate.decision(provider))
+                .unwrap_or(crate::protocol::NativeModelCacheDecision::Undetermined)
+        });
+        // Missing registry/credential observations must not silently mean
+        // cache-enabled. Preserve text/order, but omit Native cache markers
+        // until the SDK has the source fact needed for an exact decision.
+        let drop_model_complete_cache = opts.drop_cache_control_when_caching_disabled
+            && is_anthropic_model_protocol
+            && matches!(
+                model_complete_cache_decision,
+                Some(
+                    crate::protocol::NativeModelCacheDecision::Disabled
+                        | crate::protocol::NativeModelCacheDecision::Undetermined
+                )
+            );
+        let mut request_without_model_complete_cache = None;
+        if drop_model_complete_cache {
+            let mut request = req.request.clone();
+            request.prompt_cache.automatic = None;
+            request.prompt_cache.breakpoints.clear();
+            request_without_model_complete_cache = Some(request);
+        }
+        let allow_empty_model_complete_cache_blocks = opts.drop_cache_control_when_caching_disabled
+            && is_anthropic_model_protocol
+            && matches!(
+                model_complete_cache_decision,
+                Some(crate::protocol::NativeModelCacheDecision::Enabled)
+            );
         validate_request_file_expirations(req.request, self.clock.now())?;
         let backend = dispatch::chat(profile);
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_native_anthropic_context(opts.native_anthropic_context)
             .with_fast_capability(if profile.profile_name == route.profile_name {
                 opts.fast_capability
             } else {
@@ -556,8 +618,30 @@ impl<'client> RequestExecutor<'client> {
             .with_account_scope(opts.account_scope.as_deref())
             .with_native_options(&req.request.native_options)
             .with_file_scope(opts.file_account_scope.as_deref())
-            .with_file_validation_time(self.clock.now());
-        backend.validate_preparation(req.request, &validation_context, opts)?;
+            .with_file_validation_time(self.clock.now())
+            .with_model_complete_empty_cache_blocks(allow_empty_model_complete_cache_blocks);
+
+        // Native model.complete cache flags are operation-local hints. Keep
+        // their positional breakpoints when the current provider codec accepts
+        // them; otherwise omit only those markers and keep the normalized
+        // text/layout intact. This lets unsupported failover routes continue
+        // through their own existing cache capability rules.
+        let initial_request = request_without_model_complete_cache
+            .as_ref()
+            .unwrap_or(req.request);
+        let prune_unsupported_model_complete_cache = opts.drop_cache_control_when_caching_disabled
+            && !is_anthropic_model_protocol
+            && !initial_request.prompt_cache.breakpoints.is_empty()
+            && crate::codecs::cache::validate(initial_request, &validation_context).is_err();
+        if prune_unsupported_model_complete_cache {
+            let mut request = initial_request.clone();
+            request.prompt_cache.breakpoints.clear();
+            request_without_model_complete_cache = Some(request);
+        }
+        let request = request_without_model_complete_cache
+            .as_ref()
+            .unwrap_or(req.request);
+        backend.validate_preparation(request, &validation_context, opts)?;
 
         // Failing over re-points the endpoint and the credential, never the
         // model — so the codec encodes against this connection's profile and
@@ -617,6 +701,7 @@ impl<'client> RequestExecutor<'client> {
             opts.file_account_scope.as_deref(),
         );
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_native_anthropic_context(opts.native_anthropic_context)
             .with_fast_capability(if profile.profile_name == route.profile_name {
                 opts.fast_capability
             } else {
@@ -624,11 +709,12 @@ impl<'client> RequestExecutor<'client> {
             })
             .with_file_scope(attempt_opts.file_account_scope.as_deref())
             .with_account_scope(opts.account_scope.as_deref())
-            .with_native_options(&req.request.native_options)
-            .with_file_validation_time(self.clock.now());
-        crate::codecs::structured::validate(req.request, &context)?;
-        codec.validate_request(req.request, &context)?;
-        let inference = codec.request_inference(req.request, &context)?;
+            .with_native_options(&request.native_options)
+            .with_file_validation_time(self.clock.now())
+            .with_model_complete_empty_cache_blocks(allow_empty_model_complete_cache_blocks);
+        crate::codecs::structured::validate(request, &context)?;
+        codec.validate_request(request, &context)?;
+        let inference = codec.request_inference(request, &context)?;
         let media = req
             .attachments
             .iter()
@@ -637,7 +723,7 @@ impl<'client> RequestExecutor<'client> {
                 bytes: &payload.bytes,
             })
             .collect::<Vec<_>>();
-        backend.preflight_media(req.request, &media, &context, codec.as_ref())?;
+        backend.preflight_media(request, &media, &context, codec.as_ref())?;
         let endpoint = self
             .state
             .config
@@ -649,7 +735,7 @@ impl<'client> RequestExecutor<'client> {
             .prepare_provider_file_inputs(
                 profile,
                 &attempt.model.request_model,
-                req.request,
+                request,
                 &req.attachments,
                 ProviderFilePreparation {
                     file_validation_time: self.clock.now(),
@@ -676,7 +762,7 @@ impl<'client> RequestExecutor<'client> {
                     }
                     codec
                         .encoded_body_len(
-                            EncodeRequest::new(req.request)
+                            EncodeRequest::new(request)
                                 .with_media(&media)
                                 .with_bindings(bindings),
                             &context,
@@ -689,12 +775,12 @@ impl<'client> RequestExecutor<'client> {
         // Uploads and processing may have consumed a file's remaining lifetime.
         context = context.with_file_validation_time(self.clock.now());
         validate_prepared_file_expirations(
-            req.request,
+            request,
             &prepared.uses,
             context.file_validation_time(),
         )?;
         let mut http = codec.encode_request(
-            EncodeRequest::new(req.request)
+            EncodeRequest::new(request)
                 .with_media(&media)
                 .with_bindings(&prepared.bindings),
             &context,
@@ -709,7 +795,7 @@ impl<'client> RequestExecutor<'client> {
         if let Some(finalizer) = &opts.finalizer {
             finalizer.finalize(&mut http, profile)?;
         }
-        apply_generation_body_policies(req.request, profile, opts, mode, authenticate, &mut http)?;
+        apply_generation_body_policies(request, profile, opts, mode, authenticate, &mut http)?;
         let native_anthropic_request_header_facts =
             crate::providers::response_headers::NativeAnthropicRequestHeaderFacts::
                 from_provider_profile(profile, &http.url);
@@ -722,9 +808,17 @@ impl<'client> RequestExecutor<'client> {
                 )?;
             }
         }
+        if authenticate && matches!(mode, RequestMode::Complete | RequestMode::Stream) {
+            if let Some(body) = crate::exact_json::normalize_native_generation_json_body(
+                &http.body,
+                profile.protocol,
+            )? {
+                http.body = body.into();
+            }
+        }
         backend.validate_prepared_body(http.body.len(), endpoint)?;
 
-        validate_prepared_file_expirations(req.request, &prepared.uses, self.clock.now())?;
+        validate_prepared_file_expirations(request, &prepared.uses, self.clock.now())?;
         http.timeout = opts.total_timeout;
 
         if authenticate {
@@ -793,6 +887,7 @@ impl<'client> RequestExecutor<'client> {
             .ok()
             .map(|time| time.as_secs());
         let request_url = http.url.clone();
+        let request_authority = request_authority(&request_url);
         // The authenticator may await a refresh. Re-check just before the
         // model write, including uploaded references no longer in req.messages.
         validate_prepared_file_expirations(req.request, &files, self.clock.now())
@@ -823,7 +918,8 @@ impl<'client> RequestExecutor<'client> {
                 .err()
                 .unwrap_or_else(|| LlmError::ProviderInternal {
                     message: format!("request failed with HTTP {}", response.status),
-                });
+                })
+                .with_native_anthropic_request_authority(request_authority.clone());
             return Err(AttemptFailure::new(error, Some(response), files));
         }
         if mode == RequestMode::Stream {
@@ -860,7 +956,13 @@ impl<'client> RequestExecutor<'client> {
         };
         let mut decoded = match codec.decode_response(&response, &context) {
             Ok(decoded) => decoded,
-            Err(error) => return Err(AttemptFailure::new(error, Some(response), files)),
+            Err(error) => {
+                return Err(AttemptFailure::new(
+                    error.with_native_anthropic_request_authority(request_authority),
+                    Some(response),
+                    files,
+                ));
+            }
         };
         if decision
             && matches!(
@@ -907,6 +1009,7 @@ impl<'client> RequestExecutor<'client> {
         validate_request_file_expirations(req, self.clock.now())?;
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
+                .with_native_anthropic_context(opts.native_anthropic_context)
                 .with_fast_capability(opts.fast_capability)
                 .with_account_scope(opts.account_scope.as_deref())
                 .with_file_scope(opts.file_account_scope.as_deref())
@@ -1161,6 +1264,36 @@ pub(super) fn execution_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_authority_keeps_only_host_and_port_from_final_url() {
+        assert_eq!(
+            request_authority(
+                "https://user:secret@127.0.0.1:43123/v1/messages?token=secret#fragment"
+            ),
+            Some("127.0.0.1:43123".into())
+        );
+        assert_eq!(
+            request_authority("https://[::1]:8443/v1/messages?key=secret"),
+            Some("[::1]:8443".into())
+        );
+        assert_eq!(
+            request_authority("https://api.anthropic.com/v1/messages"),
+            Some("api.anthropic.com".into())
+        );
+        assert_eq!(request_authority("file:///tmp/request"), None);
+    }
+
+    #[test]
+    fn attachment_fallback_uses_wrapped_capability_classification() {
+        let error = LlmError::UnsupportedCapability {
+            message: "attachments are unsupported".into(),
+        }
+        .with_provider_error_text(crate::protocol::ProviderErrorText::from("provider text"));
+        assert!(is_attachment_capability_fallback(1, true, &error));
+        assert!(!is_attachment_capability_fallback(0, true, &error));
+        assert!(!is_attachment_capability_fallback(1, false, &error));
+    }
 
     #[test]
     fn a_continuation_is_pinned_to_the_head_connection() {

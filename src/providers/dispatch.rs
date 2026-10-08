@@ -45,11 +45,11 @@ pub(crate) trait ChatBackend: Send + Sync {
             .iter()
             .flat_map(|message| &message.content)
             .any(|block| matches!(block, ContentBlock::Audio { .. }))
-            || req.metadata.get("openrouter_chat_audio").is_some();
+            || req.metadata.payload_at("/openrouter_chat_audio").is_some();
         if has_audio {
             if !super::openrouter::chat::accepts_audio(context)
                 && (!super::google::chat::accepts_audio(context)
-                    || req.metadata.get("openrouter_chat_audio").is_some())
+                    || req.metadata.payload_at("/openrouter_chat_audio").is_some())
             {
                 return Err(LlmError::UnsupportedCapability { message: "Chat audio requires OpenRouter Chat or Gemini GenerateContent; OpenRouter output settings require OpenRouter".into() });
             }
@@ -235,11 +235,14 @@ impl StreamObservation {
     ) -> Option<&crate::providers::anthropic::types::AnthropicContainerMetadata> {
         self.anthropic.container()
     }
-    pub(crate) fn anthropic_stop_details(&self) -> Option<&serde_json::Value> {
+    pub(crate) fn anthropic_stop_details(&self) -> Option<&crate::protocol::JsonPayload> {
         self.anthropic.stop_details()
     }
-    pub(crate) fn anthropic_usage(&self) -> Option<&serde_json::Value> {
+    pub(crate) fn anthropic_usage(&self) -> Option<&crate::protocol::JsonPayload> {
         self.anthropic.usage()
+    }
+    pub(crate) fn anthropic_resumable(&self) -> Option<&crate::protocol::JsonPayload> {
+        self.anthropic.resumable()
     }
 }
 

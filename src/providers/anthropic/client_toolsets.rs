@@ -168,13 +168,17 @@ fn validate_toolset(
         .tools
         .iter()
         .any(|tool| tool.name == toolset.kind_name())
-        || request.messages.iter().flat_map(|message| &message.content).any(|block| {
-            matches!(block, crate::protocol::ContentBlock::ProviderContent {
+        || request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| {
+                matches!(block, crate::protocol::ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages, value,
-            } if value.get("type").and_then(Value::as_str) == Some("tool_addition")
-                && value.pointer("/tool/type").and_then(Value::as_str) == Some("tool_definition")
-                && value.pointer("/tool/definition/name").and_then(Value::as_str) == Some(toolset.kind_name()))
-        })
+            } if value.string_is("/type", "tool_addition")
+                && value.string_is("/tool/type", "tool_definition")
+                && value.string_at("/tool/definition/name").as_deref() == Some(toolset.kind_name()))
+            })
     {
         return Err(invalid(format!(
             "client tool name {:?} conflicts with the Anthropic {} toolset",

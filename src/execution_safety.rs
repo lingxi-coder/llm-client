@@ -4,7 +4,8 @@
 //! still be unsafe to repeat after a particular failure; callers must also apply
 //! their transport, settlement, and retry policies.
 
-use crate::protocol::{ChatRequest, ContentBlock, NativeExtension};
+use crate::protocol::{ChatRequest, ContentBlock, JsonPayload, NativeExtension};
+#[cfg(test)]
 use serde_json::Value;
 
 /// Whether canonical input may refer to provider work or unrecognized state.
@@ -56,29 +57,29 @@ fn stateless_options(extension: &NativeExtension) -> bool {
     // SDK field needs review before it becomes stateless by deserialization.
     extension
         .data()
-        .as_object()
-        .is_some_and(|data| data.keys().all(|key| key == "client_toolsets"))
+        .has_only_fields_at("", &["client_toolsets"])
         && extension.decode::<AnthropicRequestOptions>().is_ok()
 }
 
-fn indirect_caller(caller: &Value) -> bool {
-    !caller.is_null() && caller.get("type").and_then(Value::as_str) != Some("direct")
+fn indirect_caller(caller: &JsonPayload) -> bool {
+    !caller.is_root_null() && caller.string_at("/type").as_deref() != Some("direct")
 }
 
-fn native_content_may_execute(value: &Value) -> bool {
-    match value.get("type").and_then(Value::as_str) {
+fn native_content_may_execute(value: &JsonPayload) -> bool {
+    match value.string_at("/type").as_deref() {
         Some("text" | "thinking" | "redacted_thinking" | "reasoning" | "chat_reasoning") => false,
         Some("tool_use") => {
-            value
-                .get("toolset_name")
-                .is_some_and(|name| !name.is_null())
-                || value.get("caller").is_some_and(indirect_caller)
+            nonnull_field(value, "/toolset_name")
+                || (nonnull_field(value, "/caller") && !value.string_is("/caller/type", "direct"))
         }
-        Some("tool_result") => value
-            .get("toolset_name")
-            .is_some_and(|name| !name.is_null()),
+        Some("tool_result") => nonnull_field(value, "/toolset_name"),
         _ => true,
     }
+}
+
+fn nonnull_field(value: &JsonPayload, pointer: &str) -> bool {
+    value.raw_source_at(pointer).is_some()
+        && value.kind_at(pointer) != Some(crate::response_json::FlatJsonKind::Null)
 }
 
 #[cfg(test)]
@@ -102,7 +103,7 @@ mod tests {
     fn native(value: Value) -> ContentBlock {
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value,
+            value: JsonPayload::from_generated_value(&value).unwrap(),
         }
     }
 
@@ -168,9 +169,13 @@ mod tests {
             RequestReplaySafety::StatefulOrUnknown
         );
         req = request(native(json!({"type":"text","text":"x"})));
-        req.messages[0]
-            .native_options
-            .push(NativeExtension::new("future.message.v1", json!({"state":"id"})).unwrap());
+        req.messages[0].native_options.push(
+            NativeExtension::new(
+                "future.message.v1",
+                JsonPayload::from_generated_value(&json!({"state":"id"})).unwrap(),
+            )
+            .unwrap(),
+        );
         assert_eq!(
             request_replay_safety(&req),
             RequestReplaySafety::StatefulOrUnknown
@@ -183,7 +188,7 @@ mod tests {
         req.native_options.push(
             NativeExtension::new(
                 AnthropicRequestOptions::FORMAT,
-                json!({"client_toolsets":[]}),
+                JsonPayload::from_generated_value(&json!({"client_toolsets":[]})).unwrap(),
             )
             .unwrap(),
         );
@@ -199,7 +204,11 @@ mod tests {
                 json!({"client_toolsets":42}),
             ),
         ] {
-            req.native_options = vec![NativeExtension::new(format, data).unwrap()];
+            req.native_options = vec![NativeExtension::new(
+                format,
+                JsonPayload::from_generated_value(&data).unwrap(),
+            )
+            .unwrap()];
             assert_eq!(
                 request_replay_safety(&req),
                 RequestReplaySafety::StatefulOrUnknown

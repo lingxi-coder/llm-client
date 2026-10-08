@@ -933,7 +933,7 @@ fn map_execution_error(
 ) -> VoiceResourceError {
     if is_mutation
         && matches!(
-            source,
+            source.classification_source(),
             LlmError::Transport { .. }
                 | LlmError::TransportTimeout { .. }
                 | LlmError::StreamInterrupted { .. }

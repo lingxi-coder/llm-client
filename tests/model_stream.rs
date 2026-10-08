@@ -88,7 +88,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_error_is_interruption_only_after_exposed_events_for_both_pull_apis() {
+    async fn transport_error_preserves_its_cause_after_exposed_events_for_both_pull_apis() {
         for batches in [false, true] {
             for started in [false, true] {
                 let mut frames = Vec::new();
@@ -126,17 +126,10 @@ mod tests {
                         }
                     }
                 };
-                if started {
-                    assert!(successful > 0);
-                    assert!(
-                        matches!(error, LlmError::StreamInterrupted { message } if message == "disconnected")
-                    );
-                } else {
-                    assert_eq!(successful, 0);
-                    assert!(
-                        matches!(error, LlmError::Transport { message } if message == "disconnected")
-                    );
-                }
+                assert_eq!(successful > 0, started);
+                assert!(
+                    matches!(error, LlmError::Transport { message } if message == "disconnected")
+                );
                 assert!(stream.next_batch().await.is_none());
             }
         }
@@ -158,8 +151,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            result.response.anthropic_stop_details(),
-            Some(&json!({"type":"refusal","future":true}))
+            result
+                .response
+                .anthropic_stop_details()
+                .unwrap()
+                .as_json_source(),
+            r#"{"type":"refusal","future":true}"#
         );
     }
 
@@ -185,7 +182,7 @@ mod tests {
         );
         assert_eq!(result.response.executed_profile.as_deref(), Some("test"));
         assert!(
-            matches!(&result.response.message.content[0], lingxi_llm_client::protocol::ContentBlock::ToolUse { name, input, .. } if name == "read" && input == &json!({}))
+            matches!(&result.response.message.content[0], lingxi_llm_client::protocol::ContentBlock::ToolUse { name, input, .. } if name == "read" && input.as_json_source() == "{}")
         );
     }
 
@@ -196,7 +193,7 @@ mod tests {
         let result = stream_for(
             stream::iter(vec![
                 Ok(Bytes::from(payload)),
-                Err(LlmError::StreamInterrupted {
+                Err(LlmError::Transport {
                     message: "disconnected".into(),
                 }),
             ])
@@ -214,7 +211,7 @@ mod tests {
             Some("test")
         );
         assert!(
-            matches!(result.source, LlmError::StreamInterrupted { message } if message == "disconnected")
+            matches!(result.source, LlmError::Transport { message } if message == "disconnected")
         );
     }
 
@@ -233,11 +230,14 @@ mod tests {
         let format = lingxi_llm_client::protocol::OutputFormat::JsonSchema {
             name: "answer".into(),
             strict: true,
-            schema: json!({"type":"object","properties":{"answer":{"type":"string"}},
+            schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"type":"object","properties":{"answer":{"type":"string"}},
                 "required":["answer"],"additionalProperties":false}),
+            )
+            .expect("schema fixture is valid JSON"),
         };
         let result = stream.collect_structured_json(&format).await.unwrap();
-        assert_eq!(result.value, json!({"answer":"ok"}));
+        assert_eq!(result.value.as_json_source(), r#"{"answer":"ok"}"#);
         assert_eq!(result.response.model, "m");
         assert_eq!(result.response.executed_profile.as_deref(), Some("test"));
         assert!(result
@@ -260,8 +260,11 @@ mod tests {
         let format = lingxi_llm_client::protocol::OutputFormat::JsonSchema {
             name: "answer".into(),
             strict: true,
-            schema: json!({"type":"object","properties":{"answer":{"type":"string"}},
+            schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"type":"object","properties":{"answer":{"type":"string"}},
                 "required":["answer"],"additionalProperties":false}),
+            )
+            .expect("schema fixture is valid JSON"),
         };
         let Err(StructuredStreamError::Validation { source, events }) =
             stream.collect_structured_json(&format).await
@@ -305,28 +308,48 @@ mod tests {
     #[tokio::test]
     async fn terminal_markers_close_transport_and_keep_final_usage() {
         for (protocol, payload) in [
-            ("open_ai_chat", concat!(
-                "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n",
-                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
-                "data: [DONE]\n\n")),
-            ("open_ai_responses", "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n"),
-            ("anthropic_messages", concat!(
-                "data: {\"type\":\"message_start\",\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":2}}}\n\n",
-                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
-                "data: {\"type\":\"message_stop\"}\n\n")),
+            (
+                "open_ai_chat",
+                concat!(
+                    "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+            ),
+            (
+                "open_ai_responses",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}\n\n",
+            ),
+            (
+                "anthropic_messages",
+                concat!(
+                    "data: {\"type\":\"message_start\",\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":2}}}\n\n",
+                    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+                    "data: {\"type\":\"message_stop\"}\n\n"
+                ),
+            ),
         ] {
             let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let guard = Dropped(dropped.clone());
-            let body = stream::iter(vec![Ok(Bytes::from(payload))]).chain(stream::pending()).inspect(move |_| { let _ = &guard; }).boxed();
+            let body = stream::iter(vec![Ok(Bytes::from(payload))])
+                .chain(stream::pending())
+                .inspect(move |_| {
+                    let _ = &guard;
+                })
+                .boxed();
             let mut s = stream_for(body, protocol).await;
             tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
-                    if matches!(s.next().await.unwrap().unwrap(), StreamEvent::End { .. }) { break; }
+                    if matches!(s.next().await.unwrap().unwrap(), StreamEvent::End { .. }) {
+                        break;
+                    }
                 }
                 assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
                 assert!(s.next().await.is_none());
                 assert!(s.next().await.is_none());
-            }).await.expect("terminal marker must finish even while the socket stays open");
+            })
+            .await
+            .expect("terminal marker must finish even while the socket stays open");
             let usage = crate::wire_api::observed_usage(&s).unwrap();
             assert_eq!(usage.input_tokens, 2);
             assert_eq!(usage.output_tokens, 3);

@@ -3,6 +3,9 @@ use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::{CodecContext, EncodeRequest, RequestMode, VertexClaudeCodec, WireCodec};
 use serde_json::{json, Value};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 const MODEL: &str = "claude-opus-5-5";
 
 fn profile() -> ProviderProfile {
@@ -59,7 +62,7 @@ fn system(content: Vec<ContentBlock>) -> ConversationMessage {
 fn native(value: Value) -> ContentBlock {
     ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value,
+        value: json_payload_fixture::generated(&value),
     }
 }
 

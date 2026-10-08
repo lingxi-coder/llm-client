@@ -2,8 +2,7 @@
 //!
 //! Native state and signatures belong to their wire family. Inspect a decision
 //! first, or opt in to normalization; the default policy never drops content.
-use crate::protocol::{ContentBlock, LlmError, ProtocolFamily};
-use serde_json::Value;
+use crate::protocol::{ContentBlock, JsonPayload, LlmError, ProtocolFamily};
 
 /// Hosting adapters share their underlying wire's replay representation.
 pub const fn native_family(family: ProtocolFamily) -> ProtocolFamily {
@@ -66,7 +65,7 @@ impl ReplayContext {
         let foreign_reasoning = blocks.iter().any(|block| {
             matches!(block, ContentBlock::ProviderContent { protocol, value }
                 if native_family(*protocol) != target
-                    && matches!(value["type"].as_str(), Some("reasoning" | "chat_reasoning")))
+                    && matches!(value.string_at("/type").as_deref(), Some("reasoning" | "chat_reasoning")))
         });
         Self {
             target,
@@ -99,7 +98,10 @@ impl ReplayContext {
                 {
                     ReplayDecision::Compatible(block.clone())
                 } else if value.is::<OpenAiComputerCall>() {
-                    incompatible(None, "computer calls continue through their response reference and paired output")
+                    incompatible(
+                        None,
+                        "computer calls continue through their response reference and paired output",
+                    )
                 } else if self.target == ProtocolFamily::OpenAiResponses
                     && value.is::<OpenAiComputerCallOutput>()
                 {
@@ -113,7 +115,7 @@ impl ReplayContext {
             }
             ContentBlock::ProviderContent { protocol, value } => {
                 if matches!(
-                    value.get("type").and_then(serde_json::Value::as_str),
+                    value.string_at("/type").as_deref(),
                     Some("computer_call" | "computer_call_output")
                 ) {
                     incompatible(
@@ -126,31 +128,59 @@ impl ReplayContext {
                         value: value.clone(),
                     })
                 } else {
-                    let replacement = if value["type"] == "text" {
-                        value["text"].as_str().map(|text| ContentBlock::Text {
-                            text: text.into(),
-                            thought_signature: None,
-                            citations: None,
-                        })
+                    let replacement = if value.string_is("/type", "text") {
+                        let text = value.string_at("/text");
+                        let units = value.string_units_at("/text");
+                        match (text, units) {
+                            (Some(text), Some(units)) if String::from_utf16(&units).is_ok() => {
+                                Some(ContentBlock::Text {
+                                    text,
+                                    thought_signature: None,
+                                    citations: None,
+                                })
+                            }
+                            _ => None,
+                        }
                     } else if native_family(*protocol) == ProtocolFamily::AnthropicMessages
-                        && value["type"] == "tool_result"
+                        && value.string_is("/type", "tool_result")
                     {
-                        value["tool_use_id"]
-                            .as_str()
-                            .filter(|id| !id.is_empty())
-                            .map(|id| {
-                                let content = &value["content"];
-                                ContentBlock::ToolResult {
+                        let id = value.string_at("/tool_use_id");
+                        let content_source = value.raw_source_at("/content");
+                        let content_kind = value.kind_at("/content");
+                        let parsed_blocks =
+                            if content_kind == Some(crate::response_json::FlatJsonKind::Array) {
+                                content_source
+                                    .as_deref()
+                                    .and_then(|source| JsonPayload::parse(source).ok())
+                            } else {
+                                None
+                            };
+                        let content = content_source.as_deref().and_then(|source| {
+                            if content_kind == Some(crate::response_json::FlatJsonKind::String) {
+                                JsonPayload::parse(source).ok()
+                            } else {
+                                Some(JsonPayload::string(source))
+                            }
+                        });
+                        match (id, content) {
+                            (Some(id), Some(content))
+                                if !id.is_empty()
+                                    && value.string_units_at("/tool_use_id").is_some_and(
+                                        |units| String::from_utf16(&units).is_ok(),
+                                    ) =>
+                            {
+                                Some(ContentBlock::ToolResult {
                                     tool_use_id: id.into(),
-                                    content: content
-                                        .as_str()
-                                        .map(str::to_owned)
-                                        .unwrap_or_else(|| content.to_string()),
-                                    blocks: content.as_array().cloned(),
-                                    is_error: value.get("is_error").and_then(Value::as_bool),
+                                    content,
+                                    blocks: parsed_blocks,
+                                    is_error: value
+                                        .raw_source_at("/is_error")
+                                        .and_then(|source| serde_json::from_str(&source).ok()),
                                     toolset_name: None,
-                                }
-                            })
+                                })
+                            }
+                            _ => None,
+                        }
                     } else {
                         None
                     };
@@ -379,17 +409,21 @@ pub fn adapt_request(
 }
 
 /// Visible text whose native citation locations need a replay representation.
-pub fn native_cited_text(block: &ContentBlock) -> Option<&str> {
+pub fn native_cited_text(block: &ContentBlock) -> Option<String> {
     let ContentBlock::ProviderContent { protocol, value } = block else {
         return None;
     };
-    (native_family(*protocol) == ProtocolFamily::AnthropicMessages
-        && value["type"] == "text"
-        && value["citations"]
-            .as_array()
-            .is_some_and(|citations| !citations.is_empty()))
-    .then(|| value["text"].as_str())
-    .flatten()
+    if native_family(*protocol) != ProtocolFamily::AnthropicMessages
+        || !value.string_is("/type", "text")
+        || !value
+            .array_len("/citations")
+            .is_some_and(|citations| citations > 0)
+    {
+        return None;
+    }
+    let units = value.string_units_at("/text")?;
+    String::from_utf16(&units).ok()?;
+    value.string_at("/text")
 }
 
 /// Whether reducing a canonical block to generic display text/tool input would
@@ -428,9 +462,14 @@ pub fn has_replay_metadata(block: &ContentBlock) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::protocol::JsonPayload;
+    use serde_json::{json, Value};
     const ANTHROPIC: ProtocolFamily = ProtocolFamily::AnthropicMessages;
     const GEMINI: ProtocolFamily = ProtocolFamily::GeminiGenerateContent;
+
+    fn payload(value: Value) -> JsonPayload {
+        JsonPayload::parse(&value.to_string()).unwrap()
+    }
 
     #[test]
     fn hosted_families_share_native_state_without_lossy_permission() {
@@ -443,14 +482,14 @@ mod tests {
         ] {
             let block = ContentBlock::ProviderContent {
                 protocol: source,
-                value: json!({"type":"future_native","opaque":true}),
+                value: payload(json!({"type":"future_native","opaque":true})),
             };
             let output = ReplayContext::for_message(&[], target)
                 .normalize(&block, None, ReplayPolicy::default())
                 .unwrap()
                 .unwrap();
             assert!(
-                matches!(output, ContentBlock::ProviderContent { protocol, value } if protocol == native_family(source) && value["opaque"] == true)
+                matches!(output, ContentBlock::ProviderContent { protocol, value } if protocol == native_family(source) && value.raw_source_at("/opaque").as_deref() == Some("true"))
             );
         }
     }
@@ -459,9 +498,9 @@ mod tests {
     fn foreign_citations_require_explicit_policy_to_keep_only_visible_text() {
         let block = ContentBlock::ProviderContent {
             protocol: ANTHROPIC,
-            value: json!({"type":"text","text":"answer","citations":[{"offset":3}]}),
+            value: payload(json!({"type":"text","text":"answer","citations":[{"offset":3}]})),
         };
-        assert_eq!(native_cited_text(&block), Some("answer"));
+        assert_eq!(native_cited_text(&block).as_deref(), Some("answer"));
         assert!(has_replay_metadata(&block));
         let context = ReplayContext::for_message(&[], ProtocolFamily::OpenAiChat);
         assert!(context
@@ -481,7 +520,7 @@ mod tests {
 
     #[test]
     fn nullable_citations_survive_native_replay_without_nonempty_citation_sidecar() {
-        for citations in [Some(None), Some(Some(json!([])))] {
+        for citations in [Some(None), Some(Some(JsonPayload::parse("[]").unwrap()))] {
             let block = ContentBlock::Text {
                 text: "answer".into(),
                 thought_signature: None,
@@ -507,15 +546,20 @@ mod tests {
     fn cached_native_tool_result_keeps_generic_result_on_explicit_route_change() {
         let block = ContentBlock::ProviderContent {
             protocol: ANTHROPIC,
-            value: json!({"type":"tool_result","tool_use_id":"id","content":[{"type":"text","text":"answer"}],"is_error":true,"cache_reference":"provider-cache","toolset_name":"browser"}),
+            value: payload(
+                json!({"type":"tool_result","tool_use_id":"id","content":[{"type":"text","text":"answer"}],"is_error":true,"cache_reference":"provider-cache","toolset_name":"browser"}),
+            ),
         };
         let context = ReplayContext::for_message(&[], ProtocolFamily::OpenAiChat);
         assert!(context
             .normalize(&block, None, ReplayPolicy::Reject)
             .is_err());
-        assert!(
-            matches!(context.normalize(&block, None, ReplayPolicy::DropIncompatible).unwrap(), Some(ContentBlock::ToolResult { tool_use_id, blocks: Some(blocks), is_error:Some(true), toolset_name:None, .. }) if tool_use_id.as_str() == "id" && blocks == vec![json!({"type":"text","text":"answer"})])
-        );
+        assert!(matches!(
+            context.normalize(&block, None, ReplayPolicy::DropIncompatible).unwrap(),
+            Some(ContentBlock::ToolResult { tool_use_id, blocks: Some(blocks), is_error:Some(true), toolset_name:None, .. })
+                if tool_use_id.as_str() == "id"
+                    && blocks.as_json_source() == r#"[{"type":"text","text":"answer"}]"#
+        ));
     }
 
     #[test]
@@ -527,7 +571,7 @@ mod tests {
             },
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::OpenAiResponses,
-                value: json!({"type":"reasoning","encrypted_content":"opaque"}),
+                value: payload(json!({"type":"reasoning","encrypted_content":"opaque"})),
             },
         ];
         let context = ReplayContext::for_message(&blocks, ANTHROPIC);
@@ -562,9 +606,9 @@ mod tests {
         let block = ContentBlock::ToolUse {
             id: "id".into(),
             name: "read".into(),
-            input: json!({"x":1}),
+            input: crate::protocol::JsonPayload::parse(&json!({"x":1}).to_string()).unwrap(),
             provider_id: Some("provider".into()),
-            caller: Some(json!({"type":"direct"})),
+            caller: Some(JsonPayload::parse(r#"{"type":"direct"}"#).unwrap()),
             toolset_name: Some("browser".into()),
             thought_signature: Some("signature".into()),
         };
@@ -577,7 +621,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            matches!(stripped, ContentBlock::ToolUse { id, name, input, provider_id:None, caller:None, toolset_name:None, thought_signature:None } if id.as_str() == "id" && name == "read" && input == json!({"x":1}))
+            matches!(stripped, ContentBlock::ToolUse { id, name, input, provider_id:None, caller:None, toolset_name:None, thought_signature:None } if id.as_str() == "id" && name == "read" && input.as_json_source() == r#"{"x":1}"#)
         );
         let text = ContentBlock::Text {
             text: "signed text".into(),
@@ -617,6 +661,9 @@ mod tests {
 #[cfg(test)]
 mod request_tests {
     use super::*;
+    fn payload(value: serde_json::Value) -> crate::protocol::JsonPayload {
+        crate::protocol::JsonPayload::from_generated_value(&value).unwrap()
+    }
     use crate::protocol::{
         CacheBreakpoint, CachePosition, CacheTtl, ChatRequest, ConversationMessage, MessageRole,
     };
@@ -643,7 +690,7 @@ mod request_tests {
                     },
                     ContentBlock::ProviderContent {
                         protocol: ProtocolFamily::AnthropicMessages,
-                        value: json!({"type":"text","text":"answer","citations":[{}]}),
+                        value: payload(json!({"type":"text","text":"answer","citations":[{}]})),
                     },
                 ],
             },

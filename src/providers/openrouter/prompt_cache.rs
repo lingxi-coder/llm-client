@@ -6,7 +6,7 @@
 
 use crate::codecs::{json::WireValue, CodecContext};
 use crate::protocol::{
-    CachePosition, CacheTtl, ChatRequest, ContentBlock, LlmError, ProtocolFamily,
+    CachePosition, CacheTtl, ChatRequest, ContentBlock, JsonPayload, LlmError, ProtocolFamily,
 };
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
@@ -215,13 +215,13 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             CachePosition::System { index } => request
                 .system
                 .get(index)
-                .is_some_and(|block| !block.text.is_empty()),
+                .is_some_and(|block| !block.is_empty()),
             CachePosition::Message { index, block } => request
                 .messages
                 .get(index)
                 .and_then(|message| message.content.get(block))
                 .is_some_and(|content| {
-                    matches!(content, ContentBlock::Text { text, .. } if !text.is_empty())
+                    matches!(content, ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. } if !text.is_empty())
                 }),
         };
         if !valid {
@@ -288,6 +288,19 @@ pub(crate) fn text_content(text: &str, marker: Option<Value>) -> WireValue<'_> {
     }
 }
 
+pub(crate) fn tool_result_text_content(
+    content: &JsonPayload,
+    marker: Option<Value>,
+) -> WireValue<'_> {
+    if let Some(marker) = marker {
+        let part =
+            WireValue::from(json!({"type":"text"})).with("text", WireValue::raw_json(content));
+        WireValue::array(vec![part.with("cache_control", WireValue::from(marker))])
+    } else {
+        WireValue::raw_json(content)
+    }
+}
+
 pub(crate) fn mark(mut part: WireValue<'_>, marker: Option<Value>) -> WireValue<'_> {
     if let Some(marker) = marker {
         part.insert("cache_control".into(), marker);
@@ -313,11 +326,11 @@ pub(crate) fn system<'a>(
         if index > 0 {
             parts.push(json!({"type":"text","text":"\n\n"}).into());
         }
-        if block.text.is_empty() {
+        if block.is_empty() {
             continue;
         }
-        let part =
-            WireValue::from(json!({"type":"text"})).with("text", WireValue::text(&block.text));
+        let part = WireValue::from(json!({"type":"text"}))
+            .with("text", WireValue::raw_json(block.text_payload()));
         let marker = marker(request, context, CachePosition::System { index });
         parts.push(mark(part, marker));
     }

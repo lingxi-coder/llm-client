@@ -36,8 +36,9 @@ pub fn request<'a>(
     crate::providers::qwen::cache::validate(req, opts)?;
     crate::providers::openrouter::prompt_cache::validate(req, opts)?;
     crate::providers::openrouter::chat_audio::validate_audio_request(req, profile, opts)?;
+    let audio_config = req.metadata.payload_at("/openrouter_chat_audio");
     let audio_output = crate::providers::openrouter::chat_audio::openrouter_audio_output(
-        req.metadata.get("openrouter_chat_audio"),
+        audio_config.as_ref(),
         profile,
         opts,
     )?;
@@ -83,14 +84,25 @@ pub fn request<'a>(
     } else if let Some(system) = crate::providers::openrouter::prompt_cache::system(req, opts) {
         messages.push(system);
     } else if !req.system.is_empty() {
-        let text = req
-            .system
-            .iter()
-            .map(|b| b.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if !qwen_long || !text.trim().is_empty() {
-            messages.push((json!({"role": "system", "content": text})).into());
+        let mut text = Vec::new();
+        for (index, block) in req.system.iter().enumerate() {
+            if index > 0 {
+                text.extend("\n\n".encode_utf16());
+            }
+            text.extend(
+                block
+                    .text_payload()
+                    .root_string_code_units()
+                    .unwrap_or_default(),
+            );
+        }
+        let text = crate::protocol::JsonPayload::string_from_utf16_code_units(&text);
+        let display = String::from_utf16_lossy(&text.root_string_code_units().unwrap_or_default());
+        if !qwen_long || !display.trim().is_empty() {
+            messages.push(
+                WireValue::from(json!({"role": "system"}))
+                    .with("content", WireValue::owned_raw_json(text)),
+            );
         }
     }
 
@@ -289,8 +301,8 @@ pub fn request<'a>(
         "{}/chat/completions",
         profile.base_url.trim_end_matches('/')
     );
-    let mut body =
-        WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages));
+    let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?
+        .with("messages", WireValue::array(messages));
     if !req.tools.is_empty() {
         body = body.map_array_field("tools", |index, mut tool| {
             let Some(spec) = req.tools.get(index) else {
@@ -304,7 +316,8 @@ pub fn request<'a>(
             WireValue::from(tool).with(
                 "function",
                 WireValue::from(function)
-                    .with("parameters", WireValue::borrowed(&spec.input_schema)),
+                    .with("description", WireValue::raw_json(&spec.description))
+                    .with("parameters", WireValue::raw_json(&spec.input_schema)),
             )
         });
     }
@@ -503,13 +516,21 @@ fn encode_message<'a>(
             } => tool_calls.push(json!({
                 "id": id,
                 "type": "function",
-                "function": { "name": name, "arguments": input.to_string() },
+                "function": {
+                    "name": name,
+                    "arguments": input.canonical_json(crate::exact_json::JsonEncoding::Serde)?,
+                },
             })),
             ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                blocks,
                 ..
             } => {
+                content.validate_root_string("tool result content")?;
+                if let Some(blocks) = blocks {
+                    blocks.validate_root_array("tool result blocks")?;
+                }
                 flush_message(
                     &mut out,
                     role,
@@ -526,9 +547,9 @@ fn encode_message<'a>(
                     .with(
                         "content",
                         if qwen_marked {
-                            crate::providers::qwen::cache::text_content(content, true)
+                            crate::providers::qwen::cache::tool_result_text_content(content, true)
                         } else {
-                            crate::providers::openrouter::prompt_cache::text_content(
+                            crate::providers::openrouter::prompt_cache::tool_result_text_content(
                                 content,
                                 openrouter_marker.clone(),
                             )
@@ -700,7 +721,7 @@ fn encode_tool(t: &crate::protocol::ToolSpec) -> Value {
         "type": "function",
         "function": {
             "name": t.name,
-            "description": t.description,
+            "description": Value::Null,
             "parameters": Value::Null,
             "strict": t.strict,
         }

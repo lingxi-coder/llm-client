@@ -62,9 +62,9 @@ fn breakpoint(position: CachePosition, ttl: CacheTtl) -> CacheBreakpoint {
 fn anthropic_route_encodes_automatic_and_explicit_cache_control_separately() {
     let model = "anthropic/claude-sonnet-5";
     let mut request = sample_request(model);
-    request.system = vec![lingxi_llm_client::protocol::SystemBlock {
-        text: "Stable system policy".into(),
-    }];
+    request.system = vec![lingxi_llm_client::protocol::SystemBlock::new(
+        "Stable system policy",
+    )];
     request.prompt_cache = PromptCachePolicy {
         automatic: Some(CacheTtl::FiveMinutes),
         breakpoints: vec![
@@ -110,9 +110,9 @@ fn documented_alibaba_openrouter_models_use_a_five_minute_content_breakpoint() {
 fn openai_gpt_56_uses_thirty_minute_prompt_cache_options_and_explicit_breakpoints() {
     let model = "openai/gpt-5.6-sol";
     let mut request = sample_request(model);
-    request.system = vec![lingxi_llm_client::protocol::SystemBlock {
-        text: "Stable system policy".into(),
-    }];
+    request.system = vec![lingxi_llm_client::protocol::SystemBlock::new(
+        "Stable system policy",
+    )];
     request.prompt_cache.breakpoints = vec![
         breakpoint(CachePosition::System { index: 0 }, CacheTtl::ThirtyMinutes),
         breakpoint(

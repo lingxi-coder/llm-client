@@ -9,9 +9,12 @@ use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
 use crate::protocol::{
-    LlmError, LlmErrorKind, NativeExtension, ResponseId, StopReason, StreamEvent, ToolUseId,
+    JsonPayload, JsonPayloadFragment, LlmError, LlmErrorKind, NativeExtension, ResponseId,
+    StopReason, StreamEvent, ToolUseId,
 };
 use crate::providers::openai::computer::OpenAiComputerCall;
+use crate::response_json::ResponseJson;
+use crate::response_json::{text_delta, ResponseJsonScanner};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,6 +24,47 @@ struct StreamedFunctionCall {
     id: ToolUseId,
     name: String,
     arguments: String,
+}
+
+fn finalize_function_arguments(
+    call: &mut StreamedFunctionCall,
+    arguments: &str,
+    out: &mut Vec<StreamEvent>,
+) -> Result<(), LlmError> {
+    let finalized: Value =
+        serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
+            message: "finalized function call arguments are malformed".into(),
+        })?;
+    if let Some(remainder) = arguments.strip_prefix(call.arguments.as_str()) {
+        if !remainder.is_empty() {
+            out.push(StreamEvent::ToolCallDelta {
+                block: call.index,
+                id: call.id.clone(),
+                caller: None,
+                toolset_name: None,
+                name: call.name.clone(),
+                arguments_fragment: JsonPayloadFragment::from_decoded_text(remainder, None)
+                    .map_err(|message| LlmError::InvalidRequest {
+                        message: message.into(),
+                    })?,
+                provider_id: None,
+            });
+        }
+    } else {
+        let streamed: Value =
+            serde_json::from_str(&call.arguments).map_err(|_| LlmError::InvalidRequest {
+                message: "streamed function call arguments are malformed".into(),
+            })?;
+        if streamed != finalized {
+            return Err(LlmError::InvalidRequest {
+                message: "finalized function call arguments conflict with streamed fragments"
+                    .into(),
+            });
+        }
+    }
+    call.arguments.clear();
+    call.arguments.push_str(arguments);
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -90,9 +134,136 @@ impl EventDecoder for ResponsesStreamDecoder {
         if data.is_empty() {
             return Ok(out);
         }
-        let root: Value = serde_json::from_str(data).map_err(|_| LlmError::InvalidRequest {
-            message: "stream frame is not valid JSON".to_owned(),
+        let scanner =
+            ResponseJsonScanner::parse(data.as_bytes(), "stream frame is not valid JSON")?;
+        let event_type = scanner.string_at("/type").unwrap_or_default();
+        if event_type == "response.failed" {
+            // A terminal failure can still carry a billable partial usage
+            // observation. Capture it before the error branch returns so the
+            // Host can settle the attempt before surfacing the provider error.
+            if let Some(source) = scanner.raw_source_at("/response/usage") {
+                if let Ok(usage) = serde_json::from_str::<Value>(&source) {
+                    if !usage.is_null() {
+                        self.usage_raw = Some(usage);
+                    }
+                }
+            }
+        }
+        let error_route = match event_type {
+            "response.failed" => Some((
+                "/response/error",
+                "/response/error/message",
+                if scanner.raw_source_at("/response/error").is_some() {
+                    "/response/error"
+                } else {
+                    "/response"
+                },
+                500,
+            )),
+            "error" if scanner.raw_source_at("/error").is_some() => Some((
+                "/error",
+                "/error/message",
+                "/error",
+                scanner
+                    .number_source_at("/status")
+                    .and_then(|status| status.parse::<u16>().ok())
+                    .unwrap_or(500),
+            )),
+            "error" => Some((
+                "",
+                "/message",
+                "",
+                scanner
+                    .number_source_at("/status")
+                    .and_then(|status| status.parse::<u16>().ok())
+                    .unwrap_or(500),
+            )),
+            _ => None,
+        };
+        if let Some((error_pointer, message_pointer, source_pointer, status)) = error_route {
+            let selected_text = scanner.provider_error_text_at(message_pointer, None)?;
+            let provider_text = match &selected_text {
+                Some(text) => text.prefixed(&format!("{status} ")),
+                None => scanner.provider_error_text_or_source_at(
+                    message_pointer,
+                    Some(status),
+                    source_pointer,
+                )?,
+            };
+            let body = scanner.provider_error_classification_body(
+                error_pointer,
+                &["message", "code", "type"],
+                selected_text.as_ref(),
+            );
+            let retry_after = scanner
+                .string_at("/headers/retry-after")
+                .and_then(|value| value.parse::<f64>().ok())
+                .and_then(|value| std::time::Duration::try_from_secs_f64(value).ok());
+            let classified = decode::classify_error(status, &body, retry_after, false)
+                .with_provider_error_text(provider_text);
+            if self.chatgpt_plan {
+                let envelope: Value =
+                    serde_json::from_str(data).map_err(|error| LlmError::InvalidRequest {
+                        message: error.to_string(),
+                    })?;
+                let body = if event_type == "response.failed" {
+                    envelope.get("response").cloned().unwrap_or(Value::Null)
+                } else if envelope.get("error").is_some() {
+                    envelope
+                } else {
+                    serde_json::json!({"error":envelope})
+                };
+                return Err(LlmError::ProviderResponse {
+                    status: self.http_status.unwrap_or(200),
+                    request_id: self.request_id.clone(),
+                    body,
+                    classification: classified.kind(),
+                    retry_after,
+                });
+            }
+            return Err(classified);
+        }
+        let root_payload = JsonPayload::parse(data).map_err(|error| LlmError::InvalidRequest {
+            message: format!("Responses stream frame is invalid JSON: {error}"),
         })?;
+        let mut opaque_paths = Vec::new();
+        if event_type == "response.output_text.annotation.added"
+            && scanner.raw_source_at("/annotation").is_some()
+        {
+            opaque_paths.push("/annotation".to_owned());
+        }
+        if event_type == "response.output_item.done"
+            && matches!(
+                scanner.string_at("/item/type"),
+                Some("web_search_call" | "file_search_call")
+            )
+        {
+            opaque_paths.push("/item".to_owned());
+        }
+        if matches!(event_type, "response.completed" | "response.incomplete") {
+            for output_index in 0..scanner.array_len("/response/output").unwrap_or(0) {
+                let item = format!("/response/output/{output_index}");
+                match scanner.string_at(&format!("{item}/type")) {
+                    Some("web_search_call" | "file_search_call") => opaque_paths.push(item),
+                    Some("message") => {
+                        for content_index in
+                            0..scanner.array_len(&format!("{item}/content")).unwrap_or(0)
+                        {
+                            let annotations = format!("{item}/content/{content_index}/annotations");
+                            if scanner.raw_source_at(&annotations).is_some() {
+                                opaque_paths.push(annotations);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut response_json = scanner.into_response_json_with_opaque_paths(&opaque_paths)?;
+        for pointer in &opaque_paths {
+            let _ = response_json.take_raw_json_source_at(pointer)?;
+        }
+        let root = response_json.value.clone();
 
         if let Some(u) = root.pointer("/response/usage").filter(|v| !v.is_null()) {
             self.usage_raw = Some(u.clone());
@@ -113,14 +284,51 @@ impl EventDecoder for ResponsesStreamDecoder {
         self.inference.observe(&root, &mut out);
         match root.get("type").and_then(Value::as_str) {
             Some("response.output_text.annotation.added") => {
-                if root["annotation"]["type"].as_str() == Some("url_citation") {
-                    self.search.emit(web_search_decode::result(serde_json::json!({"annotations":[{
-                        "output_index": index(&root), "content_index":root.get("content_index").and_then(Value::as_u64).unwrap_or(0), "annotation":root["annotation"]
-                    }]})), &mut out);
+                if root_payload.string_at("/annotation/type").as_deref() == Some("url_citation") {
+                    if let Some(annotation) = root_payload
+                        .raw_source_at("/annotation")
+                        .and_then(|source| JsonPayload::parse(&source).ok())
+                    {
+                        self.search.emit(
+                            web_search_decode::responses_annotation(
+                                index(&root),
+                                root.get("content_index")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(0) as usize,
+                                &annotation,
+                            ),
+                            &mut out,
+                        );
+                    }
                 }
             }
             Some("response.output_item.done") => {
                 let item = &root["item"];
+                if item["type"] == "function_call" {
+                    let call = self
+                        .calls
+                        .iter_mut()
+                        .find(|call| call.index == index(&root))
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "completed function call has no preceding call identity"
+                                .into(),
+                        })?;
+                    if item["call_id"].as_str() != Some(call.id.as_str())
+                        || item["name"].as_str() != Some(call.name.as_str())
+                    {
+                        return Err(LlmError::InvalidRequest {
+                            message: "function call identity changed before output_item.done"
+                                .into(),
+                        });
+                    }
+                    let arguments =
+                        item["arguments"]
+                            .as_str()
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "completed function call has no arguments string".into(),
+                            })?;
+                    finalize_function_arguments(call, arguments, &mut out)?;
+                }
                 if let Some((id, call_id)) = self.added_computer_calls.get(&index(&root)) {
                     if item.get("type").and_then(Value::as_str) != Some("computer_call")
                         || item.get("id").and_then(Value::as_str) != Some(id.as_str())
@@ -151,19 +359,48 @@ impl EventDecoder for ResponsesStreamDecoder {
                 out.push(StreamEvent::BlockEnd {
                     block: index(&root),
                 });
+                let item_payload = root_payload
+                    .raw_source_at("/item")
+                    .and_then(|source| JsonPayload::parse(&source).ok());
                 if item.get("type").and_then(Value::as_str) != Some("computer_call") {
-                    self.emit_native(index(&root), item, &mut out);
+                    if let Some(item_payload) = &item_payload {
+                        self.emit_native_payload(
+                            index(&root),
+                            item_payload,
+                            "/item",
+                            &mut response_json,
+                            &mut out,
+                        )?;
+                    } else {
+                        self.emit_native(
+                            index(&root),
+                            item,
+                            "/item",
+                            &mut response_json,
+                            &mut out,
+                        )?;
+                    }
                 }
                 self.saw_refusal |= decode::has_refusal(item);
-                if item.get("type").and_then(Value::as_str) == Some("file_search_call") {
-                    self.file_search
-                        .emit(&serde_json::json!({"output":[item]}), &mut out);
+                if item_payload.as_ref().is_some_and(|item| {
+                    item.string_at("/type").as_deref() == Some("file_search_call")
+                }) {
+                    let item_source = item_payload
+                        .as_ref()
+                        .map(JsonPayload::as_json_source)
+                        .unwrap_or("null");
+                    let body = JsonPayload::parse(&format!("{{\"output\":[{item_source}]}}"))
+                        .map_err(|error| LlmError::InvalidRequest {
+                            message: format!("Responses output item is invalid JSON: {error}"),
+                        })?;
+                    self.file_search.emit_payload(&body, &mut out);
                 }
-                if item["type"].as_str() == Some("web_search_call") {
-                    self.search.emit(
-                        web_search_decode::result(serde_json::json!({"web_search_calls":[item]})),
-                        &mut out,
-                    );
+                if let Some(item_payload) = item_payload
+                    .as_ref()
+                    .filter(|item| item.string_at("/type").as_deref() == Some("web_search_call"))
+                {
+                    let search = web_search_decode::responses_item(item_payload);
+                    self.search.emit(search, &mut out);
                 }
             }
             Some("response.created") => {
@@ -223,18 +460,14 @@ impl EventDecoder for ResponsesStreamDecoder {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned();
-                    let arguments = item
-                        .get("arguments")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned();
                     // Only this event names the call; the argument deltas that
-                    // follow carry the index alone.
+                    // follow carry the index alone. Its arguments field is a
+                    // provisional snapshot, not an additional argument delta.
                     self.calls.push(StreamedFunctionCall {
                         index: index(&root),
                         id: id.clone(),
                         name: name.clone(),
-                        arguments: arguments.clone(),
+                        arguments: String::new(),
                     });
                     out.push(StreamEvent::ToolCallDelta {
                         block: index(&root),
@@ -242,15 +475,16 @@ impl EventDecoder for ResponsesStreamDecoder {
                         caller: None,
                         toolset_name: None,
                         name,
-                        arguments_fragment: arguments,
+                        arguments_fragment: JsonPayloadFragment::from_text(""),
                         provider_id: None,
                     });
                 }
             }
-            Some("response.output_text.delta") => out.push(StreamEvent::TextDelta {
-                block: index(&root),
-                text: delta(&root),
-            }),
+            Some("response.output_text.delta") => {
+                let text = delta(&root);
+                let decoded = response_json.take_text("/delta", &text)?;
+                out.push(text_delta(index(&root), decoded));
+            }
             Some("response.refusal.delta" | "response.refusal.done") => {
                 self.saw_refusal = true;
             }
@@ -266,23 +500,43 @@ impl EventDecoder for ResponsesStreamDecoder {
                 "response.code_interpreter_call.in_progress"
                 | "response.code_interpreter_call.interpreting"
                 | "response.code_interpreter_call.completed",
-            ) if self.qwen_code_interpreter => out.push(StreamEvent::ProviderContent {
-                block: index(&root),
-                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                value: root.clone(),
-            }),
+            ) if self.qwen_code_interpreter => {
+                let source = response_json.take_raw_json_source_at("")?.ok_or_else(|| {
+                    LlmError::InvalidRequest {
+                        message: "Responses event source was not retained".into(),
+                    }
+                })?;
+                out.push(StreamEvent::ProviderContent {
+                    block: index(&root),
+                    protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                    value: JsonPayload::parse(source).map_err(|error| {
+                        LlmError::InvalidRequest {
+                            message: format!("Responses event is invalid JSON: {error}"),
+                        }
+                    })?,
+                });
+            }
             Some("response.function_call_arguments.delta") => {
                 let i = index(&root);
                 if let Some(call) = self.calls.iter_mut().find(|call| call.index == i) {
                     let fragment = delta(&root);
                     call.arguments.push_str(&fragment);
+                    let display = delta(&root);
+                    let decoded = response_json.take_text("/delta", &display)?;
+                    let arguments_fragment = JsonPayloadFragment::from_decoded_text(
+                        &decoded.text,
+                        decoded.utf16_code_units,
+                    )
+                    .map_err(|message| LlmError::InvalidRequest {
+                        message: message.into(),
+                    })?;
                     out.push(StreamEvent::ToolCallDelta {
                         block: i,
                         id: call.id.clone(),
                         caller: None,
                         toolset_name: None,
                         name: call.name.clone(),
-                        arguments_fragment: fragment,
+                        arguments_fragment,
                         provider_id: None,
                     });
                 } else {
@@ -306,41 +560,13 @@ impl EventDecoder for ResponsesStreamDecoder {
                     .ok_or_else(|| LlmError::InvalidRequest {
                         message: "finalized function call has no preceding call identity".into(),
                     })?;
-                if let Some(remainder) = arguments.strip_prefix(call.arguments.as_str()) {
-                    if !remainder.is_empty() {
-                        out.push(StreamEvent::ToolCallDelta {
-                            block: i,
-                            id: call.id.clone(),
-                            caller: None,
-                            toolset_name: None,
-                            name: call.name.clone(),
-                            arguments_fragment: remainder.to_owned(),
-                            provider_id: None,
-                        });
-                    }
-                } else {
-                    let streamed: Value = serde_json::from_str(&call.arguments).map_err(|_| {
-                        LlmError::InvalidRequest {
-                            message: "streamed function call arguments are malformed".into(),
-                        }
-                    })?;
-                    let finalized: Value =
-                        serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
-                            message: "finalized function call arguments are malformed".into(),
-                        })?;
-                    if streamed != finalized {
-                        return Err(LlmError::InvalidRequest {
-                            message:
-                                "finalized function call arguments conflict with streamed fragments"
-                                    .into(),
-                        });
-                    }
-                }
-                call.arguments.clear();
-                call.arguments.push_str(arguments);
+                finalize_function_arguments(call, arguments, &mut out)?;
             }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
+                let response_payload = root_payload
+                    .raw_source_at("/response")
+                    .and_then(|source| JsonPayload::parse(&source).ok());
                 let completed_event = root["type"] == "response.completed";
                 if self.chatgpt_plan && root["type"] == "response.incomplete" {
                     return Err(LlmError::ProviderResponse {
@@ -373,6 +599,24 @@ impl EventDecoder for ResponsesStreamDecoder {
                     });
                 }
                 if let Some(items) = output {
+                    // Some gateways publish only the final argument snapshot.
+                    // Reconcile it once; never concatenate an added snapshot
+                    // with the subsequent delta stream.
+                    for call in &mut self.calls {
+                        if let Some(item) = items.get(call.index).filter(|item| {
+                            item["type"] == "function_call"
+                                && item["call_id"].as_str() == Some(call.id.as_str())
+                                && item["name"].as_str() == Some(call.name.as_str())
+                        }) {
+                            let arguments = item["arguments"].as_str().ok_or_else(|| {
+                                LlmError::InvalidRequest {
+                                    message: "terminal function call has no arguments string"
+                                        .into(),
+                                }
+                            })?;
+                            finalize_function_arguments(call, arguments, &mut out)?;
+                        }
+                    }
                     let terminal_status = response.get("status").and_then(Value::as_str);
                     let has_computer_calls = items.iter().any(|item| {
                         item.get("type").and_then(Value::as_str) == Some("computer_call")
@@ -423,21 +667,52 @@ impl EventDecoder for ResponsesStreamDecoder {
                             out.push(StreamEvent::ProviderContent {
                                 block: output_index,
                                 protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                                value: item.clone(),
+                                value: JsonPayload::from_generated_value(item).map_err(
+                                    |error| LlmError::InvalidRequest {
+                                        message: format!("cannot retain provider item: {error}"),
+                                    },
+                                )?,
                             });
                         } else {
-                            self.emit_native(output_index, item, &mut out);
+                            let pointer = format!("/response/output/{output_index}");
+                            if item.is_null() {
+                                if let Some(payload) = root_payload
+                                    .raw_source_at(&pointer)
+                                    .and_then(|source| JsonPayload::parse(&source).ok())
+                                {
+                                    self.emit_native_payload(
+                                        output_index,
+                                        &payload,
+                                        &pointer,
+                                        &mut response_json,
+                                        &mut out,
+                                    )?;
+                                }
+                            } else {
+                                self.emit_native(
+                                    output_index,
+                                    item,
+                                    &pointer,
+                                    &mut response_json,
+                                    &mut out,
+                                )?;
+                            }
                         }
                     }
                 }
-                self.file_search.emit(response, &mut out);
-                self.search.emit(
-                    web_search_decode::with_usage(
-                        web_search_decode::responses(response),
-                        response.get("usage"),
-                    ),
-                    &mut out,
-                );
+                if let Some(response_payload) = &response_payload {
+                    self.file_search.emit_payload(&response_payload, &mut out);
+                    let usage_payload = response_payload
+                        .raw_source_at("/usage")
+                        .and_then(|source| JsonPayload::parse(&source).ok());
+                    self.search.emit(
+                        web_search_decode::with_usage_payload(
+                            web_search_decode::responses_payload(&response_payload),
+                            usage_payload.as_ref(),
+                        ),
+                        &mut out,
+                    );
+                }
                 if let Some(u) = response.get("usage") {
                     self.usage_raw = Some(u.clone());
                 }
@@ -452,54 +727,11 @@ impl EventDecoder for ResponsesStreamDecoder {
                 ));
                 self.finish_into(&mut out);
             }
-            Some("response.failed") => {
-                let response = root.get("response").unwrap_or(&Value::Null);
-                let classified = decode::classify_error(500, response, None);
-                return Err(if self.chatgpt_plan {
-                    LlmError::ProviderResponse {
-                        status: self.http_status.unwrap_or(200),
-                        request_id: self.request_id.clone(),
-                        body: response.clone(),
-                        classification: classified.kind(),
-                        retry_after: None,
-                    }
-                } else {
-                    classified
-                });
-            }
-            Some("error") => {
-                let envelope = if root.get("error").is_some() {
-                    root
-                } else {
-                    serde_json::json!({"error": root})
-                };
-                let status = envelope
-                    .get("status")
-                    .and_then(Value::as_u64)
-                    .and_then(|s| u16::try_from(s).ok())
-                    .unwrap_or(500);
-                let retry_after = envelope
-                    .pointer("/headers/retry-after")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .and_then(|s| std::time::Duration::try_from_secs_f64(s).ok());
-                let classified = decode::classify_error(status, &envelope, retry_after);
-                return Err(if self.chatgpt_plan {
-                    LlmError::ProviderResponse {
-                        status: self.http_status.unwrap_or(200),
-                        request_id: self.request_id.clone(),
-                        body: envelope.clone(),
-                        classification: classified.kind(),
-                        retry_after,
-                    }
-                } else {
-                    classified
-                });
-            }
             // Unknown types (`response.in_progress`, `…output_text.done`, and
             // whatever is added next) are ignored.
             _ => {}
         }
+        response_json.finish()?;
         Ok(out)
     }
 
@@ -691,24 +923,70 @@ impl ResponsesStreamDecoder {
         Ok(())
     }
 
-    fn emit_native(&mut self, block: usize, item: &Value, out: &mut Vec<StreamEvent>) {
+    fn emit_native_payload(
+        &mut self,
+        block: usize,
+        item: &JsonPayload,
+        pointer: &str,
+        response_json: &mut crate::response_json::ResponseJson,
+        out: &mut Vec<StreamEvent>,
+    ) -> Result<(), LlmError> {
+        let kind = item.string_at("/type").unwrap_or_default();
+        self.requires_action |= self.openai_approval_semantics && kind == "mcp_approval_request"
+            || self.openai_tool_search_semantics
+                && kind == "tool_search_call"
+                && item.string_at("/execution").as_deref() == Some("client");
+        if !matches!(kind.as_str(), "message" | "function_call") && self.native_items.insert(block)
+        {
+            let source = response_json
+                .take_raw_json_source_at(pointer)?
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Responses native output source was not retained".into(),
+                })?;
+            out.push(StreamEvent::ProviderContent {
+                block,
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                value: JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("Responses native output is invalid JSON: {error}"),
+                })?,
+            });
+        }
+        Ok(())
+    }
+
+    fn emit_native(
+        &mut self,
+        block: usize,
+        item: &Value,
+        pointer: &str,
+        response_json: &mut ResponseJson,
+        out: &mut Vec<StreamEvent>,
+    ) -> Result<(), LlmError> {
         self.requires_action |= self.openai_approval_semantics
             && item["type"] == "mcp_approval_request"
             || self.openai_tool_search_semantics && decode::is_client_tool_search_call(item);
         if item.get("type").and_then(Value::as_str) == Some("computer_call") {
-            return;
+            return Ok(());
         }
         if item["type"]
             .as_str()
             .is_some_and(|kind| !matches!(kind, "message" | "function_call"))
             && self.native_items.insert(block)
         {
+            let source = response_json
+                .take_raw_json_source_at(pointer)?
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Responses native output source was not retained".into(),
+                })?;
             out.push(StreamEvent::ProviderContent {
                 block,
                 protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                value: item.clone(),
+                value: JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("Responses native output is invalid JSON: {error}"),
+                })?,
             });
         }
+        Ok(())
     }
 
     fn finish_into(&mut self, out: &mut Vec<StreamEvent>) {
@@ -735,6 +1013,124 @@ impl ResponsesStreamDecoder {
             usage: self.usage_report(),
             inference: self.inference.report.clone(),
         });
+    }
+}
+
+#[cfg(test)]
+mod utf16_stream_tests {
+    use super::*;
+    use crate::codecs::EventDecoder;
+
+    #[test]
+    fn failed_stream_response_keeps_exact_error_units() {
+        let mut decoder = ResponsesStreamDecoder::default();
+        let error = decoder
+            .decode_frame(
+                br#"{"type":"response.failed","response":{"error":{"code":"invalid_prompt","message":"bad\ud800"}}}"#,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(text.display(), "500 bad�");
+        assert_eq!(
+            text.utf16_code_units(),
+            &[53, 48, 48, 32, 98, 97, 100, 0xd800]
+        );
+    }
+
+    #[test]
+    fn stream_output_delta_retains_lone_units() {
+        let mut decoder = ResponsesStreamDecoder::default();
+        let events = decoder
+            .decode_frame(
+                br#"{"type":"response.output_text.delta","output_index":0,"delta":"A\ud800B"}"#,
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::TextDeltaJsUtf16 { text, utf16_code_units, .. }
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        )));
+    }
+
+    #[test]
+    fn failed_response_retains_partial_usage_before_returning_error() {
+        let mut decoder = ResponsesStreamDecoder::default();
+        let error = decoder
+            .decode_frame(
+                br#"{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"failed"},"usage":{"input_tokens":10,"output_tokens":7,"output_tokens_details":{"reasoning_tokens":3}}}}"#,
+            )
+            .expect_err("failed response still surfaces its provider error");
+        assert!(error.provider_error_text().is_some());
+
+        let report = decoder.usage_report();
+        assert_eq!(report.state, crate::protocol::UsageState::Partial);
+        let usage = report.usage.expect("failure frame reported usage");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 7);
+        assert_eq!(usage.reasoning_tokens, 3);
+    }
+}
+
+#[cfg(test)]
+mod function_argument_snapshot_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call(arguments: &str) -> Value {
+        json!({"type":"function_call","id":"item","call_id":"call","name":"Read","arguments":arguments})
+    }
+    fn fragments(frames: &[Value]) -> Result<String, LlmError> {
+        let mut decoder = ResponsesStreamDecoder::default();
+        let mut result = String::new();
+        for frame in frames {
+            for event in decoder.decode_frame(&serde_json::to_vec(frame).unwrap())? {
+                if let StreamEvent::ToolCallDelta {
+                    arguments_fragment, ..
+                } = event
+                {
+                    result.push_str(&String::from_utf16_lossy(
+                        arguments_fragment.utf16_code_units(),
+                    ));
+                }
+            }
+        }
+        Ok(result)
+    }
+    #[test]
+    fn added_snapshot_does_not_duplicate_argument_deltas() {
+        let item = call("{}");
+        let frames = [
+            json!({"type":"response.output_item.added","output_index":0,"item":item}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}),
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            json!({"type":"response.completed","response":{"id":"response","status":"completed","output":[item]}}),
+        ];
+        assert_eq!(fragments(&frames).unwrap(), "{}");
+    }
+    #[test]
+    fn final_snapshot_without_deltas_is_emitted_once() {
+        let item = call(r#"{"path":"file"}"#);
+        let frames = [
+            json!({"type":"response.output_item.added","output_index":0,"item":item}),
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+            json!({"type":"response.completed","response":{"id":"response","status":"completed","output":[item]}}),
+        ];
+        assert_eq!(fragments(&frames).unwrap(), r#"{"path":"file"}"#);
+    }
+    #[test]
+    fn final_snapshot_cannot_change_streamed_arguments() {
+        let frames = [
+            json!({"type":"response.output_item.added","output_index":0,"item":call("")}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":r#"{"path":"first"}"#}),
+            json!({"type":"response.output_item.done","output_index":0,"item":call(r#"{"path":"changed"}"#)}),
+        ];
+        assert!(
+            matches!(fragments(&frames),Err(LlmError::InvalidRequest{message}) if message.contains("conflict"))
+        );
     }
 }
 

@@ -3,7 +3,9 @@ use super::executor::{DecisionExecutionError, RequestExecutor, RequestOutput};
 use super::resolve::RequestRoute;
 use super::*;
 use crate::codecs::RequestMode;
-use crate::protocol::{ChatResponse, WebSearchConfig};
+use crate::protocol::{
+    ChatResponse, ModelCompleteInput, NativeModelRegistrySnapshot, WebSearchConfig,
+};
 impl ClientSnapshot {
     pub(crate) async fn web_search(
         &self,
@@ -54,6 +56,46 @@ impl ClientSnapshot {
     ) -> Result<ChatResponse, LlmError> {
         let route = self.state.config.resolve_request(&req.model, None)?;
         self.complete_route(route, req, opts).await
+    }
+    pub(crate) async fn model_complete(
+        &self,
+        input: &ModelCompleteInput,
+        opts: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        let request = input.chat_request()?;
+        let route = self.state.config.resolve_request(&request.model, None)?;
+        self.model_complete_route(route, &request, input, opts)
+            .await
+    }
+    pub(crate) async fn model_complete_in(
+        &self,
+        profile: &str,
+        input: &ModelCompleteInput,
+        opts: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        let request = input.chat_request()?;
+        let route = self
+            .state
+            .config
+            .resolve_request(&request.model, Some(profile))?;
+        self.model_complete_route(route, &request, input, opts)
+            .await
+    }
+    pub(crate) async fn model_complete_bound_in(
+        &self,
+        profile: &str,
+        provider_id: &str,
+        input: &ModelCompleteInput,
+        opts: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        let request = input.chat_request()?;
+        let mut route = self
+            .state
+            .config
+            .resolve_request(&request.model, Some(profile))?;
+        route.retain_provider(provider_id)?;
+        self.model_complete_route(route, &request, input, opts)
+            .await
     }
     pub(crate) async fn complete_in(
         &self,
@@ -144,6 +186,31 @@ impl ClientSnapshot {
         {
             (RequestOutput::Complete(response), prior_attempts) => Ok((*response, prior_attempts)),
             (RequestOutput::Stream(_), _) => unreachable!(),
+        }
+    }
+    async fn model_complete_route(
+        &self,
+        route: RequestRoute<'_>,
+        request: &ChatRequest,
+        input: &ModelCompleteInput,
+        opts: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        reject_image_output(&route)?;
+        let mut options = opts.clone();
+        options.anthropic_request_kind =
+            crate::providers::anthropic::request_policy::AnthropicRequestKind::HookPrompt;
+        options.model_complete_cache_gate =
+            Some(input.cache_gate(NativeModelRegistrySnapshot::unobserved()));
+        options.drop_cache_control_when_caching_disabled = true;
+        if let Some(timeout) = input.effective_timeout() {
+            options.total_timeout = Some(timeout);
+        }
+        match RequestExecutor::new(self)
+            .run(route, request, &options, RequestMode::Complete)
+            .await?
+        {
+            RequestOutput::Complete(response) => Ok(*response),
+            RequestOutput::Stream(_) => unreachable!(),
         }
     }
     async fn stream_route(

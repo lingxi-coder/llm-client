@@ -1,7 +1,7 @@
 //! Message-level Chat reasoning metadata. Keep opaque details in their wire
 //! order; display text cannot reconstruct encrypted or signed replay data.
 
-use crate::protocol::{LlmError, ProtocolFamily};
+use crate::protocol::{JsonPayload, LlmError, ProtocolFamily};
 use serde_json::{Map, Value};
 
 const ENVELOPE_TYPE: &str = "chat_reasoning";
@@ -67,10 +67,11 @@ pub(super) fn display_text(message: &Value) -> String {
 /// Never allow arbitrary native fields to replace role, content or tool calls.
 pub(super) fn replay_fields(
     protocol: ProtocolFamily,
-    value: &Value,
+    value: &JsonPayload,
 ) -> Result<Map<String, Value>, LlmError> {
     if protocol != ProtocolFamily::OpenAiChat
-        || value.get("type").and_then(Value::as_str) != Some(ENVELOPE_TYPE)
+        || !value.string_is("/type", ENVELOPE_TYPE)
+        || !value.has_only_fields_at("", &["type", "reasoning", "reasoning_details"])
     {
         return Err(LlmError::UnsupportedCapability {
             message: "native content is not Chat reasoning metadata".into(),
@@ -81,23 +82,22 @@ pub(super) fn replay_fields(
         message: "Chat reasoning metadata must contain a string reasoning or array reasoning_details and no other fields".into(),
     }
     };
-    let object = value.as_object().ok_or_else(invalid)?;
-    if object
-        .keys()
-        .any(|key| !matches!(key.as_str(), "type" | "reasoning" | "reasoning_details"))
-    {
-        return Err(invalid());
+    let mut result = Map::new();
+    if value.raw_source_at("/reasoning").is_some() {
+        let units = value.string_units_at("/reasoning").ok_or_else(invalid)?;
+        let text = String::from_utf16(&units).map_err(|_| invalid())?;
+        result.insert("reasoning".into(), Value::String(text));
     }
-    if object
-        .get("reasoning")
-        .is_some_and(|value| !value.is_string())
-        || object
-            .get("reasoning_details")
-            .is_some_and(|value| !value.is_array())
-    {
-        return Err(invalid());
+    if value.raw_source_at("/reasoning_details").is_some() {
+        let source = value
+            .raw_source_at("/reasoning_details")
+            .ok_or_else(invalid)?;
+        let details: Value = serde_json::from_str(&source).map_err(|_| invalid())?;
+        if !details.is_array() {
+            return Err(invalid());
+        }
+        result.insert("reasoning_details".into(), details);
     }
-    let result = fields(value).map_err(|_| invalid())?;
     if result.is_empty() {
         return Err(invalid());
     }

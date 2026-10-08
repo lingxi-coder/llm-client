@@ -1,63 +1,79 @@
 //! Typed facts from native Messages observations for host presentation.
 //! The SDK owns wire interpretation; hosts choose their durable history format.
 
-use crate::protocol::ProtocolFamily;
-use serde_json::Value;
+use crate::protocol::{JsonPayload, ProtocolFamily};
 
 /// Text fields that can be represented canonically, or the complete opaque block.
-#[derive(Debug, Clone, Copy)]
-pub enum TextBlock<'a> {
+#[derive(Debug, Clone)]
+pub enum TextBlock {
     Known {
-        text: &'a str,
+        text: String,
+        /// Exact JavaScript UTF-16 units of the model-visible text.
+        utf16_code_units: Vec<u16>,
         /// Absent, explicit null, and a JSON value remain distinct.
-        citations: Option<Option<&'a Value>>,
+        citations: Option<Option<JsonPayload>>,
     },
-    Opaque(&'a Value),
+    Opaque(JsonPayload),
 }
 
-pub fn text_block(value: &Value) -> Option<TextBlock<'_>> {
-    if value.get("type").and_then(Value::as_str) != Some("text") {
+pub fn text_block(value: &JsonPayload) -> Option<TextBlock> {
+    if !value.string_is("/type", "text") {
         return None;
     }
-    if !crate::codecs::anthropic::decode::has_only_known_text_fields(value) {
-        return Some(TextBlock::Opaque(value));
+    if !value.has_only_fields_at("", &["type", "text", "citations"]) {
+        return Some(TextBlock::Opaque(value.clone()));
     }
+    let citations = match value.raw_source_at("/citations") {
+        None => None,
+        Some(_)
+            if value.kind_at("/citations") == Some(crate::response_json::FlatJsonKind::Null) =>
+        {
+            Some(None)
+        }
+        Some(source) => Some(Some(JsonPayload::parse(&source).ok()?)),
+    };
     Some(TextBlock::Known {
-        text: value.get("text")?.as_str()?,
-        citations: value
-            .get("citations")
-            .map(|value| (!value.is_null()).then_some(value)),
+        text: value.string_at("/text")?,
+        utf16_code_units: value.string_units_at("/text")?,
+        citations,
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct StopDelta<'a> {
-    pub reason: &'a str,
-    pub details: Option<&'a Value>,
+#[derive(Debug, Clone)]
+pub struct StopDelta {
+    pub reason: String,
+    pub details: Option<JsonPayload>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ProviderEvent<'a> {
+#[derive(Debug, Clone)]
+pub struct ProviderEvent {
     pub block_index: Option<u64>,
-    pub text_start: Option<TextBlock<'a>>,
-    pub stop_delta: Option<StopDelta<'a>>,
+    pub text_start: Option<TextBlock>,
+    pub stop_delta: Option<StopDelta>,
 }
 
 /// Interpret only Messages observations, without inferring absent stop fields.
-pub fn provider_event(protocol: ProtocolFamily, payload: &Value) -> Option<ProviderEvent<'_>> {
+pub fn provider_event(protocol: ProtocolFamily, payload: &JsonPayload) -> Option<ProviderEvent> {
     if protocol != ProtocolFamily::AnthropicMessages {
         return None;
     }
     Some(ProviderEvent {
-        block_index: payload.get("index").and_then(Value::as_u64),
-        text_start: (payload.get("type").and_then(Value::as_str) == Some("content_block_start"))
-            .then(|| payload.get("content_block").and_then(text_block))
+        block_index: payload.unsigned_integer_at("/index"),
+        text_start: payload
+            .string_is("/type", "content_block_start")
+            .then(|| {
+                payload
+                    .payload_at("/content_block")
+                    .and_then(|value| text_block(&value))
+            })
             .flatten(),
-        stop_delta: if payload.get("type").and_then(Value::as_str) == Some("message_delta") {
-            payload.get("delta").and_then(|delta| {
+        stop_delta: if payload.string_is("/type", "message_delta") {
+            payload.payload_at("/delta").and_then(|delta| {
                 Some(StopDelta {
-                    reason: delta.get("stop_reason")?.as_str()?,
-                    details: delta.get("stop_details").filter(|value| !value.is_null()),
+                    reason: delta.string_at("/stop_reason")?,
+                    details: delta.payload_at("/stop_details").filter(|value| {
+                        value.kind_at("") != Some(crate::response_json::FlatJsonKind::Null)
+                    }),
                 })
             })
         } else {
@@ -66,32 +82,47 @@ pub fn provider_event(protocol: ProtocolFamily, payload: &Value) -> Option<Provi
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum NativeDelta<'a> {
-    Citation(&'a Value),
-    ConnectorText(&'a str),
+#[derive(Debug, Clone)]
+pub enum NativeDelta {
+    Citation(JsonPayload),
+    ConnectorText {
+        text: String,
+        utf16_code_units: Vec<u16>,
+    },
 }
 
-pub fn native_delta(protocol: ProtocolFamily, delta: &Value) -> Option<NativeDelta<'_>> {
+pub fn native_delta(protocol: ProtocolFamily, delta: &JsonPayload) -> Option<NativeDelta> {
     if protocol != ProtocolFamily::AnthropicMessages {
         return None;
     }
-    match delta.get("type").and_then(Value::as_str) {
-        Some("citations_delta") => Some(NativeDelta::Citation(&delta["citation"])),
-        Some("connector_text_delta") => Some(NativeDelta::ConnectorText(
+    if delta.string_is("/type", "citations_delta") {
+        return Some(NativeDelta::Citation(
             delta
-                .get("connector_text")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        )),
-        _ => None,
+                .payload_at("/citation")
+                .unwrap_or_else(|| JsonPayload::parse("null").expect("null is valid JSON")),
+        ));
     }
+    if delta.string_is("/type", "connector_text_delta") {
+        return Some(NativeDelta::ConnectorText {
+            text: delta.string_at("/connector_text").unwrap_or_default(),
+            utf16_code_units: delta.string_units_at("/connector_text").unwrap_or_default(),
+        });
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
+
+    fn payload(value: serde_json::Value) -> JsonPayload {
+        JsonPayload::from_generated_value(&value).unwrap()
+    }
+
+    fn payload_value(payload: &JsonPayload) -> serde_json::Value {
+        serde_json::from_str(payload.as_json_source()).unwrap()
+    }
 
     #[test]
     fn text_start_preserves_citation_presence_and_opaque_fields() {
@@ -105,72 +136,101 @@ mod tests {
             if let Some(value) = &citations {
                 block["citations"] = value.clone();
             }
-            let payload = json!({"type":"content_block_start","index":7,"content_block":block});
-            let event = provider_event(ProtocolFamily::AnthropicMessages, &payload).unwrap();
+            let event_payload =
+                payload(json!({"type":"content_block_start","index":7,"content_block":block}));
+            let event = provider_event(ProtocolFamily::AnthropicMessages, &event_payload).unwrap();
             assert_eq!(event.block_index, Some(7));
             let Some(TextBlock::Known {
                 text,
                 citations: actual,
+                ..
             }) = event.text_start
             else {
                 panic!("expected typed text start");
             };
             assert_eq!(text, "seed");
             assert_eq!(
-                actual.map(|value| value.cloned()),
+                actual.map(|value| value.map(|payload| payload_value(&payload))),
                 citations.map(|value| (!value.is_null()).then_some(value))
             );
         }
         let block = json!({"type":"text","text":"seed","extra":{"keep":true}});
-        assert!(matches!(text_block(&block), Some(TextBlock::Opaque(value)) if value == &block));
-        assert!(text_block(&json!({"type":"text"})).is_none());
-        assert!(text_block(&json!({"type":"thinking","text":"seed"})).is_none());
+        let block_payload = payload(block);
+        assert!(
+            matches!(text_block(&block_payload), Some(TextBlock::Opaque(value)) if value.as_json_source() == block_payload.as_json_source())
+        );
+        assert!(text_block(&payload(json!({"type":"text"}))).is_none());
+        assert!(text_block(&payload(json!({"type":"thinking","text":"seed"}))).is_none());
+
+        let exact = JsonPayload::parse(r#"{"type":"text","text":"\ud800"}"#).unwrap();
+        let Some(TextBlock::Known {
+            text,
+            utf16_code_units,
+            ..
+        }) = text_block(&exact)
+        else {
+            panic!("expected a typed text block");
+        };
+        assert_eq!(text, "\u{fffd}");
+        assert_eq!(utf16_code_units, vec![0xd800]);
     }
 
     #[test]
     fn stop_facts_do_not_cross_protocols_or_infer_a_reason() {
-        let payload = json!({"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","reason":"policy"}}});
-        let event = provider_event(ProtocolFamily::AnthropicMessages, &payload).unwrap();
+        let event_payload = payload(
+            json!({"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"type":"refusal","reason":"policy"}}}),
+        );
+        let event = provider_event(ProtocolFamily::AnthropicMessages, &event_payload).unwrap();
         let stop = event.stop_delta.unwrap();
         assert_eq!(stop.reason, "refusal");
-        assert_eq!(stop.details, payload.pointer("/delta/stop_details"));
-        assert!(provider_event(ProtocolFamily::OpenAiChat, &payload).is_none());
+        assert_eq!(
+            stop.details,
+            Some(payload(json!({"type":"refusal","reason":"policy"})))
+        );
+        assert!(provider_event(ProtocolFamily::OpenAiChat, &event_payload).is_none());
         for delta in [
             json!({}),
             json!({"stop_reason":null}),
             json!({"stop_details":{"reason":"policy"}}),
         ] {
-            let payload = json!({"type":"message_delta","delta":delta});
-            assert!(provider_event(ProtocolFamily::AnthropicMessages, &payload)
+            let event_payload = payload(json!({"type":"message_delta","delta":delta}));
+            assert!(
+                provider_event(ProtocolFamily::AnthropicMessages, &event_payload)
+                    .unwrap()
+                    .stop_delta
+                    .is_none()
+            );
+        }
+        let event_payload = payload(
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_details":null}}),
+        );
+        assert!(
+            provider_event(ProtocolFamily::AnthropicMessages, &event_payload)
                 .unwrap()
                 .stop_delta
-                .is_none());
-        }
-        let payload =
-            json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_details":null}});
-        assert!(provider_event(ProtocolFamily::AnthropicMessages, &payload)
-            .unwrap()
-            .stop_delta
-            .unwrap()
-            .details
-            .is_none());
+                .unwrap()
+                .details
+                .is_none()
+        );
     }
 
     #[test]
     fn native_deltas_preserve_values_and_are_protocol_scoped() {
         let citation = json!({"type":"citations_delta","citation":{"url":"x","extra":null}});
+        let citation_payload = payload(citation.clone());
         assert!(
-            matches!(native_delta(ProtocolFamily::AnthropicMessages, &citation), Some(NativeDelta::Citation(value)) if value == &citation["citation"])
+            matches!(native_delta(ProtocolFamily::AnthropicMessages, &citation_payload), Some(NativeDelta::Citation(value)) if value == payload(citation["citation"].clone()))
         );
-        let connector = json!({"type":"connector_text_delta","connector_text":"partial"});
+        let connector = payload(json!({"type":"connector_text_delta","connector_text":"partial"}));
         assert!(matches!(
             native_delta(ProtocolFamily::AnthropicMessages, &connector),
-            Some(NativeDelta::ConnectorText("partial"))
+            Some(NativeDelta::ConnectorText { text, utf16_code_units })
+                if text == "partial" && utf16_code_units == "partial".encode_utf16().collect::<Vec<_>>()
         ));
-        assert!(native_delta(ProtocolFamily::OpenAiChat, &citation).is_none());
+        assert!(native_delta(ProtocolFamily::OpenAiChat, &citation_payload).is_none());
         assert!(native_delta(
             ProtocolFamily::AnthropicMessages,
-            &json!({"type":"text_delta","text":"x"})
+            &payload(json!({"type":"text_delta","text":"x"}))
         )
         .is_none());
     }

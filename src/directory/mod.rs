@@ -234,13 +234,13 @@ fn cursor(body: &Value, key: &str) -> Option<String> {
 /// prompt for a key should not have to special-case where it came from.
 fn ok_or_classified(
     resp: &HttpResponse,
-    classify: fn(u16, &Value, Option<Duration>) -> LlmError,
+    classify: fn(u16, &Value, Option<Duration>, bool) -> LlmError,
 ) -> Result<Value, LlmError> {
     if (200..300).contains(&resp.status) {
         return body_of(resp);
     }
     let body = serde_json::from_slice(&resp.body).unwrap_or(Value::Null);
-    Err(classify(resp.status, &body, retry_after(resp)))
+    Err(classify(resp.status, &body, retry_after(resp), false))
 }
 
 fn retry_after(resp: &HttpResponse) -> Option<Duration> {

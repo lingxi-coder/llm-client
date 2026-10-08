@@ -98,7 +98,7 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
             "30-minute cache TTL is supported only by OpenRouter OpenAI GPT-5.6+ Chat profiles",
         ));
     }
-    validate_breakpoint_positions(req, policy, false)?;
+    validate_breakpoint_positions(req, policy, false, false)?;
     let mut ordered = policy.breakpoints.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|b| b.position);
     let mut short = false;
@@ -132,7 +132,12 @@ fn validate_anthropic_markers(req: &ChatRequest, context: &CodecContext) -> Resu
             "30-minute cache TTL is supported only by OpenRouter OpenAI GPT-5.6+ Chat profiles",
         ));
     }
-    validate_breakpoint_positions(req, policy, true)?;
+    validate_breakpoint_positions(
+        req,
+        policy,
+        true,
+        context.allows_model_complete_empty_cache_blocks(),
+    )?;
 
     // Anthropic's prompt prefix is ordered tools -> system -> messages. The
     // MCP toolsets are emitted after caller tools and before system blocks.
@@ -152,9 +157,10 @@ fn validate_anthropic_markers(req: &ChatRequest, context: &CodecContext) -> Resu
             else {
                 continue;
             };
-            let definition = inline_tool_definition(value);
-            let outer = value.get("cache_control");
-            let nested = definition.and_then(|definition| definition.get("cache_control"));
+            let definition = value.string_is("/type", "tool_addition")
+                && value.string_is("/tool/type", "tool_definition");
+            let outer = value.raw_source_at("/cache_control");
+            let nested = value.raw_source_at("/tool/definition/cache_control");
             let position = CachePosition::Message {
                 index: message_index,
                 block: block_index,
@@ -165,16 +171,18 @@ fn validate_anthropic_markers(req: &ChatRequest, context: &CodecContext) -> Resu
                 ));
             }
             let marker = outer.or(nested);
-            if definition.is_some_and(|definition| {
-                definition.get("defer_loading").and_then(Value::as_bool) == Some(true)
-            }) && (marker.is_some() || explicit.contains_key(&position))
-            {
+            let deferred = value
+                .raw_source_at("/tool/definition/defer_loading")
+                .is_some_and(|source| source == "true");
+            if definition && deferred && (marker.is_some() || explicit.contains_key(&position)) {
                 return Err(invalid("deferred inline tool definitions cannot be cached"));
             }
             let Some(raw) = marker else {
                 continue;
             };
-            let ttl = parse_anthropic_cache_control(raw)?;
+            let raw: Value =
+                serde_json::from_str(&raw).map_err(|error| invalid(&error.to_string()))?;
+            let ttl = parse_anthropic_cache_control(&raw)?;
             insert_explicit_marker(
                 &mut explicit,
                 CachePosition::Message {
@@ -288,18 +296,11 @@ fn validate_anthropic_markers(req: &ChatRequest, context: &CodecContext) -> Resu
 
 // Only a direct inline definition is a cache-bearing tool entry. Never scan
 // arbitrary nested schemas: their property names are user data.
-fn inline_tool_definition(value: &Value) -> Option<&Value> {
-    (value.get("type").and_then(Value::as_str) == Some("tool_addition"))
-        .then(|| value.get("tool"))
-        .flatten()
-        .filter(|tool| tool.get("type").and_then(Value::as_str) == Some("tool_definition"))
-        .and_then(|tool| tool.get("definition"))
-}
-
 fn validate_breakpoint_positions(
     req: &ChatRequest,
     policy: &crate::protocol::PromptCachePolicy,
     allow_native_content: bool,
+    allow_empty_text: bool,
 ) -> Result<(), LlmError> {
     let mut positions = BTreeSet::new();
     for breakpoint in &policy.breakpoints {
@@ -325,13 +326,16 @@ fn validate_breakpoint_positions(
             CachePosition::System { index } => req
                 .system
                 .get(index)
-                .is_some_and(|block| !block.text.is_empty()),
+                .is_some_and(|block| allow_empty_text || !block.is_empty()),
             CachePosition::Message { index, block } => req
                 .messages
                 .get(index)
                 .and_then(|message| message.content.get(block))
                 .is_some_and(|block| match block {
-                    ContentBlock::Text { text, .. } => !text.is_empty(),
+                    ContentBlock::Text { text, .. } => allow_empty_text || !text.is_empty(),
+                    ContentBlock::TextJsUtf16 {
+                        utf16_code_units, ..
+                    } => allow_empty_text || !utf16_code_units.is_empty(),
                     ContentBlock::Image { .. }
                     | ContentBlock::Document { .. }
                     | ContentBlock::ToolUse { .. }

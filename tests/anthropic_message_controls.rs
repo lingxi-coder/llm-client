@@ -3,6 +3,9 @@ use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 const MODEL: &str = "claude-opus-5-5";
 fn profile() -> ProviderProfile {
     serde_json::from_value(json!({"provider_id":"anthropic","profile_name":"anthropic","base_url":"https://api.anthropic.com","protocol":"anthropic_messages","auth":"none","regions":["international"],"models":[{"display_model":MODEL,"request_model":MODEL,"billing_model":MODEL}]})).unwrap()
@@ -102,7 +105,9 @@ fn scoped_messages_reject_cache_effort_tool_changes_and_wrong_roles() {
     r.prompt_cache.breakpoints.clear();
     r.messages[1].content = vec![ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: json!({"type":"text","text":"reminder","cache_control":{"type":"ephemeral"}}),
+        value: json_payload_fixture::generated(
+            &json!({"type":"text","text":"reminder","cache_control":{"type":"ephemeral"}}),
+        ),
     }];
     assert!(encode(&r, &profile(), MODEL).is_err());
     r.messages[1] = scoped();

@@ -4,6 +4,9 @@
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 use lingxi_llm_client::codecs::openai::{chat::OpenAiChatCodec, responses::OpenAiResponsesCodec};
 use lingxi_llm_client::framing::eventstream::crc32;
 use lingxi_llm_client::protocol::{
@@ -83,7 +86,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
@@ -136,7 +139,10 @@ fn the_conversation_is_a_flat_list_of_items() {
             content: vec![ContentBlock::ToolUse {
                 id: ToolUseId::new("call-1"),
                 name: "read".to_owned(),
-                input: json!({"path": "a"}),
+                input: lingxi_llm_client::protocol::JsonPayload::parse(
+                    &json!({"path": "a"}).to_string(),
+                )
+                .unwrap(),
                 provider_id: None,
                 caller: None,
                 toolset_name: None,
@@ -148,7 +154,7 @@ fn the_conversation_is_a_flat_list_of_items() {
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
-                content: "contents".to_owned(),
+                content: lingxi_llm_client::protocol::JsonPayload::string("contents"),
                 is_error: Some(false),
                 blocks: None,
                 toolset_name: None,
@@ -190,9 +196,7 @@ fn the_conversation_is_a_flat_list_of_items() {
 #[test]
 fn the_system_prompt_is_instructions_not_a_message() {
     let mut req = request(vec![user("hi")]);
-    req.system = vec![SystemBlock {
-        text: "be brief".to_owned(),
-    }];
+    req.system = vec![SystemBlock::new("be brief")];
     let b = body(
         &OpenAiResponsesCodec
             .encode_request(
@@ -213,9 +217,7 @@ fn the_system_prompt_is_instructions_not_a_message() {
 fn a_declared_stateful_endpoint_receives_the_typed_continuation_id() {
     let mut req = request(vec![user("only the new turn")]);
     req.continuation = Some(continuation());
-    req.system = vec![SystemBlock {
-        text: "repeat this every turn".to_owned(),
-    }];
+    req.system = vec![SystemBlock::new("repeat this every turn")];
     let mut p = profile("open_ai_responses", "https://api.acme.test/v1");
     p.extra = json!({"supports_previous_response_id": true});
 
@@ -354,18 +356,25 @@ fn a_function_call_is_named_once_and_its_arguments_stream_after() {
         events.extend(wire_api::decode_frame(&mut *d, f.as_bytes()).unwrap());
     }
 
-    let fragments: Vec<&str> = events
+    let fragments: Vec<Vec<u16>> = events
         .iter()
         .filter_map(|e| match e {
             StreamEvent::ToolCallDelta {
                 id,
                 arguments_fragment,
                 ..
-            } if id.as_str() == "fc_1" => Some(arguments_fragment.as_str()),
+            } if id.as_str() == "fc_1" => Some(arguments_fragment.utf16_code_units().to_vec()),
             _ => None,
         })
         .collect();
-    assert_eq!(fragments, vec!["", "{\"p\":", "1}"]);
+    assert_eq!(
+        fragments,
+        vec![
+            "".encode_utf16().collect::<Vec<_>>(),
+            "{\"p\":".encode_utf16().collect::<Vec<_>>(),
+            "1}".encode_utf16().collect::<Vec<_>>(),
+        ]
+    );
     assert!(matches!(
         events.last(),
         Some(StreamEvent::End {
@@ -590,10 +599,15 @@ fn responses_refusal_does_not_replace_truncation_or_provider_errors() {
     let mut failed = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     wire_api::decode_frame(&mut *failed , br#"{"type":"response.refusal.delta","output_index":0,"content_index":0,"delta":"refusal"}"#)
         .unwrap();
+    let error = wire_api::decode_frame(&mut *failed , br#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"generation failed"}}}"#).unwrap_err();
     assert!(matches!(
-        wire_api::decode_frame(&mut *failed , br#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"generation failed"}}}"#),
-        Err(LlmError::ProviderInternal { .. })
+        error.classification_source(),
+        LlmError::ProviderInternal { .. }
     ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("500 generation failed")
+    );
 }
 
 // --- Bedrock ---------------------------------------------------------------
@@ -999,27 +1013,48 @@ fn codecs_reject_malformed_success_bodies_and_redirects() {
 fn responses_failed_event_preserves_provider_error_classification() {
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let error = wire_api::decode_frame(&mut *decoder , br#"{"type":"response.failed","response":{"error":{"code":"context_length_exceeded","message":"context exceeded"}}}"#).unwrap_err();
-    assert!(matches!(error, LlmError::ContextOverflow { .. }));
+    assert!(matches!(
+        error.classification_source(),
+        LlmError::ContextOverflow { .. }
+    ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("500 context exceeded")
+    );
 }
 
 #[test]
 fn chat_and_gemini_stream_error_frames_are_errors() {
     let mut chat = OpenAiChatCodec.stream_decoder(&wire_api::decode_context());
+    let chat_error = wire_api::decode_frame(
+        &mut *chat,
+        br#"{"error":{"code":"invalid_api_key","message":"bad key"}}"#,
+    )
+    .unwrap_err();
     assert!(matches!(
-        wire_api::decode_frame(
-            &mut *chat,
-            br#"{"error":{"code":"invalid_api_key","message":"bad key"}}"#
-        ),
-        Err(LlmError::Authentication { .. })
+        chat_error.classification_source(),
+        LlmError::Authentication { .. }
     ));
+    assert_eq!(
+        chat_error.provider_error_text().map(|text| text.display()),
+        Some("500 bad key")
+    );
     let mut gemini = GeminiCodec.stream_decoder(&wire_api::decode_context());
+    let gemini_error = wire_api::decode_frame(
+        &mut *gemini,
+        br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"too many requests"}}"#,
+    )
+    .unwrap_err();
     assert!(matches!(
-        wire_api::decode_frame(
-            &mut *gemini,
-            br#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"too many requests"}}"#
-        ),
-        Err(LlmError::RateLimited { .. })
+        gemini_error.classification_source(),
+        LlmError::RateLimited { .. }
     ));
+    assert_eq!(
+        gemini_error
+            .provider_error_text()
+            .map(|text| text.display()),
+        Some("500 too many requests")
+    );
 }
 
 #[test]
@@ -1112,10 +1147,17 @@ fn responses_failed_body_is_an_error_even_with_http_success() {
         .unwrap()
         .into(),
     };
+    let error = OpenAiResponsesCodec
+        .decode_response(&response, &wire_api::decode_context())
+        .unwrap_err();
     assert!(matches!(
-        OpenAiResponsesCodec.decode_response(&response, &wire_api::decode_context()),
-        Err(LlmError::QuotaExceeded { .. })
+        error.classification_source(),
+        LlmError::QuotaExceeded { .. }
     ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("quota exhausted")
+    );
 }
 
 #[test]
@@ -1251,13 +1293,19 @@ fn gemini_explicit_prompt_block_is_a_refusal_not_truncation() {
 #[test]
 fn responses_flat_error_event_keeps_error_code() {
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
+    let error = wire_api::decode_frame(
+        &mut *decoder,
+        br#"{"type":"error","code":"context_length_exceeded","message":"context exceeded"}"#,
+    )
+    .unwrap_err();
     assert!(matches!(
-        wire_api::decode_frame(
-            &mut *decoder,
-            br#"{"type":"error","code":"context_length_exceeded","message":"context exceeded"}"#
-        ),
-        Err(LlmError::ContextOverflow { .. })
+        error.classification_source(),
+        LlmError::ContextOverflow { .. }
     ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("500 context exceeded")
+    );
 }
 
 #[test]
@@ -1342,10 +1390,13 @@ fn responses_stream_preserves_native_reasoning_once_with_terminal_fallback() {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            native,
-            vec![(0, ProtocolFamily::OpenAiResponses, &reasoning)]
-        );
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].0, 0);
+        assert_eq!(native[0].1, ProtocolFamily::OpenAiResponses);
+        assert!(json_payload_fixture::source_matches(
+            native[0].2,
+            &reasoning
+        ));
         assert!(matches!(events.last(), Some(StreamEvent::End { .. })));
     }
 }
@@ -1354,10 +1405,12 @@ fn responses_stream_preserves_native_reasoning_once_with_terminal_fallback() {
 fn responses_tool_results_preserve_structured_and_text_outputs() {
     for blocks in [
         None,
-        Some(vec![
-            json!({"type":"input_image","image_url":"https://example.test/screenshot.png"}),
-            json!({"type":"input_file","file_id":"file-result"}),
-        ]),
+        Some(
+            lingxi_llm_client::protocol::JsonPayload::parse(
+                r#"[{"type":"input_image","image_url":"https://example.test/screenshot.png"},{"type":"input_file","file_id":"file-result"}]"#,
+            )
+            .unwrap(),
+        ),
     ] {
         let req = request(vec![ConversationMessage {
             native_options: Vec::new(),
@@ -1383,7 +1436,9 @@ fn responses_tool_results_preserve_structured_and_text_outputs() {
         let body: Value = serde_json::from_slice(&http.body).unwrap();
         assert_eq!(
             body["input"][0]["output"],
-            blocks.map_or(json!("fallback"), |v| json!(v))
+            blocks.map_or(json!("fallback"), |value| {
+                serde_json::from_str::<Value>(value.as_json_source()).unwrap()
+            })
         );
     }
 }
@@ -1408,12 +1463,16 @@ fn provider_timeouts_retain_their_type_and_distinguish_http_from_sse_status() {
         .decode_response(&response, &context)
         .unwrap_err();
     assert!(matches!(
-        error,
+        error.classification_source(),
         LlmError::ProviderTimeout {
             status: Some(504),
             ..
         }
     ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("504 upstream deadline")
+    );
     assert_eq!(error.kind(), LlmErrorKind::ProviderTimeout);
     assert!(FailoverTriggers {
         server_error: true,

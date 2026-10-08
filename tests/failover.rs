@@ -354,6 +354,7 @@ impl WireCodec for FakeCodec {
             },
             stop_reason: StopReason::EndTurn,
             usage: Usage::default().into(),
+            native_resume_context_exhausted: None,
             model: "fake".to_owned(),
             response_id: None,
             continuation: None,
@@ -593,7 +594,7 @@ fn request(model: &str) -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
@@ -1436,6 +1437,7 @@ fn a_continuation_does_not_fail_over_to_a_connection_that_never_saw_it() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".to_owned(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),
@@ -1464,6 +1466,7 @@ fn a_continuation_does_not_fail_over_to_a_connection_that_never_saw_it() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".to_owned(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),
@@ -1539,6 +1542,7 @@ fn a_failover_trigger_moves_the_request_to_the_next_connection() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".to_owned(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),
@@ -1596,6 +1600,7 @@ fn the_last_error_survives_when_the_group_is_spent() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "one busy".to_owned(),
+                native_retry_base_eligible: false,
             }),
         ),
         (
@@ -1704,10 +1709,14 @@ fn an_exhausted_interrupted_http_error_body_keeps_429_retry_after_and_body() {
     };
 
     assert!(
-        matches!(err, LlmError::RateLimited { ref message, retry_after: Some(duration) }
-            if duration == std::time::Duration::from_secs(7)
+        matches!(err.classification_source(), LlmError::RateLimited { message, retry_after: Some(duration) }
+            if *duration == std::time::Duration::from_secs(7)
                 && message.contains("quota exceeded")),
         "the final classified error retains the status, collected body, and Retry-After: {err}"
+    );
+    assert_eq!(
+        err.provider_error_text().map(|text| text.display()),
+        Some("429 quota exceeded")
     );
     assert_eq!(http.hops().len(), 2);
 }
@@ -1718,6 +1727,7 @@ fn a_standalone_profile_is_one_connection() {
         "https://one.test",
         Err(LlmError::Overloaded {
             message: "busy".to_owned(),
+            native_retry_base_eligible: false,
         }),
     )]);
     let c = client(
@@ -2107,19 +2117,27 @@ mod raw_http_streams {
                 Err(error) => error,
                 Ok(_) => panic!("HTTP error returned a stream"),
             };
-            match error {
+            match error.classification_source() {
                 LlmError::RateLimited {
                     message,
                     retry_after,
                 } if status == 429 => {
                     assert!(message.contains("quota unavailable"));
-                    assert_eq!(retry_after, Some(Duration::from_secs(7)));
+                    assert_eq!(*retry_after, Some(Duration::from_secs(7)));
                 }
                 LlmError::Authentication { message } if status == 401 => {
                     assert!(message.contains("quota unavailable"))
                 }
                 other => panic!("unexpected error: {other:?}"),
             }
+            assert_eq!(
+                error.provider_error_text().map(|text| text.display()),
+                Some(if status == 429 {
+                    "429 quota unavailable"
+                } else {
+                    "401 quota unavailable"
+                })
+            );
         }
     }
 
@@ -2133,13 +2151,15 @@ mod raw_http_streams {
             Ok(Bytes::new())
         })));
         let (client, _) = setup(vec![resp], false);
+        let error = block_on(
+            client
+                .chat()
+                .stream(&request("m-1"), &RequestOptions::default()),
+        )
+        .expect_err("oversized 429 error body remains classified");
         assert!(matches!(
-            block_on(
-                client
-                    .chat()
-                    .stream(&request("m-1"), &RequestOptions::default())
-            ),
-            Err(LlmError::RateLimited { .. })
+            error.classification_source(),
+            LlmError::RateLimited { .. }
         ));
     }
 }
@@ -2315,6 +2335,7 @@ fn a_fallback_without_its_own_credential_is_never_sent() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".into(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),
@@ -2366,6 +2387,7 @@ fn a_fallback_uses_its_explicit_credential_and_reports_the_actual_profile() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".into(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),
@@ -2532,6 +2554,7 @@ fn an_explicit_legacy_response_id_also_pins_the_connection() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".to_owned(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),
@@ -2565,6 +2588,7 @@ fn an_explicit_legacy_response_id_also_pins_the_connection() {
             "https://one.test",
             Err(LlmError::Overloaded {
                 message: "busy".to_owned(),
+                native_retry_base_eligible: false,
             }),
         ),
         ("https://two.test", Ok(200)),

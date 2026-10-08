@@ -258,9 +258,7 @@ fn foundry_mcp_fetch_and_messages_share_cache_count_and_ttl_order() {
     let body: Value = serde_json::from_slice(&wire.body).unwrap();
     assert_eq!(body["tools"][0]["type"], "mcp_toolset");
     assert_eq!(body["tools"][1]["type"], "web_fetch_20250910");
-    r.system.push(SystemBlock {
-        text: "Instruction".into(),
-    });
+    r.system.push(SystemBlock::new("Instruction"));
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         scope: None,
         position: CachePosition::System { index: 0 },
@@ -301,9 +299,7 @@ async fn invalid_foundry_combined_cache_fails_before_attachment_reads() {
     builder.with_attachment_resolver(Arc::new(Never));
     let client = builder.build().unwrap();
     let mut r = fetch_and_mcp_cache();
-    r.system.push(SystemBlock {
-        text: "Instruction".into(),
-    });
+    r.system.push(SystemBlock::new("Instruction"));
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         scope: None,
         position: CachePosition::System { index: 0 },
@@ -352,9 +348,7 @@ fn vertex_client_toolsets_share_the_same_cache_marker_budget() {
         ttl: CacheTtl::FiveMinutes,
     });
     VertexClaudeCodec.validate_request(&r, &ctx).unwrap();
-    r.system.push(SystemBlock {
-        text: "Instruction".into(),
-    });
+    r.system.push(SystemBlock::new("Instruction"));
     r.prompt_cache.breakpoints.push(CacheBreakpoint {
         scope: None,
         position: CachePosition::System { index: 0 },

@@ -14,6 +14,13 @@ pub struct RequestOptions {
     /// Host-supplied Native Anthropic request kind, used only by SDK request
     /// serialization policies that are specific to an exact request route.
     pub anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
+    /// Trusted Native Anthropic context observations for this request.
+    pub native_anthropic_context: NativeAnthropicContextInput,
+    /// Typed, request-local Native model.complete gate. This is execution
+    /// context and is never serialized into the provider request.
+    pub model_complete_cache_gate: Option<crate::protocol::NativeModelCacheGate>,
+    /// Current Native model.complete operation-specific cache-disable bit.
+    pub drop_cache_control_when_caching_disabled: bool,
     /// Exact text sidecars in canonical ChatRequest message/content
     /// coordinates. The selected SDK codec remaps them to its encoded JSON
     /// body schema before exposing the prepared request.
@@ -61,6 +68,24 @@ pub struct RequestOptions {
     /// OpenAI/xAI `server_label` or Anthropic server `name`. Never serialized
     /// into ChatRequest/history.
     pub mcp_authorizations: BTreeMap<String, Secret<String>>,
+}
+
+/// Current Native Anthropic context facts available to the SDK. `None` means
+/// that source was not observed; a generic model-directory fallback is not
+/// substituted for Native's own context registry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeAnthropicContextInput {
+    /// Context window from the selected Native model-registry observation.
+    pub model_registry_context_window: Option<u64>,
+    /// Whether the selected Native model is registered for the 1M beta.
+    pub model_supports_context_1m: Option<bool>,
+    /// Context window from a current Native dynamic-context observation.
+    pub dynamic_context_window: Option<u64>,
+    /// Exact membership in Native's planned `betas` list; this is not inferred
+    /// from the eventual signed HTTP header.
+    pub thinking_resumption_beta_requested: Option<bool>,
+    /// Whether Native planned the 1M context beta for this request.
+    pub context_1m_beta_requested: Option<bool>,
 }
 
 /// Per-request transformation of the encoded request, before authentication.

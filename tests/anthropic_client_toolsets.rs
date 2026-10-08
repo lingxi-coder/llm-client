@@ -3,6 +3,9 @@ use lingxi_llm_client::protocol::*;
 use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 use std::sync::Arc;
 
 const MODEL: &str = "claude-opus-5-5";
@@ -70,7 +73,18 @@ fn calls_and_results(
 ) -> ChatRequest {
     let mut r = request();
     r.messages.push(serde_json::from_value(json!({"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":member,"input":{},"toolset_name":"browser"}]})).unwrap());
-    r.messages.push(serde_json::from_value(json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","toolset_name":result_set,"content":"result","is_error":error,"blocks":blocks}]})).unwrap());
+    let mut tool_result = json!({
+        "type":"tool_result",
+        "tool_use_id":"call-1",
+        "toolset_name":result_set,
+        "content":"result",
+        "is_error":error
+    });
+    if !blocks.is_null() {
+        tool_result["blocks"] = blocks;
+    }
+    r.messages
+        .push(serde_json::from_value(json!({"role":"user","content":[tool_result]})).unwrap());
     r
 }
 #[test]
@@ -297,7 +311,7 @@ fn inline_definitions_cannot_take_declared_toolset_names() {
             .push(ConversationMessage::system_text("New tool"));
         r.messages.last_mut().unwrap().content.push(ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":name,"description":"Inline client tool","input_schema":{"type":"object","properties":{}}}}}),
+            value: json_payload_fixture::generated(&json!({"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":name,"description":"Inline client tool","input_schema":{"type":"object","properties":{}}}}})),
         });
         let result = encode(&r, &profile(), MODEL);
         assert_eq!(result.is_ok(), allowed, "{name}: {result:?}");
@@ -529,7 +543,7 @@ fn member_calls_are_direct_and_download_metadata_remains_native() {
     let blocks = json!([{"type":"browser_state","tabs":[],"state_changes":[{"type":"download_completed","download_id":"d1","url":"https://example.com/file","path":null,"size_bytes":null}]}]);
     let mut r = calls_and_results("screenshot", Some("browser"), blocks.clone(), false);
     if let ContentBlock::ToolUse { caller, .. } = &mut r.messages[1].content[0] {
-        *caller = Some(json!({"type":"direct"}));
+        *caller = Some(json_payload_fixture::generated(&json!({"type":"direct"})));
     }
     let body = encode(&r, &profile(), MODEL).unwrap();
     assert_eq!(body["messages"][2]["content"][0]["content"], blocks);
@@ -541,7 +555,9 @@ fn member_calls_are_direct_and_download_metadata_remains_native() {
     )
     .is_err());
     if let ContentBlock::ToolUse { caller, .. } = &mut r.messages[1].content[0] {
-        *caller = Some(json!({"type":"code_execution_20260120","tool_id":"srv1"}));
+        *caller = Some(json_payload_fixture::generated(
+            &json!({"type":"code_execution_20260120","tool_id":"srv1"}),
+        ));
     }
     assert!(encode(&r, &profile(), MODEL).is_err());
     let duplicate = json!([{"type":"browser_state","tabs":[],"state_changes":[{"type":"download_started","download_id":"d1","url":"https://example.com/file"},{"type":"download_completed","download_id":"d1","url":"https://example.com/file"}]}]);
@@ -630,7 +646,10 @@ async fn invalid_declaration_fails_before_attachment_read_or_transport() {
                 .with_tools([AnthropicMcpTool {
                     name: "remote_lookup".into(),
                     description: None,
-                    input_schema: json!({"type":"object","properties":{}}),
+                    input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                        &json!({"type":"object","properties":{}}),
+                    )
+                    .unwrap(),
                 }])
                 .unwrap(),
         )

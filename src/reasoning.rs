@@ -1,4 +1,4 @@
-//! Provider and model reasoning controls, derived from SDK presets.
+//! Provider and model reasoning controls, using selected facts with preset fallback.
 
 use crate::protocol::ProtocolFamily;
 use std::collections::HashMap;
@@ -62,6 +62,10 @@ pub struct ReasoningTarget<'a> {
     pub protocol: &'a ProtocolFamily,
     pub base_url: &'a str,
     pub model: &'a str,
+    /// Selected model facts after connection restrictions. Unknown facts use presets.
+    pub features: &'a crate::protocol::InferenceFeatures,
+    /// Selected connection wire contract.
+    pub inference: &'a crate::protocol::InferenceWire,
 }
 
 /// Apply a validated user selection to canonical model input. An unsupported
@@ -118,6 +122,101 @@ pub fn validate_reasoning_selection(
 }
 
 pub fn reasoning_control_spec(target: ReasoningTarget<'_>) -> ReasoningControlSpec {
+    use crate::protocol::{CapabilitySupport, ReasoningEffort, ReasoningWire, ThinkingMode};
+    let wire = target.inference.reasoning.unwrap_or(match target.protocol {
+        ProtocolFamily::OpenAiChat | ProtocolFamily::AzureOpenAi => ReasoningWire::OpenAiChat,
+        ProtocolFamily::OpenAiResponses => ReasoningWire::OpenAiResponses,
+        ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini => {
+            ReasoningWire::Gemini
+        }
+        _ => ReasoningWire::Anthropic,
+    });
+    if wire == ReasoningWire::Unavailable {
+        return ReasoningControlSpec::automatic_only();
+    }
+    let mut spec = preset_control_spec(target);
+    let facts = target.features;
+    spec.levels = ReasoningEffort::ALL
+        .into_iter()
+        .filter(|effort| *effort != ReasoningEffort::None)
+        .filter(|effort| match facts.supports_effort(None, *effort) {
+            CapabilitySupport::Supported => true,
+            CapabilitySupport::Unsupported => false,
+            CapabilitySupport::Unknown => spec.levels.iter().any(|id| id == effort.as_str()),
+        })
+        .map(|effort| effort.as_str().to_owned())
+        .collect();
+    // A mode and a token budget are separate capabilities. Partial directory
+    // observations replace only the facts they actually establish.
+    let mode = |mode, fallback| match facts.supports_mode(mode) {
+        CapabilitySupport::Supported => true,
+        CapabilitySupport::Unsupported => false,
+        CapabilitySupport::Unknown => fallback,
+    };
+    spec.can_disable = mode(ThinkingMode::Disabled, spec.can_disable);
+    let enabled = mode(ThinkingMode::Enabled, spec.can_enable);
+    if facts.thinking == CapabilitySupport::Unsupported
+        || facts.budget.support == CapabilitySupport::Unsupported
+        || facts.supports_mode(ThinkingMode::Enabled) == CapabilitySupport::Unsupported
+    {
+        spec.token_budget = None;
+    } else if facts.budget.support == CapabilitySupport::Supported {
+        let min = facts
+            .budget
+            .min_tokens
+            .or(spec.token_budget.map(|range| range.min));
+        let max = facts
+            .budget
+            .max_tokens
+            .or(spec.token_budget.map(|range| range.max));
+        spec.token_budget = match (min, max) {
+            (Some(min), Some(max)) if min <= max => Some(TokenBudgetRange { min, max }),
+            _ => None,
+        };
+    }
+    if matches!(
+        wire,
+        ReasoningWire::OpenAiChat | ReasoningWire::OpenAiResponses | ReasoningWire::ThinkingType
+    ) {
+        spec.token_budget = None;
+    }
+    spec.can_enable = enabled
+        && spec.levels.is_empty()
+        && spec.token_budget.is_none()
+        && !matches!(
+            wire,
+            ReasoningWire::OpenAiChat | ReasoningWire::OpenAiResponses
+        )
+        && !(wire == ReasoningWire::Anthropic
+            && target.inference.enabled_requires_budget.unwrap_or(true));
+    let mandatory_rejected =
+        spec.mandatory_selection
+            .as_ref()
+            .is_some_and(|selection| match selection {
+                ReasoningSelection::Automatic => false,
+                ReasoningSelection::Disabled => {
+                    facts.supports_mode(ThinkingMode::Disabled) == CapabilitySupport::Unsupported
+                }
+                ReasoningSelection::Enabled => {
+                    facts.supports_mode(ThinkingMode::Enabled) == CapabilitySupport::Unsupported
+                        || facts.supports_mode(ThinkingMode::Disabled)
+                            == CapabilitySupport::Supported
+                }
+                ReasoningSelection::Level(id) => ReasoningEffort::ALL
+                    .into_iter()
+                    .find(|e| e.as_str() == id)
+                    .is_some_and(|e| {
+                        facts.supports_effort(None, e) == CapabilitySupport::Unsupported
+                    }),
+                ReasoningSelection::TokenBudget(_) => spec.token_budget.is_none(),
+            });
+    if mandatory_rejected {
+        spec.mandatory_selection = None;
+    }
+    spec
+}
+
+fn preset_control_spec(target: ReasoningTarget<'_>) -> ReasoningControlSpec {
     if let Some(spec) = match target.profile_name {
         Some("zai") => Some(catalog_control_spec(zai_catalog(), target.model)),
         Some("glm-coding") => Some(catalog_control_spec(glm_coding_catalog(), target.model)),
@@ -191,11 +290,6 @@ fn anthropic_catalog() -> &'static HashMap<String, CatalogReasoningSpec> {
 
 fn anthropic_spec(model: &str) -> ReasoningControlSpec {
     let canonical = normalize_model_id(model);
-    // These historical host controls offered effort only, not token budgets
-    // or mode toggles. Keep that user-facing contract as catalogs evolve.
-    if canonical == "claude-opus-4-5" || canonical.starts_with("claude-opus-4-5-") {
-        return ReasoningControlSpec::automatic_only();
-    }
     let canonical = if canonical == "claude-mythos-5-1" {
         "claude-fable-5-1"
     } else {
@@ -585,12 +679,176 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selected_facts_restrict_known_models_and_enable_directory_only_models() {
+        use crate::protocol::{
+            BudgetSupport, CapabilitySupport, EffortSupport, InferenceFeatures, ReasoningEffort,
+            ThinkingMode,
+        };
+        let mut facts = InferenceFeatures {
+            effort: EffortSupport {
+                support: CapabilitySupport::Supported,
+                levels: Some(vec![
+                    ReasoningEffort::Low,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Max,
+                ]),
+                level_support: [(ReasoningEffort::Max, CapabilitySupport::Unsupported)]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        fn target<'a>(
+            features: &'a InferenceFeatures,
+            inference: &'a crate::protocol::InferenceWire,
+        ) -> ReasoningTarget<'a> {
+            ReasoningTarget {
+                inference,
+                profile_name: Some("anthropic"),
+                protocol: &ProtocolFamily::AnthropicMessages,
+                base_url: "https://api.anthropic.com",
+                model: "directory-model",
+                features,
+            }
+        }
+        let spec = reasoning_control_spec(target(&facts, &Default::default()));
+        assert_eq!(spec.levels, vec!["low", "high"]);
+        assert!(!spec.supports(&ReasoningSelection::Level("max".into())));
+        facts.effort.levels = Some(vec![]);
+        assert!(reasoning_control_spec(target(&facts, &Default::default()))
+            .levels
+            .is_empty());
+        facts.effort.levels = None;
+        facts
+            .effort
+            .level_support
+            .insert(ReasoningEffort::XHigh, CapabilitySupport::Supported);
+        assert_eq!(
+            reasoning_control_spec(target(&facts, &Default::default())).levels,
+            vec!["xhigh"]
+        );
+        facts.effort.support = CapabilitySupport::Unsupported;
+        assert!(reasoning_control_spec(target(&facts, &Default::default()))
+            .levels
+            .is_empty());
+
+        let facts = InferenceFeatures {
+            modes: Some(vec![ThinkingMode::Disabled, ThinkingMode::Enabled]),
+            thinking: CapabilitySupport::Supported,
+            budget: BudgetSupport {
+                support: CapabilitySupport::Supported,
+                min_tokens: Some(1024),
+                max_tokens: Some(8192),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let spec = reasoning_control_spec(target(&facts, &Default::default()));
+        assert!(spec.can_disable);
+        assert!(
+            !spec.can_enable,
+            "a budget model offers its token budget selection"
+        );
+        assert!(spec.supports(&ReasoningSelection::TokenBudget(2048)));
+        assert!(!spec.supports(&ReasoningSelection::TokenBudget(1)));
+        let spec = reasoning_control_spec(ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            profile_name: Some("deepseek"),
+            protocol: &ProtocolFamily::OpenAiChat,
+            base_url: "https://api.deepseek.com",
+            model: "deepseek-reasoner",
+            features: &facts,
+        });
+        assert!(
+            spec.mandatory_selection.is_none(),
+            "explicit disabled mode replaces the preset mandate"
+        );
+    }
+
+    #[test]
+    fn explicit_connection_restrictions_replace_preset_controls() {
+        use crate::protocol::{CapabilitySupport, InferenceFeatures};
+        let mut facts = InferenceFeatures::default();
+        facts.effort.support = CapabilitySupport::Unsupported;
+        facts.thinking = CapabilitySupport::Unsupported;
+        facts.modes = Some(vec![]);
+        let spec = reasoning_control_spec(ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            profile_name: Some("gemini"),
+            protocol: &ProtocolFamily::GeminiGenerateContent,
+            base_url: "https://generativelanguage.googleapis.com",
+            model: "gemini-2.5-flash",
+            features: &facts,
+        });
+        assert_eq!(spec, ReasoningControlSpec::automatic_only());
+    }
+
+    #[test]
+    fn connection_wire_does_not_offer_an_incomplete_enabled_selection() {
+        use crate::protocol::{InferenceFeatures, InferenceWire, ReasoningWire, ThinkingMode};
+        let facts = InferenceFeatures {
+            modes: Some(vec![ThinkingMode::Enabled]),
+            ..Default::default()
+        };
+        let manual = InferenceWire::default();
+        let target = ReasoningTarget {
+            profile_name: None,
+            protocol: &ProtocolFamily::AnthropicMessages,
+            base_url: "https://example.test",
+            model: "directory-model",
+            features: &facts,
+            inference: &manual,
+        };
+        assert!(
+            !reasoning_control_spec(target).can_enable,
+            "manual Claude requires a token budget"
+        );
+        let toggle = InferenceWire {
+            enabled_requires_budget: Some(false),
+            ..Default::default()
+        };
+        assert!(
+            reasoning_control_spec(ReasoningTarget {
+                inference: &toggle,
+                ..target
+            })
+            .can_enable
+        );
+        let unavailable = InferenceWire {
+            reasoning: Some(ReasoningWire::Unavailable),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasoning_control_spec(ReasoningTarget {
+                inference: &unavailable,
+                ..target
+            }),
+            ReasoningControlSpec::automatic_only()
+        );
+        let openai = InferenceWire {
+            reasoning: Some(ReasoningWire::OpenAiChat),
+            ..Default::default()
+        };
+        assert!(
+            !reasoning_control_spec(ReasoningTarget {
+                inference: &openai,
+                ..target
+            })
+            .can_enable,
+            "OpenAI needs an explicit effort with enabled mode"
+        );
+    }
+
+    #[test]
     fn selection_changes_only_typed_thinking_after_validation() {
         use crate::protocol::{
             ChatRequest, ReasoningEffort, ThinkingBudget, ThinkingConfig, ThinkingMode,
         };
         let mut request = ChatRequest::new("gpt-5");
         let target = ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            features: &crate::protocol::InferenceFeatures::default(),
             profile_name: None,
             protocol: &ProtocolFamily::OpenAiResponses,
             base_url: "https://api.openai.com/v1",
@@ -620,6 +878,8 @@ mod tests {
         apply_reasoning_selection(&mut request, target, ReasoningSelection::Automatic).unwrap();
         assert_eq!(request, ChatRequest::new("gpt-5"));
         let target = ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            features: &crate::protocol::InferenceFeatures::default(),
             profile_name: Some("gemini"),
             protocol: &ProtocolFamily::GeminiGenerateContent,
             base_url: "https://generativelanguage.googleapis.com",
@@ -679,14 +939,16 @@ mod tests {
             );
         }
         assert_eq!(
-            anthropic_spec("claude-opus-4-5"),
-            ReasoningControlSpec::automatic_only()
+            anthropic_spec("claude-opus-4-5").levels,
+            vec!["low", "medium", "high"]
         );
     }
 
     #[test]
     fn validation_respects_automatic_mandatory_and_budget_bounds() {
         let target = ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            features: &crate::protocol::InferenceFeatures::default(),
             profile_name: Some("deepseek"),
             protocol: &ProtocolFamily::OpenAiChat,
             base_url: "https://api.deepseek.com",
@@ -696,6 +958,8 @@ mod tests {
         assert!(validate_reasoning_selection(target, &ReasoningSelection::Enabled).is_ok());
         assert!(validate_reasoning_selection(target, &ReasoningSelection::Disabled).is_err());
         let target = ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            features: &crate::protocol::InferenceFeatures::default(),
             profile_name: Some("gemini"),
             protocol: &ProtocolFamily::GeminiGenerateContent,
             base_url: "https://generativelanguage.googleapis.com",
@@ -788,6 +1052,8 @@ mod tests {
     fn subscription_and_glm_profiles_use_their_route_catalog() {
         let protocol = ProtocolFamily::AnthropicMessages;
         let glm = reasoning_control_spec(ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            features: &crate::protocol::InferenceFeatures::default(),
             profile_name: Some("glm-coding"),
             protocol: &protocol,
             base_url: "https://open.bigmodel.cn/api/anthropic",
@@ -797,6 +1063,8 @@ mod tests {
 
         let chat = ProtocolFamily::OpenAiChat;
         let copilot = reasoning_control_spec(ReasoningTarget {
+            inference: &crate::protocol::InferenceWire::default(),
+            features: &crate::protocol::InferenceFeatures::default(),
             profile_name: Some("github-copilot"),
             protocol: &chat,
             base_url: "https://api.githubcopilot.com",

@@ -94,4 +94,7 @@ impl<D: EventDecoder> StreamDecoder for SseDecoder<D> {
     fn usage_report(&self) -> UsageReport {
         self.inner.usage_report()
     }
+    fn native_resume_context_exhausted(&self) -> Option<bool> {
+        self.inner.native_resume_context_exhausted()
+    }
 }

@@ -104,14 +104,17 @@ fn validate_native_tool(
             });
         }
     }
-    let kind = extension
-        .data()
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| LlmError::InvalidRequest {
-            message: "native hosted tool has no type".into(),
-        })?;
-    Ok((extension.format().to_string(), kind.to_string()))
+    let kind_units =
+        extension
+            .data()
+            .string_units_at("/type")
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "native hosted tool has no type".into(),
+            })?;
+    let kind = String::from_utf16(&kind_units).map_err(|_| LlmError::InvalidRequest {
+        message: "native hosted tool type must be valid Unicode".into(),
+    })?;
+    Ok((extension.format().to_string(), kind))
 }
 
 fn validate_options(
@@ -171,6 +174,7 @@ fn validate_request_options(options: &[NativeExtension]) -> Result<(), LlmError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::JsonPayload;
     use serde_json::json;
 
     fn request() -> ChatRequest {
@@ -187,7 +191,8 @@ mod tests {
         ] {
             let mut request = request();
             request.hosted_tools.push(HostedTool::Native(
-                NativeExtension::new(format, data).unwrap(),
+                NativeExtension::new(format, JsonPayload::from_generated_value(&data).unwrap())
+                    .unwrap(),
             ));
             assert!(request.validate_hosted_tools().is_err());
         }
@@ -203,7 +208,7 @@ mod tests {
         assert!(request.validate_hosted_tools().is_err());
         request.native_options = vec![NativeExtension::new(
             super::super::anthropic::native::AnthropicRequestOptions::FORMAT,
-            json!({"client_toolsets":false}),
+            JsonPayload::from_generated_value(&json!({"client_toolsets":false})).unwrap(),
         )
         .unwrap()];
         assert!(request.validate_hosted_tools().is_err());
@@ -214,12 +219,32 @@ mod tests {
         assert!(request.validate_hosted_tools().is_err());
         request.native_options = vec![NativeExtension::new(
             OpenAiComputerToolConfig::FORMAT,
-            json!({"unexpected":true}),
+            JsonPayload::from_generated_value(&json!({"unexpected":true})).unwrap(),
         )
         .unwrap()];
         assert!(request.validate_hosted_tools().is_err());
-        request.native_options =
-            vec![NativeExtension::new("unknown.request.option.v1", json!({})).unwrap()];
+        request.native_options = vec![NativeExtension::new(
+            "unknown.request.option.v1",
+            JsonPayload::from_generated_value(&json!({})).unwrap(),
+        )
+        .unwrap()];
+        assert!(request.validate_hosted_tools().is_err());
+        request.native_options = vec![
+            NativeExtension::from_typed(OpenAiComputerToolConfig::default()).unwrap(),
+            NativeExtension::from_typed(OpenAiComputerToolConfig::default()).unwrap(),
+        ];
+        assert!(request.validate_hosted_tools().is_err());
+        request.native_options = vec![NativeExtension::new(
+            OpenAiComputerToolConfig::FORMAT,
+            JsonPayload::from_generated_value(&json!({"unexpected":true})).unwrap(),
+        )
+        .unwrap()];
+        assert!(request.validate_hosted_tools().is_err());
+        request.native_options = vec![NativeExtension::new(
+            "unknown.request.option.v1",
+            JsonPayload::from_generated_value(&json!({})).unwrap(),
+        )
+        .unwrap()];
         assert!(request.validate_hosted_tools().is_err());
         request.native_options.clear();
         let mut message = crate::protocol::ConversationMessage::user_text("hello");

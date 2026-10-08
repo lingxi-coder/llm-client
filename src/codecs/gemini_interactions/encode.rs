@@ -1,4 +1,7 @@
-use crate::codecs::{CodecContext, EncodeRequest, RequestMode};
+use crate::codecs::{
+    json::{WireRequest, WireValue},
+    CodecContext, EncodeRequest, RequestMode,
+};
 use crate::protocol::*;
 use crate::providers::google::{
     computer::{GeminiComputerToolConfig, CALL_FORMAT, RESULT_FORMAT},
@@ -16,6 +19,77 @@ fn unsupported(message: impl Into<String>) -> LlmError {
     LlmError::UnsupportedCapability {
         message: message.into(),
     }
+}
+
+fn text_payload(units: &[u16]) -> crate::protocol::JsonPayload {
+    crate::protocol::JsonPayload::string_from_utf16_code_units(units)
+}
+
+fn without_root_field(
+    source: &crate::protocol::JsonPayload,
+    omitted: &str,
+) -> Result<crate::protocol::JsonPayload, LlmError> {
+    use crate::response_json::FlatJsonKind;
+
+    let scanner = source.scanner()?;
+    let root = scanner.root_node();
+    if root.kind() != FlatJsonKind::Object {
+        return Err(invalid("Interactions native step must be an object"));
+    }
+    let omitted = omitted.encode_utf16().collect::<Vec<_>>();
+    let mut fields = Vec::new();
+    for entry in root
+        .object_entries()
+        .ok_or_else(|| invalid("Interactions native step has no object fields"))?
+    {
+        if entry.key_units == omitted {
+            continue;
+        }
+        let value = crate::exact_json::serialize_json_node(
+            entry.value,
+            crate::exact_json::JsonEncoding::Serde,
+        )?;
+        fields.push((entry.key_units.to_vec(), value));
+    }
+    crate::protocol::JsonPayload::object_from_fields(&fields)
+        .map_err(|error| invalid(format!("Interactions native step is invalid: {error}")))
+}
+
+fn result_block(block: &crate::protocol::JsonPayload) -> Result<WireValue<'static>, LlmError> {
+    match block.string_at("/type").as_deref() {
+        Some("text")
+            if block.kind_at("/text") == Some(crate::response_json::FlatJsonKind::String) =>
+        {
+            Ok(WireValue::owned_raw_json(block.clone()))
+        }
+        Some("image") => {
+            let normalized = crate::providers::google::interactions::encode_result_block(block)?;
+            Ok(WireValue::owned_raw_json(normalized))
+        }
+        _ => Err(invalid(
+            "unsupported or malformed Interactions function-result content",
+        )),
+    }
+}
+
+fn flush_parts<'a>(
+    steps: &mut Vec<WireValue<'a>>,
+    parts: &mut Vec<WireValue<'a>>,
+    role: MessageRole,
+) {
+    if parts.is_empty() {
+        return;
+    }
+    let kind = if role == MessageRole::Assistant {
+        "model_output"
+    } else {
+        "user_input"
+    };
+    let content = std::mem::take(parts);
+    steps.push(
+        WireValue::from(json!({"type":kind,"content":[]}))
+            .with("content", WireValue::array(content)),
+    );
 }
 
 pub(super) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), LlmError> {
@@ -40,7 +114,9 @@ pub(super) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
         || !matches!(req.output_format, OutputFormat::Text)
         || req.prompt_cache != PromptCachePolicy::default()
     {
-        return Err(unsupported("Interactions chat currently supports text output, function tools and native desktop computer declarations"));
+        return Err(unsupported(
+            "Interactions chat currently supports text output, function tools and native desktop computer declarations",
+        ));
     }
     if req.controls.responses != Default::default()
         || req.controls.anthropic != Default::default()
@@ -56,7 +132,9 @@ pub(super) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
         .is_some_and(|thinking| thinking.budget.is_some() || thinking.mode.is_some())
         || req.service_tier.is_some()
     {
-        return Err(unsupported("Interactions thinking budgets, explicit thinking mode and service tier have no unified mapping"));
+        return Err(unsupported(
+            "Interactions thinking budgets, explicit thinking mode and service tier have no unified mapping",
+        ));
     }
     if let Some(reference) = &req.continuation {
         reference.validate(
@@ -87,7 +165,9 @@ pub(super) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
                 || crate::providers::google::computer::is_desktop_function(&tool.name)
         })
     {
-        return Err(invalid("desktop tool members and computer management functions must be declared in different turns"));
+        return Err(invalid(
+            "desktop tool members and computer management functions must be declared in different turns",
+        ));
     }
     for tool in &req.tools {
         if tool.defer_loading
@@ -126,7 +206,7 @@ pub(super) fn request(
             );
         }
     }
-    let mut steps = vec![];
+    let mut steps: Vec<WireValue<'_>> = vec![];
     for message in &req.messages {
         if message.role == MessageRole::System {
             continue;
@@ -140,12 +220,7 @@ pub(super) fn request(
         if req.continuation.is_some() && message.role == MessageRole::Assistant {
             continue;
         }
-        let mut parts = vec![];
-        let flush = |steps: &mut Vec<Value>, parts: &mut Vec<Value>| {
-            if !parts.is_empty() {
-                steps.push(json!({"type":if message.role == MessageRole::Assistant {"model_output"} else {"user_input"},"content":std::mem::take(parts)}));
-            }
-        };
+        let mut parts: Vec<WireValue<'_>> = vec![];
         for original in &message.content {
             let block = input.block(original);
             match block {
@@ -153,29 +228,45 @@ pub(super) fn request(
                     text,
                     thought_signature: None,
                     citations: None,
-                } => parts.push(json!({"type":"text","text":text})),
+                } => parts.push(
+                    WireValue::from(json!({"type":"text","text":null}))
+                        .with("text", WireValue::text(text)),
+                ),
+                ContentBlock::TextJsUtf16 {
+                    utf16_code_units,
+                    thought_signature: None,
+                    citations: None,
+                    ..
+                } => parts.push(WireValue::from(json!({"type":"text","text":null})).with(
+                    "text",
+                    WireValue::owned_raw_json(text_payload(utf16_code_units)),
+                )),
                 ContentBlock::Image {
                     source: ImageSource::Base64 { media_type, data },
-                } => parts.push(json!({"type":"image","mime_type":media_type,"data":data})),
+                } => parts.push(WireValue::from(
+                    json!({"type":"image","mime_type":media_type,"data":data}),
+                )),
                 ContentBlock::Image {
                     source: ImageSource::Url { url },
-                } => parts.push(json!({"type":"image","uri":url})),
+                } => parts.push(WireValue::from(json!({"type":"image","uri":url}))),
                 ContentBlock::Image {
                     source: ImageSource::Attachment { .. },
                 } => {
                     let media = input
                         .inline_media(block)?
                         .ok_or_else(crate::codecs::unresolved_attachment_error)?;
-                    parts.push(json!({"type":"image","mime_type":media.attachment.media_type,"data":base64::engine::general_purpose::STANDARD.encode(media.bytes)}));
+                    parts.push(WireValue::from(json!({"type":"image","mime_type":media.attachment.media_type,"data":base64::engine::general_purpose::STANDARD.encode(media.bytes)})));
                 }
                 ContentBlock::Document {
                     source: DocumentSource::Base64 { media_type, data },
                     ..
-                } => parts.push(json!({"type":"document","mime_type":media_type,"data":data})),
+                } => parts.push(WireValue::from(
+                    json!({"type":"document","mime_type":media_type,"data":data}),
+                )),
                 ContentBlock::Document {
                     source: DocumentSource::Text { data, .. },
                     ..
-                } => parts.push(json!({"type":"text","text":data})),
+                } => parts.push(WireValue::from(json!({"type":"text","text":data}))),
                 ContentBlock::ToolUse {
                     id,
                     name,
@@ -184,10 +275,11 @@ pub(super) fn request(
                     thought_signature,
                     ..
                 } => {
-                    flush(&mut steps, &mut parts);
-                    let mut step = json!({"type":"function_call","id":provider_id.as_deref().unwrap_or(id.as_str()),"name":name,"arguments":input});
+                    flush_parts(&mut steps, &mut parts, message.role);
+                    let mut step = WireValue::from(json!({"type":"function_call","id":provider_id.as_deref().unwrap_or(id.as_str()),"name":name,"arguments":null}))
+                        .with("arguments", WireValue::raw_json(input));
                     if let Some(signature) = thought_signature {
-                        step["signature"] = json!(signature);
+                        step = step.with("signature", WireValue::text(signature));
                     }
                     steps.push(step);
                 }
@@ -198,75 +290,117 @@ pub(super) fn request(
                     is_error,
                     ..
                 } => {
-                    flush(&mut steps, &mut parts);
+                    flush_parts(&mut steps, &mut parts, message.role);
                     let (name,id) = calls.get(tool_use_id.as_str()).ok_or_else(|| invalid("Interactions function result requires its paired call name and provider id"))?;
-                    let result = blocks.clone().unwrap_or_else(||vec![json!({"type":"text","text":if *is_error == Some(true) {format!("Tool failed: {content}")} else {content.clone()}})]);
-                    let result = result
-                        .iter()
-                        .map(crate::providers::google::interactions::encode_result_block)
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let result = if let Some(blocks) = blocks {
+                        blocks.validate_root_array("Interactions function result blocks")?;
+                        blocks
+                            .array_items()
+                            .ok_or_else(|| {
+                                invalid("Interactions function result blocks are malformed")
+                            })?
+                            .iter()
+                            .map(result_block)
+                            .collect::<Result<Vec<_>, _>>()?
+                    } else {
+                        content.validate_root_string("Interactions function result content")?;
+                        let mut units = content.root_string_code_units().ok_or_else(|| {
+                            invalid("Interactions function result content must be a string")
+                        })?;
+                        if *is_error == Some(true) {
+                            let mut prefixed = "Tool failed: ".encode_utf16().collect::<Vec<_>>();
+                            prefixed.append(&mut units);
+                            units = prefixed;
+                        }
+                        let content = text_payload(&units);
+                        vec![WireValue::from(json!({"type":"text","text":null}))
+                            .with("text", WireValue::owned_raw_json(content))]
+                    };
                     steps.push(
-                        json!({"type":"function_result","name":name,"call_id":id,"result":result}),
+                        WireValue::from(
+                            json!({"type":"function_result","name":name,"call_id":id,"result":[]}),
+                        )
+                        .with("result", WireValue::array(result)),
                     );
                 }
                 ContentBlock::Native { value }
                     if matches!(value.format(), CALL_FORMAT | RESULT_FORMAT) =>
                 {
-                    flush(&mut steps, &mut parts);
+                    flush_parts(&mut steps, &mut parts, message.role);
                     let expected = if value.format() == CALL_FORMAT {
                         "function_call"
                     } else {
                         "function_result"
                     };
-                    if value.data()["type"] != expected {
+                    if value.data().string_at("/type").as_deref() != Some(expected) {
                         return Err(invalid(
                             "Interactions native step type differs from extension format",
                         ));
                     }
-                    let mut step = value.data().clone();
-                    if let Some(scoped) = step
-                        .as_object_mut()
-                        .and_then(|object| object.remove("_sdk_continuation"))
-                    {
+                    if let Some(scoped) = value.data().payload_at("/_sdk_continuation") {
                         let reference: ContinuationRef =
-                            serde_json::from_value(scoped).map_err(|error| {
+                            serde_json::from_str(scoped.as_json_source()).map_err(|error| {
                                 invalid(format!("invalid receipt continuation: {error}"))
                             })?;
                         if req.continuation.as_ref() != Some(&reference) {
-                            return Err(invalid("Gemini native receipt does not match its originating interaction continuation"));
+                            return Err(invalid(
+                                "Gemini native receipt does not match its originating interaction continuation",
+                            ));
                         }
+                        steps.push(WireValue::owned_raw_json(without_root_field(
+                            value.data(),
+                            "_sdk_continuation",
+                        )?));
+                    } else {
+                        steps.push(WireValue::raw_json(value.data()));
                     }
-                    steps.push(step);
                 }
                 ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::GeminiInteractions,
                     value,
                 } => {
-                    flush(&mut steps, &mut parts);
-                    steps.push(value.clone());
+                    flush_parts(&mut steps, &mut parts, message.role);
+                    steps.push(WireValue::raw_json(value));
                 }
                 _ => {
                     return Err(unsupported(
                         "content block has no lossless Interactions representation",
-                    ))
+                    ));
                 }
             }
         }
-        flush(&mut steps, &mut parts);
+        flush_parts(&mut steps, &mut parts, message.role);
     }
-    let mut request =
-        InteractionRequest::model(context.request_model(), InteractionInput::steps(steps));
+    let mut request = InteractionRequest::model(
+        context.request_model(),
+        InteractionInput::steps(std::iter::repeat(Value::Null).take(steps.len())),
+    );
+    for tool in &req.tools {
+        tool.description.validate_root_string("tool description")?;
+    }
     request.tools = req
         .tools
         .iter()
-        .map(|tool| {
-            InteractionTool::function(&tool.name, &tool.description, tool.input_schema.clone())
-        })
+        // This typed helper creates only the generated request shell; final wire tools retain source.
+        .map(|tool| InteractionTool::function(&tool.name, "", Value::Null))
         .collect();
+    let mut wire_tools = req
+        .tools
+        .iter()
+        .map(|tool| {
+            WireValue::from(
+                json!({"type":"function","name":tool.name,"description":null,"parameters":null}),
+            )
+            .with("description", WireValue::raw_json(&tool.description))
+            .with("parameters", WireValue::raw_json(&tool.input_schema))
+        })
+        .collect::<Vec<_>>();
     for extension in &req.native_options {
-        request.tools.push(InteractionTool::from_value(
-            extension.decode::<GeminiComputerToolConfig>()?.tool(),
-        )?);
+        let native_tool = extension.decode::<GeminiComputerToolConfig>()?.tool();
+        request
+            .tools
+            .push(InteractionTool::from_value(native_tool.clone())?);
+        wire_tools.push(WireValue::from(native_tool));
     }
     let mut generation = json!({});
     if let Some(value) = req.max_tokens {
@@ -314,28 +448,47 @@ pub(super) fn request(
     if let Some(reference) = &req.continuation {
         body["previous_interaction_id"] = json!(reference.response_id);
     }
-    let system = req
+    let mut system_texts = req
         .system
         .iter()
-        .map(|block| block.text.as_str())
-        .chain(
-            req.messages
-                .iter()
-                .filter(|message| message.role == MessageRole::System)
-                .flat_map(|message| message.content.iter())
-                .filter_map(|block| {
-                    if let ContentBlock::Text { text, .. } = block {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                }),
-        )
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !system.is_empty() {
-        body["system_instruction"] = json!(system);
-    }
+        .map(|block| {
+            block
+                .text_payload()
+                .root_string_code_units()
+                .expect("SystemBlock carries a JSON string")
+        })
+        .collect::<Vec<_>>();
+    system_texts.extend(
+        req.messages
+            .iter()
+            .filter(|message| message.role == MessageRole::System)
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.encode_utf16().collect()),
+                ContentBlock::TextJsUtf16 {
+                    utf16_code_units, ..
+                } => Some(utf16_code_units.clone()),
+                _ => None,
+            }),
+    );
+    let system_payload = if system_texts.is_empty() {
+        None
+    } else {
+        let mut units = Vec::new();
+        for (index, text) in system_texts.into_iter().enumerate() {
+            if index > 0 {
+                units.push(b'\n' as u16);
+            }
+            units.extend(text);
+        }
+        if units.is_empty() {
+            None
+        } else {
+            let display = String::from_utf16_lossy(&units);
+            body["system_instruction"] = json!(display);
+            Some(text_payload(&units))
+        }
+    };
     if let Some(extra) = context.profile().extra["body"].as_object() {
         for (key, value) in extra {
             if body.get(key).is_some_and(|old| old != value) {
@@ -346,22 +499,30 @@ pub(super) fn request(
             body[key] = value.clone();
         }
     }
-    let encoded = serde_json::to_vec(&body).map_err(|error| invalid(error.to_string()))?;
-    if encoded.len() > 100 * 1024 * 1024 {
-        return Err(LlmError::RequestTooLarge {
-            message: "Interactions request exceeds 100 MiB".into(),
-        });
+    let mut wire_body = WireValue::from(body).with(
+        "input",
+        WireValue::from(json!({"steps":[]})).with("steps", WireValue::array(steps)),
+    );
+    if !wire_tools.is_empty() {
+        wire_body = wire_body.with("tools", WireValue::array(std::mem::take(&mut wire_tools)));
+    }
+    if let Some(system_payload) = system_payload.as_ref() {
+        wire_body = wire_body.with("system_instruction", WireValue::raw_json(system_payload));
     }
     let base = context.profile().base_url.trim_end_matches('/');
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: if base.ends_with("/interactions") {
+    let request = WireRequest::new(
+        if base.ends_with("/interactions") {
             base.into()
         } else {
             format!("{base}/interactions")
         },
-        headers: vec![("content-type".into(), "application/json".into())],
-        body: encoded.into(),
-        timeout: None,
-    })
+        vec![("content-type".into(), "application/json".into())],
+        wire_body,
+    );
+    if request.body_len()? > 100 * 1024 * 1024 {
+        return Err(LlmError::RequestTooLarge {
+            message: "Interactions request exceeds 100 MiB".into(),
+        });
+    }
+    request.encode()
 }

@@ -103,22 +103,29 @@ pub fn request<'a>(
     }
 
     let mut body = Map::new();
+    let mut exact_instructions = None;
     body.insert(
         "model".to_owned(),
         Value::String(opts.request_model.clone()),
     );
     if !req.system.is_empty() && !crate::providers::openai::prompt_cache::has_system_breakpoint(req)
     {
-        body.insert(
-            "instructions".to_owned(),
-            Value::String(
-                req.system
-                    .iter()
-                    .map(|b| b.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n\n"),
-            ),
-        );
+        let mut units = Vec::new();
+        for (index, block) in req.system.iter().enumerate() {
+            if index > 0 {
+                units.extend("\n\n".encode_utf16());
+            }
+            units.extend(
+                block
+                    .text_payload()
+                    .root_string_code_units()
+                    .unwrap_or_default(),
+            );
+        }
+        let source = crate::protocol::JsonPayload::string_from_utf16_code_units(&units);
+        let display = String::from_utf16_lossy(&units);
+        body.insert("instructions".to_owned(), Value::String(display.clone()));
+        exact_instructions = Some((source, display));
     }
     body.insert("input".to_owned(), Value::Null);
     if let Some(id) = &req.continuation {
@@ -127,17 +134,16 @@ pub fn request<'a>(
             Value::String(id.response_id.as_str().to_owned()),
         );
     }
+    let include_defer_loading = has_openrouter_tool_search || has_openai_tool_search;
+    let encoded_tools = req
+        .tools
+        .iter()
+        .map(|tool| encode_tool(tool, include_defer_loading))
+        .collect::<Result<Vec<_>, _>>()?;
     if !req.tools.is_empty() {
         body.insert(
             "tools".to_owned(),
-            Value::Array(
-                req.tools
-                    .iter()
-                    .map(|tool| {
-                        encode_tool(tool, has_openrouter_tool_search || has_openai_tool_search)
-                    })
-                    .collect(),
-            ),
+            Value::Array(std::iter::repeat_n(Value::Null, req.tools.len()).collect()),
         );
         body.insert(
             "tool_choice".to_owned(),
@@ -288,16 +294,37 @@ pub fn request<'a>(
     } else {
         format!("{}/responses", profile.base_url.trim_end_matches('/'))
     };
-    let mut body = WireValue::from(Value::Object(body)).with("input", WireValue::array(input));
+    let instruction_override = exact_instructions
+        .filter(|(_, display)| {
+            profile.extra["body"].get("instructions").is_none()
+                && body.get("instructions") == Some(&Value::String(display.clone()))
+        })
+        .map(|(source, _)| source);
+    let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?
+        .with("input", WireValue::array(input));
+    if let Some(instructions) = instruction_override {
+        body = body.with("instructions", WireValue::owned_raw_json(instructions));
+    }
     if !req.tools.is_empty() {
         body = body.map_array_field("tools", |index, tool| {
-            let has_schema = tool.get("parameters").is_some();
-            let tool = WireValue::from(tool);
-            match req.tools.get(index) {
-                Some(spec) if has_schema => {
-                    tool.with("parameters", WireValue::borrowed(&spec.input_schema))
-                }
-                _ => tool,
+            let Some(spec) = req.tools.get(index) else {
+                return WireValue::from(tool);
+            };
+            let payload = &encoded_tools[index];
+            let tool = WireValue::owned_raw_json(payload.clone());
+            if payload.raw_source_at("/parameters").is_some() {
+                tool.with("parameters", WireValue::raw_json(&spec.input_schema))
+            } else {
+                tool
+            }
+        });
+    }
+    if let Some(parameters) = openai_tool_search.and_then(|config| config.parameters.as_ref()) {
+        body = body.map_array_field("tools", |_, tool| {
+            if tool.get("type").and_then(Value::as_str) == Some("tool_search") {
+                WireValue::from(tool).with("parameters", WireValue::raw_json(parameters))
+            } else {
+                WireValue::from(tool)
             }
         });
     }
@@ -342,7 +369,7 @@ fn encode_message<'a>(
                     });
                 }
                 if matches!(
-                    value.get("type").and_then(Value::as_str),
+                    value.string_at("/type").as_deref(),
                     Some("computer_call" | "computer_call_output")
                 ) {
                     return Err(LlmError::UnsupportedCapability {
@@ -356,9 +383,9 @@ fn encode_message<'a>(
                     message_index,
                     block_index,
                 ) {
-                    crate::providers::openai::prompt_cache::mark_provider_message(value)
+                    crate::providers::openai::prompt_cache::mark_provider_message(value)?
                 } else {
-                    WireValue::borrowed(value)
+                    WireValue::raw_json(value)
                 };
                 input.push(item);
             }
@@ -445,7 +472,7 @@ fn encode_message<'a>(
                         "name": name,
                         // Arguments go on the wire as a JSON string, as on the
                         // Chat wire.
-                        "arguments": args.to_string(),
+                        "arguments": args.canonical_json(crate::exact_json::JsonEncoding::Serde)?,
                     }))
                     .into(),
                 );
@@ -462,8 +489,8 @@ fn encode_message<'a>(
                     message_index,
                     block_index,
                     content,
-                    blocks.as_deref(),
-                );
+                    blocks.as_ref(),
+                )?;
                 input.push(
                     WireValue::from(json!({
                         "type": "function_call_output",
@@ -555,7 +582,7 @@ fn reject_duplicate_or_raw_computer_declarations(
     }
     if request.hosted_tools.iter().any(|tool| {
         matches!(tool, crate::protocol::HostedTool::Native(extension)
-            if extension.format() == "openai.hosted_tool.v1" && extension.data()["type"] == "computer")
+            if extension.format() == "openai.hosted_tool.v1" && extension.data().string_is("/type", "computer"))
     }) {
         return Err(LlmError::InvalidRequest {
             message: "OpenAI computer use must use the typed native computer tool option, not a hosted-tool payload".into(),
@@ -591,7 +618,7 @@ pub(super) fn validate_computer_request<'a>(
             match block {
                 ContentBlock::ProviderContent { value, .. }
                     if matches!(
-                        value.get("type").and_then(Value::as_str),
+                        value.string_at("/type").as_deref(),
                         Some("computer_call" | "computer_call_output")
                     ) =>
                 {
@@ -641,17 +668,22 @@ pub(super) fn validate_computer_request<'a>(
 }
 
 fn validate_provider_item_replay(
-    value: &Value,
+    value: &crate::protocol::JsonPayload,
     request: &crate::protocol::ChatRequest,
 ) -> Result<(), LlmError> {
-    if value.get("type").and_then(Value::as_str) != Some("mcp_approval_response") {
+    if !value.string_is("/type", "mcp_approval_response") {
         return Ok(());
     }
     let approval_id = value
-        .get("approval_request_id")
-        .and_then(Value::as_str)
+        .string_at("/approval_request_id")
         .filter(|id| !id.trim().is_empty() && !id.chars().any(char::is_control));
-    if approval_id.is_none() || value.get("approve").and_then(Value::as_bool).is_none() {
+    let approval_id_is_scalar = value
+        .string_units_at("/approval_request_id")
+        .is_some_and(|units| String::from_utf16(&units).is_ok());
+    let approve_is_bool = value
+        .raw_source_at("/approve")
+        .is_some_and(|source| matches!(source.as_str(), "true" | "false"));
+    if approval_id.is_none() || !approval_id_is_scalar || !approve_is_bool {
         return Err(LlmError::InvalidRequest {
             message: "MCP approval response requires approval_request_id and approve".into(),
         });
@@ -674,18 +706,25 @@ fn flush<'a>(role: &str, parts: &mut Vec<WireValue<'a>>, input: &mut Vec<WireVal
     );
 }
 
-fn encode_tool(t: &ToolSpec, include_defer_loading: bool) -> Value {
+fn encode_tool(
+    t: &ToolSpec,
+    include_defer_loading: bool,
+) -> Result<crate::protocol::JsonPayload, LlmError> {
     let mut tool = json!({
         "type": "function",
         "name": t.name,
-        "description": t.description,
+        "description": Value::Null,
         "parameters": Value::Null,
         "strict": t.strict,
     });
     if include_defer_loading && t.defer_loading {
         tool["defer_loading"] = Value::Bool(true);
     }
-    crate::codecs::request_controls::tool_extensions(t, tool)
+    crate::codecs::request_controls::tool_extensions(
+        t,
+        tool,
+        crate::exact_json::JsonEncoding::Serde,
+    )
 }
 
 fn encode_openai_tool_search(
@@ -695,7 +734,7 @@ fn encode_openai_tool_search(
     if config.execution == OpenAiToolSearchExecution::Client {
         tool["execution"] = Value::String("client".into());
         tool["description"] = json!(config.description);
-        tool["parameters"] = config.parameters.clone().unwrap_or(Value::Null);
+        tool["parameters"] = Value::Null;
     }
     tool
 }

@@ -571,13 +571,17 @@ impl Pinned<'_> {
             .with_deadline(deadline)
             .send(http)
             .await
-            .map_err(|source| match source {
-                LlmError::Transport { .. }
-                | LlmError::TransportTimeout { .. }
-                | LlmError::StreamInterrupted { .. } => {
+            .map_err(|source| {
+                if matches!(
+                    source.classification_source(),
+                    LlmError::Transport { .. }
+                        | LlmError::TransportTimeout { .. }
+                        | LlmError::StreamInterrupted { .. }
+                ) {
                     BackgroundError::SubmitOutcomeUnknown { source }
+                } else {
+                    BackgroundError::Llm(source)
                 }
-                other => BackgroundError::Llm(other),
             })?;
         let template = BackgroundJobRef {
             provider_id: profile.provider_id.clone(),

@@ -1,6 +1,8 @@
 //! Native GGt guards over a current APIError envelope. Keep IR recognition
 //! separate from pF policy guards: only IR suppresses failed-probe accounting.
 use super::beta_repair::{capability_rejected, error_message, prefix_rejected};
+use crate::protocol::JsonPayload;
+#[cfg(test)]
 use serde_json::Value;
 use std::sync::OnceLock;
 
@@ -105,7 +107,7 @@ fn media_rejected(message: &str, units: &[u8]) -> bool {
 /// Complete native pF boolean composition. Model availability is a routing
 /// fact, supplied by its owner rather than inferred from a generic 400/404.
 /// First-party Gft returns unknown, so its main Messages caller supplies false.
-pub fn policy_denied(status: u16, body: &Value, model_refused: bool) -> bool {
+pub fn policy_denied(status: u16, body: &JsonPayload, model_refused: bool) -> bool {
     if model_refused {
         return true;
     }
@@ -276,7 +278,7 @@ fn mid_system_copy(message: &str) -> bool {
 
 /// GGt's prefix-healing marker belongs to the error object, so its owner must
 /// supply it explicitly. No SDK error-category or HTTP auth inference is used.
-pub fn known_error(status: u16, body: &Value, prefix_heal_declined: bool) -> bool {
+pub fn known_error(status: u16, body: &JsonPayload, prefix_heal_declined: bool) -> bool {
     let message = error_message(status, body);
     let lower = message.to_lowercase();
     if (prefix_rejected(status, &message) && !prefix_heal_declined)
@@ -287,7 +289,7 @@ pub fn known_error(status: u16, body: &Value, prefix_heal_declined: bool) -> boo
         || capability_rejected(&message, "max_tokens_context_overflow")
         || lower.contains("credit balance is too low")
         || lower.contains("organization has been disabled")
-        || body["error"]["details"]["error_code"] == "dlp_request_denied"
+        || body.string_at("/error/details/error_code").as_deref() == Some("dlp_request_denied")
     {
         return true;
     }
@@ -297,7 +299,7 @@ pub fn known_error(status: u16, body: &Value, prefix_heal_declined: bool) -> boo
     let normalized = lower.replace('`', "");
     message.contains("Fast mode is not enabled")
         || message.contains("cannot be used as an advisor when the request model is")
-        || body["error"]["type"] == "policy_blocked"
+        || body.string_at("/error/type").as_deref() == Some("policy_blocked")
         || message.contains("Output blocked by content filtering policy")
         || mid_system_copy(&message)
         || capability_rejected(&message, "mid_conv_system")
@@ -325,7 +327,7 @@ pub struct RecognitionContext<'a> {
 /// the host resolve identities/aliases without moving provider parsing there.
 pub fn speed_rejected_for(
     status: u16,
-    body: &Value,
+    body: &JsonPayload,
     model: &str,
     identity: impl Fn(&str) -> String,
 ) -> bool {
@@ -345,7 +347,7 @@ pub fn speed_rejected_for(
     false
 }
 
-pub fn fast_not_enabled(status: u16, body: &Value) -> bool {
+pub fn fast_not_enabled(status: u16, body: &JsonPayload) -> bool {
     status == 400 && error_message(status, body).contains("Fast mode is not enabled")
 }
 
@@ -353,7 +355,7 @@ pub fn fast_not_enabled(status: u16, body: &Value) -> bool {
 /// current request enabled fast mode; only the actual repair uses that fact.
 pub fn recognized(
     status: u16,
-    body: &Value,
+    body: &JsonPayload,
     context: RecognitionContext<'_>,
     identity: impl Fn(&str) -> String,
 ) -> bool {
@@ -365,6 +367,11 @@ pub fn recognized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn payload(value: &Value) -> JsonPayload {
+        JsonPayload::from_generated_value(value).expect("fixture JSON can be encoded")
+    }
+
     fn policy_fixture() -> Value {
         serde_json::from_str(include_str!(
             "../../../tests/fixtures/error_policy_2_1_288.json"
@@ -384,13 +391,14 @@ mod tests {
                 |model: &str| f["identities"][model].as_str().unwrap_or(model).to_owned();
             let status = case["status"].as_u64().unwrap() as u16;
             let model = case["request_model"].as_str().unwrap();
+            let body = payload(&case["body"]);
             assert_eq!(
-                fast_not_enabled(status, &case["body"]),
+                fast_not_enabled(status, &body),
                 case["fastNotEnabled"].as_bool().unwrap(),
                 "{case}"
             );
             assert_eq!(
-                speed_rejected_for(status, &case["body"], model, identity),
+                speed_rejected_for(status, &body, model, identity),
                 case["speedMatches"].as_bool().unwrap(),
                 "{case}"
             );
@@ -401,7 +409,7 @@ mod tests {
                 prefix_heal_declined: case["declined"].as_bool().unwrap(),
             };
             assert_eq!(
-                recognized(status, &case["body"], context, identity),
+                recognized(status, &body, context, identity),
                 case["expected"].as_bool().unwrap(),
                 "{case}"
             );
@@ -416,7 +424,7 @@ mod tests {
             assert_eq!(
                 policy_denied(
                     case["status"].as_u64().unwrap() as u16,
-                    &case["body"],
+                    &payload(&case["body"]),
                     case["model_refused"].as_bool().unwrap()
                 ),
                 case["expected"].as_bool().unwrap(),
@@ -451,11 +459,12 @@ mod tests {
                 }
             }
             let status = case["status"].as_u64().unwrap() as u16;
+            let body = payload(&case["body"]);
             let retry = probe.on_error(
                 status,
                 probe_admission(
                     status,
-                    &case["body"],
+                    &body,
                     true,
                     false,
                     RecognitionContext::default(),
@@ -488,7 +497,7 @@ mod tests {
             assert_eq!(
                 known_error(
                     case["status"].as_u64().unwrap() as u16,
-                    &case["body"],
+                    &payload(&case["body"]),
                     case["declined"].as_bool().unwrap()
                 ),
                 case["expected"].as_bool().unwrap(),

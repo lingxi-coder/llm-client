@@ -1,7 +1,7 @@
 //! Provider-specific request, tool, and replay types.
 
 use crate::protocol::{
-    ContentBlock, ConversationMessage, LlmError, ProtocolFamily, ProviderFileSource,
+    ContentBlock, ConversationMessage, JsonPayload, LlmError, ProtocolFamily, ProviderFileSource,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -188,11 +188,15 @@ impl McpApprovalResponse {
     pub fn into_assistant_message(self) -> ConversationMessage {
         ConversationMessage::assistant(vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: serde_json::json!({
-                "type": "mcp_approval_response",
-                "approval_request_id": self.approval_request_id,
-                "approve": self.approve
-            }),
+            value: crate::protocol::JsonPayload::parse(
+                &serde_json::json!({
+                    "type": "mcp_approval_response",
+                    "approval_request_id": self.approval_request_id,
+                    "approve": self.approve
+                })
+                .to_string(),
+            )
+            .expect("typed OpenAI MCP approval response is JSON"),
         }])
     }
 }
@@ -220,7 +224,7 @@ pub struct OpenAiToolSearchConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<Value>,
+    pub parameters: Option<JsonPayload>,
 }
 
 fn is_server_tool_search(value: &OpenAiToolSearchExecution) -> bool {
@@ -242,7 +246,7 @@ impl OpenAiToolSearchConfig {
                     .description
                     .as_deref()
                     .is_none_or(|description| description.trim().is_empty())
-                    || !self.parameters.as_ref().is_some_and(Value::is_object) =>
+                    || !self.parameters.as_ref().is_some_and(JsonPayload::is_root_object) =>
             {
                 Err(LlmError::InvalidRequest {
                     message: "OpenAI client tool search requires a description and object parameters schema".into(),

@@ -16,6 +16,9 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
@@ -45,15 +48,16 @@ fn request() -> ChatRequest {
 fn deferred_tool(name: &str) -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: name.into(),
-        description: format!("Look up {name}"),
-        input_schema: json!({
+        description: lingxi_llm_client::protocol::JsonPayload::string(&format!("Look up {name}")),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"query":{"type":"string"}},
             "required":["query"],
             "additionalProperties":false
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
         strict: true,
         defer_loading: true,
         native_options: Vec::new(),
@@ -122,12 +126,15 @@ fn client_search_encodes_its_schema_and_requires_gpt_5_4_or_later() {
             OpenAiToolSearchConfig {
                 execution: OpenAiToolSearchExecution::Client,
                 description: Some("Find the tools needed for this task".into()),
-                parameters: Some(json!({
-                    "type":"object",
-                    "properties":{"goal":{"type":"string"}},
-                    "required":["goal"],
-                    "additionalProperties":false
-                })),
+                parameters: Some(
+                    lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
+                        "type":"object",
+                        "properties":{"goal":{"type":"string"}},
+                        "required":["goal"],
+                        "additionalProperties":false
+                    }))
+                    .unwrap(),
+                ),
             },
         )
         .into(),
@@ -154,6 +161,46 @@ fn client_search_encodes_its_schema_and_requires_gpt_5_4_or_later() {
     }
     assert!(encode(&req, "gpt-5.5").is_ok());
     assert!(encode(&req, "gpt-6-sol").is_ok());
+}
+
+#[test]
+fn tagged_tool_search_config_keeps_deep_and_lone_surrogate_parameters() {
+    let nested = format!("{}0{}", "[".repeat(16_384), "]".repeat(16_384));
+    let mut source = String::from(
+        r#"{"type":"tool_search","config":{"execution":"client","description":"search","parameters":{"type":"object","\ud800":"\ud800","deep":"#,
+    );
+    source.push_str(&nested);
+    source.push_str("}}}");
+    let decoded: lingxi_llm_client::providers::openai::native::OpenAiHostedTool =
+        serde_json::from_str(&source).unwrap();
+    let lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(config) =
+        decoded
+    else {
+        panic!("tool search variant expected")
+    };
+    let parameters = config.parameters.unwrap();
+    assert!(parameters.as_json_source().contains(&nested));
+    assert!(parameters.as_json_source().contains(r#""\ud800":"\ud800""#));
+
+    let mut request = request();
+    request.hosted_tools.push(
+        lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
+            OpenAiToolSearchConfig {
+                execution: OpenAiToolSearchExecution::Client,
+                description: Some("search".into()),
+                parameters: Some(parameters),
+            },
+        )
+        .into(),
+    );
+    let profile = profile("gpt-6-astra");
+    let context = CodecContext::new(&profile, "gpt-6-astra", RequestMode::Complete);
+    let encoded = OpenAiResponsesCodec
+        .encode_request(EncodeRequest::new(&request), &context)
+        .unwrap();
+    let body = std::str::from_utf8(&encoded.body).unwrap();
+    assert!(body.contains(&nested));
+    assert!(body.contains(r#""\ud800":"\ud800""#));
 }
 
 #[test]
@@ -195,7 +242,7 @@ fn client_search_calls_require_host_action_and_keep_call_id_correlated_on_replay
     assert!(response.message.content.iter().any(|block| matches!(
         block,
         ContentBlock::ProviderContent { protocol: ProtocolFamily::OpenAiResponses, value }
-            if value == &call && value["call_id"] == "tsc_123"
+            if json_payload_fixture::source_matches(value, &call) && call["call_id"] == "tsc_123"
     )));
 
     let mut replay = request();
@@ -204,7 +251,12 @@ fn client_search_calls_require_host_action_and_keep_call_id_correlated_on_replay
             OpenAiToolSearchConfig {
                 execution: OpenAiToolSearchExecution::Client,
                 description: Some("Find the right tool".into()),
-                parameters: Some(json!({"type":"object","properties":{}})),
+                parameters: Some(
+                    lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
+                        "type":"object","properties":{}
+                    }))
+                    .unwrap(),
+                ),
             },
         )
         .into(),
@@ -212,11 +264,11 @@ fn client_search_calls_require_host_action_and_keep_call_id_correlated_on_replay
     replay.messages = vec![ConversationMessage::assistant(vec![
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: call.clone(),
+            value: json_payload_fixture::generated(&call),
         },
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: output.clone(),
+            value: json_payload_fixture::generated(&output),
         },
     ])];
     assert_eq!(
@@ -260,7 +312,13 @@ fn hosted_server_search_output_stays_native_without_becoming_a_client_tool_call(
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(native, vec![&call, &output]);
+    assert_eq!(
+        native,
+        vec![
+            &json_payload_fixture::generated(&call),
+            &json_payload_fixture::generated(&output)
+        ]
+    );
 }
 
 #[test]
@@ -288,7 +346,7 @@ fn streamed_client_search_is_native_and_ends_with_requires_action() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if value == &call))
+            .filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if json_payload_fixture::source_matches(value, &call)))
             .count(),
         1
     );

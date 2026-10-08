@@ -1,19 +1,19 @@
 //! OpenRouter Chat audio capabilities and option validation.
 use crate::codecs::CodecContext;
-use crate::protocol::{ContentBlock, LlmError, MessageRole, ProviderProfile};
-use serde_json::Value;
+use crate::protocol::{ContentBlock, JsonPayload, LlmError, MessageRole, ProviderProfile};
+use crate::response_json::FlatJsonKind;
 
 #[derive(Debug)]
-pub(crate) struct AudioOutputConfig<'a> {
-    pub(crate) voice: &'a str,
-    pub(crate) format: &'a str,
+pub(crate) struct AudioOutputConfig {
+    pub(crate) voice: String,
+    pub(crate) format: String,
 }
 
-pub(crate) fn openrouter_audio_output<'a>(
-    value: Option<&'a Value>,
+pub(crate) fn openrouter_audio_output(
+    value: Option<&JsonPayload>,
     profile: &ProviderProfile,
     opts: &CodecContext,
-) -> Result<Option<AudioOutputConfig<'a>>, LlmError> {
+) -> Result<Option<AudioOutputConfig>, LlmError> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -28,28 +28,39 @@ pub(crate) fn openrouter_audio_output<'a>(
             message: "OpenRouter Chat audio output requires streaming".into(),
         });
     }
-    let config = value.as_object().ok_or_else(|| LlmError::InvalidRequest {
-        message: "metadata.openrouter_chat_audio must be an object".into(),
-    })?;
-    if config.keys().any(|key| key != "voice" && key != "format") {
+    if value.kind_at("") != Some(FlatJsonKind::Object) {
+        return Err(LlmError::InvalidRequest {
+            message: "metadata.openrouter_chat_audio must be an object".into(),
+        });
+    }
+    if !value.has_only_fields_at("", &["voice", "format"]) {
         return Err(LlmError::InvalidRequest {
             message: "metadata.openrouter_chat_audio accepts only voice and format".into(),
         });
     }
-    let voice = config
-        .get("voice")
-        .and_then(Value::as_str)
-        .filter(|voice| !voice.trim().is_empty())
+    let voice_units = value
+        .string_units_at("/voice")
         .ok_or_else(|| LlmError::InvalidRequest {
             message: "metadata.openrouter_chat_audio.voice must be a non-empty string".into(),
         })?;
-    let format = config
-        .get("format")
-        .and_then(Value::as_str)
-        .ok_or_else(|| LlmError::InvalidRequest {
-            message: "metadata.openrouter_chat_audio.format must be a string".into(),
-        })?;
-    if !["wav", "mp3", "flac", "opus", "pcm16"].contains(&format) {
+    let voice = String::from_utf16(&voice_units).map_err(|_| LlmError::InvalidRequest {
+        message: "metadata.openrouter_chat_audio.voice must be valid Unicode".into(),
+    })?;
+    if voice.trim().is_empty() {
+        return Err(LlmError::InvalidRequest {
+            message: "metadata.openrouter_chat_audio.voice must be a non-empty string".into(),
+        });
+    }
+    let format_units =
+        value
+            .string_units_at("/format")
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "metadata.openrouter_chat_audio.format must be a string".into(),
+            })?;
+    let format = String::from_utf16(&format_units).map_err(|_| LlmError::InvalidRequest {
+        message: "metadata.openrouter_chat_audio.format must be valid Unicode".into(),
+    })?;
+    if !["wav", "mp3", "flac", "opus", "pcm16"].contains(&format.as_str()) {
         return Err(LlmError::InvalidRequest {
             message: "OpenRouter Chat audio output format must be wav, mp3, flac, opus, or pcm16"
                 .into(),
@@ -89,8 +100,9 @@ pub(crate) fn validate_audio_request(
     if has_audio {
         validate_model_audio_modality(profile, &opts.request_model, true)?;
     }
-    if let Some(audio) = req.metadata.get("openrouter_chat_audio") {
-        openrouter_audio_output(Some(audio), profile, opts)?;
+    let audio = req.metadata.payload_at("/openrouter_chat_audio");
+    if audio.is_some() {
+        openrouter_audio_output(audio.as_ref(), profile, opts)?;
     }
     Ok(())
 }

@@ -7,7 +7,10 @@ use super::decode;
 use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
-use crate::protocol::{LlmError, ProtocolFamily, StopReason, StreamEvent};
+use crate::protocol::{
+    JsonPayload, JsonPayloadFragment, LlmError, ProtocolFamily, StopReason, StreamEvent,
+};
+use crate::response_json::{text_delta, FlatJsonKind, ResponseJsonScanner};
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -44,16 +47,73 @@ impl EventDecoder for GeminiStreamDecoder {
         if data.is_empty() {
             return Ok(vec![]);
         }
-        let root: Value = serde_json::from_str(data).map_err(|_| LlmError::InvalidRequest {
-            message: "stream frame is not valid JSON".to_owned(),
+        let scanner =
+            ResponseJsonScanner::parse(data.as_bytes(), "stream frame is not valid JSON")?;
+        if scanner
+            .kind_at("/error")
+            .is_some_and(|kind| kind != FlatJsonKind::Null)
+        {
+            let selected_text = scanner.provider_error_text_at("/error/message", None)?;
+            let provider_text = match &selected_text {
+                Some(text) => text.prefixed("500 "),
+                None => scanner.provider_error_text_or_source_at(
+                    "/error/message",
+                    Some(500),
+                    "/error",
+                )?,
+            };
+            let body = scanner.provider_error_classification_body(
+                "/error",
+                &["message", "status", "code", "type"],
+                selected_text.as_ref(),
+            );
+            return Err(decode::classify_error(500, &body, None, false)
+                .with_provider_error_text(provider_text));
+        }
+        let root_payload = JsonPayload::parse(data).map_err(|error| LlmError::InvalidRequest {
+            message: format!("Gemini stream frame is invalid JSON: {error}"),
         })?;
+        let mut opaque_paths = [
+            "/candidates/0/groundingMetadata",
+            "/candidates/0/urlContextMetadata",
+        ]
+        .into_iter()
+        .filter(|pointer| scanner.raw_source_at(pointer).is_some())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let mut native_parts = HashSet::new();
+        for index in 0..scanner
+            .array_len("/candidates/0/content/parts")
+            .unwrap_or(0)
+        {
+            let part = format!("/candidates/0/content/parts/{index}");
+            if [
+                "executableCode",
+                "codeExecutionResult",
+                "inlineData",
+                "toolCall",
+                "toolResponse",
+            ]
+            .iter()
+            .any(|field| scanner.raw_source_at(&format!("{part}/{field}")).is_some())
+            {
+                opaque_paths.push(part);
+                native_parts.insert(index);
+                continue;
+            }
+            let pointer = format!("{part}/functionCall/args");
+            if scanner.raw_source_at(&pointer).is_some() {
+                opaque_paths.push(pointer);
+            }
+        }
+        let mut response_json = scanner.into_response_json_with_opaque_paths(&opaque_paths)?;
+        for pointer in &opaque_paths {
+            let _ = response_json.take_raw_json_source_at(pointer)?;
+        }
+        let root = response_json.value.clone();
 
         if let Some(u) = root.get("usageMetadata").filter(|v| !v.is_null()) {
             self.usage_raw = Some(u.clone());
-        }
-
-        if root.get("error").is_some_and(|error| !error.is_null()) {
-            return Err(decode::classify_error(500, &root, None));
         }
 
         let mut out = Vec::new();
@@ -83,11 +143,19 @@ impl EventDecoder for GeminiStreamDecoder {
             .and_then(Value::as_array)
             .and_then(|c| c.first())
         else {
+            response_json.finish()?;
             return Ok(out);
         };
 
-        self.search
-            .emit(web_search_decode::gemini(candidate), &mut out);
+        let candidate_payload = root_payload
+            .raw_source_at("/candidates/0")
+            .and_then(|source| JsonPayload::parse(&source).ok());
+        self.search.emit(
+            candidate_payload
+                .as_ref()
+                .and_then(web_search_decode::gemini_payload),
+            &mut out,
+        );
 
         let parts = candidate
             .get("content")
@@ -98,7 +166,28 @@ impl EventDecoder for GeminiStreamDecoder {
         self.used_call_ids.extend(decode::provider_call_ids(parts));
         let mut saw_text_part_in_frame = false;
         let mut saw_reasoning_part_in_frame = false;
-        for part in parts {
+        for (part_index, part) in parts.iter().enumerate() {
+            if native_parts.contains(&part_index) {
+                let pointer = format!("/candidates/0/content/parts/{part_index}");
+                if let Some(source) = root_payload.raw_source_at(&pointer) {
+                    let value =
+                        JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+                            message: format!("Gemini native Part is invalid JSON: {error}"),
+                        })?;
+                    self.text_block = None;
+                    self.reasoning_block = None;
+                    let block = self.next_block;
+                    self.next_block += 1;
+                    out.push(StreamEvent::ProviderContent {
+                        block,
+                        protocol: self
+                            .protocol
+                            .unwrap_or(ProtocolFamily::GeminiGenerateContent),
+                        value,
+                    });
+                }
+                continue;
+            }
             let signature = part
                 .get("thoughtSignature")
                 .and_then(Value::as_str)
@@ -117,6 +206,18 @@ impl EventDecoder for GeminiStreamDecoder {
                 let (id, provider_id) = decode::call_id(call, &mut self.used_call_ids);
                 // Arguments arrive whole here rather than in fragments, so the
                 // one delta carries the complete object.
+                let args_pointer =
+                    format!("/candidates/0/content/parts/{part_index}/functionCall/args");
+                let arguments_fragment = root_payload
+                    .raw_source_at(&args_pointer)
+                    .and_then(|source| JsonPayload::parse(&source).ok())
+                    .and_then(|payload| {
+                        payload
+                            .canonical_json(crate::exact_json::JsonEncoding::Serde)
+                            .ok()
+                    })
+                    .map(|source| JsonPayloadFragment::from_text(&source))
+                    .unwrap_or_else(|| JsonPayloadFragment::from_text("null"));
                 out.push(StreamEvent::ToolCallDelta {
                     block,
                     id,
@@ -124,35 +225,12 @@ impl EventDecoder for GeminiStreamDecoder {
                     caller: None,
                     toolset_name: None,
                     name,
-                    arguments_fragment: call
-                        .get("args")
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                        .to_string(),
+                    arguments_fragment,
                 });
                 if let Some(signature) = signature {
                     out.push(StreamEvent::ThoughtSignature { block, signature });
                 }
                 out.push(StreamEvent::BlockEnd { block });
-                continue;
-            }
-            if part.get("executableCode").is_some()
-                || part.get("codeExecutionResult").is_some()
-                || part.get("inlineData").is_some()
-                || part.get("toolCall").is_some()
-                || part.get("toolResponse").is_some()
-            {
-                self.text_block = None;
-                self.reasoning_block = None;
-                let block = self.next_block;
-                self.next_block += 1;
-                out.push(StreamEvent::ProviderContent {
-                    block,
-                    protocol: self
-                        .protocol
-                        .unwrap_or(ProtocolFamily::GeminiGenerateContent),
-                    value: part.clone(),
-                });
                 continue;
             }
             let Some(text) = part.get("text").and_then(Value::as_str) else {
@@ -188,10 +266,11 @@ impl EventDecoder for GeminiStreamDecoder {
                     self.next_block += 1;
                     b
                 });
-                out.push(StreamEvent::TextDelta {
-                    block,
-                    text: text.to_owned(),
-                });
+                let decoded = response_json.take_text(
+                    &format!("/candidates/0/content/parts/{part_index}/text"),
+                    text,
+                )?;
+                out.push(text_delta(block, decoded));
                 if let Some(signature) = signature {
                     out.push(StreamEvent::ThoughtSignature { block, signature });
                     self.text_block = None;
@@ -206,6 +285,7 @@ impl EventDecoder for GeminiStreamDecoder {
         {
             self.stop = Some(decode::stop_reason(Some(f)));
         }
+        response_json.finish()?;
         Ok(out)
     }
 
@@ -253,5 +333,48 @@ impl GeminiStreamDecoder {
             protocol: Some(context.profile().protocol),
             ..Self::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod utf16_stream_tests {
+    use super::*;
+
+    #[test]
+    fn stream_text_part_retains_lone_units() {
+        let mut decoder = GeminiStreamDecoder::default();
+        let events = decoder
+            .decode_frame(
+                br#"{"modelVersion":"gemini-test","candidates":[{"content":{"parts":[{"text":"A\ud800B"}]}}]}"#,
+            )
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::TextDeltaJsUtf16 { text, utf16_code_units, .. }
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        )));
+    }
+}
+
+#[cfg(test)]
+mod provider_error_utf16_tests {
+    use super::*;
+
+    #[test]
+    fn stream_error_text_keeps_exact_units_and_classification() {
+        let mut decoder = GeminiStreamDecoder::default();
+        let error = decoder
+            .decode_frame(br#"{"error":{"status":"INVALID_ARGUMENT","message":"bad\ud800"}}"#)
+            .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(text.display(), "500 bad�");
+        assert_eq!(
+            text.utf16_code_units(),
+            &[53, 48, 48, 32, 98, 97, 100, 0xd800]
+        );
     }
 }

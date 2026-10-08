@@ -42,6 +42,53 @@ pub fn chatgpt_body(body: &mut serde_json::Value) {
         body.entry("instructions").or_insert_with(|| "".into());
     }
 }
+/// Apply generation auth controls to flat source JSON. Unknown fields, exact
+/// string/key units, and deep provider data never pass through a Value tree.
+pub(crate) fn chatgpt_source_body(
+    body: &crate::protocol::JsonPayload,
+) -> Result<crate::protocol::JsonPayload, crate::protocol::LlmError> {
+    let scanner = body.scanner()?;
+    let Some(entries) = scanner.root_node().object_entries() else {
+        return Ok(body.clone());
+    };
+    let mut fields = Vec::new();
+    let mut has_store = false;
+    let mut has_instructions = false;
+    for entry in entries {
+        let key = String::from_utf16(entry.key_units).ok();
+        if matches!(
+            key.as_deref(),
+            Some("max_output_tokens" | "temperature" | "top_p")
+        ) {
+            continue;
+        }
+        let source = if key.as_deref() == Some("store") {
+            has_store = true;
+            "false".to_owned()
+        } else {
+            if key.as_deref() == Some("instructions") {
+                has_instructions = true;
+            }
+            crate::exact_json::serialize_json_node(
+                entry.value,
+                crate::exact_json::JsonEncoding::Serde,
+            )?
+        };
+        fields.push((entry.key_units.to_vec(), source));
+    }
+    if !has_store {
+        fields.push(("store".encode_utf16().collect(), "false".into()));
+    }
+    if !has_instructions {
+        fields.push(("instructions".encode_utf16().collect(), "\"\"".into()));
+    }
+    crate::protocol::JsonPayload::object_from_fields(&fields).map_err(|error| {
+        crate::protocol::LlmError::InvalidRequest {
+            message: format!("could not apply generation auth body policy: {error}"),
+        }
+    })
+}
+
 pub fn copilot(
     headers: &mut BTreeMap<String, String>,
     token: &str,

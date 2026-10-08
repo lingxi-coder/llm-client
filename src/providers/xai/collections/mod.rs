@@ -777,12 +777,18 @@ impl<'a> XaiCollectionsClient<'a> {
             .with_deadline(deadline)
             .execute_stream_bounded(request, MAX_RESPONSE_BYTES)
             .await
-            .map_err(|error| match error {
-                LlmError::UnsupportedCapability { .. } => XaiCollectionsError::Transport(error),
-                other => outcome_unknown(
-                    "direct document upload",
-                    XaiCollectionsError::Transport(other),
-                ),
+            .map_err(|error| {
+                if matches!(
+                    error.classification_source(),
+                    LlmError::UnsupportedCapability { .. }
+                ) {
+                    XaiCollectionsError::Transport(error)
+                } else {
+                    outcome_unknown(
+                        "direct document upload",
+                        XaiCollectionsError::Transport(error),
+                    )
+                }
             })?;
         let request_id = response
             .header("x-request-id")

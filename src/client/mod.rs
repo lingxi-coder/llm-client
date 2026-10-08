@@ -10,6 +10,7 @@ pub use crate::account;
 mod executor;
 mod frozen_pricing;
 mod live;
+mod model_complete;
 pub use frozen_pricing::{
     resolve_anthropic_server_fallback_summary_model, AnthropicFallbackCostBuckets,
     AnthropicFallbackCostCompleteness, AnthropicFallbackCostComponent,
@@ -48,7 +49,7 @@ pub use account::{
     AccountUsageSource, SubscriptionStatus,
 };
 pub use chat::ChatService;
-pub use options::RequestOptions;
+pub use options::{NativeAnthropicContextInput, RequestOptions};
 pub use resolve::{ResolveError, RoutingCatalog};
 pub use store::{
     ClientConfigManager, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,

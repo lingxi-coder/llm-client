@@ -13,6 +13,9 @@ use lingxi_llm_client::{
     HttpResponse, LlmClientBuilder, RequestOptions,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 use std::sync::Arc;
 
 mod support;
@@ -212,7 +215,7 @@ fn qwen_response_preserves_call_output_and_provider_tool_usage() {
         response.message.content,
         vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: item,
+            value: json_payload_fixture::generated(&item),
         }]
     );
     assert_eq!(
@@ -314,15 +317,15 @@ fn qwen_stream_keeps_status_events_and_complete_native_output() {
     assert_eq!(
         native[..3]
             .iter()
-            .map(|event| event["type"].as_str().unwrap())
+            .map(|event| json_payload_fixture::source_string_at(event, "/type").unwrap())
             .collect::<Vec<_>>(),
-        [
-            "response.code_interpreter_call.in_progress",
-            "response.code_interpreter_call.interpreting",
-            "response.code_interpreter_call.completed"
+        vec![
+            "response.code_interpreter_call.in_progress".to_owned(),
+            "response.code_interpreter_call.interpreting".to_owned(),
+            "response.code_interpreter_call.completed".to_owned()
         ]
     );
-    assert_eq!(native[3], &item);
+    assert!(json_payload_fixture::source_matches(native[3], &item));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));

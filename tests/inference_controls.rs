@@ -290,7 +290,8 @@ fn beta_headers_accumulate_and_nested_extras_survive() {
     let mut p = preset("anthropic");
     p.extra["betas"] = json!(["another-beta", "fast-mode-2026-02-01"]);
     p.extra["headers"] = json!({"Anthropic-Beta":"header-beta,another-beta"});
-    p.extra["body"] = json!({"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{},"additionalProperties":false}}}});
+    let schema = json!({"type":"object","properties":{},"additionalProperties":false});
+    p.extra["body"] = json!({"output_config":{"format":{"type":"json_schema","schema":schema}}});
     let mut req = request(
         "claude-opus-5",
         json!({"mode":"adaptive","effort":"high"}),
@@ -298,12 +299,14 @@ fn beta_headers_accumulate_and_nested_extras_survive() {
     );
     req.output_format = OutputFormat::JsonSchema {
         name: "answer".into(),
-        schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&schema)
+            .expect("schema fixture is valid JSON"),
         strict: true,
     };
     let http = encode(&p, &req).unwrap();
     let b: Value = serde_json::from_slice(&http.body).unwrap();
     assert_eq!(b["output_config"]["format"]["type"], "json_schema");
+    assert_eq!(b["output_config"]["format"]["schema"], schema);
     assert_eq!(
         http.headers
             .iter()
@@ -317,6 +320,28 @@ fn beta_headers_accumulate_and_nested_extras_survive() {
         encode(&p, &req),
         Err(LlmError::InvalidRequest { .. })
     ));
+}
+
+#[test]
+fn anthropic_json_controls_keep_deep_source_backed_schema_and_context_hint() {
+    let profile = preset("anthropic");
+    let mut req = request("claude-opus-5", json!({"mode":"disabled"}), json!(null));
+    let nested = format!("{}0{}", "[".repeat(512), "]".repeat(512));
+    let schema_source = format!(
+        r#"{{"type":"object","properties":{{"deep":{nested}}},"required":["deep"],"additionalProperties":false,"\ud800":"\ud800"}}"#
+    );
+    req.controls.response_format = Some(ResponseFormat::JsonSchema {
+        name: "answer".into(),
+        schema: JsonPayload::parse(&schema_source).unwrap(),
+        strict: true,
+    });
+    req.controls.anthropic.context_hint =
+        Some(JsonPayload::parse(r#"{"\ud800":"\ud800"}"#).unwrap());
+
+    let encoded = encode(&profile, &req).unwrap();
+    let body = String::from_utf8(encoded.body.to_vec()).unwrap();
+    assert!(body.contains(&nested));
+    assert!(body.contains(r#""\ud800":"\ud800""#));
 }
 
 #[test]
@@ -467,6 +492,7 @@ fn standard_fast_quotes_and_unknown_prices_do_not_depend_on_effort() {
             },
             UsageState::Complete,
         ),
+        native_resume_context_exhausted: None,
         model: route.request_model.clone(),
         response_id: None,
         continuation: None,
@@ -736,6 +762,7 @@ impl Transport for TierTransport {
         if self.fail_primary && request.url.contains("primary.test") {
             return Err(LlmError::Overloaded {
                 message: "busy".into(),
+                native_retry_base_eligible: false,
             });
         }
         let mut response = json!({"id":"r","model":"grok-4.6","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1_000_000,"completion_tokens":800_000,"completion_tokens_details":{"reasoning_tokens":200_000}}});

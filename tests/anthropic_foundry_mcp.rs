@@ -11,6 +11,9 @@ use lingxi_llm_client::{
     LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport, WireCodec,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 use std::sync::{Arc, Mutex};
 
 const DEPLOYMENT: &str = "custom-opus-deployment";
@@ -161,11 +164,11 @@ fn foundry_rejects_pinned_lists_inline_toolsets_and_listing_replay() {
         0,
         ConversationMessage::assistant(vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"mcp_tool_listing",
                 "mcp_server_name":"workspace",
                 "tools":[]
-            }),
+            })),
         }]),
     );
     assert!(matches!(
@@ -177,13 +180,13 @@ fn foundry_rejects_pinned_lists_inline_toolsets_and_listing_replay() {
     let mut system_message = ConversationMessage::system_text("Add the MCP server here.");
     system_message.content.push(ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: json!({
+        value: json_payload_fixture::generated(&json!({
             "type":"tool_addition",
             "tool":{
                 "type":"tool_definition",
                 "definition":{"type":"mcp_toolset","mcp_server_name":"workspace"}
             }
-        }),
+        })),
     });
     inline_addition.messages.push(system_message);
     assert!(matches!(
@@ -218,24 +221,24 @@ fn native_mcp_history() -> ChatRequest {
     request.messages.push(ConversationMessage::assistant(vec![
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"mcp_tool_use",
                 "id":"mcptoolu_call1",
                 "name":"workspace__search",
                 "server_name":"workspace",
                 "input":{"query":"launch plan"}
-            }),
+            })),
         },
     ]));
     let mut tool_result_message = ConversationMessage::user_text("");
     tool_result_message.content = vec![ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: json!({
+        value: json_payload_fixture::generated(&json!({
             "type":"mcp_tool_result",
             "tool_use_id":"mcptoolu_call1",
             "is_error":false,
             "content":[{"type":"text","text":"Found the plan."}]
-        }),
+        })),
     }];
     request.messages.push(tool_result_message);
     request

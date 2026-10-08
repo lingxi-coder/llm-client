@@ -1210,7 +1210,7 @@ impl<'a> PinnedRetrievalService<'a> {
                         | "delete_store"
                         | "delete_file"
                 ) && matches!(
-                    source,
+                    source.classification_source(),
                     LlmError::Transport { .. } | LlmError::TransportTimeout { .. }
                 ) {
                     RetrievalError::OutcomeUnknown { operation, source }
@@ -1357,7 +1357,9 @@ pub fn validate_route(route: &RetrievalRoute) -> Result<(), LlmError> {
         || url.fragment().is_some()
         || !url.path().ends_with("/vector_stores")
     {
-        return Err(invalid("retrieval endpoint must end in /vector_stores and contain no credentials, query or fragment"));
+        return Err(invalid(
+            "retrieval endpoint must end in /vector_stores and contain no credentials, query or fragment",
+        ));
     }
     if let ServiceAuth::ApiKey { header } = &route.auth {
         if header.is_empty()

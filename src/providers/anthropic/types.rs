@@ -1,14 +1,26 @@
 //! Provider-specific request, tool, and replay types.
 
 use crate::protocol::{
-    ContentBlock, ConversationMessage, FoundryDeployment, FoundryHosting, LlmError, MessageRole,
-    ProtocolFamily, ProviderFileSource, ProviderProfile, ToolSpec,
+    ContentBlock, ConversationMessage, FoundryDeployment, FoundryHosting, JsonPayload, LlmError,
+    MessageRole, ProtocolFamily, ProviderFileSource, ProviderProfile, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn is_false(value: &bool) -> bool {
     !value
+}
+
+fn object_payload(fields: impl IntoIterator<Item = (&'static str, String)>) -> JsonPayload {
+    let fields = fields
+        .into_iter()
+        .map(|(key, value)| (key.encode_utf16().collect(), value))
+        .collect::<Vec<_>>();
+    JsonPayload::object_from_fields(&fields).expect("typed Anthropic object fields are valid JSON")
+}
+
+fn string_source(value: &str) -> String {
+    JsonPayload::string(value).as_json_source().to_owned()
 }
 
 /// Anthropic Messages caller classes for a user-defined tool.
@@ -203,7 +215,7 @@ pub struct AnthropicMcpTool {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub input_schema: Value,
+    pub input_schema: JsonPayload,
 }
 
 /// Prompt-cache lifetime accepted on an Anthropic MCP toolset.
@@ -318,12 +330,36 @@ impl AnthropicMcpConfig {
                     .into(),
             });
         }
+        let definition = self.toolset_value();
+        let tool = JsonPayload::object_from_fields(&[
+            (
+                "type".encode_utf16().collect(),
+                JsonPayload::string("tool_definition")
+                    .as_json_source()
+                    .to_owned(),
+            ),
+            (
+                "definition".encode_utf16().collect(),
+                definition.as_json_source().to_owned(),
+            ),
+        ])
+        .expect("typed Anthropic tool definition is JSON");
+        let value = JsonPayload::object_from_fields(&[
+            (
+                "type".encode_utf16().collect(),
+                JsonPayload::string("tool_addition")
+                    .as_json_source()
+                    .to_owned(),
+            ),
+            (
+                "tool".encode_utf16().collect(),
+                tool.as_json_source().to_owned(),
+            ),
+        ])
+        .expect("typed Anthropic tool addition is JSON");
         Ok(ContentBlock::ProviderContent {
             protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-            value: serde_json::json!({
-                "type":"tool_addition",
-                "tool":{"type":"tool_definition","definition":self.toolset_value()}
-            }),
+            value,
         })
     }
 
@@ -359,34 +395,49 @@ impl AnthropicMcpConfig {
         self.cache_control
     }
 
-    pub(crate) fn toolset_value(&self) -> Value {
-        let mut toolset = serde_json::json!({
-            "type":"mcp_toolset",
-            "mcp_server_name":self.name,
-        });
+    pub(crate) fn toolset_value(&self) -> JsonPayload {
+        let mut fields = vec![
+            (
+                "type".encode_utf16().collect(),
+                JsonPayload::string("mcp_toolset")
+                    .as_json_source()
+                    .to_owned(),
+            ),
+            (
+                "mcp_server_name".encode_utf16().collect(),
+                JsonPayload::string(&self.name).as_json_source().to_owned(),
+            ),
+        ];
         if let Some(default_config) = &self.default_config {
-            toolset["default_config"] = serde_json::to_value(default_config).unwrap_or(Value::Null);
+            fields.push((
+                "default_config".encode_utf16().collect(),
+                serde_json::to_string(default_config)
+                    .expect("typed Anthropic MCP config is serializable"),
+            ));
         }
         if !self.configs.is_empty() {
-            toolset["configs"] = serde_json::to_value(&self.configs).unwrap_or(Value::Null);
+            fields.push((
+                "configs".encode_utf16().collect(),
+                serde_json::to_string(&self.configs)
+                    .expect("typed Anthropic MCP configs are serializable"),
+            ));
         }
         if let Some(pinned_tools) = &self.tools {
-            toolset["tools"] = serde_json::to_value(pinned_tools).unwrap_or(Value::Null);
+            fields.push((
+                "tools".encode_utf16().collect(),
+                serde_json::to_string(pinned_tools)
+                    .expect("typed Anthropic MCP tools are serializable"),
+            ));
         }
         if let Some(cache_control) = self.cache_control {
-            let mut value = serde_json::json!({"type":"ephemeral"});
-            if let Some(ttl) = cache_control.ttl {
-                value["ttl"] = serde_json::Value::String(
-                    match ttl {
-                        AnthropicMcpCacheTtl::FiveMinutes => "5m",
-                        AnthropicMcpCacheTtl::OneHour => "1h",
-                    }
-                    .into(),
-                );
-            }
-            toolset["cache_control"] = value;
+            let source = match cache_control.ttl {
+                Some(AnthropicMcpCacheTtl::OneHour) => r#"{"type":"ephemeral","ttl":"1h"}"#,
+                None | Some(AnthropicMcpCacheTtl::FiveMinutes) => r#"{"type":"ephemeral"}"#,
+            };
+            fields.push(("cache_control".encode_utf16().collect(), source.to_owned()));
         }
-        toolset
+        JsonPayload::object_from_fields(&fields)
+            .expect("typed Anthropic MCP toolset fields form valid JSON")
     }
 
     pub(crate) fn validate(&self) -> Result<(), LlmError> {
@@ -404,7 +455,7 @@ impl AnthropicMcpConfig {
             let mut names = std::collections::BTreeSet::new();
             tools.iter().all(|tool| {
                 valid_name(&tool.name)
-                    && tool.input_schema.is_object()
+                    && tool.input_schema.is_root_object()
                     && names.insert(tool.name.as_str())
             })
         });
@@ -463,12 +514,42 @@ impl AnthropicToolReference {
 
 /// One Anthropic inline tool change. A removal always requires a reference;
 /// custom definitions are additions or same-name updates.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "change", content = "value", rename_all = "snake_case")]
 pub enum AnthropicToolChange {
     AddReference(AnthropicToolReference),
     Remove(AnthropicToolReference),
     DefineTool(ToolSpec),
+}
+
+impl<'de> Deserialize<'de> for AnthropicToolChange {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let payload = JsonPayload::parse(raw.get()).map_err(serde::de::Error::custom)?;
+        let kind = payload
+            .string_at("/change")
+            .ok_or_else(|| serde::de::Error::custom("Anthropic tool change kind is missing"))?;
+        let value = payload
+            .raw_source_at("/value")
+            .ok_or_else(|| serde::de::Error::custom("Anthropic tool change value is missing"))?;
+        match kind.as_str() {
+            "add_reference" => serde_json::from_str::<AnthropicToolReference>(&value)
+                .map(Self::AddReference)
+                .map_err(serde::de::Error::custom),
+            "remove" => serde_json::from_str::<AnthropicToolReference>(&value)
+                .map(Self::Remove)
+                .map_err(serde::de::Error::custom),
+            "define_tool" => serde_json::from_str::<ToolSpec>(&value)
+                .map(Self::DefineTool)
+                .map_err(serde::de::Error::custom),
+            _ => Err(serde::de::Error::custom(
+                "unknown Anthropic tool change kind",
+            )),
+        }
+    }
 }
 
 impl AnthropicToolChange {
@@ -486,33 +567,53 @@ impl AnthropicToolChange {
 
     pub fn into_content_block(self) -> ContentBlock {
         let value = match self {
-            Self::AddReference(reference) => serde_json::json!({
-                "type":"tool_addition", "tool":reference.wire_value()
-            }),
-            Self::Remove(reference) => serde_json::json!({
-                "type":"tool_removal", "tool":reference.wire_value()
-            }),
+            Self::AddReference(reference) => {
+                let tool = JsonPayload::from_generated_value(&reference.wire_value())
+                    .expect("typed Anthropic reference is JSON");
+                object_payload([
+                    ("type", string_source("tool_addition")),
+                    ("tool", tool.as_json_source().to_owned()),
+                ])
+            }
+            Self::Remove(reference) => {
+                let tool = JsonPayload::from_generated_value(&reference.wire_value())
+                    .expect("typed Anthropic reference is JSON");
+                object_payload([
+                    ("type", string_source("tool_removal")),
+                    ("tool", tool.as_json_source().to_owned()),
+                ])
+            }
             Self::DefineTool(tool) => {
-                let mut definition = serde_json::json!({
-                    "name":tool.name,
-                    "description":tool.description,
-                    "input_schema":tool.input_schema,
-                });
+                let mut fields = vec![
+                    ("name", string_source(&tool.name)),
+                    ("description", tool.description.as_json_source().to_owned()),
+                    (
+                        "input_schema",
+                        tool.input_schema.as_json_source().to_owned(),
+                    ),
+                ];
                 if tool.strict {
-                    definition["strict"] = Value::Bool(true);
+                    fields.push(("strict", "true".to_owned()));
                 }
                 if tool.defer_loading {
-                    definition["defer_loading"] = Value::Bool(true);
+                    fields.push(("defer_loading", "true".to_owned()));
                 }
-                if !tool.anthropic_allowed_callers().is_empty() {
-                    definition["allowed_callers"] =
-                        serde_json::to_value(tool.anthropic_allowed_callers())
-                            .unwrap_or(Value::Null);
+                let callers = tool.anthropic_allowed_callers();
+                if !callers.is_empty() {
+                    fields.push((
+                        "allowed_callers",
+                        serde_json::to_string(&callers).expect("typed callers are serializable"),
+                    ));
                 }
-                serde_json::json!({
-                    "type":"tool_addition",
-                    "tool":{"type":"tool_definition","definition":definition}
-                })
+                let definition = object_payload(fields);
+                let tool = object_payload([
+                    ("type", string_source("tool_definition")),
+                    ("definition", definition.as_json_source().to_owned()),
+                ]);
+                object_payload([
+                    ("type", string_source("tool_addition")),
+                    ("tool", tool.as_json_source().to_owned()),
+                ])
             }
         };
         ContentBlock::ProviderContent {
@@ -1066,7 +1167,7 @@ impl AnthropicContainerRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnthropicContainerMetadata {
-    pub envelope: Value,
+    pub envelope: JsonPayload,
 }
 
 impl AnthropicContainerMetadata {
@@ -1075,14 +1176,16 @@ impl AnthropicContainerMetadata {
         &self,
         scope: AnthropicContainerScope,
     ) -> Result<AnthropicContainerRef, LlmError> {
-        let id = self
-            .envelope
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| LlmError::InvalidRequest {
-                message: "Anthropic container metadata has no string ID to import".into(),
-            })?;
-        AnthropicContainerRef::new(id, scope)
+        let id_units =
+            self.envelope
+                .string_units_at("/id")
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Anthropic container metadata has no string ID to import".into(),
+                })?;
+        let id = String::from_utf16(&id_units).map_err(|_| LlmError::InvalidRequest {
+            message: "Anthropic container metadata has no well-formed string ID to import".into(),
+        })?;
+        AnthropicContainerRef::new(&id, scope)
     }
 }
 

@@ -91,6 +91,7 @@ impl WireCodec for AnthropicMessagesCodec {
             crate::providers::openrouter::server_tools::is_official_profile(context.profile());
         decode::response(
             resp,
+            Some(context),
             retain_openrouter_container,
             crate::providers::anthropic::code_execution::is_official_profile(context.profile())
                 || crate::providers::anthropic::code_execution::supports_execution(context),

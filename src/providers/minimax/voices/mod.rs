@@ -536,7 +536,9 @@ pub enum MiniMaxVoicesError {
     Llm(#[from] LlmError),
     #[error("invalid MiniMax voices request: {0}")]
     InvalidRequest(String),
-    #[error("MiniMax voices provider rejected {operation} (HTTP {http_status:?}, code {code:?}): {message}")]
+    #[error(
+        "MiniMax voices provider rejected {operation} (HTTP {http_status:?}, code {code:?}): {message}"
+    )]
     Provider {
         operation: &'static str,
         http_status: Option<u16>,
@@ -890,7 +892,9 @@ fn validate_clone_request(
         validate_nonempty_text(&prompt.text, "clone prompt transcript")?;
         if let Some(duration) = prompt.duration_seconds {
             if !duration.is_finite() || duration <= 0.0 || duration >= 8.0 {
-                return Err(invalid("caller-declared MiniMax prompt audio duration must be greater than zero and less than 8 seconds"));
+                return Err(invalid(
+                    "caller-declared MiniMax prompt audio duration must be greater than zero and less than 8 seconds",
+                ));
             }
         }
     }
@@ -985,7 +989,9 @@ fn validate_custom_voice_id(value: &str) -> Result<(), MiniMaxVoicesError> {
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_'))
     {
-        return Err(invalid("MiniMax clone voice_id must be 8-256 ASCII characters, start with a letter, use only letters/digits/hyphen/underscore, and end with a letter or digit"));
+        return Err(invalid(
+            "MiniMax clone voice_id must be 8-256 ASCII characters, start with a letter, use only letters/digits/hyphen/underscore, and end with a letter or digit",
+        ));
     }
     Ok(())
 }
@@ -1089,7 +1095,7 @@ fn response_id(headers: &[(String, String)]) -> Option<String> {
 
 fn is_ambiguous_transport(error: &LlmError) -> bool {
     matches!(
-        error,
+        error.classification_source(),
         LlmError::Transport { .. }
             | LlmError::TransportTimeout { .. }
             | LlmError::StreamInterrupted { .. }

@@ -67,9 +67,10 @@ pub use client::{
     AttachmentResolver, BuildError, ChatService, ClientConfigManager, ClientSnapshot,
     CollectedResponse, DecisionError, DecisionService, FrozenPricing, LlmClient, LlmClientBuilder,
     LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream,
-    PreparedCall, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, ReceivedCall,
-    RequestDraft, RequestOptions, ResolveError, ResponsesSession, RoutingCatalog, StreamBatch,
-    StructuredStreamError, StructuredStreamResult, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
+    NativeAnthropicContextInput, PreparedCall, ProviderStoreError, ProviderSyncOperation,
+    ProviderSyncResult, ReceivedCall, RequestDraft, RequestOptions, ResolveError, ResponsesSession,
+    RoutingCatalog, StreamBatch, StructuredStreamError, StructuredStreamResult, SubscriptionStatus,
+    MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;

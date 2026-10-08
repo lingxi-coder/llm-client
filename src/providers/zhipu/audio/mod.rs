@@ -411,11 +411,15 @@ fn decode_response(
 }
 
 fn map_transport_error(source: LlmError) -> GlmAsrError {
-    match source {
+    if matches!(
+        source.classification_source(),
         LlmError::Transport { .. }
-        | LlmError::TransportTimeout { .. }
-        | LlmError::StreamInterrupted { .. } => GlmAsrError::OutcomeUnknown { source },
-        other => GlmAsrError::Llm(other),
+            | LlmError::TransportTimeout { .. }
+            | LlmError::StreamInterrupted { .. }
+    ) {
+        GlmAsrError::OutcomeUnknown { source }
+    } else {
+        GlmAsrError::Llm(source)
     }
 }
 

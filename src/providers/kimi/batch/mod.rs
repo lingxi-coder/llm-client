@@ -52,7 +52,9 @@ impl KimiBatchScope {
             || account_scope.trim().is_empty()
             || account_scope.chars().any(char::is_control)
         {
-            return Err(invalid("profile name and account scope must be non-empty and contain no control characters"));
+            return Err(invalid(
+                "profile name and account scope must be non-empty and contain no control characters",
+            ));
         }
         if api_base_url.as_ref() != API_BASE_URL {
             return Err(invalid(
@@ -518,7 +520,9 @@ pub enum KimiBatchError {
         #[source]
         source: LlmError,
     },
-    #[error("outcome of Kimi Batch {operation} is unknown because the success response was invalid: {reason}")]
+    #[error(
+        "outcome of Kimi Batch {operation} is unknown because the success response was invalid: {reason}"
+    )]
     ResponseOutcomeUnknown {
         operation: &'static str,
         reason: String,
@@ -1102,7 +1106,7 @@ fn ensure_success(response: HttpResponse) -> Result<Bytes, KimiBatchError> {
 
 fn is_ambiguous_transport(error: &LlmError) -> bool {
     matches!(
-        error,
+        error.classification_source(),
         LlmError::Transport { .. }
             | LlmError::TransportTimeout { .. }
             | LlmError::StreamInterrupted { .. }

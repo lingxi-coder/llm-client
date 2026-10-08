@@ -7,9 +7,10 @@ pub(crate) fn invalid(message: impl Into<String>) -> LlmError {
         message: message.into(),
     }
 }
-fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str, LlmError> {
-    value[key]
-        .as_str()
+fn required_source(value: &JsonPayload, key: &str) -> Result<String, LlmError> {
+    value
+        .string_units_at(&format!("/{key}"))
+        .and_then(|units| String::from_utf16(&units).ok())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| invalid(format!("interaction step is missing {key}")))
 }
@@ -49,20 +50,25 @@ pub(crate) fn usage_report(raw: Option<&Value>) -> UsageReport {
     )
 }
 
+pub(crate) fn usage_report_source(raw: Option<&JsonPayload>) -> UsageReport {
+    let value = raw.and_then(|payload| serde_json::from_str(payload.as_json_source()).ok());
+    usage_report(value.as_ref())
+}
+
 pub(crate) fn step_blocks(
-    step: &Value,
+    source: &JsonPayload,
     context: &CodecContext,
 ) -> Result<Vec<ContentBlock>, LlmError> {
-    match required(step, "type")? {
+    match required_source(source, "type")?.as_str() {
         "function_call" => {
-            let id = required(step, "id")?;
-            let name = required(step, "name")?;
-            if !step["arguments"].is_object() {
+            let id = required_source(source, "id")?;
+            let name = required_source(source, "name")?;
+            if source.kind_at("/arguments") != Some(crate::response_json::FlatJsonKind::Object) {
                 return Err(invalid("interaction function arguments must be an object"));
             }
             if context.native_options().iter().any(|option| {
                 option.is::<crate::providers::google::computer::GeminiComputerToolConfig>()
-            }) && crate::providers::google::computer::is_desktop_function(name)
+            }) && crate::providers::google::computer::is_desktop_function(&name)
             {
                 for option in context.native_options().iter().filter(|option| {
                     option.is::<crate::providers::google::computer::GeminiComputerToolConfig>()
@@ -74,7 +80,7 @@ pub(crate) fn step_blocks(
                     if config
                         .excluded_predefined_functions
                         .iter()
-                        .any(|excluded| excluded == name)
+                        .any(|excluded| excluded == &name)
                     {
                         return Err(invalid("interaction called an excluded desktop function"));
                     }
@@ -82,80 +88,99 @@ pub(crate) fn step_blocks(
                 return Ok(vec![ContentBlock::Native {
                     value: NativeExtension::new(
                         crate::providers::google::computer::CALL_FORMAT,
-                        step.clone(),
+                        source.clone(),
                     )?,
                 }]);
             }
             Ok(vec![ContentBlock::ToolUse {
-                id: id.into(),
-                name: name.into(),
-                input: step["arguments"].clone(),
+                id: id.clone().into(),
+                name,
+                input: source
+                    .payload_at("/arguments")
+                    .ok_or_else(|| invalid("interaction function arguments are missing"))?,
                 provider_id: Some(id.into()),
                 caller: None,
                 toolset_name: None,
-                thought_signature: step["signature"].as_str().map(str::to_owned),
+                thought_signature: source.string_at("/signature"),
             }])
         }
         "model_output" => {
-            let content = step["content"]
-                .as_array()
+            let content = source
+                .payload_at("/content")
+                .and_then(|content| content.array_items())
                 .ok_or_else(|| invalid("model_output content must be an array"))?;
             // Preserve annotated and multimodal output as the native step; plain text
             // has a portable representation with identical replay bytes.
-            if step.as_object().is_some_and(|object| {
-                object
-                    .keys()
-                    .any(|key| !matches!(key.as_str(), "type" | "content"))
-            }) || content.iter().any(|part| {
-                part["type"] != "text"
-                    || part
-                        .as_object()
-                        .is_some_and(|o| o.keys().any(|k| !matches!(k.as_str(), "type" | "text")))
-            }) {
+            if !source.has_only_fields_at("", &["type", "content"])
+                || content.iter().any(|part| {
+                    part.string_at("/type").as_deref() != Some("text")
+                        || !part.has_only_fields_at("", &["type", "text"])
+                        || part.kind_at("/text") != Some(crate::response_json::FlatJsonKind::String)
+                })
+            {
                 return Ok(vec![ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::GeminiInteractions,
-                    value: step.clone(),
+                    value: source.clone(),
                 }]);
             }
             content
                 .iter()
                 .map(|part| {
-                    Ok(ContentBlock::Text {
-                        text: part["text"]
-                            .as_str()
-                            .ok_or_else(|| invalid("model output text must be a string"))?
-                            .into(),
-                        thought_signature: None,
-                        citations: None,
+                    let units = part
+                        .string_units_at("/text")
+                        .ok_or_else(|| invalid("model output text must be a string"))?;
+                    let text = part
+                        .string_at("/text")
+                        .ok_or_else(|| invalid("model output text must be a string"))?;
+                    let display_units = text.encode_utf16().collect::<Vec<_>>();
+                    Ok(if display_units == units {
+                        ContentBlock::Text {
+                            text,
+                            thought_signature: None,
+                            citations: None,
+                        }
+                    } else {
+                        ContentBlock::TextJsUtf16 {
+                            text,
+                            utf16_code_units: units,
+                            thought_signature: None,
+                            citations: None,
+                        }
                     })
                 })
                 .collect()
         }
         _ => Ok(vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::GeminiInteractions,
-            value: step.clone(),
+            value: source.clone(),
         }]),
     }
 }
 
-pub(crate) fn response(body: &Value, context: &CodecContext) -> Result<ChatResponse, LlmError> {
-    let status = required(body, "status")?;
-    if !matches!(status, "completed" | "requires_action") {
+pub(crate) fn response(
+    source: &JsonPayload,
+    context: &CodecContext,
+) -> Result<ChatResponse, LlmError> {
+    let status = required_source(source, "status")?;
+    if !matches!(status.as_str(), "completed" | "requires_action") {
         return Err(invalid(format!(
             "interaction is not executable at status {status}"
         )));
     }
-    let id = required(body, "id")?;
+    let id = required_source(source, "id")?;
     let mut content = Vec::new();
     let mut ids = std::collections::BTreeSet::new();
-    let steps = body["steps"]
-        .as_array()
+    let steps = source
+        .payload_at("/steps")
+        .and_then(|steps| steps.array_items())
         .ok_or_else(|| invalid("interaction response has no steps array"))?;
-    for step in steps {
-        if step["type"] == "function_call" && !ids.insert(required(step, "id")?) {
+    for step_source in steps {
+        if step_source.string_at("/type").as_deref() == Some("function_call")
+            && !ids.insert(required_source(&step_source, "id")?)
+        {
             return Err(invalid("interaction contains duplicate function call ids"));
         }
-        content.extend(step_blocks(step, context)?);
+        content.extend(step_blocks(&step_source, context)?);
     }
     if status == "requires_action" && ids.is_empty() {
         return Err(invalid(
@@ -173,11 +198,13 @@ pub(crate) fn response(body: &Value, context: &CodecContext) -> Result<ChatRespo
         } else {
             StopReason::EndTurn
         },
-        usage: usage_report(body.get("usage")),
-        model: body["model"]
-            .as_str()
-            .unwrap_or(context.request_model())
-            .into(),
+        usage: usage_report_source(source.payload_at("/usage").as_ref()),
+        native_resume_context_exhausted: None,
+        model: source
+            .string_units_at("/model")
+            .and_then(|units| String::from_utf16(&units).ok())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| context.request_model().to_owned()),
         response_id: Some(id.into()),
         continuation: None,
         executed_profile: None,
@@ -187,7 +214,7 @@ pub(crate) fn response(body: &Value, context: &CodecContext) -> Result<ChatRespo
         file_search: None,
         native_metadata: vec![NativeExtension::new(
             "google.interactions.metadata.v1",
-            body.clone(),
+            source.clone(),
         )?],
     })
 }

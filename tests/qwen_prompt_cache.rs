@@ -148,7 +148,7 @@ fn text_and_multimodal_markers_are_not_flattened_away() {
 #[test]
 fn intermediate_text_and_consecutive_tool_results_keep_distinct_markers() {
     let mut req = request();
-    req.system[0].text.clear();
+    req.system[0] = SystemBlock::new("");
     req.messages = serde_json::from_value(json!([
         {"role":"user","content":[{"type":"text","text":"cached"},{"type":"text","text":"new"}]},
         {"role":"user","content":[
@@ -210,7 +210,7 @@ fn invalid_ttl_positions_and_ignored_controls_fail_preflight_and_encoding() {
     req.prompt_cache.breakpoints = vec![breakpoint(CachePosition::System { index: 0 }); 5];
     cases.push(req);
     let mut req = request();
-    req.system[0].text.clear();
+    req.system[0] = SystemBlock::new("");
     req.prompt_cache.breakpoints = vec![breakpoint(CachePosition::System { index: 0 })];
     cases.push(req);
     let p = profile();

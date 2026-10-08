@@ -11,7 +11,11 @@ use serde_json::json;
 
 fn unknown_block() -> ContentBlock {
     ContentBlock::Native {
-        value: NativeExtension::new("future.client_call.v1", json!({"call_id":"call_a"})).unwrap(),
+        value: NativeExtension::new(
+            "future.client_call.v1",
+            JsonPayload::from_generated_value(&json!({"call_id":"call_a"})).unwrap(),
+        )
+        .unwrap(),
     }
 }
 
@@ -137,11 +141,14 @@ fn generated_and_raw_computer_calls_cannot_be_replayed_as_input() {
         call,
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: item,
+            value: JsonPayload::from_generated_value(&item).unwrap(),
         },
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: json!({"type":"computer_call_output", "call_id":"call_1"}),
+            value: JsonPayload::from_generated_value(
+                &json!({"type":"computer_call_output", "call_id":"call_1"}),
+            )
+            .unwrap(),
         },
     ] {
         let replay = ReplayContext::for_message(

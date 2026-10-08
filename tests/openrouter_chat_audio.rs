@@ -2,12 +2,15 @@ use lingxi_llm_client::{
     codecs::{openai::chat::OpenAiChatCodec, CodecContext, RequestMode},
     protocol::{
         message::{OpenRouterChatAudioFormat, OpenRouterChatAudioOutput},
-        ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProviderProfile,
-        StopReason, StreamEvent, ToolChoice,
+        ChatRequest, ContentBlock, ConversationMessage, JsonPayload, LlmError, MessageRole,
+        ProviderProfile, StopReason, StreamEvent, ToolChoice,
     },
     WireCodec,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 
 fn openrouter_profile(input_modalities: &[&str], output_modalities: &[&str]) -> ProviderProfile {
     serde_json::from_value(json!({
@@ -55,7 +58,7 @@ fn request() -> ChatRequest {
         thinking: None,
         service_tier: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
@@ -76,7 +79,7 @@ fn audio_input_and_output_use_openrouter_chat_shapes() {
         format: "wav".into(),
         data: "AAECAw==".into(),
     });
-    request.metadata = json!({"trace_id": "trace-1"});
+    request.metadata = JsonPayload::parse(r#"{"trace_id":"trace-1"}"#).unwrap();
     OpenRouterChatAudioOutput::new("alloy", OpenRouterChatAudioFormat::Pcm16)
         .write_metadata(&mut request.metadata)
         .unwrap();
@@ -101,20 +104,22 @@ fn audio_input_and_output_use_openrouter_chat_shapes() {
         body["messages"][0]["content"][1],
         json!({"type":"input_audio", "input_audio":{"data":"AAECAw==", "format":"wav"}})
     );
-    assert_eq!(request.metadata["trace_id"], "trace-1");
+    assert!(request
+        .metadata
+        .as_json_source()
+        .contains(r#""trace_id":"trace-1""#));
 }
 
 #[test]
 fn audio_output_metadata_helper_preserves_other_metadata_and_rejects_scalars() {
     let config = OpenRouterChatAudioOutput::new("nova", OpenRouterChatAudioFormat::Mp3);
-    let mut metadata = json!({"trace_id":"turn-7"});
+    let mut metadata = JsonPayload::parse(r#"{"trace_id":"turn-7"}"#).unwrap();
     config.write_metadata(&mut metadata).unwrap();
-    assert_eq!(metadata["trace_id"], "turn-7");
     assert_eq!(
-        metadata["openrouter_chat_audio"],
-        json!({"voice":"nova", "format":"mp3"})
+        metadata.as_json_source(),
+        r#"{"trace_id":"turn-7","openrouter_chat_audio":{"voice":"nova","format":"mp3"}}"#
     );
-    let mut scalar_metadata = json!("existing metadata");
+    let mut scalar_metadata = JsonPayload::parse(r#""existing metadata""#).unwrap();
     assert!(config.write_metadata(&mut scalar_metadata).is_err());
 }
 
@@ -214,10 +219,22 @@ fn stream_preserves_audio_chunks_response_ids_transcript_and_usage() {
             _ => None,
         })
         .expect("audio chunk is preserved as provider-native content");
-    assert_eq!(native.1["response_id"], "gen-audio-1");
-    assert_eq!(native.1["audio"]["id"], "audio-1");
-    assert_eq!(native.1["audio"]["data"], "AQID");
-    assert_eq!(native.1["audio"]["transcript"], "Hello");
+    assert_eq!(
+        json_payload_fixture::source_string_at(&native.1, "/response_id").as_deref(),
+        Some("gen-audio-1")
+    );
+    assert_eq!(
+        json_payload_fixture::source_string_at(&native.1, "/audio/id").as_deref(),
+        Some("audio-1")
+    );
+    assert_eq!(
+        json_payload_fixture::source_string_at(&native.1, "/audio/data").as_deref(),
+        Some("AQID")
+    );
+    assert_eq!(
+        json_payload_fixture::source_string_at(&native.1, "/audio/transcript").as_deref(),
+        Some("Hello")
+    );
 
     let second = decode_frame(
         &mut *decoder,
@@ -232,8 +249,14 @@ fn stream_preserves_audio_chunks_response_ids_transcript_and_usage() {
         })
         .expect("subsequent audio chunk remains incremental");
     assert_eq!(continued.0, native.0);
-    assert_eq!(continued.1["audio"]["data"], "BAUG");
-    assert_eq!(continued.1["audio"]["transcript"], " there");
+    assert_eq!(
+        json_payload_fixture::source_string_at(continued.1, "/audio/data").as_deref(),
+        Some("BAUG")
+    );
+    assert_eq!(
+        json_payload_fixture::source_string_at(continued.1, "/audio/transcript").as_deref(),
+        Some(" there")
+    );
 
     let terminal = decode_frame(
         &mut *decoder,
@@ -282,7 +305,8 @@ fn output_config_does_not_accept_unknown_format_or_empty_voice() {
     let profile = openrouter_profile(&["text", "audio"], &["text", "audio"]);
     let context = ctx(&profile, RequestMode::Stream);
     let mut request = request();
-    request.metadata = json!({"openrouter_chat_audio":{"voice":" ","format":"wav"}});
+    request.metadata =
+        JsonPayload::parse(r#"{"openrouter_chat_audio":{"voice":" ","format":"wav"}}"#).unwrap();
     assert!(matches!(
         OpenAiChatCodec.encode_request(
             lingxi_llm_client::codecs::EncodeRequest::new(&request),
@@ -290,7 +314,9 @@ fn output_config_does_not_accept_unknown_format_or_empty_voice() {
         ),
         Err(LlmError::InvalidRequest { .. })
     ));
-    request.metadata = json!({"openrouter_chat_audio":{"voice":"alloy","format":"aac"}});
+    request.metadata =
+        JsonPayload::parse(r#"{"openrouter_chat_audio":{"voice":"alloy","format":"aac"}}"#)
+            .unwrap();
     assert!(matches!(
         OpenAiChatCodec.encode_request(
             lingxi_llm_client::codecs::EncodeRequest::new(&request),

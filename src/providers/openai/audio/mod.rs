@@ -426,11 +426,17 @@ impl Pinned<'_> {
             .with_deadline(deadline)
             .execute_stream_bounded(http, MAX_RESULT)
             .await
-            .map_err(|source| match source {
-                LlmError::Transport { .. }
-                | LlmError::TransportTimeout { .. }
-                | LlmError::StreamInterrupted { .. } => AudioError::OutcomeUnknown { source },
-                other => AudioError::Llm(other),
+            .map_err(|source| {
+                if matches!(
+                    source.classification_source(),
+                    LlmError::Transport { .. }
+                        | LlmError::TransportTimeout { .. }
+                        | LlmError::StreamInterrupted { .. }
+                ) {
+                    AudioError::OutcomeUnknown { source }
+                } else {
+                    AudioError::Llm(source)
+                }
             })?;
         decode_result(&response, format)
     }

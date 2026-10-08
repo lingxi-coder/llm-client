@@ -30,8 +30,11 @@ fn result(
     NativeComputerResult {
         operation_index: index,
         status,
-        content: "actual final result".into(),
-        blocks,
+        content: JsonPayload::string("actual final result"),
+        blocks: blocks.map(|blocks| {
+            JsonPayload::from_generated_value(&Value::Array(blocks))
+                .expect("test result blocks are valid JSON")
+        }),
     }
 }
 fn receipt(results: Vec<NativeComputerResult>) -> ComputerReceiptInput {
@@ -76,19 +79,23 @@ fn openai_retains_actions_modifiers_geometry_safety_and_requires_explicit_observ
     );
     assert!(encode_computer_receipt(call, &input).is_err());
     let mut input = input;
-    input.results[3].blocks = Some(vec![
-        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}),
-    ]);
+    input.results[3].blocks = Some(
+        JsonPayload::from_generated_value(&json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]))
+            .unwrap(),
+    );
     let output = encode_computer_receipt(call, &input).unwrap();
     let value = match output {
         ContentBlock::Native { value } => value,
         _ => panic!(),
     };
     assert_eq!(
-        value.data()["output"]["image_url"],
-        "data:image/png;base64,AA=="
+        value.data().string_at("/output/image_url").as_deref(),
+        Some("data:image/png;base64,AA==")
     );
-    assert!(value.data().get("acknowledged_safety_checks").is_none());
+    assert!(value
+        .data()
+        .raw_source_at("/acknowledged_safety_checks")
+        .is_none());
     input.results[1].status = NativeExecutionStatus::Failed;
     input.results[2].status = NativeExecutionStatus::Skipped;
     input.results[3].status = NativeExecutionStatus::Skipped;
@@ -190,8 +197,10 @@ fn decode_validates_entire_batch_and_receipts_enforce_stopping_and_hook_output()
             .map(|i| result(i, NativeExecutionStatus::Skipped, None))
             .collect(),
     );
-    assert!(
-        matches!(encode_computer_receipt(&calls[0],&skipped).unwrap(),ContentBlock::ToolResult{is_error:Some(true),content,toolset_name:Some(toolset),..} if content==SKIPPED_COMPUTER_ACTION && toolset=="computer")
+    assert_eq!(
+        serde_json::to_value(encode_computer_receipt(&calls[0], &skipped).unwrap()).unwrap(),
+        json!({"type":"tool_result","tool_use_id":calls[0].context.call_id,
+            "content":SKIPPED_COMPUTER_ACTION,"is_error":true,"toolset_name":"computer"})
     );
     let shot = decode_computer_calls(
         NativeComputerProvider::Anthropic,
@@ -311,7 +320,7 @@ fn duplicate_call_ids_are_rejected_before_any_normalized_call_is_returned() {
 #[test]
 fn history_call_identity_is_namespaced_and_never_matches_ordinary_member_functions() {
     let native = member("native-id", "screenshot", json!({}));
-    assert_eq!(computer_call_id(&native), Some("native-id"));
+    assert_eq!(computer_call_id(&native).as_deref(), Some("native-id"));
     let ordinary: ContentBlock = serde_json::from_value(
         json!({"type":"tool_use","id":"ordinary-id","name":"screenshot","input":{}}),
     )

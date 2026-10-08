@@ -7,6 +7,9 @@ use lingxi_llm_client::{
 };
 use serde_json::{json, Value};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 const MODEL: &str = "claude-opus-5-5";
 fn profile() -> ProviderProfile {
     serde_json::from_value(json!({
@@ -20,7 +23,7 @@ fn profile() -> ProviderProfile {
 fn native(value: Value) -> ContentBlock {
     ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value,
+        value: json_payload_fixture::generated(&value),
     }
 }
 fn system(content: Vec<ContentBlock>) -> ConversationMessage {
@@ -115,7 +118,7 @@ fn nullable_presence_survives_raw_codec_body_with_paired_tool_result() {
         ConversationMessage::assistant(vec![ContentBlock::ToolUse {
             id: ToolUseId::new("toolu_presence"),
             name: "Read".into(),
-            input: json!({}),
+            input: lingxi_llm_client::protocol::JsonPayload::parse(&json!({}).to_string()).unwrap(),
             provider_id: None,
             caller: None,
             toolset_name: None,
@@ -138,7 +141,9 @@ fn nullable_presence_survives_raw_codec_body_with_paired_tool_result() {
                 ContentBlock::Text {
                     text: "empty citations".into(),
                     thought_signature: None,
-                    citations: Some(Some(json!([]))),
+                    citations: Some(Some(
+                        lingxi_llm_client::protocol::JsonPayload::parse("[]").unwrap(),
+                    )),
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: ToolUseId::new("toolu_presence"),
@@ -569,10 +574,15 @@ fn pinned_mcp_limits_use_effective_members_after_each_message() {
     let config = AnthropicMcpConfig::new("many", "https://mcp.example.test/many")
         .unwrap()
         .with_inline_toolset(true)
-        .with_tools((0..10_001).map(|i| AnthropicMcpTool {
-            name: format!("tool_{i}"),
-            description: None,
-            input_schema: json!({"type":"object"}),
+        .with_tools((0..10_001).map(|i| {
+            AnthropicMcpTool {
+                name: format!("tool_{i}"),
+                description: None,
+                input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                    &json!({"type":"object"}),
+                )
+                .unwrap(),
+            }
         }))
         .unwrap();
     let mut req = request();
@@ -635,4 +645,24 @@ fn definition_byte_limit_counts_retained_definitions_not_history_copies() {
         native(reference("tool_removal", "lookup")),
     ];
     assert!(encode(&req, &profile(), MODEL).is_ok());
+}
+
+#[test]
+fn typed_tool_change_deserialization_keeps_deep_lone_schema_source() {
+    let depth = 16_384;
+    let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+    let schema = format!(r#"{{"type":"object","deep":{nested},"lone":"\ud800"}}"#);
+    let source = format!(
+        r#"{{"change":"define_tool","value":{{"name":"search","description":"Search","input_schema":{schema}}}}}"#
+    );
+    let change: lingxi_llm_client::providers::anthropic::types::AnthropicToolChange =
+        serde_json::from_str(&source).unwrap();
+    let lingxi_llm_client::providers::anthropic::types::AnthropicToolChange::DefineTool(tool) =
+        &change
+    else {
+        panic!("expected a typed tool definition")
+    };
+    assert_eq!(tool.input_schema.as_json_source(), schema);
+    let encoded = serde_json::to_string(&change).unwrap();
+    assert!(encoded.contains(&format!("\"input_schema\":{schema}")));
 }

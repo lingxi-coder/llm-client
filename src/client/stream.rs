@@ -3,13 +3,12 @@
 use crate::codecs::StreamDecoder;
 use crate::files::AutomaticFileCleanup;
 use crate::protocol::{
-    ChatResponse, ContinuationRef, LlmError, OutputFormat, ResponseCacheObservation, StreamEvent,
-    StructuredOutputError, StructuredOutputErrorKind, Usage,
+    ChatResponse, ContinuationRef, JsonPayload, LlmError, OutputFormat, ResponseCacheObservation,
+    StreamEvent, StructuredOutputError, StructuredOutputErrorKind, Usage,
 };
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -156,12 +155,15 @@ impl ModelStream {
     /// Native Anthropic usage with reported fields folded across stream frames.
     /// Original JSON frames remain available through `ProviderEvent`. This
     /// observation may be partial until the terminal usage event arrives.
-    pub fn anthropic_stop_details(&self) -> Option<&Value> {
+    pub fn anthropic_stop_details(&self) -> Option<&crate::protocol::JsonPayload> {
         self.provider_observation.anthropic_stop_details()
     }
 
-    pub fn anthropic_usage(&self) -> Option<&Value> {
+    pub fn anthropic_usage(&self) -> Option<&crate::protocol::JsonPayload> {
         self.provider_observation.anthropic_usage()
+    }
+    pub fn anthropic_resumable(&self) -> Option<&crate::protocol::JsonPayload> {
+        self.provider_observation.anthropic_resumable()
     }
     /// Server fallback controls observed so far, independent of host admission.
     pub fn anthropic_fallback(
@@ -366,12 +368,19 @@ impl ModelStream {
         self.decoder.usage_report().state == crate::protocol::UsageState::Complete
     }
 
+    /// SDK-computed Native Anthropic resumption gate from the raw folded usage
+    /// source and a trusted context observation. It stays `None` when either
+    /// source is unavailable.
+    pub fn native_resume_context_exhausted(&self) -> Option<bool> {
+        self.decoder.native_resume_context_exhausted()
+    }
+
     /// Consume a stream, then validate its final text against an output
     /// contract. Deltas are never parsed as standalone JSON.
     pub async fn collect_structured_json(
         mut self,
         format: &OutputFormat,
-    ) -> Result<StructuredStreamResult<Value>, StructuredStreamError> {
+    ) -> Result<StructuredStreamResult<JsonPayload>, StructuredStreamError> {
         let mut accumulator = crate::StreamAccumulator::new();
         let mut event_bytes = EventByteCounter {
             bytes: 0,
@@ -412,7 +421,9 @@ impl ModelStream {
             self.anthropic_usage().cloned(),
         );
         response.set_anthropic_stop_details(self.anthropic_stop_details().cloned());
+        response.set_anthropic_resumable(self.anthropic_resumable().cloned());
         response.set_anthropic_fallback(self.anthropic_fallback().cloned());
+        response.native_resume_context_exhausted = self.native_resume_context_exhausted();
         if saw_tool {
             return Err(StructuredStreamError::Validation {
                 source: StructuredOutputError {
@@ -439,7 +450,7 @@ impl ModelStream {
         format: &OutputFormat,
     ) -> Result<StructuredStreamResult<T>, StructuredStreamError> {
         let result = self.collect_structured_json(format).await?;
-        let value = match serde_json::from_value(result.value) {
+        let value = match serde_json::from_str(result.value.as_json_source()) {
             Ok(value) => value,
             Err(error) => {
                 return Err(StructuredStreamError::Validation {

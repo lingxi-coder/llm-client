@@ -151,6 +151,76 @@ budget = { support = "supported", dynamic = "unsupported", hard_limit = false, m
 effort = { support = "unsupported", levels = [] }
 
 [[model]]
+id = "claude-haiku-5-5"
+name = "Claude Haiku 5.5"
+description = "Claude Haiku 5.5 is tuned for high-volume, latency-sensitive work and supports adaptive thinking with effort controls."
+release_date = "2026-10-07"
+knowledge_cutoff = "2026-06"
+context_window = 1000000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+temperature = false
+
+[model.pricing]
+input_per_million = 0.10
+output_per_million = 0.50
+cache_read_per_million = 0.01
+cache_write_per_million = 0.125
+cache_write_1h_per_million = 0.20
+web_search_per_request = 0.01
+source = "Claude Code 2.1.293 embedded catalog and Claude Platform docs"
+verified_at = "2026-10-07"
+
+[model.pricing.batch]
+input_per_million = 0.05
+output_per_million = 0.25
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+max_input_tokens = 100000
+rates = { input_per_million = 0.10, output_per_million = 0.50, cache_read_per_million = 0.01, cache_write_per_million = 0.125, cache_write_1h_per_million = 0.20, web_search_per_request = 0.01 }
+source = "Claude Code 2.1.293 embedded catalog and Claude Platform docs"
+verified_at = "2026-10-07"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+min_input_tokens = 100001
+rates = { input_per_million = 0.50, output_per_million = 2.50, cache_read_per_million = 0.05, cache_write_per_million = 0.625, cache_write_1h_per_million = 1.0, web_search_per_request = 0.01 }
+source = "Claude Code 2.1.293 embedded catalog and Claude Platform docs"
+verified_at = "2026-10-07"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+max_input_tokens = 100000
+rates = { input_per_million = 0.05, output_per_million = 0.25, cache_read_per_million = 0.01, cache_write_per_million = 0.125, cache_write_1h_per_million = 0.20 }
+source = "Claude Code 2.1.293 embedded catalog and Claude Platform docs"
+verified_at = "2026-10-07"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+min_input_tokens = 100001
+rates = { input_per_million = 0.25, output_per_million = 1.25, cache_read_per_million = 0.05, cache_write_per_million = 0.625, cache_write_1h_per_million = 1.0 }
+source = "Claude Code 2.1.293 embedded catalog and Claude Platform docs"
+verified_at = "2026-10-07"
+
+[model.features]
+default_mode = "adaptive"
+mode_support = { adaptive = {} }
+thinking = "supported"
+fast = "unsupported"
+sources = ["https://platform.claude.com/docs/en/models/haiku-5-5/overview"]
+modes = ["adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported", hard_limit = false }
+effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "max"], default = "medium" }
+
+[[model]]
 id = "claude-opus-4-5-20251101"
 aliases = ["claude-opus-4.5", "claude-opus-4-5"]
 name = "Claude Opus 4.5"
@@ -271,7 +341,7 @@ fast = "unsupported"
 sources = ["https://platform.claude.com/docs/en/build-with-claude/thinking"]
 modes = ["adaptive", "disabled"]
 budget = { support = "unsupported", dynamic = "unsupported", hard_limit = false }
-effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "max"], default = "high" }
+effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "max"], default = "xhigh" }
 
 [[model]]
 id = "claude-opus-4-8"
@@ -409,7 +479,7 @@ fast = "supported"
 sources = ["https://platform.claude.com/docs/en/models/opus-5-5/overview"]
 modes = ["adaptive"]
 budget = { support = "unsupported", dynamic = "unsupported", hard_limit = false }
-effort = { support = "supported", levels = ["low", "medium", "high"], default = "medium" }
+effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "max"], default = "medium" }
 [[model]]
 id = "claude-sonnet-4-5-20250929"
 aliases = ["claude-sonnet-4.5", "claude-sonnet-4-5"]

@@ -198,7 +198,6 @@ impl WireCodec for VertexClaudeCodec {
             .and_then(Value::as_str)
             .unwrap_or(VERTEX_ANTHROPIC_VERSION)
             .to_owned();
-        http.http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
             body.insert("anthropic_version".to_owned(), Value::String(version));
@@ -299,10 +298,10 @@ fn strip_body_key(
 /// The Anthropic Messages body on Amazon Bedrock: signed with SigV4 and
 /// streamed as AWS event-stream frames rather than SSE.
 ///
-/// Four differences from the first-party wire, each load-bearing:
+/// Differences from the first-party wire:
 /// the model is in the URL path; `model` leaves the body; `anthropic_version`
-/// moves into the body as Bedrock's own constant; and the `anthropic-version`
-/// header is removed, because Bedrock rejects it. The endpoint action chooses
+/// is added to the body as Bedrock's own constant. The shared Messages SDK
+/// version header remains, as in native Claude Code. The endpoint action chooses
 /// streaming, so the first-party `stream` body field is removed too.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BedrockClaudeCodec;
@@ -344,7 +343,6 @@ impl WireCodec for BedrockClaudeCodec {
             "invoke"
         };
         http.http.url = bedrock_model_url(&profile.base_url, &opts.request_model, action)?;
-        http.http.headers.retain(|(k, _)| k != "anthropic-version");
         edit_body(&mut http, |body| {
             body.remove("model");
             // Bedrock selects streaming through the invoke-with-response-stream

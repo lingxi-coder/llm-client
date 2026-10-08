@@ -914,6 +914,22 @@ mod pricing_tests {
     }
 
     #[test]
+    fn failover_uses_the_provider_error_taxonomy_under_exact_text() {
+        let error = crate::protocol::LlmError::RateLimited {
+            message: "429 provider busy".into(),
+            retry_after: None,
+        }
+        .with_provider_error_text(crate::protocol::ProviderErrorText::from("429 busy�"));
+        let triggers = FailoverTriggers {
+            rate_limit: true,
+            ..FailoverTriggers::NONE
+        };
+        assert!(triggers.matches(&error));
+        assert_eq!(error.kind(), crate::protocol::LlmErrorKind::RateLimited);
+        assert_eq!(error.provider_error_text().unwrap().display(), "429 busy�");
+    }
+
+    #[test]
     fn a_window_is_half_open_so_its_end_is_already_off_peak() {
         let s = schedule();
         assert!(s.is_peak(at(0, 1, 0)), "the window's start is peak");

@@ -143,7 +143,10 @@ impl Transport for AccountTransport {
     }
 }
 pub(crate) fn map_transport_error(error: crate::protocol::LlmError) -> AccountFailure {
-    if matches!(error, crate::protocol::LlmError::TransportTimeout { .. }) {
+    if matches!(
+        error.classification_source(),
+        crate::protocol::LlmError::TransportTimeout { .. }
+    ) {
         AccountFailure::Timeout
     } else {
         AccountFailure::Transport

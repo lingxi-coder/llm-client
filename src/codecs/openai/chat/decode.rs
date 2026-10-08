@@ -4,10 +4,12 @@
 //! caller can choose how to reduce input or otherwise recover.
 
 use crate::protocol::{
-    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
-    ReportedCost, ResponseId, StopReason, ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, JsonPayload, JsonPayloadFragment, LlmError,
+    MessageRole, ProtocolFamily, ReportedCost, ResponseId, StopReason, ToolUseId, Usage,
 };
-use crate::response_json::{combine_text_parts, content_block, ResponseJson};
+use crate::response_json::{
+    combine_text_parts, content_block, FlatJsonKind, ResponseJson, ResponseJsonScanner,
+};
 use serde_json::Value;
 
 pub(super) fn response_with_usage_mode(
@@ -15,11 +17,54 @@ pub(super) fn response_with_usage_mode(
     separate_reasoning: bool,
     qwen_cache: bool,
 ) -> Result<ChatResponse, LlmError> {
-    let mut response_json = ResponseJson::parse(&resp.body, "OpenAI response is not valid JSON")?;
-    let body = response_json.value.clone();
+    let scanner = match ResponseJsonScanner::parse(&resp.body, "OpenAI response is not valid JSON")
+    {
+        Ok(scanner) => scanner,
+        Err(_error) if !(200..300).contains(&resp.status) => {
+            let (body, provider_text) = ResponseJson::raw_http_error(resp.status, &resp.body);
+            return Err(classify_error(resp.status, &body, retry_after(resp), false)
+                .with_provider_error_text(provider_text));
+        }
+        Err(error) => return Err(error),
+    };
     if !(200..300).contains(&resp.status) {
-        return Err(classify_error(resp.status, &body, retry_after(resp)));
+        let selected_text = scanner.provider_error_text_at("/error/message", None)?;
+        let provider_text = match &selected_text {
+            Some(text) => text.prefixed(&format!("{} ", resp.status)),
+            None => scanner.provider_error_text_or_body_at("/error/message", Some(resp.status))?,
+        };
+        let body = scanner.provider_error_classification_body(
+            "/error",
+            &["message", "code", "type"],
+            selected_text.as_ref(),
+        );
+        return Err(classify_error(resp.status, &body, retry_after(resp), false)
+            .with_provider_error_text(provider_text));
     }
+    let provider_source = scanner
+        .raw_source_at("")
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "OpenAI response source was not retained".into(),
+        })?;
+    let provider_payload =
+        JsonPayload::parse(provider_source).map_err(|error| LlmError::InvalidRequest {
+            message: format!("OpenAI response source is invalid JSON: {error}"),
+        })?;
+    let opaque_paths = [
+        "/web_search",
+        "/choices/0/message/annotations",
+        "/choices/0/message/reasoning",
+        "/choices/0/message/reasoning_details",
+    ]
+    .into_iter()
+    .filter(|pointer| scanner.raw_source_at(pointer).is_some())
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let mut response_json = scanner.into_response_json_with_opaque_paths(&opaque_paths)?;
+    for pointer in &opaque_paths {
+        let _ = response_json.take_raw_json_source_at(pointer)?;
+    }
+    let body = response_json.value.clone();
     let choice = body
         .get("choices")
         .and_then(Value::as_array)
@@ -31,14 +76,14 @@ pub(super) fn response_with_usage_mode(
     let refusal = message.get("refusal").and_then(Value::as_str);
 
     let mut content = Vec::new();
-    let reasoning = super::reasoning::display_text(message);
+    let reasoning = display_reasoning_text(&provider_payload);
     if !reasoning.is_empty() {
         content.push(ContentBlock::Thinking {
             text: reasoning,
             signature: None,
         });
     }
-    if let Some(value) = super::reasoning::from_message(message)? {
+    if let Some(value) = reasoning_payload(&provider_payload)? {
         content.push(ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiChat,
             value,
@@ -71,10 +116,12 @@ pub(super) fn response_with_usage_mode(
         let text = response_json.take_text("/choices/0/message/refusal", text)?;
         content.push(content_block(text, None, None));
     }
-    for call in message
+    for (call_index, call) in message
         .get("tool_calls")
         .and_then(Value::as_array)
         .unwrap_or(&Vec::new())
+        .iter()
+        .enumerate()
     {
         let function = call.get("function").unwrap_or(&Value::Null);
         let arguments = function
@@ -82,6 +129,19 @@ pub(super) fn response_with_usage_mode(
             .and_then(Value::as_str)
             .ok_or_else(|| LlmError::InvalidRequest {
                 message: "provider tool call has no arguments string".into(),
+            })?;
+        let pointer = format!("/choices/0/message/tool_calls/{call_index}/function/arguments");
+        let decoded_arguments = response_json.take_text(&pointer, arguments)?;
+        let fragment = JsonPayloadFragment::from_decoded_text(
+            &decoded_arguments.text,
+            decoded_arguments.utf16_code_units,
+        )
+        .map_err(|message| LlmError::InvalidRequest {
+            message: message.into(),
+        })?;
+        let input =
+            JsonPayload::parse_fragments([&fragment]).map_err(|_| LlmError::InvalidRequest {
+                message: "provider returned malformed tool arguments".into(),
             })?;
         content.push(ContentBlock::ToolUse {
             id: ToolUseId::new(call.get("id").and_then(Value::as_str).unwrap_or_default()),
@@ -93,9 +153,7 @@ pub(super) fn response_with_usage_mode(
             // Arguments arrive as a JSON *string*; a provider that streamed a
             // truncated fragment leaves it unparseable, and the tool's own
             // schema validation is where that should surface.
-            input: serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
-                message: "provider returned malformed tool arguments".into(),
-            })?,
+            input,
             provider_id: None,
             caller: None,
             toolset_name: None,
@@ -107,9 +165,15 @@ pub(super) fn response_with_usage_mode(
     Ok(ChatResponse {
         inference: Default::default(),
         response_cache: None,
-        web_search: crate::codecs::web_search_decode::with_usage(
-            crate::codecs::web_search_decode::chat_with_search(message, &body),
-            body.get("usage"),
+        web_search: crate::codecs::web_search_decode::with_usage_payload(
+            crate::codecs::web_search_decode::chat_response_payload(
+                &provider_payload,
+                "/choices/0/message",
+            ),
+            provider_payload
+                .raw_source_at("/usage")
+                .and_then(|source| JsonPayload::parse(&source).ok())
+                .as_ref(),
         ),
         file_search: None,
         native_metadata: Vec::new(),
@@ -130,6 +194,7 @@ pub(super) fn response_with_usage_mode(
             usage,
             true,
         ),
+        native_resume_context_exhausted: None,
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -145,6 +210,78 @@ pub(super) fn response_with_usage_mode(
     })
 }
 
+/// Build the typed Chat reasoning envelope from its explicit source fields.
+/// This is a known SDK wrapper; provider values remain source-backed instead
+/// of being converted through a recursive `Value` as opaque content.
+fn reasoning_payload(provider_payload: &JsonPayload) -> Result<Option<JsonPayload>, LlmError> {
+    let mut fields = vec![(
+        "type".encode_utf16().collect(),
+        r#""chat_reasoning""#.to_owned(),
+    )];
+    for name in ["reasoning", "reasoning_details"] {
+        let pointer = format!("/choices/0/message/{name}");
+        let Some(kind) = provider_payload.kind_at(&pointer) else {
+            continue;
+        };
+        if kind == FlatJsonKind::Null {
+            continue;
+        }
+        let expected = if name == "reasoning" {
+            FlatJsonKind::String
+        } else {
+            FlatJsonKind::Array
+        };
+        if kind != expected {
+            return Err(LlmError::ProviderInternal {
+                message: format!("Chat response has invalid {name}"),
+            });
+        }
+        let source =
+            provider_payload
+                .raw_source_at(&pointer)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: format!("OpenAI response source for {name} was not retained"),
+                })?;
+        fields.push((name.encode_utf16().collect(), source));
+    }
+    if fields.len() == 1 {
+        return Ok(None);
+    }
+    JsonPayload::object_from_fields(&fields)
+        .map(Some)
+        .map_err(|error| LlmError::InvalidRequest {
+            message: format!("OpenAI reasoning metadata is invalid JSON: {error}"),
+        })
+}
+
+fn display_reasoning_text(provider_payload: &JsonPayload) -> String {
+    for name in ["reasoning_content", "reasoning"] {
+        if let Some(text) = provider_payload
+            .string_at(&format!("/choices/0/message/{name}"))
+            .filter(|text| !text.is_empty())
+        {
+            return text;
+        }
+    }
+    display_reasoning_details(provider_payload, "/choices/0/message/reasoning_details")
+}
+
+fn display_reasoning_details(payload: &JsonPayload, pointer: &str) -> String {
+    let mut text = String::new();
+    for index in 0..payload.array_len(pointer).unwrap_or(0) {
+        let item = format!("{pointer}/{index}");
+        let field = match payload.string_at(&format!("{item}/type")).as_deref() {
+            Some("reasoning.text") => "text",
+            Some("reasoning.summary") => "summary",
+            _ => continue,
+        };
+        if let Some(value) = payload.string_at(&format!("{item}/{field}")) {
+            text.push_str(&value);
+        }
+    }
+    text
+}
+
 /// Map a non-success response onto the error taxonomy.
 ///
 /// The 413 split is the part that matters and the part that is not obvious:
@@ -152,7 +289,12 @@ pub(super) fn response_with_usage_mode(
 /// fix; any other 413 is an oversized request body (accumulated images or
 /// attachments), which compaction cannot. Collapsing them would send the turn
 /// into a compaction loop that never shrinks the thing that is too big.
-pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) -> LlmError {
+pub fn classify_error(
+    status: u16,
+    body: &Value,
+    retry_after: Option<Duration>,
+    native_retry_base_eligible: bool,
+) -> LlmError {
     let error = body.get("error");
     let message = error
         .and_then(|e| e.get("message"))
@@ -259,6 +401,7 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
         },
         529 => LlmError::Overloaded {
             message: display(status, body, &message),
+            native_retry_base_eligible,
         },
         _ => LlmError::ProviderInternal {
             message: display(status, body, &message),
@@ -385,6 +528,32 @@ pub(crate) fn normalize_usage(raw: &Value, separate_reasoning: bool, qwen_cache:
 #[cfg(test)]
 mod utf16_response_tests {
     use super::*;
+
+    #[test]
+    fn http_error_text_keeps_exact_provider_units_and_classification() {
+        let error = response_with_usage_mode(
+            &HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: br#"{"error":{"code":"invalid_prompt","message":"bad\ud800"}}"#
+                    .as_slice()
+                    .into(),
+            },
+            false,
+            false,
+        )
+        .unwrap_err();
+        let LlmError::InvalidRequest { message } = error.classification_source() else {
+            panic!("HTTP 400 must retain InvalidRequest classification");
+        };
+        assert_eq!(message, "400 bad�");
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(text.display(), "400 bad�");
+        assert_eq!(
+            text.utf16_code_units(),
+            &[52, 48, 48, 32, 98, 97, 100, 0xd800]
+        );
+    }
 
     #[test]
     fn completed_chat_text_retains_lone_units_and_normalizes_pair_controls() {

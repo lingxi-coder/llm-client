@@ -2,9 +2,8 @@
 //!
 //! The original JSON is the serialization authority. Decoding caches a typed
 //! view without rewriting unknown fields or invalidating borrowed references.
-use super::LlmError;
+use super::{JsonPayload, LlmError};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     any::Any,
     fmt,
@@ -22,7 +21,7 @@ type Decoded = Result<Box<dyn Any + Send + Sync>, LlmError>;
 #[serde(deny_unknown_fields)]
 pub struct NativeExtension {
     format: String,
-    data: Value,
+    data: JsonPayload,
     #[serde(skip)]
     decoded: Arc<OnceLock<Decoded>>,
 }
@@ -30,7 +29,7 @@ pub struct NativeExtension {
 impl NativeExtension {
     /// Preserve native JSON without interpreting it. The receiving provider
     /// must validate supported formats before executing a request.
-    pub fn new(format: impl Into<String>, data: Value) -> Result<Self, LlmError> {
+    pub fn new(format: impl Into<String>, data: JsonPayload) -> Result<Self, LlmError> {
         let format = format.into();
         if format.is_empty() || format.chars().any(char::is_whitespace) {
             return Err(LlmError::InvalidRequest {
@@ -45,7 +44,10 @@ impl NativeExtension {
     }
 
     pub fn from_typed<T: NativeType>(value: T) -> Result<Self, LlmError> {
-        let data = serde_json::to_value(&value).map_err(|error| LlmError::InvalidRequest {
+        let source = serde_json::to_string(&value).map_err(|error| LlmError::InvalidRequest {
+            message: format!("cannot serialize {}: {error}", T::FORMAT),
+        })?;
+        let data = JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
             message: format!("cannot serialize {}: {error}", T::FORMAT),
         })?;
         let extension = Self::new(T::FORMAT, data)?;
@@ -76,21 +78,30 @@ impl NativeExtension {
                     ),
                 });
             }
-            serde_json::from_value::<T>(self.data.clone()).map_err(|error| {
+            serde_json::from_str::<T>(self.data.as_json_source()).map_err(|error| {
                 LlmError::InvalidRequest {
                     message: format!("invalid {} extension: {error}", T::FORMAT),
                 }
             })?
         };
-        let before = serde_json::to_value(&typed).map_err(|error| LlmError::InvalidRequest {
-            message: error.to_string(),
-        })?;
+        let before_source =
+            serde_json::to_string(&typed).map_err(|error| LlmError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+        let before =
+            JsonPayload::parse(&before_source).map_err(|error| LlmError::InvalidRequest {
+                message: error.to_string(),
+            })?;
         let result = edit(&mut typed);
-        let after = serde_json::to_value(&typed).map_err(|error| LlmError::InvalidRequest {
-            message: error.to_string(),
-        })?;
-        let mut updated = self.data.clone();
-        merge_typed_changes(&mut updated, &before, &after)?;
+        let after_source =
+            serde_json::to_string(&typed).map_err(|error| LlmError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+        let after =
+            JsonPayload::parse(&after_source).map_err(|error| LlmError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+        let updated = merge_typed_changes(&self.data, &before, &after)?;
         self.data = updated;
         self.decoded = Arc::default();
         let _ = self.decoded.set(Ok(Box::new(typed)));
@@ -100,7 +111,7 @@ impl NativeExtension {
     pub fn format(&self) -> &str {
         &self.format
     }
-    pub fn data(&self) -> &Value {
+    pub fn data(&self) -> &JsonPayload {
         &self.data
     }
     pub fn is<T: NativeType>(&self) -> bool {
@@ -118,7 +129,7 @@ impl NativeExtension {
             });
         }
         let decoded = self.decoded.get_or_init(|| {
-            serde_json::from_value::<T>(self.data.clone())
+            serde_json::from_str::<T>(self.data.as_json_source())
                 .map(|value| Box::new(value) as Box<dyn Any + Send + Sync>)
                 .map_err(|error| LlmError::InvalidRequest {
                     message: format!("invalid {} extension: {error}", T::FORMAT),
@@ -138,94 +149,370 @@ impl NativeExtension {
     }
 }
 
-fn merge_typed_changes(raw: &mut Value, before: &Value, after: &Value) -> Result<(), LlmError> {
-    if matches!(before, Value::Array(_))
-        && has_unmodeled_fields(raw, before)
-        && !same_json_representation(before, after)
-    {
+fn merge_typed_changes(
+    raw: &JsonPayload,
+    before: &JsonPayload,
+    after: &JsonPayload,
+) -> Result<JsonPayload, LlmError> {
+    use crate::response_json::{FlatJsonKind, JsonNodeRef};
+
+    enum Work<'r, 'b, 'a> {
+        Merge(
+            Option<JsonNodeRef<'r>>,
+            Option<JsonNodeRef<'b>>,
+            Option<JsonNodeRef<'a>>,
+        ),
+        Byte(u8),
+        Key(Vec<u16>),
+        Raw(Vec<u8>),
+    }
+
+    let raw_scanner = raw.scanner()?;
+    let before_scanner = before.scanner()?;
+    let after_scanner = after.scanner()?;
+    let raw_root = raw_scanner.root_node();
+    let before_root = before_scanner.root_node();
+    let after_root = after_scanner.root_node();
+    if has_unmodeled_array_changes(raw_root, before_root, after_root) {
         return Err(LlmError::InvalidRequest {
             message:
                 "cannot edit a native array with unmodeled fields without an explicit replacement"
                     .into(),
         });
     }
-    match (raw, before, after) {
-        (Value::Object(raw), Value::Object(before), Value::Object(after)) => {
-            for key in before.keys() {
-                if !after.contains_key(key) {
-                    raw.remove(key);
-                }
-            }
-            for (key, value) in after {
-                match (raw.get_mut(key), before.get(key)) {
-                    (Some(raw), Some(before)) => merge_typed_changes(raw, before, value)?,
-                    _ => {
-                        raw.insert(key.clone(), value.clone());
+
+    let mut output = Vec::new();
+    let mut stack = vec![Work::Merge(
+        Some(raw_root),
+        Some(before_root),
+        Some(after_root),
+    )];
+    while let Some(work) = stack.pop() {
+        match work {
+            Work::Byte(byte) => output.push(byte),
+            Work::Key(key) => crate::exact_json::write_json_string_from_utf16(&mut output, &key),
+            Work::Raw(source) => output.extend_from_slice(&source),
+            Work::Merge(raw, before, after) => match (raw, before, after) {
+                (Some(raw), Some(before), Some(after))
+                    if raw.kind() == FlatJsonKind::Object
+                        && before.kind() == FlatJsonKind::Object
+                        && after.kind() == FlatJsonKind::Object =>
+                {
+                    let raw_entries =
+                        raw.object_entries()
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "native JSON object has no flat children".into(),
+                            })?;
+                    let before_entries =
+                        before
+                            .object_entries()
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "typed native JSON object has no flat children".into(),
+                            })?;
+                    let after_entries =
+                        after
+                            .object_entries()
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "edited native JSON object has no flat children".into(),
+                            })?;
+                    let mut fields = Vec::with_capacity(raw_entries.len() + after_entries.len());
+                    for raw_entry in &raw_entries {
+                        let before_value = before_entries
+                            .iter()
+                            .find(|entry| entry.key_units == raw_entry.key_units)
+                            .map(|entry| entry.value);
+                        let after_value = after_entries
+                            .iter()
+                            .find(|entry| entry.key_units == raw_entry.key_units)
+                            .map(|entry| entry.value);
+                        if before_value.is_some() && after_value.is_none() {
+                            continue;
+                        }
+                        fields.push((
+                            raw_entry.key_units.to_vec(),
+                            Some(raw_entry.value),
+                            before_value,
+                            after_value,
+                        ));
                     }
+                    for after_entry in &after_entries {
+                        if raw_entries
+                            .iter()
+                            .any(|entry| entry.key_units == after_entry.key_units)
+                        {
+                            continue;
+                        }
+                        let before_value = before_entries
+                            .iter()
+                            .find(|entry| entry.key_units == after_entry.key_units)
+                            .map(|entry| entry.value);
+                        fields.push((
+                            after_entry.key_units.to_vec(),
+                            None,
+                            before_value,
+                            Some(after_entry.value),
+                        ));
+                    }
+
+                    stack.push(Work::Byte(b'}'));
+                    for (index, (key, raw, before, after)) in fields.into_iter().enumerate().rev() {
+                        stack.push(Work::Merge(raw, before, after));
+                        stack.push(Work::Byte(b':'));
+                        stack.push(Work::Key(key));
+                        if index > 0 {
+                            stack.push(Work::Byte(b','));
+                        }
+                    }
+                    stack.push(Work::Byte(b'{'));
+                }
+                (Some(raw), Some(before), Some(after))
+                    if raw.kind() == FlatJsonKind::Array
+                        && before.kind() == FlatJsonKind::Array
+                        && after.kind() == FlatJsonKind::Array
+                        && raw.array_len() == before.array_len()
+                        && before.array_len() == after.array_len() =>
+                {
+                    let len = raw.array_len().unwrap_or(0);
+                    stack.push(Work::Byte(b']'));
+                    for index in (0..len).rev() {
+                        stack.push(Work::Merge(
+                            raw.array_item(index),
+                            before.array_item(index),
+                            after.array_item(index),
+                        ));
+                        if index > 0 {
+                            stack.push(Work::Byte(b','));
+                        }
+                    }
+                    stack.push(Work::Byte(b'['));
+                }
+                (Some(raw), Some(before), Some(after)) => {
+                    let selected = if same_json_representation(before, after) {
+                        raw
+                    } else {
+                        after
+                    };
+                    stack.push(Work::Raw(
+                        crate::exact_json::serialize_json_node(
+                            selected,
+                            crate::exact_json::JsonEncoding::Serde,
+                        )?
+                        .into_bytes(),
+                    ));
+                }
+                (_, _, Some(after)) => stack.push(Work::Raw(
+                    crate::exact_json::serialize_json_node(
+                        after,
+                        crate::exact_json::JsonEncoding::Serde,
+                    )?
+                    .into_bytes(),
+                )),
+                (Some(raw), _, None) => stack.push(Work::Raw(
+                    crate::exact_json::serialize_json_node(
+                        raw,
+                        crate::exact_json::JsonEncoding::Serde,
+                    )?
+                    .into_bytes(),
+                )),
+                (None, _, None) => output.extend_from_slice(b"null"),
+            },
+        }
+    }
+    let source = String::from_utf8(output).map_err(|error| LlmError::InvalidRequest {
+        message: format!("edited native JSON is not UTF-8: {error}"),
+    })?;
+    JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+        message: format!("edited native JSON is invalid: {error}"),
+    })
+}
+
+fn same_json_representation<'l, 'r>(
+    left: crate::response_json::JsonNodeRef<'l>,
+    right: crate::response_json::JsonNodeRef<'r>,
+) -> bool {
+    use crate::response_json::FlatJsonKind;
+    let mut pending = vec![(left, right)];
+    while let Some((left, right)) = pending.pop() {
+        if left.kind() != right.kind() {
+            return false;
+        }
+        match left.kind() {
+            FlatJsonKind::Null => {}
+            FlatJsonKind::Boolean => {
+                if left.primitive_source() != right.primitive_source() {
+                    return false;
+                }
+            }
+            FlatJsonKind::Number => {
+                let left = left
+                    .number_source()
+                    .and_then(|source| serde_json::from_str::<serde_json::Number>(source).ok());
+                let right = right
+                    .number_source()
+                    .and_then(|source| serde_json::from_str::<serde_json::Number>(source).ok());
+                let (Some(left), Some(right)) = (left, right) else {
+                    return false;
+                };
+                if left != right
+                    || left.as_f64().map(f64::to_bits) != right.as_f64().map(f64::to_bits)
+                {
+                    return false;
+                }
+            }
+            FlatJsonKind::String => {
+                if left.string_units() != right.string_units() {
+                    return false;
+                }
+            }
+            FlatJsonKind::Array => {
+                let (Some(left_len), Some(right_len)) = (left.array_len(), right.array_len())
+                else {
+                    return false;
+                };
+                if left_len != right_len {
+                    return false;
+                }
+                for index in 0..left_len {
+                    let (Some(left), Some(right)) =
+                        (left.array_item(index), right.array_item(index))
+                    else {
+                        return false;
+                    };
+                    pending.push((left, right));
+                }
+            }
+            FlatJsonKind::Object => {
+                let (Some(left), Some(right)) = (left.object_entries(), right.object_entries())
+                else {
+                    return false;
+                };
+                if left.len() != right.len() {
+                    return false;
+                }
+                for (left, right) in left.into_iter().zip(right) {
+                    if left.key_units != right.key_units {
+                        return false;
+                    }
+                    pending.push((left.value, right.value));
                 }
             }
         }
-        (Value::Array(raw), Value::Array(before), Value::Array(after))
-            if raw.len() == before.len() && before.len() == after.len() =>
+    }
+    true
+}
+
+fn has_unmodeled_fields(
+    raw: crate::response_json::JsonNodeRef<'_>,
+    typed: crate::response_json::JsonNodeRef<'_>,
+) -> bool {
+    use crate::response_json::FlatJsonKind;
+    let mut pending = vec![(raw, typed)];
+    while let Some((raw, typed)) = pending.pop() {
+        match (raw.kind(), typed.kind()) {
+            (FlatJsonKind::Object, FlatJsonKind::Object) => {
+                let (Some(raw), Some(typed)) = (raw.object_entries(), typed.object_entries())
+                else {
+                    return true;
+                };
+                for raw_entry in raw {
+                    let Some(typed_entry) = typed
+                        .iter()
+                        .find(|entry| entry.key_units == raw_entry.key_units)
+                    else {
+                        return true;
+                    };
+                    pending.push((raw_entry.value, typed_entry.value));
+                }
+            }
+            (FlatJsonKind::Array, FlatJsonKind::Array) => {
+                let (Some(raw_len), Some(typed_len)) = (raw.array_len(), typed.array_len()) else {
+                    return true;
+                };
+                if raw_len != typed_len {
+                    return true;
+                }
+                for index in 0..raw_len {
+                    let (Some(raw), Some(typed)) = (raw.array_item(index), typed.array_item(index))
+                    else {
+                        return true;
+                    };
+                    pending.push((raw, typed));
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Find arrays at any depth whose raw elements contain unmodeled fields and
+/// whose typed contents changed. A typed object can hide such an array below
+/// ordinary fields, so checking only the root value would allow reordering
+/// unknown fields by array position.
+fn has_unmodeled_array_changes(
+    raw: crate::response_json::JsonNodeRef<'_>,
+    before: crate::response_json::JsonNodeRef<'_>,
+    after: crate::response_json::JsonNodeRef<'_>,
+) -> bool {
+    use crate::response_json::FlatJsonKind;
+
+    let mut pending = vec![(raw, before, Some(after))];
+    while let Some((raw, before, after)) = pending.pop() {
+        if raw.kind() == FlatJsonKind::Array
+            && before.kind() == FlatJsonKind::Array
+            && has_unmodeled_fields(raw, before)
+            && after.is_none_or(|after| !same_json_representation(before, after))
         {
-            for ((raw, before), after) in raw.iter_mut().zip(before).zip(after) {
-                merge_typed_changes(raw, before, after)?;
-            }
+            return true;
         }
-        (raw, before, after) => {
-            // JSON value equality equates 0.0 and -0.0, but their wire
-            // representations differ. Compare number spelling when deciding
-            // whether a typed edit actually changed a known scalar.
-            let changed = !same_json_representation(before, after);
-            if changed {
-                *raw = after.clone();
-            }
-        }
-    }
-    Ok(())
-}
 
-fn same_json_representation(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Number(left), Value::Number(right)) => {
-            left == right && left.as_f64().map(f64::to_bits) == right.as_f64().map(f64::to_bits)
+        let Some(after) = after else {
+            continue;
+        };
+        match (raw.kind(), before.kind(), after.kind()) {
+            (FlatJsonKind::Object, FlatJsonKind::Object, FlatJsonKind::Object) => {
+                let (Some(raw_entries), Some(before_entries), Some(after_entries)) = (
+                    raw.object_entries(),
+                    before.object_entries(),
+                    after.object_entries(),
+                ) else {
+                    return true;
+                };
+                for before_entry in before_entries {
+                    let Some(raw_entry) = raw_entries
+                        .iter()
+                        .find(|entry| entry.key_units == before_entry.key_units)
+                    else {
+                        continue;
+                    };
+                    let after_value = after_entries
+                        .iter()
+                        .find(|entry| entry.key_units == before_entry.key_units)
+                        .map(|entry| entry.value);
+                    pending.push((raw_entry.value, before_entry.value, after_value));
+                }
+            }
+            (FlatJsonKind::Array, FlatJsonKind::Array, FlatJsonKind::Array) => {
+                let (Some(raw_len), Some(before_len), Some(after_len)) =
+                    (raw.array_len(), before.array_len(), after.array_len())
+                else {
+                    return true;
+                };
+                for index in 0..raw_len.min(before_len).min(after_len) {
+                    let (Some(raw_item), Some(before_item), Some(after_item)) = (
+                        raw.array_item(index),
+                        before.array_item(index),
+                        after.array_item(index),
+                    ) else {
+                        return true;
+                    };
+                    pending.push((raw_item, before_item, Some(after_item)));
+                }
+            }
+            _ => {}
         }
-        (Value::Array(left), Value::Array(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| same_json_representation(left, right))
-        }
-        (Value::Object(left), Value::Object(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|((left_key, left), (right_key, right))| {
-                        left_key == right_key && same_json_representation(left, right)
-                    })
-        }
-        _ => left == right,
     }
-}
-
-fn has_unmodeled_fields(raw: &Value, typed: &Value) -> bool {
-    match (raw, typed) {
-        (Value::Object(raw), Value::Object(typed)) => raw.iter().any(|(key, value)| {
-            typed
-                .get(key)
-                .is_none_or(|typed| has_unmodeled_fields(value, typed))
-        }),
-        (Value::Array(raw), Value::Array(typed)) => {
-            raw.len() != typed.len()
-                || raw
-                    .iter()
-                    .zip(typed)
-                    .any(|(raw, typed)| has_unmodeled_fields(raw, typed))
-        }
-        _ => false,
-    }
+    false
 }
 
 impl fmt::Debug for NativeExtension {
@@ -246,6 +533,11 @@ impl Eq for NativeExtension {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    fn payload(value: Value) -> JsonPayload {
+        JsonPayload::from_generated_value(&value).unwrap()
+    }
     #[derive(Clone, Serialize, Deserialize)]
     struct Known {
         text: String,
@@ -265,7 +557,7 @@ mod tests {
     fn typed_view_preserves_unknown_fields_and_borrow_identity() {
         let extension = NativeExtension::new(
             Known::FORMAT,
-            serde_json::json!({"text":"hello", "signature":"opaque", "future":{"x":1}}),
+            payload(serde_json::json!({"text":"hello", "signature":"opaque", "future":{"x":1}})),
         )
         .unwrap();
         let view = extension.decode::<Known>().unwrap();
@@ -284,7 +576,7 @@ mod tests {
     fn editing_keeps_unknown_fields_and_cloned_snapshot_unchanged() {
         let mut extension = NativeExtension::new(
             Known::FORMAT,
-            serde_json::json!({"text":"before", "signature":"opaque", "future":{"x":1}}),
+            payload(serde_json::json!({"text":"before", "signature":"opaque", "future":{"x":1}})),
         )
         .unwrap();
         let snapshot = extension.clone();
@@ -294,9 +586,15 @@ mod tests {
             .unwrap();
         assert_eq!(extension.decode::<Known>().unwrap().text, "after");
         assert_eq!(captured.text, "before");
-        assert_eq!(extension.data()["signature"], "opaque");
-        assert_eq!(extension.data()["future"]["x"], 1);
-        assert_eq!(snapshot.data()["text"], "before");
+        assert_eq!(
+            extension.data().string_at("/signature").as_deref(),
+            Some("opaque")
+        );
+        assert_eq!(extension.data().number_at("/future/x"), Some(1.0));
+        assert_eq!(
+            snapshot.data().string_at("/text").as_deref(),
+            Some("before")
+        );
     }
 
     #[test]
@@ -312,15 +610,17 @@ mod tests {
         extension
             .edit::<Coordinates, _>(|typed| typed.value = 0.0)
             .unwrap();
-        assert!(!extension.data()["value"]
-            .as_f64()
+        assert!(!extension
+            .data()
+            .number_at("/value")
             .unwrap()
             .is_sign_negative());
         extension
             .edit::<Coordinates, _>(|typed| typed.value = -0.0)
             .unwrap();
-        assert!(extension.data()["value"]
-            .as_f64()
+        assert!(extension
+            .data()
+            .number_at("/value")
             .unwrap()
             .is_sign_negative());
     }
@@ -337,12 +637,12 @@ mod tests {
         }
         let mut extension = NativeExtension::new(
             List::FORMAT,
-            serde_json::json!({
+            payload(serde_json::json!({
                 "title":"before", "items":[
                     {"text":"a", "signature":"signature-a"},
                     {"text":"b", "signature":"signature-b"}
                 ]
-            }),
+            })),
         )
         .unwrap();
         let original_raw = extension.data().clone();
@@ -368,7 +668,10 @@ mod tests {
         extension
             .edit::<List, _>(|value| value.title = "safe".into())
             .unwrap();
-        assert_eq!(extension.data()["items"][0]["signature"], "signature-a");
+        assert_eq!(
+            extension.data().string_at("/items/0/signature").as_deref(),
+            Some("signature-a")
+        );
         let mut fully_typed = NativeExtension::from_typed(List {
             title: "before".into(),
             items: vec![Known { text: "a".into() }, Known { text: "b".into() }],
@@ -377,12 +680,15 @@ mod tests {
         fully_typed
             .edit::<List, _>(|value| value.items.swap(0, 1))
             .unwrap();
-        assert_eq!(fully_typed.data()["items"][0]["text"], "b");
+        assert_eq!(
+            fully_typed.data().string_at("/items/0/text").as_deref(),
+            Some("b")
+        );
     }
 
     #[test]
     fn malformed_payload_and_conflicting_type_are_errors() {
-        let extension = NativeExtension::new(Known::FORMAT, Value::Null).unwrap();
+        let extension = NativeExtension::new(Known::FORMAT, payload(Value::Null)).unwrap();
         assert!(extension.decode::<Known>().is_err());
         let extension = NativeExtension::from_typed(Known { text: "ok".into() }).unwrap();
         #[derive(Serialize, Deserialize)]
@@ -393,5 +699,18 @@ mod tests {
             const FORMAT: &'static str = Known::FORMAT;
         }
         assert!(extension.decode::<Conflict>().is_err());
+    }
+
+    #[test]
+    fn native_extension_wire_keeps_opaque_deep_and_lone_data_source() {
+        let depth = 16_384;
+        let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let source = format!(r#"{{"text":"ok","future":{{"deep":{nested},"lone":"\ud800"}}}}"#);
+        let extension =
+            NativeExtension::new(Known::FORMAT, JsonPayload::parse(&source).unwrap()).unwrap();
+        let encoded = serde_json::to_string(&extension).unwrap();
+        assert!(encoded.contains(&format!("\"data\":{source}")));
+        let decoded: NativeExtension = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.data().as_json_source(), source);
     }
 }

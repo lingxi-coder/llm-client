@@ -14,6 +14,57 @@ use std::sync::Arc;
 mod support;
 
 #[test]
+fn anthropic_haiku_55_catalog_preserves_native_limits_and_prompt_price_bands() {
+    let catalog: toml::Value = include_str!("../data/providers/anthropic.toml")
+        .parse()
+        .unwrap();
+    let models = catalog["model"].as_array().unwrap();
+    let model = models
+        .iter()
+        .find(|model| model["id"].as_str() == Some("claude-haiku-5-5"))
+        .unwrap();
+
+    assert_eq!(model["release_date"].as_str(), Some("2026-10-07"));
+    assert_eq!(model["knowledge_cutoff"].as_str(), Some("2026-06"));
+    assert_eq!(model["context_window"].as_integer(), Some(1_000_000));
+    assert_eq!(model["max_output"].as_integer(), Some(128_000));
+    assert_eq!(model["temperature"].as_bool(), Some(false));
+
+    let rules = model["pricing"]["rules"].as_array().unwrap();
+    let long_interactive = rules
+        .iter()
+        .find(|rule| {
+            rule["submission"].as_str() == Some("interactive")
+                && rule["min_input_tokens"].as_integer() == Some(100_001)
+        })
+        .unwrap();
+    assert_eq!(
+        long_interactive["rates"]["input_per_million"].as_float(),
+        Some(0.5)
+    );
+    assert_eq!(
+        long_interactive["rates"]["output_per_million"].as_float(),
+        Some(2.5)
+    );
+
+    let long_batch = rules
+        .iter()
+        .find(|rule| {
+            rule["submission"].as_str() == Some("batch")
+                && rule["min_input_tokens"].as_integer() == Some(100_001)
+        })
+        .unwrap();
+    assert_eq!(
+        long_batch["rates"]["input_per_million"].as_float(),
+        Some(0.25)
+    );
+    assert_eq!(
+        long_batch["rates"]["output_per_million"].as_float(),
+        Some(1.25)
+    );
+}
+
+#[test]
 fn metered_glm_never_inherits_subscription_zero_prices() {
     let profile = builtin()
         .unwrap()

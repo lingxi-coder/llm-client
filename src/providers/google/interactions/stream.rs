@@ -319,7 +319,7 @@ impl Pinned<'_> {
             .map_err(|source| {
                 if submitting
                     && matches!(
-                        source,
+                        source.classification_source(),
                         LlmError::Transport { .. }
                             | LlmError::TransportTimeout { .. }
                             | LlmError::StreamInterrupted { .. }

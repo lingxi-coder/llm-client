@@ -159,7 +159,12 @@ fn cache_patches_preserve_borrowed_schema_system_and_structured_tool_results() {
         blocks, is_error, ..
     } = &mut req.messages[2].content[0]
     {
-        *blocks = Some(vec![result.clone()]);
+        *blocks = Some(
+            lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!(
+                [result.clone()]
+            ))
+            .unwrap(),
+        );
         *is_error = Some(true);
     }
     req.prompt_cache.breakpoints = vec![
@@ -181,7 +186,10 @@ fn cache_patches_preserve_borrowed_schema_system_and_structured_tool_results() {
     ];
     let encoded = encode(&AnthropicMessagesCodec, &req, Value::Null);
     let body: Value = serde_json::from_slice(&encoded.body).unwrap();
-    assert_eq!(body["tools"][0]["input_schema"], req.tools[0].input_schema);
+    assert_eq!(
+        body["tools"][0]["input_schema"].to_string(),
+        req.tools[0].input_schema.as_json_source()
+    );
     assert_eq!(body["system"][0]["text"], TEXT);
     for value in [
         &body["tools"][0],
@@ -199,6 +207,41 @@ fn cache_patches_preserve_borrowed_schema_system_and_structured_tool_results() {
     let encoded = encode(&OpenAiResponsesCodec, &req, Value::Null);
     let body: Value = serde_json::from_slice(&encoded.body).unwrap();
     assert_eq!(body["input"][3]["output"], json!([result]));
+}
+
+#[test]
+fn tool_cache_marker_keeps_lone_description_and_schema_source() {
+    let mut req = request();
+    req.tools[0].description = JsonPayload::string_from_utf16_code_units(&[
+        b'l' as u16,
+        b'o' as u16,
+        b'o' as u16,
+        b'k' as u16,
+        0xd800,
+    ]);
+    req.tools[0].input_schema = JsonPayload::parse(
+        r#"{"type":"object","properties":{"value":"\ud800","escaped":"\u0061"}}"#,
+    )
+    .unwrap();
+    req.prompt_cache.breakpoints = vec![CacheBreakpoint {
+        scope: None,
+        position: CachePosition::Tool { index: 0 },
+        ttl: CacheTtl::FiveMinutes,
+    }];
+
+    let encoded = encode(&AnthropicMessagesCodec, &req, Value::Null);
+    let body = std::str::from_utf8(&encoded.body).expect("JSON body is UTF-8");
+    assert!(body.contains(r#""description":"look\ud800""#), "{body}");
+    assert!(
+        body.contains(
+            r#""input_schema":{"type":"object","properties":{"value":"\ud800","escaped":"\u0061"}}"#
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#""cache_control":{"type":"ephemeral"}"#),
+        "{body}"
+    );
 }
 
 #[test]

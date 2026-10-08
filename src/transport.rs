@@ -320,9 +320,13 @@ impl<'a> HttpExecutor<'a> {
             let mut body = BytesMut::new();
             while let Some(chunk) = chunks.next().await {
                 let chunk = chunk.map_err(|error| {
-                    let error = match error {
-                        LlmError::StreamInterrupted { message } => LlmError::Transport { message },
-                        other => other,
+                    let text = error.provider_error_text().cloned();
+                    let error = match error.classification_source() {
+                        LlmError::StreamInterrupted { message } => LlmError::Transport {
+                            message: message.clone(),
+                        }
+                        .with_optional_provider_error_text(text),
+                        _ => error,
                     };
                     (
                         error,

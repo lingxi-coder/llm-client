@@ -3,8 +3,8 @@ use super::{backends::Encoder, model::encoder_for, types::*};
 use crate::{
     client::ClientSnapshot,
     protocol::{
-        ChatRequest, ContentBlock, DocumentSource, ImageSource, MessageRole, ProtocolFamily,
-        VideoSource,
+        ChatRequest, ContentBlock, DocumentSource, ImageSource, JsonPayload, MessageRole,
+        ProtocolFamily, VideoSource,
     },
 };
 impl ClientSnapshot {
@@ -47,7 +47,15 @@ impl ClientSnapshot {
         let profile = self.profile(&route.profile_name).expect("resolved profile");
         let mut accumulator = Accumulator::new(&encoder, profile.protocol);
         for block in &request.system {
-            accumulator.add_text(&block.text)?;
+            let display = block
+                .text_payload()
+                .display_root_string_lossy()
+                .ok_or_else(|| {
+                    LocalTokenCountError::Serialization(
+                        "system block is not a JSON string value".into(),
+                    )
+                })?;
+            accumulator.add_text(&display)?;
             accumulator.add_framing(2);
         }
 
@@ -67,7 +75,15 @@ impl ClientSnapshot {
 
         for tool in &request.tools {
             accumulator.add_text(&tool.name)?;
-            accumulator.add_text(&tool.description)?;
+            let description = tool
+                .description
+                .display_root_string_lossy()
+                .ok_or_else(|| {
+                    LocalTokenCountError::Serialization(
+                        "ToolSpec description must be a JSON string".to_owned(),
+                    )
+                })?;
+            accumulator.add_text(&description)?;
             accumulator.add_json(&tool.input_schema)?;
             if tool.strict {
                 accumulator.add_text("strict")?;
@@ -83,8 +99,11 @@ impl ClientSnapshot {
 
         if !matches!(request.output_format, crate::protocol::OutputFormat::Text) {
             accumulator.add_json(
-                &serde_json::to_value(&request.output_format)
-                    .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?,
+                &JsonPayload::parse(
+                    &serde_json::to_string(&request.output_format)
+                        .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?,
+                )
+                .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?,
             )?;
             accumulator.omit(LocalTokenEstimateOmission::StructuredOutputInstructions);
         }
@@ -124,7 +143,7 @@ impl ClientSnapshot {
         if request.continuation.is_some() {
             accumulator.omit(LocalTokenEstimateOmission::PreviousResponseState);
         }
-        if !request.metadata.is_null() {
+        if !request.metadata.is_root_null() {
             accumulator.omit(LocalTokenEstimateOmission::ProviderMetadata);
         }
 
@@ -164,8 +183,9 @@ impl<'a> Accumulator<'a> {
         Ok(())
     }
 
-    fn add_json(&mut self, value: &serde_json::Value) -> Result<(), LocalTokenCountError> {
-        let encoded = serde_json::to_string(value)
+    fn add_json(&mut self, value: &JsonPayload) -> Result<(), LocalTokenCountError> {
+        let encoded = value
+            .canonical_json(crate::exact_json::JsonEncoding::for_protocol(self.protocol))
             .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?;
         self.add_text(&encoded)
     }
@@ -229,11 +249,23 @@ impl<'a> Accumulator<'a> {
                 ..
             } => {
                 self.add_text(tool_use_id.as_str())?;
-                self.add_text(content)?;
+                content
+                    .validate_root_string("tool result content")
+                    .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?;
+                self.add_text(
+                    &content
+                        .display_root_string_lossy()
+                        .expect("validated tool result string"),
+                )?;
                 if let Some(toolset_name) = toolset_name {
                     self.add_text(toolset_name)?;
                 }
                 if blocks.is_some() {
+                    blocks
+                        .as_ref()
+                        .expect("checked above")
+                        .validate_root_array("tool result blocks")
+                        .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?;
                     self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
                 }
             }
@@ -407,15 +439,16 @@ mod tests {
                 request_model: "deepseek-flash".into(),
                 workspace_id: Some("workspace-1".into()),
             }),
-            system: vec![SystemBlock {
-                text: "system prompt".to_owned(),
-            }],
+            system: vec![SystemBlock::new("system prompt")],
             messages: vec![
                 ConversationMessage::user_text("hello world"),
                 ConversationMessage::assistant(vec![ContentBlock::ToolUse {
                     id: "call-1".into(),
                     name: "lookup".to_owned(),
-                    input: json!({"query": "local token count"}),
+                    input: crate::protocol::JsonPayload::parse(
+                        &json!({"query": "local token count"}).to_string(),
+                    )
+                    .unwrap(),
                     provider_id: Some("provider-call-1".to_owned()),
                     caller: None,
                     toolset_name: None,
@@ -427,7 +460,7 @@ mod tests {
                     content: vec![
                         ContentBlock::ToolResult {
                             tool_use_id: "call-1".into(),
-                            content: "found a result".to_owned(),
+                            content: JsonPayload::string("found a result"),
                             is_error: Some(false),
                             blocks: None,
                             toolset_name: None,
@@ -466,20 +499,22 @@ mod tests {
                         },
                         ContentBlock::ProviderContent {
                             protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                            value: json!({"type": "opaque_provider_block"}),
+                            value: JsonPayload::parse(r#"{"type":"opaque_provider_block"}"#)
+                                .unwrap(),
                         },
                     ],
                 },
             ],
             tools: vec![ToolSpec {
                 tool_type: None,
-                extra: serde_json::Value::Null,
+                extra: crate::protocol::JsonPayload::default(),
                 name: "lookup".to_owned(),
-                description: "search local records".to_owned(),
-                input_schema: json!({
+                description: crate::protocol::JsonPayload::string("search local records"),
+                input_schema: crate::protocol::JsonPayload::from_generated_value(&json!({
                     "type": "object",
                     "properties": {"query": {"type": "string"}}
-                }),
+                }))
+                .expect("schema fixture is valid JSON"),
                 strict: true,
                 defer_loading: false,
                 native_options: Vec::new(),
@@ -494,7 +529,10 @@ mod tests {
                 ..ThinkingConfig::default()
             }),
             stop_sequences: vec!["END".to_owned()],
-            metadata: json!({"provider_hint": "opaque"}),
+            metadata: crate::protocol::JsonPayload::from_generated_value(
+                &json!({"provider_hint": "opaque"}),
+            )
+            .unwrap(),
         };
 
         let estimate = client.estimate_local_tokens(&request).unwrap();
@@ -562,7 +600,7 @@ mod tests {
             temperature: None,
             thinking: None,
             stop_sequences: Vec::new(),
-            metadata: serde_json::Value::Null,
+            metadata: crate::protocol::JsonPayload::default(),
         };
         assert!(matches!(
             openai.estimate_local_tokens(&request),

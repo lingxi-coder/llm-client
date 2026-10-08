@@ -4,6 +4,10 @@ use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 #[path = "support/wire_api.rs"]
 mod wire_api;
 const MODEL: &str = "claude-opus-5-5";
@@ -32,14 +36,14 @@ fn encode(
 fn schema() -> OutputFormat {
     OutputFormat::JsonSchema {
         name: "answer".into(),
-        schema: json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}),
+        schema: JsonPayload::from_generated_value(&json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false})).unwrap(),
         strict: true,
     }
 }
 fn native(v: Value) -> ContentBlock {
     ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: v,
+        value: json_payload_fixture::generated(&v),
     }
 }
 #[test]
@@ -218,10 +222,9 @@ fn fetch_results_errors_and_usage_are_native_not_client_calls() {
     let ctx = CodecContext::new(&p, MODEL, RequestMode::Complete);
     let resp=AnthropicMessagesCodec.decode_response(&HttpResponse{status:200,headers:vec![],body:bytes::Bytes::from(serde_json::to_vec(&json!({"id":"msg_1","model":MODEL,"content":blocks,"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":4,"server_tool_use":{"web_fetch_requests":1}}})).unwrap())},&ctx).unwrap();
     assert_eq!(resp.message.tool_uses().count(), 0);
-    assert_eq!(
-        resp.anthropic_usage().unwrap()["server_tool_use"]["web_fetch_requests"],
-        1
-    );
+    let usage: Value =
+        serde_json::from_str(resp.anthropic_usage().unwrap().as_json_source()).unwrap();
+    assert_eq!(usage["server_tool_use"]["web_fetch_requests"], 1);
     assert_eq!(
         resp.usage
             .usage
@@ -266,34 +269,40 @@ fn streamed_fetch_json_and_result_survive_with_raw_usage() {
             .web_fetch_requests,
         Some(1)
     );
+    let server_tool_use = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ProviderContent {
+                block: 0, value, ..
+            } => Some(value),
+            _ => None,
+        })
+        .unwrap();
     assert_eq!(
-        events
-            .iter()
-            .find_map(|event| match event {
-                StreamEvent::ProviderContent {
-                    block: 0, value, ..
-                } => Some(value),
-                _ => None,
-            })
-            .unwrap()["input"],
-        json!({"url":"https://example.com"})
+        json_payload_fixture::source_value_at(server_tool_use, "/input"),
+        Some(json!({"url":"https://example.com"}))
     );
-    assert_eq!(
-        events
-            .iter()
-            .find_map(|event| match event {
-                StreamEvent::ProviderContent {
-                    block: 1, value, ..
-                } => Some(value),
-                _ => None,
-            })
-            .unwrap(),
+    let server_tool_result = events
+        .iter()
+        .find_map(|event| match event {
+            StreamEvent::ProviderContent {
+                block: 1, value, ..
+            } => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert!(json_payload_fixture::source_matches(
+        server_tool_result,
         &result
-    );
+    ));
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));
-    assert!(events.iter().any(|event|matches!(event,StreamEvent::ProviderEvent{payload,..} if payload.pointer("/usage/server_tool_use/web_fetch_requests")==Some(&json!(1)))));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ProviderEvent { payload, .. }
+            if json_payload_fixture::source_value_at(payload, "/usage/server_tool_use/web_fetch_requests") == Some(json!(1))
+    )));
 }
 #[derive(Default)]
 struct FailTransport(Mutex<usize>);

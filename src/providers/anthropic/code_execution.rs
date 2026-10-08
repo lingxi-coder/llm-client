@@ -112,17 +112,21 @@ fn is_anthropic_messages_protocol(protocol: ProtocolFamily) -> bool {
 /// Conservatively pin those requests even if the caller omitted tool settings.
 pub(crate) fn has_execution(request: &ChatRequest) -> bool {
     request.hosted_anthropic_code_execution().is_some()
-        || request.messages.iter().flat_map(|message| &message.content).any(|block| {
-            matches!(block, ContentBlock::ProviderContent {
+        || request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| {
+                matches!(block, ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
                 value,
-            } if value.get("type").and_then(Value::as_str).is_some_and(|kind| {
+            } if value.string_at("/type").is_some_and(|kind| {
                 kind == "container_upload" || kind.contains("code_execution")
-            }) || value.get("type").and_then(Value::as_str) == Some("server_tool_use")
-                && value.get("name").and_then(Value::as_str).is_some_and(|name| {
-                    matches!(name, "code_execution" | "bash_code_execution" | "text_editor_code_execution")
-                }))
-        })
+            }) || value.string_is("/type", "server_tool_use")
+                && ["code_execution", "bash_code_execution", "text_editor_code_execution"]
+                    .iter()
+                    .any(|name| value.string_is("/name", name)))
+            })
 }
 
 /// Validate before resolving attachments and authenticating, and again in the
@@ -156,7 +160,9 @@ pub(crate) fn validate_with_inline_tools(
                 })
             });
         if extra.get("container").is_some() || raw_execution {
-            return Err(invalid("Anthropic execution tools and container IDs must use AnthropicCodeExecutionConfig, not extra.body"));
+            return Err(invalid(
+                "Anthropic execution tools and container IDs must use AnthropicCodeExecutionConfig, not extra.body",
+            ));
         }
     }
 
@@ -164,7 +170,7 @@ pub(crate) fn validate_with_inline_tools(
     let mut programmatic_caller_metadata_present = false;
     let mut server_tool_ids = std::collections::HashMap::<String, usize>::new();
     let mut completed_server_tools = std::collections::HashMap::<String, usize>::new();
-    let mut programmatic_history_calls = Vec::new();
+    let mut programmatic_history_calls = Vec::<(String, String, usize)>::new();
     let mut history_position = 0usize;
     for message in &request.messages {
         for block in &message.content {
@@ -172,37 +178,32 @@ pub(crate) fn validate_with_inline_tools(
                 ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::AnthropicMessages,
                     value,
-                } if value.get("type").and_then(Value::as_str) == Some("server_tool_use")
-                    && value
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .is_some_and(|name| {
-                            matches!(
-                                name,
-                                "code_execution"
-                                    | "bash_code_execution"
-                                    | "text_editor_code_execution"
-                            )
-                        }) =>
+                } if value.string_is("/type", "server_tool_use")
+                    && [
+                        "code_execution",
+                        "bash_code_execution",
+                        "text_editor_code_execution",
+                    ]
+                    .iter()
+                    .any(|name| value.string_is("/name", name)) =>
                 {
-                    if let Some(id) = value.get("id").and_then(Value::as_str) {
-                        server_tool_ids.insert(id.to_owned(), history_position);
+                    if let Some(id) = value.string_at("/id") {
+                        server_tool_ids.insert(id, history_position);
                     }
                 }
                 ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::AnthropicMessages,
                     value,
-                } if matches!(
-                    value.get("type").and_then(Value::as_str),
-                    Some(
-                        "code_execution_tool_result"
-                            | "bash_code_execution_tool_result"
-                            | "text_editor_code_execution_tool_result"
-                    )
-                ) =>
+                } if [
+                    "code_execution_tool_result",
+                    "bash_code_execution_tool_result",
+                    "text_editor_code_execution_tool_result",
+                ]
+                .iter()
+                .any(|kind| value.string_is("/type", kind)) =>
                 {
-                    if let Some(id) = value.get("tool_use_id").and_then(Value::as_str) {
-                        completed_server_tools.insert(id.to_owned(), history_position);
+                    if let Some(id) = value.string_at("/tool_use_id") {
+                        completed_server_tools.insert(id, history_position);
                     }
                 }
                 ContentBlock::ToolUse {
@@ -211,36 +212,44 @@ pub(crate) fn validate_with_inline_tools(
                     ..
                 } => {
                     caller_metadata_present = true;
-                    let Some(caller) = caller.as_object() else {
+                    if caller.kind_at("") != Some(crate::response_json::FlatJsonKind::Object) {
                         return Err(invalid(
                             "Anthropic tool caller metadata must remain a JSON object",
                         ));
-                    };
-                    let Some(caller_type) = caller.get("type").and_then(Value::as_str) else {
+                    }
+                    let Some(caller_type_units) = caller.string_units_at("/type") else {
                         return Err(invalid(
                             "Anthropic tool caller metadata requires a string type",
                         ));
                     };
+                    let caller_type = String::from_utf16(&caller_type_units).map_err(|_| {
+                        invalid(
+                            "Anthropic tool caller metadata type contains unpaired UTF-16 units",
+                        )
+                    })?;
                     if matches!(
-                        caller_type,
+                        caller_type.as_str(),
                         "code_execution_20260120" | "code_execution_20260521"
                     ) {
                         programmatic_caller_metadata_present = true;
-                        let Some(tool_id) = caller.get("tool_id").and_then(Value::as_str) else {
+                        let Some(tool_id_units) = caller.string_units_at("/tool_id") else {
                             return Err(invalid(
                                 "Anthropic programmatic tool caller metadata requires a string tool_id",
                             ));
                         };
+                        let tool_id = String::from_utf16(&tool_id_units).map_err(|_| {
+                            invalid("Anthropic programmatic tool caller tool_id contains unpaired UTF-16 units")
+                        })?;
                         if tool_id.is_empty()
                             || server_tool_ids
-                                .get(tool_id)
+                                .get(&tool_id)
                                 .is_none_or(|position| *position >= history_position)
                         {
                             return Err(invalid(
                                 "Anthropic programmatic tool caller must reference a preceding server_tool_use block",
                             ));
                         }
-                        programmatic_history_calls.push((name.as_str(), tool_id, history_position));
+                        programmatic_history_calls.push((name.clone(), tool_id, history_position));
                     }
                 }
                 _ => {}
@@ -273,7 +282,7 @@ pub(crate) fn validate_with_inline_tools(
         .into_iter()
         .filter(|(_, tool_id, call_position)| {
             completed_server_tools
-                .get(*tool_id)
+                .get(tool_id)
                 .is_none_or(|result_position| *result_position <= *call_position)
         })
         .collect::<Vec<_>>();
@@ -339,7 +348,7 @@ pub(crate) fn validate_with_inline_tools(
         // redefinition here; without inline history, preserve the static check.
         if inline_tools.is_empty() {
             for (name, _, _) in &pending_programmatic_calls {
-                let Some(tool) = tool_specs.iter().find(|tool| tool.name == *name) else {
+                let Some(tool) = tool_specs.iter().find(|tool| tool.name == name.as_str()) else {
                     return Err(invalid(format!(
                         "programmatic tool call {name:?} must be replayed with its original tool definition"
                     )));
@@ -480,9 +489,7 @@ pub(crate) fn validate_with_inline_tools(
                 ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::AnthropicMessages,
                     value,
-                } if value.get("type").and_then(Value::as_str) == Some("container_upload") => {
-                    value.get("file_id").and_then(Value::as_str)
-                }
+                } if value.string_is("/type", "container_upload") => value.string_at("/file_id"),
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
@@ -522,7 +529,9 @@ pub(crate) fn validate_with_inline_tools(
             || Some(scope.account_scope()) != context.account_scope()
             || scope.request_model() != context.request_model()
         {
-            return Err(invalid("Anthropic container reference does not match the selected profile, endpoint, account_scope, or request model"));
+            return Err(invalid(
+                "Anthropic container reference does not match the selected profile, endpoint, account_scope, or request model",
+            ));
         }
     }
     Ok(())
@@ -575,19 +584,78 @@ pub(crate) fn apply(
 
 /// `None` means no update. An explicit JSON null clears previously observed
 /// container metadata; it is different from an omitted field.
-pub(crate) fn stream_container(frame: &Value) -> Option<&Value> {
-    match frame.get("type").and_then(Value::as_str) {
-        Some("message_start") => frame.get("message")?.get("container"),
-        Some("message_delta") => frame.get("delta")?.get("container"),
+pub(crate) fn stream_container(
+    frame: &crate::protocol::JsonPayload,
+) -> Option<crate::protocol::JsonPayload> {
+    match frame.string_at("/type").as_deref() {
+        Some("message_start") => frame.payload_at("/message/container"),
+        Some("message_delta") => frame.payload_at("/delta/container"),
         _ => None,
     }
 }
 
-pub(crate) fn stream_usage(frame: &Value) -> Option<&Value> {
-    match frame.get("type").and_then(Value::as_str) {
-        Some("message_start") => frame.get("message")?.get("usage"),
-        Some("message_delta") => frame.get("usage"),
+/// Native assigns resumability from a boolean on the delta first, then from
+/// the message_delta envelope. A message_start nested value is stripped by the
+/// current consumer and is not an update to the completed assistant message.
+pub(crate) fn stream_resumable(
+    frame: &crate::protocol::JsonPayload,
+) -> Option<crate::protocol::JsonPayload> {
+    if frame.string_at("/type").as_deref() != Some("message_delta") {
+        return None;
+    }
+    ["/delta/resumable", "/resumable"]
+        .into_iter()
+        .find_map(|pointer| {
+            (frame.kind_at(pointer) == Some(crate::response_json::FlatJsonKind::Boolean))
+                .then(|| frame.payload_at(pointer))
+                .flatten()
+        })
+}
+
+pub(crate) fn stream_usage(
+    frame: &crate::protocol::JsonPayload,
+) -> Option<crate::protocol::JsonPayload> {
+    match frame.string_at("/type").as_deref() {
+        Some("message_start") => frame.payload_at("/message/usage"),
+        Some("message_delta") => frame.payload_at("/usage"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod resumable_tests {
+    use super::stream_resumable;
+    use crate::protocol::JsonPayload;
+
+    #[test]
+    fn resumable_stream_merge_matches_current_native_field_sources() {
+        let cases = [
+            (
+                r#"{"type":"message_delta","delta":{"resumable":false},"resumable":true}"#,
+                Some("false"),
+            ),
+            (
+                r#"{"type":"message_delta","delta":{"resumable":null},"resumable":true}"#,
+                Some("true"),
+            ),
+            (
+                r#"{"type":"message_delta","delta":{"resumable":"true"},"resumable":2}"#,
+                None,
+            ),
+            (
+                r#"{"type":"message_start","message":{"resumable":true}}"#,
+                None,
+            ),
+        ];
+        for (source, expected) in cases {
+            let frame = JsonPayload::parse(source).unwrap();
+            assert_eq!(
+                stream_resumable(&frame)
+                    .as_ref()
+                    .map(JsonPayload::as_json_source),
+                expected
+            );
+        }
     }
 }
 

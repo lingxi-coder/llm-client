@@ -4,9 +4,9 @@ use lingxi_llm_client::{
         StreamDecoder, WireCodec,
     },
     protocol::{
-        ChatRequest, ChatResponse, ContentBlock, ContinuationRef, ConversationMessage, LlmError,
-        MessageRole, NativeExtension, ProtocolFamily, ProviderId, ProviderProfile, ResponseId,
-        StopReason, StreamEvent,
+        ChatRequest, ChatResponse, ContentBlock, ContinuationRef, ConversationMessage, JsonPayload,
+        LlmError, MessageRole, NativeExtension, ProtocolFamily, ProviderId, ProviderProfile,
+        ResponseId, StopReason, StreamEvent,
     },
     providers::openai::computer::{
         ComputerAction, ComputerCallStatus, ComputerSafetyCheck, OpenAiComputerCall,
@@ -20,6 +20,10 @@ use serde_json::{json, Value};
 mod wire_api;
 
 const MODEL: &str = "gpt-6-astra";
+
+fn json_payload_value(payload: &JsonPayload) -> Value {
+    serde_json::from_str(payload.as_json_source()).expect("source payload is valid JSON")
+}
 
 fn profile() -> ProviderProfile {
     serde_json::from_value(json!({
@@ -125,7 +129,13 @@ fn completed_nonstream_call_requires_explicit_safety_checks_array() {
     let ContentBlock::Native { value } = &response.message.content[0] else {
         panic!("completed computer call must be typed native content");
     };
-    assert_eq!(value.data()["pending_safety_checks"], json!([]));
+    assert_eq!(
+        value
+            .data()
+            .raw_source_at("/pending_safety_checks")
+            .as_deref(),
+        Some("[]")
+    );
     assert!(OpenAiComputerCall::from_extension(value).is_ok());
 
     item.as_object_mut()
@@ -245,7 +255,7 @@ fn incomplete_call_is_preserved_as_non_executable_provider_content() {
     assert!(matches!(
         &response.message.content[..],
         [ContentBlock::ProviderContent { protocol: ProtocolFamily::OpenAiResponses, value }]
-            if value == &item
+            if json_payload_value(value) == item
     ));
     assert!(response.usage.usage.is_some());
 }
@@ -416,7 +426,7 @@ fn completed_stream_call_requires_explicit_safety_checks_array() {
     let events = push_stream_frame(&mut *decoder, &terminal);
     assert!(events.iter().any(|event| matches!(event,
         Ok(StreamEvent::Native { value, .. })
-            if value.data()["pending_safety_checks"] == json!([]))));
+            if value.data().raw_source_at("/pending_safety_checks").as_deref() == Some("[]"))));
 
     item.as_object_mut()
         .unwrap()
@@ -865,7 +875,7 @@ fn finalized_function_arguments_complete_mixed_computer_stream() {
         let response = assembly.finish().unwrap().response;
         assert!(response.message.content.iter().any(|block| matches!(block,
             ContentBlock::ToolUse { id, input, .. }
-                if id.as_str() == "function_1" && input == &json!({"x":1}))));
+                if id.as_str() == "function_1" && input.as_json_source() == final_arguments)));
         assert!(response
             .message
             .content
@@ -979,7 +989,8 @@ fn request_validation_rejects_raw_computer_calls_before_encode() {
         .content
         .push(ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: call_item("raw_call"),
+            value: JsonPayload::from_generated_value(&call_item("raw_call"))
+                .expect("generated computer fixture is valid JSON"),
         });
     assert!(matches!(
         OpenAiResponsesCodec.validate_request(&request, &context(&profile, RequestMode::Complete)),
@@ -1007,7 +1018,7 @@ fn incomplete_terminal_stream_retains_raw_call_and_usage_without_native_executio
         .any(|event| matches!(event, StreamEvent::Native { .. })));
     assert!(events.iter().any(|event| matches!(event,
         StreamEvent::ProviderContent { protocol: ProtocolFamily::OpenAiResponses, value, .. }
-            if value == &item)));
+            if json_payload_value(value) == item)));
     assert!(matches!(events.last(), Some(StreamEvent::End { .. })));
     assert!(decoder.usage_report().usage.is_some());
 }

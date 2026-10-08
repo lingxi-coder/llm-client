@@ -919,7 +919,7 @@ impl Pinned<'_> {
                     operation,
                     "create_store" | "delete_store" | "import_file" | "delete_document"
                 ) && matches!(
-                    source,
+                    source.classification_source(),
                     LlmError::Transport { .. }
                         | LlmError::TransportTimeout { .. }
                         | LlmError::StreamInterrupted { .. }

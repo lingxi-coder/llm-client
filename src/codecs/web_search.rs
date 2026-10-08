@@ -204,7 +204,10 @@ fn validate_domains(search: &WebSearchConfig) -> Result<(), LlmError> {
     if search.max_uses == Some(0) {
         return Err(invalid("web search max_uses must be positive"));
     }
-    for domain in search.allowed_domains.iter().chain(&search.blocked_domains) {
+    let domains = domain_strings(&search.allowed_domains)?
+        .into_iter()
+        .chain(domain_strings(&search.blocked_domains)?);
+    for domain in domains {
         if domain.trim().is_empty()
             || domain.contains("://")
             || domain.chars().any(char::is_whitespace)
@@ -217,26 +220,49 @@ fn validate_domains(search: &WebSearchConfig) -> Result<(), LlmError> {
     }
     Ok(())
 }
-pub(crate) fn responses_tool(search: &WebSearchConfig) -> Value {
-    let mut tool = json!({"type":"web_search"});
-    if !search.allowed_domains.is_empty() {
-        tool["filters"] = json!({"allowed_domains": search.allowed_domains});
-    }
-    if !search.blocked_domains.is_empty() {
-        tool["filters"] = json!({"excluded_domains": search.blocked_domains});
-    }
-    tool
+/// Convert source-backed domain strings only after confirming they are valid
+/// UTF-16. Domain names are semantic identifiers and cannot contain lone
+/// surrogate code units; rejecting those keeps the exact source boundary from
+/// silently replacing them with U+FFFD.
+pub(crate) fn domain_strings(
+    domains: &[crate::protocol::JsonPayload],
+) -> Result<Vec<String>, LlmError> {
+    domains
+        .iter()
+        .map(|domain| {
+            let units = domain
+                .root_string_code_units()
+                .ok_or_else(|| invalid("web search domain filters must be JSON strings"))?;
+            String::from_utf16(&units)
+                .map_err(|_| invalid("web search domain filters must be valid Unicode strings"))
+        })
+        .collect()
 }
-pub(crate) fn messages_tool(search: &WebSearchConfig) -> Value {
+
+pub(crate) fn responses_tool(search: &WebSearchConfig) -> Result<Value, LlmError> {
+    let allowed_domains = domain_strings(&search.allowed_domains)?;
+    let blocked_domains = domain_strings(&search.blocked_domains)?;
+    let mut tool = json!({"type":"web_search"});
+    if !allowed_domains.is_empty() {
+        tool["filters"] = json!({"allowed_domains": allowed_domains});
+    }
+    if !blocked_domains.is_empty() {
+        tool["filters"] = json!({"excluded_domains": blocked_domains});
+    }
+    Ok(tool)
+}
+pub(crate) fn messages_tool(search: &WebSearchConfig) -> Result<Value, LlmError> {
+    let allowed_domains = domain_strings(&search.allowed_domains)?;
+    let blocked_domains = domain_strings(&search.blocked_domains)?;
     let mut tool = json!({"type":"web_search_20250305", "name":"web_search"});
     if let Some(max) = search.max_uses {
         tool["max_uses"] = json!(max);
     }
-    if !search.allowed_domains.is_empty() {
-        tool["allowed_domains"] = json!(search.allowed_domains);
+    if !allowed_domains.is_empty() {
+        tool["allowed_domains"] = json!(allowed_domains);
     }
-    if !search.blocked_domains.is_empty() {
-        tool["blocked_domains"] = json!(search.blocked_domains);
+    if !blocked_domains.is_empty() {
+        tool["blocked_domains"] = json!(blocked_domains);
     }
-    tool
+    Ok(tool)
 }

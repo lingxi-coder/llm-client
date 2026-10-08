@@ -1125,7 +1125,7 @@ impl<'a> PinnedBatchService<'a> {
             .map_err(|source| {
                 if matches!(operation, "submit" | "cancel")
                     && matches!(
-                        source,
+                        source.classification_source(),
                         LlmError::Transport { .. } | LlmError::TransportTimeout { .. }
                     )
                 {

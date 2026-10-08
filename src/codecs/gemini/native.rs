@@ -1,19 +1,18 @@
 //! Validation for the small set of Gemini `Part` variants that this codec
 //! preserves as provider-native content.
 
-use serde_json::Value;
+use crate::{protocol::JsonPayload, response_json::FlatJsonKind};
 
-pub(crate) fn is_media_part(value: &Value) -> bool {
-    value.get("inlineData").is_some() || value.get("fileData").is_some()
+pub(crate) fn is_media_part(value: &JsonPayload) -> bool {
+    value.raw_source_at("/inlineData").is_some() || value.raw_source_at("/fileData").is_some()
 }
 
-/// Whether `value` is a replayable Gemini-native Part. We keep its original
-/// JSON shape on the wire after validating its discriminated payload; no
-/// candidate-level metadata is accepted here.
-pub(super) fn is_replayable_native_part(value: &Value) -> bool {
-    let Some(part) = value.as_object() else {
+/// Whether this is a replayable Gemini-native Part. Reads typed discriminants
+/// from the flat source scanner and never constructs a recursive Value tree.
+pub(super) fn is_replayable_native_part(value: &JsonPayload) -> bool {
+    if value.kind_at("") != Some(FlatJsonKind::Object) {
         return false;
-    };
+    }
     let data_keys = [
         "text",
         "inlineData",
@@ -27,7 +26,7 @@ pub(super) fn is_replayable_native_part(value: &Value) -> bool {
     ];
     let present = data_keys
         .iter()
-        .filter(|key| part.contains_key(**key))
+        .filter(|key| value.raw_source_at(&format!("/{key}")).is_some())
         .copied()
         .collect::<Vec<_>>();
     if present.len() != 1
@@ -38,63 +37,57 @@ pub(super) fn is_replayable_native_part(value: &Value) -> bool {
     {
         return false;
     }
-    if let Some(signature) = part.get("thoughtSignature") {
-        if !signature.is_string() {
-            return false;
-        }
-    }
-    if let Some(thought) = part.get("thought") {
-        if !thought.is_boolean() {
-            return false;
-        }
-    }
-
-    if let Some(code) = part.get("executableCode") {
-        let Some(code) = code.as_object() else {
-            return false;
-        };
-        return code.get("language").is_some_and(Value::is_string)
-            && code.get("code").is_some_and(Value::is_string)
-            && code.get("id").is_none_or(Value::is_string);
-    }
-
-    if let Some(blob) = part.get("inlineData").and_then(Value::as_object) {
-        return blob
-            .get("mimeType")
-            .and_then(Value::as_str)
-            .is_some_and(|mime| !mime.is_empty())
-            && blob.get("data").is_some_and(Value::is_string);
-    }
-
-    if let Some(result) = part.get("codeExecutionResult") {
-        let Some(result) = result.as_object() else {
-            return false;
-        };
-        return result.get("outcome").is_some_and(Value::is_string)
-            && result.get("output").is_none_or(Value::is_string)
-            && result.get("id").is_none_or(Value::is_string);
-    }
-
-    if let Some(call) = part.get("toolCall") {
-        let Some(call) = call.as_object() else {
-            return false;
-        };
-        return call
-            .get("toolType")
-            .and_then(Value::as_str)
-            .is_some_and(|tool_type| !tool_type.is_empty())
-            && call.get("id").is_none_or(Value::is_string)
-            && call.get("toolName").is_none_or(Value::is_string)
-            && call.get("args").is_none_or(Value::is_object);
-    }
-
-    let Some(response) = part.get("toolResponse").and_then(Value::as_object) else {
+    if value.raw_source_at("/thoughtSignature").is_some()
+        && value.kind_at("/thoughtSignature") != Some(FlatJsonKind::String)
+    {
         return false;
-    };
-    response
-        .get("toolType")
-        .and_then(Value::as_str)
-        .is_some_and(|tool_type| !tool_type.is_empty())
-        && response.get("id").is_none_or(Value::is_string)
-        && response.get("response").is_none_or(Value::is_object)
+    }
+    if value.raw_source_at("/thought").is_some()
+        && value.kind_at("/thought") != Some(FlatJsonKind::Boolean)
+    {
+        return false;
+    }
+
+    if value.raw_source_at("/executableCode").is_some() {
+        return value.kind_at("/executableCode") == Some(FlatJsonKind::Object)
+            && value.kind_at("/executableCode/language") == Some(FlatJsonKind::String)
+            && value.kind_at("/executableCode/code") == Some(FlatJsonKind::String)
+            && optional_kind(value, "/executableCode/id", FlatJsonKind::String);
+    }
+
+    if value.raw_source_at("/inlineData").is_some() {
+        return value.kind_at("/inlineData") == Some(FlatJsonKind::Object)
+            && value
+                .string_at("/inlineData/mimeType")
+                .is_some_and(|mime| !mime.is_empty())
+            && value.kind_at("/inlineData/data") == Some(FlatJsonKind::String);
+    }
+
+    if value.raw_source_at("/codeExecutionResult").is_some() {
+        return value.kind_at("/codeExecutionResult") == Some(FlatJsonKind::Object)
+            && value.kind_at("/codeExecutionResult/outcome") == Some(FlatJsonKind::String)
+            && optional_kind(value, "/codeExecutionResult/output", FlatJsonKind::String)
+            && optional_kind(value, "/codeExecutionResult/id", FlatJsonKind::String);
+    }
+
+    if value.raw_source_at("/toolCall").is_some() {
+        return value.kind_at("/toolCall") == Some(FlatJsonKind::Object)
+            && value
+                .string_at("/toolCall/toolType")
+                .is_some_and(|tool_type| !tool_type.is_empty())
+            && optional_kind(value, "/toolCall/id", FlatJsonKind::String)
+            && optional_kind(value, "/toolCall/toolName", FlatJsonKind::String)
+            && optional_kind(value, "/toolCall/args", FlatJsonKind::Object);
+    }
+
+    value.kind_at("/toolResponse") == Some(FlatJsonKind::Object)
+        && value
+            .string_at("/toolResponse/toolType")
+            .is_some_and(|tool_type| !tool_type.is_empty())
+        && optional_kind(value, "/toolResponse/id", FlatJsonKind::String)
+        && optional_kind(value, "/toolResponse/response", FlatJsonKind::Object)
+}
+
+fn optional_kind(value: &JsonPayload, pointer: &str, kind: FlatJsonKind) -> bool {
+    value.raw_source_at(pointer).is_none() || value.kind_at(pointer) == Some(kind)
 }

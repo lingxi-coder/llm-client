@@ -13,6 +13,9 @@ use lingxi_llm_client::{
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
@@ -207,7 +210,8 @@ async fn authorization_is_injected_per_request_and_native_mcp_output_is_preserve
     assert!(response.message.content.iter().any(|block| matches!(
         block,
         ContentBlock::ProviderContent { protocol: ProtocolFamily::OpenAiResponses, value }
-            if value["type"] == "mcp_call" && value["name"] == "search"
+            if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("mcp_call")
+                && json_payload_fixture::source_string_at(value, "/name").as_deref() == Some("search")
     )));
     assert!(!response
         .message
@@ -260,7 +264,7 @@ fn xai_approval_shaped_output_stays_native_and_does_not_pause_for_openai_approva
     assert!(response.message.content.iter().any(|block| matches!(
         block,
         ContentBlock::ProviderContent { value, .. }
-            if value["type"] == "mcp_approval_request"
+            if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("mcp_approval_request")
     )));
 
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&context);
@@ -290,7 +294,7 @@ fn xai_approval_shaped_output_stays_native_and_does_not_pause_for_openai_approva
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if matches!(value["type"].as_str(), Some("mcp_approval_request" | "mcp_call"))))
+            .filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if matches!(json_payload_fixture::source_string_at(value, "/type").as_deref(), Some("mcp_approval_request" | "mcp_call"))))
             .count(),
         2
     );

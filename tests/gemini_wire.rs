@@ -9,9 +9,9 @@ mod wire_api;
 
 use lingxi_llm_client::codecs::gemini::classify_error;
 use lingxi_llm_client::protocol::{
-    ChatRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
-    ModelCapabilitySupport, ProviderId, ProviderProfile, StopReason, StreamEvent, SystemBlock,
-    ToolChoice, ToolSpec, ToolUseId, Usage,
+    ChatRequest, ContentBlock, ConversationMessage, FailoverTriggers, JsonPayload, LlmError,
+    MessageRole, ModelCapabilitySupport, ProviderId, ProviderProfile, StopReason, StreamEvent,
+    SystemBlock, ToolChoice, ToolSpec, ToolUseId, Usage,
 };
 use lingxi_llm_client::{
     AzureOpenAiCodec, FoundryClaudeCodec, GeminiCodec, PricingModelRef, RequestOptions,
@@ -72,7 +72,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
@@ -175,7 +175,10 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             content: vec![ContentBlock::ToolUse {
                 id: ToolUseId::new("call-1"),
                 name: "read_file".to_owned(),
-                input: json!({"path": "a"}),
+                input: lingxi_llm_client::protocol::JsonPayload::parse(
+                    &json!({"path": "a"}).to_string(),
+                )
+                .unwrap(),
                 provider_id: None,
                 caller: None,
                 toolset_name: None,
@@ -187,7 +190,7 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: ToolUseId::new("call-1"),
-                content: "contents".to_owned(),
+                content: lingxi_llm_client::protocol::JsonPayload::string("contents"),
                 is_error: Some(false),
                 blocks: None,
                 toolset_name: None,
@@ -219,7 +222,7 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("orphan"),
-            content: "x".to_owned(),
+            content: lingxi_llm_client::protocol::JsonPayload::string("x"),
             is_error: Some(false),
             blocks: None,
             toolset_name: None,
@@ -249,9 +252,7 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
 #[test]
 fn the_system_prompt_is_a_system_instruction() {
     let mut req = request(vec![user("hi")]);
-    req.system = vec![SystemBlock {
-        text: "be brief".to_owned(),
-    }];
+    req.system = vec![SystemBlock::new("be brief")];
     let b = body(&encode(
         &GeminiCodec,
         &req,
@@ -274,10 +275,13 @@ fn tools_are_wrapped_in_function_declarations() {
     let mut req = request(vec![user("hi")]);
     req.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "read".to_owned(),
-        description: "read a file".to_owned(),
-        input_schema: json!({"type": "object"}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("read a file"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type": "object"}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
@@ -305,6 +309,7 @@ fn a_prompt_over_the_context_window_arrives_as_a_400_and_must_still_compact() {
         &json!({"error": {"status": "INVALID_ARGUMENT",
                           "message": "The input token count (1050000) exceeds the maximum number of tokens allowed (1048576)."}}),
         None,
+        false,
     );
     assert!(
         matches!(err, LlmError::ContextOverflow { .. }),
@@ -320,6 +325,7 @@ fn an_ordinary_bad_argument_is_not_routed_into_the_overflow_loop() {
         &json!({"error": {"status": "INVALID_ARGUMENT",
                           "message": "Invalid value at 'contents[0].role'"}}),
         None,
+        false,
     );
     assert!(
         matches!(err, LlmError::InvalidRequest { .. }),
@@ -342,6 +348,7 @@ fn the_google_status_codes_land_where_failover_expects_them() {
             500,
             &json!({"error": {"status": status, "message": "x"}}),
             None,
+            false,
         );
         assert!(format!("{err:?}").starts_with(want), "{status} -> {err:?}");
     }
@@ -615,7 +622,8 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
     assert_eq!(calls[0].as_str(), "call-a");
     assert_eq!(calls[1].as_str(), "call-b");
 
-    let serialized = serde_json::to_value(&decoded.message).unwrap();
+    let serialized: Value =
+        serde_json::from_str(&serde_json::to_string(&decoded.message).unwrap()).unwrap();
     assert_eq!(serialized["content"][0]["provider_id"], "call-a");
     assert_eq!(serialized["content"][0]["thought_signature"], "sig-a");
 
@@ -964,7 +972,8 @@ fn gemini_and_vertex_encode_typed_audio_and_validate_base64() {
             .encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context)
             .is_err());
         req.messages[0].role = MessageRole::User;
-        req.metadata = json!({"openrouter_chat_audio": {"voice":"alloy"}});
+        req.metadata =
+            JsonPayload::parse(r#"{"openrouter_chat_audio":{"voice":"alloy"}}"#).unwrap();
         assert!(matches!(
             codec.encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context),
             Err(LlmError::UnsupportedCapability { .. })
@@ -1013,6 +1022,6 @@ fn complete_function_call_closes_before_transport_or_response_end() {
     }
     let partial = accumulator.finish().unwrap_err().partial;
     assert!(
-        matches!(&partial.indexed_content[&0], ContentBlock::ToolUse { input, thought_signature:Some(signature), .. } if input == &json!({"path":"a"}) && signature == "sig")
+        matches!(&partial.indexed_content[&0], ContentBlock::ToolUse { input, thought_signature:Some(signature), .. } if input.as_json_source() == r#"{"path":"a"}"# && signature == "sig")
     );
 }

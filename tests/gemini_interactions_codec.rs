@@ -22,13 +22,17 @@ fn frame() -> ComputerFrame {
     }
 }
 
+fn payload(value: Value) -> JsonPayload {
+    JsonPayload::from_generated_value(&value).expect("test JSON payload is valid")
+}
+
 #[test]
 fn malformed_final_images_cannot_form_gemini_computer_receipts() {
     let call = lingxi_llm_client::providers::google::computer::decode(
         &[ContentBlock::Native {
             value: NativeExtension::new(
                 CALL_FORMAT,
-                json!({"type":"function_call","id":"shot","name":"take_screenshot","arguments":{}}),
+                JsonPayload::from_generated_value(&json!({"type":"function_call","id":"shot","name":"take_screenshot","arguments":{}})).unwrap(),
             )
             .unwrap(),
         }],
@@ -51,7 +55,7 @@ fn malformed_final_images_cannot_form_gemini_computer_receipts() {
                 operation_index: 0,
                 status: NativeExecutionStatus::Succeeded,
                 content: "shot".into(),
-                blocks: Some(vec![image.clone()]),
+                blocks: Some(payload(json!([image.clone()]))),
             }],
             acknowledged_safety_checks: vec![],
         };
@@ -65,9 +69,9 @@ fn malformed_final_images_cannot_form_gemini_computer_receipts() {
             operation_index: 0,
             status: NativeExecutionStatus::Succeeded,
             content: "shot".into(),
-            blocks: Some(vec![
-                json!({"type":"image","uri":"https://example.test/shot.png","mime_type":"image/png"}),
-            ]),
+            blocks: Some(payload(json!([
+                {"type":"image","uri":"https://example.test/shot.png","mime_type":"image/png"}
+            ]))),
         }],
         acknowledged_safety_checks: vec![],
     };
@@ -371,18 +375,27 @@ fn safety_receipt_requires_final_image_and_exact_confirmation() {
         acknowledged_safety_checks: vec![check],
     };
     assert!(encode_receipt(call, &input).is_err());
-    input.results[1].blocks = Some(vec![
-        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}),
-    ]);
+    input.results[1].blocks = Some(payload(json!([
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGVsbG8="}}
+    ])));
     let receipt = encode_receipt(call, &input).unwrap();
     let ContentBlock::Native { value } = receipt else {
         panic!()
     };
-    assert_eq!(value.data()["call_id"], "native");
-    assert_eq!(value.data()["name"], "click");
     assert_eq!(
-        value.data()["result"].as_array().unwrap().last().unwrap()["mime_type"],
-        "image/png"
+        value.data().string_at("/call_id").as_deref(),
+        Some("native")
+    );
+    assert_eq!(value.data().string_at("/name").as_deref(), Some("click"));
+    let last_result = value.data().array_len("/result").unwrap() - 1;
+    assert_eq!(
+        value
+            .data()
+            .array_item_at("/result", last_result)
+            .unwrap()
+            .string_at("/mime_type")
+            .as_deref(),
+        Some("image/png")
     );
     input.acknowledged_safety_checks.clear();
     assert!(encode_receipt(call, &input).is_err());
@@ -422,18 +435,18 @@ fn an_earlier_image_cannot_replace_the_terminal_screenshot_after_hooks() {
         acknowledged_safety_checks: vec![],
     };
     let earlier = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"ZWFybGllcg=="}});
-    input.results[0].blocks = Some(vec![earlier]);
+    input.results[0].blocks = Some(payload(json!([earlier])));
     assert!(
         encode_receipt(&call, &input).is_err(),
         "an image attached to the earlier click must not satisfy the terminal Screenshot"
     );
-    input.results[1].blocks = Some(vec![
-        json!({"type":"text","text":"final screenshot removed by hook"}),
-    ]);
+    input.results[1].blocks = Some(payload(json!([
+        {"type":"text","text":"final screenshot removed by hook"}
+    ])));
     assert!(encode_receipt(&call, &input).is_err());
-    input.results[1].blocks = Some(vec![
-        json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"dGVybWluYWw="}}),
-    ]);
+    input.results[1].blocks = Some(payload(json!([
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"dGVybWluYWw="}}
+    ])));
     assert!(encode_receipt(&call, &input).is_ok());
 }
 
@@ -565,9 +578,9 @@ fn native_receipt_then_function_declaration_uses_previous_interaction_and_old_bi
                 operation_index: 1,
                 status: NativeExecutionStatus::Succeeded,
                 content: "observed".into(),
-                blocks: Some(vec![
-                    json!({"type":"image","data":"aGVsbG8=","mime_type":"image/png"}),
-                ]),
+                blocks: Some(payload(json!([
+                    {"type":"image","data":"aGVsbG8=","mime_type":"image/png"}
+                ]))),
             },
         ],
         acknowledged_safety_checks: vec![],
@@ -618,7 +631,13 @@ fn native_receipt_then_function_declaration_uses_previous_interaction_and_old_bi
 #[test]
 fn native_receipts_survive_same_protocol_history_projection_and_reject_foreign_routes() {
     use lingxi_llm_client::replay::{ReplayContext, ReplayPolicy};
-    let receipt=ContentBlock::Native { value:NativeExtension::new(RESULT_FORMAT,json!({"type":"function_result","name":"click","call_id":"native","result":[{"type":"text","text":"denied"}]})).unwrap() };
+    let receipt = ContentBlock::Native {
+        value: NativeExtension::new(
+            RESULT_FORMAT,
+            JsonPayload::from_generated_value(&json!({"type":"function_result","name":"click","call_id":"native","result":[{"type":"text","text":"denied"}]})).unwrap(),
+        )
+        .unwrap(),
+    };
     let same = ReplayContext::for_message(
         std::slice::from_ref(&receipt),
         ProtocolFamily::GeminiInteractions,

@@ -21,7 +21,7 @@ pub(crate) fn apply(
         },
         |search, body| {
             let _ = body;
-            Ok(Some(web_search::responses_tool(search)))
+            Ok(Some(web_search::responses_tool(search)?))
         },
     )
 }

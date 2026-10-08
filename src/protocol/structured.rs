@@ -1,15 +1,18 @@
 //! Typed output contracts and local validation of completed responses.
 use super::{ChatResponse, ContentBlock, StopReason};
+use crate::protocol::JsonPayload;
+use crate::protocol::JsonPayloadFragment;
+use serde::Deserializer;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::Value;
 use std::{
     collections::VecDeque,
-    io,
     sync::{Arc, Mutex, OnceLock},
 };
 
 /// Output constraints are independent of a function tool's `strict` setting.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputFormat {
     #[default]
@@ -17,10 +20,58 @@ pub enum OutputFormat {
     JsonObject,
     JsonSchema {
         name: String,
-        schema: Value,
+        schema: JsonPayload,
         /// Whether the provider must enforce its schema-constrained mode.
         strict: bool,
     },
+}
+
+impl<'de> Deserialize<'de> for OutputFormat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let scanner = crate::response_json::ResponseJsonScanner::parse(
+            raw.get().as_bytes(),
+            "output format is not valid JSON",
+        )
+        .map_err(serde::de::Error::custom)?;
+        if scanner.kind_at("") != Some(crate::response_json::FlatJsonKind::Object) {
+            return Err(serde::de::Error::custom("output format must be an object"));
+        }
+        match scanner.string_at("/type") {
+            Some("text") => Ok(Self::Text),
+            Some("json_object") => Ok(Self::JsonObject),
+            Some("json_schema") => {
+                let name = scanner
+                    .string_at("/name")
+                    .ok_or_else(|| serde::de::Error::custom("JSON schema name must be a string"))?
+                    .to_owned();
+                let source = scanner
+                    .raw_source_at("/schema")
+                    .ok_or_else(|| serde::de::Error::custom("JSON schema source is required"))?;
+                let schema = JsonPayload::parse(source).map_err(serde::de::Error::custom)?;
+                let strict = match scanner.raw_source_at("/strict") {
+                    Some("true") => true,
+                    Some("false") => false,
+                    _ => {
+                        return Err(serde::de::Error::custom(
+                            "JSON schema strict must be a boolean",
+                        ))
+                    }
+                };
+                Ok(Self::JsonSchema {
+                    name,
+                    schema,
+                    strict,
+                })
+            }
+            _ => Err(serde::de::Error::custom(
+                "output format has an unknown type",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -49,7 +100,11 @@ pub struct StructuredOutputError {
 
 impl ChatResponse {
     /// Validate only a final response. Streaming deltas are not complete JSON.
-    pub fn structured_json(&self, format: &OutputFormat) -> Result<Value, StructuredOutputError> {
+    /// The returned payload keeps the response's JSON source without building a recursive Value.
+    pub fn structured_json(
+        &self,
+        format: &OutputFormat,
+    ) -> Result<JsonPayload, StructuredOutputError> {
         self.parse_structured(format)
             .map_err(|kind| StructuredOutputError {
                 kind,
@@ -61,14 +116,17 @@ impl ChatResponse {
         &self,
         format: &OutputFormat,
     ) -> Result<T, StructuredOutputError> {
-        let value = self.structured_json(format)?;
-        serde_json::from_value(value).map_err(|error| StructuredOutputError {
+        let payload = self.structured_json(format)?;
+        serde_json::from_str(payload.as_json_source()).map_err(|error| StructuredOutputError {
             kind: StructuredOutputErrorKind::Deserialization(error.to_string()),
             response: Box::new(self.clone()),
         })
     }
 
-    fn parse_structured(&self, format: &OutputFormat) -> Result<Value, StructuredOutputErrorKind> {
+    fn parse_structured(
+        &self,
+        format: &OutputFormat,
+    ) -> Result<JsonPayload, StructuredOutputErrorKind> {
         if !matches!(
             self.stop_reason,
             StopReason::EndTurn | StopReason::StopSequence
@@ -83,19 +141,24 @@ impl ChatResponse {
         if matches!(format, OutputFormat::Text) {
             return Err(StructuredOutputErrorKind::NoContract);
         }
-        let text: String = self
+        let fragments = self
             .message
             .content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(JsonPayloadFragment::from_text(text)),
+                ContentBlock::TextJsUtf16 {
+                    utf16_code_units, ..
+                } => Some(JsonPayloadFragment::from_utf16_code_units(
+                    utf16_code_units.clone(),
+                )),
                 _ => None,
             })
-            .collect();
-        let value: Value = serde_json::from_str(&text)
+            .collect::<Vec<_>>();
+        let payload = JsonPayload::parse_fragments(fragments.iter())
             .map_err(|error| StructuredOutputErrorKind::InvalidJson(error.to_string()))?;
         match format {
-            OutputFormat::JsonObject if !value.is_object() => {
+            OutputFormat::JsonObject if !payload.is_root_object() => {
                 return Err(StructuredOutputErrorKind::SchemaMismatch(
                     "expected a JSON object".into(),
                 ));
@@ -103,24 +166,49 @@ impl ChatResponse {
             OutputFormat::JsonSchema { schema, .. } => {
                 let validator =
                     compile_schema(schema).map_err(StructuredOutputErrorKind::InvalidSchema)?;
+                let value = materialize_jsonschema_value(&payload).map_err(|message| {
+                    StructuredOutputErrorKind::InvalidSchema(format!(
+                        "local JSON Schema backend cannot represent response JSON: {message}"
+                    ))
+                })?;
                 validator.validate(&value).map_err(|error| {
                     StructuredOutputErrorKind::SchemaMismatch(error.to_string())
                 })?;
             }
             _ => {}
         }
-        Ok(value)
+        Ok(payload)
     }
 }
 
 /// Reuse only compilation, never request- or provider-specific contract checks.
 /// No remote reference fetching, file access, or implicit schema rewriting.
-pub(crate) fn compile_schema(schema: &Value) -> Result<Arc<jsonschema::Validator>, String> {
+fn compile_schema(schema: &JsonPayload) -> Result<Arc<jsonschema::Validator>, String> {
     schema_cache().compile(schema)
 }
 
-pub(crate) fn compile_request_schema(schema: &Value) -> Result<Arc<jsonschema::Validator>, String> {
-    schema_cache().compile_with(schema, true, build_schema)
+/// Validate an output schema before putting it on a provider request.
+///
+/// Local response validation can compile larger schemas because it never
+/// sends them over the wire. The provider request path has a separate 1 MiB
+/// source limit, checked before consulting the compiled-schema cache so a
+/// warm entry cannot bypass the limit when its exact source changes (for
+/// example, `0.0` to `-0.0`). Compilation also uses `NoExternalSchemas`, so
+/// this check never retrieves a remote or file-backed reference. Local
+/// recursive references remain supported by the JSON Schema compiler.
+pub(crate) fn validate_request_schema(schema: &JsonPayload) -> Result<(), String> {
+    if schema.as_json_source().len() > MAX_SCHEMA_BYTES {
+        return Err("output schema exceeds 1 MiB".into());
+    }
+    compile_schema(schema).map(|_| ())
+}
+
+fn materialize_jsonschema_value(payload: &JsonPayload) -> Result<Value, String> {
+    serde_json::from_str(payload.as_json_source()).map_err(|error| {
+        format!(
+            "serde_json/jsonschema backend cannot materialize source (including its recursion and UTF-16 limits): {error}"
+        )
+    })
 }
 
 fn schema_cache() -> &'static SchemaCache {
@@ -135,21 +223,14 @@ const MAX_CACHED_SCHEMAS: usize = 16;
 type CompiledSchema = Result<Arc<jsonschema::Validator>, String>;
 
 struct SchemaEntry {
-    schema: Value,
+    schema: JsonPayload,
     bytes: usize,
-    has_float_zero: bool,
     compiled: OnceLock<CompiledSchema>,
 }
 
 impl SchemaEntry {
-    fn matches_schema(&self, schema: &Value) -> bool {
-        if self.has_float_zero {
-            cache_schema_matches(&self.schema, schema)
-        } else {
-            // Signed floating zero is the representation-sensitive case in
-            // Number equality. Keep ordinary schema hits on the usual path.
-            self.schema == *schema
-        }
+    fn matches_schema(&self, schema: &JsonPayload) -> bool {
+        self.schema.as_json_source() == schema.as_json_source()
     }
 }
 
@@ -159,25 +240,18 @@ struct SchemaCache {
 }
 
 impl SchemaCache {
-    fn compile(&self, schema: &Value) -> CompiledSchema {
-        self.compile_with(schema, false, build_schema)
+    fn compile(&self, schema: &JsonPayload) -> CompiledSchema {
+        self.compile_with(schema, build_schema)
     }
 
     fn compile_with(
         &self,
-        schema: &Value,
-        require_size_limit: bool,
-        compile: impl FnOnce(&Value) -> CompiledSchema,
+        schema: &JsonPayload,
+        compile: impl FnOnce(&JsonPayload) -> CompiledSchema,
     ) -> CompiledSchema {
         let Some(entry) = self.entry(schema) else {
-            // The request wire has a size limit, while local response parsing
-            // historically accepts arbitrary schemas. Keep large local-only
-            // contracts supported without retaining them in the global cache.
-            return if require_size_limit {
-                Err("output schema exceeds 1 MiB".into())
-            } else {
-                compile(schema)
-            };
+            // Large local schemas are compiled without retaining them in the shared cache.
+            return compile(schema);
         };
         // Independent schemas compile concurrently. Same-schema callers share
         // initialization, including failures, without holding the cache lock.
@@ -187,17 +261,17 @@ impl SchemaCache {
             .clone()
     }
 
-    fn entry(&self, schema: &Value) -> Option<Arc<SchemaEntry>> {
+    fn entry(&self, schema: &JsonPayload) -> Option<Arc<SchemaEntry>> {
         if let Some(entry) = self.find_cached(|entry| entry.matches_schema(schema)) {
             return Some(entry);
         }
-        // Warm hits compare source values directly: no serialization, hashing,
-        // or source cloning. Cold work remains outside the shared cache lock.
-        let bytes = schema_size(schema)?;
+        let bytes = schema.as_json_source().len();
+        if bytes > MAX_SCHEMA_BYTES {
+            return None;
+        }
         let candidate = Arc::new(SchemaEntry {
             schema: schema.clone(),
             bytes,
-            has_float_zero: contains_float_zero(schema),
             compiled: OnceLock::new(),
         });
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
@@ -250,7 +324,7 @@ impl SchemaCache {
 
 fn find_schema(
     entries: &mut VecDeque<Arc<SchemaEntry>>,
-    schema: &Value,
+    schema: &JsonPayload,
 ) -> Option<Arc<SchemaEntry>> {
     let index = entries
         .iter()
@@ -260,69 +334,17 @@ fn find_schema(
     Some(entry)
 }
 
-fn contains_float_zero(schema: &Value) -> bool {
-    match schema {
-        Value::Number(number) => number.is_f64() && number.as_f64() == Some(0.0),
-        Value::Array(values) => values.iter().any(contains_float_zero),
-        Value::Object(values) => values.values().any(contains_float_zero),
-        _ => false,
+fn build_schema(schema: &JsonPayload) -> CompiledSchema {
+    let value = materialize_jsonschema_value(schema)?;
+    if !value.is_object() {
+        return Err("JSON schema must be an object".into());
     }
-}
-
-/// A cache hit reuses both the validator and its checked source size. JSON
-/// equality alone is insufficient: 0.0 == -0.0, but their wire sizes differ.
-/// Object order can differ without changing size or schema semantics.
-fn cache_schema_matches(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Number(left), Value::Number(right)) => {
-            left == right && left.as_f64().map(f64::to_bits) == right.as_f64().map(f64::to_bits)
-        }
-        (Value::Array(left), Value::Array(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| cache_schema_matches(left, right))
-        }
-        (Value::Object(left), Value::Object(right)) => {
-            left.len() == right.len()
-                && left.iter().all(|(key, left)| {
-                    right
-                        .get(key)
-                        .is_some_and(|right| cache_schema_matches(left, right))
-                })
-        }
-        _ => left == right,
-    }
-}
-
-fn schema_size(schema: &Value) -> Option<usize> {
-    struct SizeLimit(usize);
-    impl io::Write for SizeLimit {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0 = self.0.saturating_add(bytes.len());
-            if self.0 > MAX_SCHEMA_BYTES {
-                return Err(io::Error::other("output schema exceeds 1 MiB"));
-            }
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut size = SizeLimit(0);
-    serde_json::to_writer(&mut size, schema).ok()?;
-    Some(size.0)
-}
-
-fn build_schema(schema: &Value) -> CompiledSchema {
     jsonschema::options()
         .with_retriever(NoExternalSchemas)
         .with_draft(jsonschema::Draft::Draft202012)
         .should_validate_formats(true)
         .should_ignore_unknown_formats(false)
-        .build(schema)
+        .build(&value)
         .map(Arc::new)
         .map_err(|error| error.to_string())
 }
@@ -346,10 +368,14 @@ mod tests {
         Barrier,
     };
 
+    fn payload(value: Value) -> JsonPayload {
+        JsonPayload::from_generated_value(&value).unwrap()
+    }
+
     #[test]
     fn concurrent_schema_compilation_is_shared() {
         let cache = SchemaCache::default();
-        let schema = json!({"type":"integer","minimum":3});
+        let schema = payload(json!({"type":"integer","minimum":3}));
         let compilations = AtomicUsize::new(0);
         let start = Barrier::new(8);
         let validators = std::thread::scope(|scope| {
@@ -358,7 +384,7 @@ mod tests {
                     scope.spawn(|| {
                         start.wait();
                         cache
-                            .compile_with(&schema, true, |schema| {
+                            .compile_with(&schema, |schema| {
                                 compilations.fetch_add(1, Ordering::SeqCst);
                                 build_schema(schema)
                             })
@@ -377,26 +403,27 @@ mod tests {
     }
 
     #[test]
-    fn changed_schema_compiles_a_distinct_validator() {
+    fn changed_schema_source_compiles_a_distinct_validator() {
         let cache = SchemaCache::default();
-        let mut schema = json!({"type":"integer","minimum":3});
+        let schema = payload(json!({"type":"integer","minimum":3}));
         let old = cache.compile(&schema).unwrap();
         let copied = cache.compile(&schema.clone()).unwrap();
         assert!(Arc::ptr_eq(&old, &copied));
-        schema["minimum"] = json!(5);
-        let new = cache.compile(&schema).unwrap();
+        let changed = payload(json!({"type":"integer","minimum":5}));
+        let new = cache.compile(&changed).unwrap();
         assert!(!Arc::ptr_eq(&old, &new));
         assert!(old.is_valid(&json!(4)));
         assert!(!new.is_valid(&json!(4)));
     }
 
     #[test]
-    fn signed_zero_representations_do_not_share_cached_source_sizes() {
+    fn source_equality_keeps_signed_zero_encodings_distinct() {
         let cache = SchemaCache::default();
-        let positive = json!({"type":"object","examples":[{"nested":[0.0]}]});
-        let negative = json!({"type":"object","examples":[{"nested":[-0.0]}]});
-        assert_eq!(positive, negative);
-        assert_ne!(schema_size(&positive), schema_size(&negative));
+        let positive =
+            JsonPayload::parse(r#"{"type":"object","examples":[{"nested":[0.0]}]}"#).unwrap();
+        let negative =
+            JsonPayload::parse(r#"{"type":"object","examples":[{"nested":[-0.0]}]}"#).unwrap();
+        assert_ne!(positive.as_json_source(), negative.as_json_source());
         let first = cache.compile(&positive).unwrap();
         // This is also the lookup used to deduplicate concurrent cold misses.
         assert!(find_schema(&mut cache.entries.lock().unwrap(), &negative).is_none());
@@ -407,9 +434,9 @@ mod tests {
     }
 
     #[test]
-    fn warm_lookup_compares_without_the_cache_lock_and_survives_eviction() {
+    fn warm_lookup_compares_source_outside_the_cache_lock_and_survives_eviction() {
         let cache = SchemaCache::default();
-        let schema = json!({"type":"integer","minimum":3});
+        let schema = payload(json!({"type":"integer","minimum":3}));
         let validator = cache.compile(&schema).unwrap();
         let entry = cache
             .find_cached(|entry| {
@@ -433,11 +460,11 @@ mod tests {
     #[test]
     fn compile_failures_are_shared_without_resolving_external_references() {
         let cache = SchemaCache::default();
-        let schema = json!({"$ref":"https://schema.invalid/example"});
+        let schema = JsonPayload::parse(r#"{"$ref":"https://schema.invalid/example"}"#).unwrap();
         let compilations = AtomicUsize::new(0);
         for _ in 0..2 {
             let error = cache
-                .compile_with(&schema, true, |schema| {
+                .compile_with(&schema, |schema| {
                     compilations.fetch_add(1, Ordering::SeqCst);
                     build_schema(schema)
                 })
@@ -450,10 +477,10 @@ mod tests {
     #[test]
     fn cache_evicts_old_entries_without_invalidating_live_validators() {
         let cache = SchemaCache::default();
-        let first_schema = json!({"const":0});
+        let first_schema = payload(json!({"const":0}));
         let first = cache.compile(&first_schema).unwrap();
         for n in 1..=MAX_CACHED_SCHEMAS {
-            cache.compile(&json!({"const":n})).unwrap();
+            cache.compile(&payload(json!({"const":n}))).unwrap();
         }
         assert_eq!(cache.entries.lock().unwrap().len(), MAX_CACHED_SCHEMAS);
         assert!(first.is_valid(&json!(0)));
@@ -461,24 +488,46 @@ mod tests {
     }
 
     #[test]
-    fn cache_bounds_source_bytes_and_rejects_oversized_schemas() {
+    fn oversized_source_is_compiled_without_being_retained_in_the_cache() {
         let cache = SchemaCache::default();
-        for n in 0..10 {
-            cache
-                .entry(&json!({"const":n,"description":"x".repeat(MAX_SCHEMA_BYTES / 2)}))
-                .unwrap();
-        }
-        let entries = cache.entries.lock().unwrap();
-        assert!(entries.len() < 10);
-        assert!(entries.iter().map(|entry| entry.bytes).sum::<usize>() <= MAX_CACHED_SCHEMA_BYTES);
-        drop(entries);
-        let error = cache
-            .compile_with(
-                &json!({"description":"x".repeat(MAX_SCHEMA_BYTES)}),
-                true,
-                build_schema,
-            )
-            .unwrap_err();
-        assert!(error.contains("output schema exceeds 1 MiB"));
+        let schema = JsonPayload::parse(&format!(
+            r#"{{"description":"{}"}}"#,
+            "x".repeat(MAX_SCHEMA_BYTES)
+        ))
+        .unwrap();
+        assert!(cache.entry(&schema).is_none());
+    }
+
+    #[test]
+    fn tagged_output_format_deserializes_deep_source_without_value_buffering() {
+        let nested = format!("{}0{}", "[".repeat(512), "]".repeat(512));
+        let source = format!(
+            r#"{{"type":"json_schema","name":"answer","schema":{{"examples":[{nested}]}},"strict":true}}"#
+        );
+        let decoded: OutputFormat = serde_json::from_str(&source).unwrap();
+        let OutputFormat::JsonSchema { schema, .. } = decoded else {
+            panic!("schema variant expected")
+        };
+        assert!(schema.as_json_source().contains(&nested));
+    }
+
+    #[test]
+    fn tagged_output_format_keeps_escaped_lone_utf16_schema_source() {
+        let source =
+            r#"{"type":"json_schema","name":"answer","schema":{"\ud800":"\ud800"},"strict":true}"#;
+        let decoded: OutputFormat = serde_json::from_str(source).unwrap();
+        let OutputFormat::JsonSchema { schema, .. } = decoded else {
+            panic!("schema variant expected")
+        };
+        assert_eq!(schema.as_json_source(), r#"{"\ud800":"\ud800"}"#);
+        assert_eq!(
+            serde_json::to_string(&OutputFormat::JsonSchema {
+                name: "answer".into(),
+                schema,
+                strict: true,
+            })
+            .unwrap(),
+            source
+        );
     }
 }

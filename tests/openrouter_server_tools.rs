@@ -24,6 +24,9 @@ use std::sync::Arc;
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 fn profile(name: &str, protocol: ProtocolFamily, base_url: &str) -> ProviderProfile {
     serde_json::from_value(json!({
         "provider_id":"openrouter",
@@ -57,14 +60,17 @@ fn encode(codec: &dyn WireCodec, req: &ChatRequest, profile: &ProviderProfile) -
 fn deferred_tool(name: &str) -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: name.into(),
-        description: format!("Find or update {name}"),
-        input_schema: json!({
+        description: lingxi_llm_client::protocol::JsonPayload::string(&format!(
+            "Find or update {name}"
+        )),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"query":{"type":"string"}},
             "required":["query"]
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: true,
         native_options: Vec::new(),
@@ -119,8 +125,8 @@ fn tool_search_is_encoded_for_responses_and_messages_with_deferred_client_tools(
     assert_eq!(messages["tools"][0]["name"], "find_events");
     assert_eq!(messages["tools"][0]["defer_loading"], true);
     assert_eq!(
-        messages["tools"][0]["input_schema"],
-        req.tools[0].input_schema
+        messages["tools"][0]["input_schema"].to_string(),
+        req.tools[0].input_schema.as_json_source()
     );
     assert_eq!(
         messages["tools"][1],
@@ -427,15 +433,18 @@ fn openrouter_messages_container_metadata_is_raw_and_explicitly_importable() {
         vec![
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: server_use.clone(),
+                value: json_payload_fixture::generated(&server_use),
             },
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: shell_result.clone(),
+                value: json_payload_fixture::generated(&shell_result),
             }
         ]
     );
-    assert_eq!(response.openrouter_container().unwrap().envelope, container);
+    assert_eq!(
+        response.openrouter_container().unwrap().envelope,
+        lingxi_llm_client::protocol::JsonPayload::from_generated_value(&container).unwrap()
+    );
 
     let scope =
         OpenRouterContainerScope::new("or-messages", "https://openrouter.ai/api/v1", "tenant-a")
@@ -598,9 +607,14 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
     let non_anthropic_caller = ContentBlock::ToolUse {
         id: ToolUseId::new("tool_direct"),
         name: "lookup".into(),
-        input: json!({"query":"recent"}),
+        input: lingxi_llm_client::protocol::JsonPayload::parse(
+            &json!({"query":"recent"}).to_string(),
+        )
+        .unwrap(),
         provider_id: None,
-        caller: Some(json!({"type":"direct"})),
+        caller: Some(
+            lingxi_llm_client::protocol::JsonPayload::parse(r#"{"type":"direct"}"#).unwrap(),
+        ),
         toolset_name: None,
         thought_signature: None,
     };
@@ -657,7 +671,7 @@ fn openrouter_responses_server_tool_output_stays_native_and_replays() {
         response.message.content,
         vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: native_item.clone(),
+            value: json_payload_fixture::generated(&native_item),
         }]
     );
     assert!(!response
@@ -713,7 +727,7 @@ fn messages_stream_preserves_server_tool_content_events_and_container_metadata()
     assert!(events.iter().any(|event| matches!(
         event,
         StreamEvent::ProviderEvent { protocol: ProtocolFamily::AnthropicMessages, payload }
-            if payload["message"]["container"]["id"] == "container_123"
+            if json_payload_fixture::source_string_at(payload, "/message/container/id").as_deref() == Some("container_123")
     )));
     let blocks = events
         .iter()
@@ -722,7 +736,13 @@ fn messages_stream_preserves_server_tool_content_events_and_container_metadata()
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(blocks, vec![(0, server_use), (1, shell_result)]);
+    assert_eq!(
+        blocks,
+        vec![
+            (0, json_payload_fixture::generated(&server_use)),
+            (1, json_payload_fixture::generated(&shell_result))
+        ]
+    );
     assert!(!events
         .iter()
         .any(|event| matches!(event, StreamEvent::ToolCallDelta { .. })));

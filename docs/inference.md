@@ -41,6 +41,8 @@ fn inspect(client: &LlmClient) -> Result<(), LlmError> {
 
 规则的 `valid_from`（含）和 `valid_until`（不含）保存 `PriceBoundary { local, time_zone }`，例如 `local = "2027-01-01T00:00:00"`、`time_zone = "America/Los_Angeles"`。使用 IANA 规则处理夏令时，并转换为 UTC 与 `PricingContext.unix_seconds` 比较，不使用运行机器的时区。重复或不存在的当地时间需提供有效的 RFC 3339 offset；非法时区在配置时拒绝。官方未声明时区且当地时间未带 offset 时，在 UTC−12 到 UTC+14 可能产生的切换窗口内返回价格未知。报价保留来源时区、匹配规则及核验日期。`PricingContext` 未指定档位时按标准档位预估。
 
+`reasoning::ReasoningTarget` 必须传入所选模型的 `features` 与所选连接的 `inference`。选择器和用户选项校验使用这些事实；信息缺失时才使用 provider 预置。明确空列表、逐级不支持及连接协议限制会移除对应控制。旧的目标构造形式不再支持。
+
 ## 设置请求
 
 ```rust,no_run

@@ -2,13 +2,13 @@
 
 use crate::codecs::CodecContext;
 use crate::protocol::{
-    ChatRequest, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
-    ProviderProfile, ToolSpec,
+    ChatRequest, ContentBlock, ConversationMessage, JsonPayload, LlmError, MessageRole,
+    ProtocolFamily, ProviderProfile, ToolSpec,
 };
 use crate::providers::anthropic::types::{
     AnthropicClearAt, AnthropicMcpConfig, AnthropicToolCaller,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 const INLINE_TOOLS_BETA: &str = "inline-tools-2026-09-15";
@@ -69,20 +69,18 @@ fn contains_inline_tool_definition(request: &ChatRequest) -> bool {
                 protocol: ProtocolFamily::AnthropicMessages,
                 value,
             } if system_change(value) == Some("tool_addition")
-                && value
-                    .get("tool")
-                    .and_then(|tool| tool.get("type"))
-                    .and_then(Value::as_str)
-                    == Some("tool_definition"))
+                && value.string_is("/tool/type", "tool_definition"))
         })
     })
 }
 
-fn system_change(value: &Value) -> Option<&'static str> {
-    match value.get("type").and_then(Value::as_str) {
-        Some("tool_addition") => Some("tool_addition"),
-        Some("tool_removal") => Some("tool_removal"),
-        _ => None,
+fn system_change(value: &JsonPayload) -> Option<&'static str> {
+    if value.string_is("/type", "tool_addition") {
+        Some("tool_addition")
+    } else if value.string_is("/type", "tool_removal") {
+        Some("tool_removal")
+    } else {
+        None
     }
 }
 
@@ -117,21 +115,18 @@ pub(crate) fn has_mcp_toolset_addition(request: &ChatRequest, server_name: &str)
             if system_change(value) != Some("tool_addition") {
                 return false;
             }
-            let Some(tool) = value.get("tool") else {
-                return false;
-            };
-            if tool.get("type").and_then(Value::as_str) == Some("mcp_toolset_reference") {
-                return tool.get("server_name").and_then(Value::as_str) == Some(server_name);
+            if value.string_is("/tool/type", "mcp_toolset_reference") {
+                return value.string_at("/tool/server_name").as_deref() == Some(server_name);
             }
-            if tool.get("type").and_then(Value::as_str) == Some("mcp_tool_reference") {
-                return tool.get("server_name").and_then(Value::as_str) == Some(server_name);
+            if value.string_is("/tool/type", "mcp_tool_reference") {
+                return value.string_at("/tool/server_name").as_deref() == Some(server_name);
             }
-            tool.get("type").and_then(Value::as_str) == Some("tool_definition")
-                && tool.get("definition").is_some_and(|definition| {
-                    definition.get("type").and_then(Value::as_str) == Some("mcp_toolset")
-                        && definition.get("mcp_server_name").and_then(Value::as_str)
-                            == Some(server_name)
-                })
+            value.string_is("/tool/type", "tool_definition")
+                && value.string_is("/tool/definition/type", "mcp_toolset")
+                && value
+                    .string_at("/tool/definition/mcp_server_name")
+                    .as_deref()
+                    == Some(server_name)
         })
     })
 }
@@ -198,26 +193,36 @@ fn valid_name(value: &str) -> bool {
     !value.trim().is_empty() && !value.chars().any(char::is_control)
 }
 
-fn parse_reference(value: &Value) -> Result<Reference, LlmError> {
-    let kind = value
-        .get("type")
-        .and_then(Value::as_str)
+fn source_string_at(value: &JsonPayload, pointer: &str) -> Result<Option<String>, LlmError> {
+    value
+        .string_units_at(pointer)
+        .map(|units| {
+            String::from_utf16(&units).map_err(|_| {
+                invalid(format!(
+                    "Anthropic tool field {pointer} must be valid Unicode"
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn parse_reference(value: &JsonPayload) -> Result<Reference, LlmError> {
+    let kind = source_string_at(value, "/type")?
         .ok_or_else(|| invalid("Anthropic tool changes require a typed reference"))?;
     let name = |key: &str| -> Result<String, LlmError> {
-        let value = value
-            .get(key)
-            .and_then(Value::as_str)
+        let pointer = format!("/{key}");
+        let value = source_string_at(value, &pointer)?
             .filter(|value| valid_name(value))
             .ok_or_else(|| invalid(format!("Anthropic tool reference requires a valid {key}")))?;
-        Ok(value.to_owned())
+        Ok(value)
     };
     match kind {
-        "tool_reference" => Ok(Reference::Tool(name("name")?)),
-        "mcp_tool_reference" => Ok(Reference::McpTool {
+        kind if kind == "tool_reference" => Ok(Reference::Tool(name("name")?)),
+        kind if kind == "mcp_tool_reference" => Ok(Reference::McpTool {
             server: name("server_name")?,
             name: name("name")?,
         }),
-        "mcp_toolset_reference" => Ok(Reference::McpToolset(name("server_name")?)),
+        kind if kind == "mcp_toolset_reference" => Ok(Reference::McpToolset(name("server_name")?)),
         _ => Err(invalid(
             "Anthropic tool changes use an unsupported reference type",
         )),
@@ -231,11 +236,10 @@ fn is_server_tool_result(block: &ContentBlock) -> bool {
             protocol: ProtocolFamily::AnthropicMessages,
             value,
         } if value
-            .get("type")
-            .and_then(Value::as_str)
+            .string_at("/type")
             .is_some_and(|kind| {
                 kind.ends_with("_tool_result")
-                    || matches!(kind, "mcp_tool_result" | "tool_search_tool_result_error")
+                    || matches!(kind.as_str(), "mcp_tool_result" | "tool_search_tool_result_error")
             })
     )
 }
@@ -286,14 +290,14 @@ fn is_effort_only_empty_system(message: &ConversationMessage) -> bool {
 
 fn is_anthropic_text_block(block: &ContentBlock) -> bool {
     match block {
-        ContentBlock::Text { .. } => true,
+        ContentBlock::Text { .. } | ContentBlock::TextJsUtf16 { .. } => true,
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
             value,
         } => {
-            value.get("type").and_then(Value::as_str) == Some("text")
-                && value.get("text").is_some_and(Value::is_string)
-                && value.get("cache_control").is_none()
+            value.string_is("/type", "text")
+                && value.kind_at("/text") == Some(crate::response_json::FlatJsonKind::String)
+                && value.raw_source_at("/cache_control").is_none()
         }
         _ => false,
     }
@@ -368,8 +372,8 @@ struct ToolTimeline<'a> {
     direct_types: BTreeMap<String, String>,
     active_direct: BTreeSet<String>,
     deferred_direct: BTreeSet<String>,
-    inline_definitions: BTreeMap<String, Value>,
-    typed_inline_definitions: BTreeMap<String, Value>,
+    inline_definitions: BTreeMap<String, JsonPayload>,
+    typed_inline_definitions: BTreeMap<String, JsonPayload>,
     inline_tool_history: Vec<ToolSpec>,
     active_inline: BTreeSet<String>,
     mcp_configs: BTreeMap<String, &'a AnthropicMcpConfig>,
@@ -387,36 +391,34 @@ fn tool_type_family(kind: &str) -> String {
     kind.to_owned()
 }
 
-fn is_typed_inline_server_definition(definition: &Value) -> bool {
-    definition
-        .get("type")
-        .and_then(Value::as_str)
-        .map(tool_type_family)
+fn is_typed_inline_server_definition(definition: &JsonPayload) -> bool {
+    source_string_at(definition, "/type")
+        .ok()
+        .flatten()
+        .map(|kind| tool_type_family(&kind))
         .is_some_and(|family| matches!(family.as_str(), "code_execution" | "web_fetch"))
 }
 
-fn parse_inline_callers(definition: &Value) -> Result<Vec<AnthropicToolCaller>, LlmError> {
-    let Some(raw) = definition.get("allowed_callers") else {
+fn parse_inline_callers(definition: &JsonPayload) -> Result<Vec<AnthropicToolCaller>, LlmError> {
+    if definition.raw_source_at("/allowed_callers").is_none() {
         return Ok(Vec::new());
-    };
-    let raw = raw
-        .as_array()
+    }
+    let length = definition
+        .array_len("/allowed_callers")
         .ok_or_else(|| invalid("Anthropic inline allowed_callers must be an array"))?;
-    let mut callers = Vec::with_capacity(raw.len());
-    for value in raw {
+    let mut callers = Vec::with_capacity(length);
+    for index in 0..length {
+        let pointer = format!("/allowed_callers/{index}");
+        let value = source_string_at(definition, &pointer)?
+            .ok_or_else(|| invalid("Anthropic inline allowed_callers values must be strings"))?;
         let caller = match value.as_str() {
-            Some("direct") => AnthropicToolCaller::Direct,
-            Some("code_execution_20260120") => AnthropicToolCaller::CodeExecution20260120,
-            Some("code_execution_20260521") => AnthropicToolCaller::CodeExecution20260521,
-            Some(_) => {
+            "direct" => AnthropicToolCaller::Direct,
+            "code_execution_20260120" => AnthropicToolCaller::CodeExecution20260120,
+            "code_execution_20260521" => AnthropicToolCaller::CodeExecution20260521,
+            _ => {
                 return Err(unsupported(
                     "inline allowed_callers supports direct and the typed Code Execution caller versions",
                 ));
-            }
-            None => {
-                return Err(invalid(
-                    "Anthropic inline allowed_callers values must be strings",
-                ))
             }
         };
         if callers.contains(&caller) {
@@ -434,62 +436,56 @@ fn parse_inline_callers(definition: &Value) -> Result<Vec<AnthropicToolCaller>, 
     Ok(callers)
 }
 
-fn inline_tool_spec(definition: &Value) -> Result<ToolSpec, LlmError> {
-    let name = definition
-        .get("name")
-        .and_then(Value::as_str)
+fn inline_tool_spec(definition: &JsonPayload) -> Result<ToolSpec, LlmError> {
+    let name = source_string_at(definition, "/name")?
         .filter(|name| valid_name(name))
-        .ok_or_else(|| invalid("Anthropic inline tool definitions require a valid name"))?
-        .to_owned();
-    let kind = match definition.get("type") {
-        None => "custom",
-        Some(Value::String(kind)) => kind.as_str(),
-        Some(_) => return Err(invalid("Anthropic inline tool type must be a string")),
+        .ok_or_else(|| invalid("Anthropic inline tool definitions require a valid name"))?;
+    let kind = match definition.raw_source_at("/type") {
+        None => "custom".to_owned(),
+        Some(_) => source_string_at(definition, "/type")?
+            .ok_or_else(|| invalid("Anthropic inline tool type must be a string"))?,
     };
     if kind != "custom" {
         return Err(unsupported(
             "Anthropic-defined server and client tools require their typed integration and cannot be added by generic inline definition",
         ));
     }
-    let schema = match definition.get("input_schema") {
-        Some(schema) if schema.is_object() => schema.clone(),
-        Some(_) => return Err(invalid("Anthropic inline input_schema must be an object")),
-        None if kind == "custom" => {
+    let schema = definition.payload_at("/input_schema").ok_or_else(|| {
+        invalid("Anthropic inline custom tool definitions require an object input_schema")
+    })?;
+    if !schema.is_root_object() {
+        return Err(invalid("Anthropic inline input_schema must be an object"));
+    }
+    let description = match definition.kind_at("/description") {
+        None | Some(crate::response_json::FlatJsonKind::Null) => JsonPayload::string(""),
+        Some(crate::response_json::FlatJsonKind::String) => definition
+            .payload_at("/description")
+            .expect("string kind has source payload"),
+        Some(_) => {
             return Err(invalid(
-                "Anthropic inline custom tool definitions require an object input_schema",
+                "Anthropic inline tool description must be a string or null",
             ));
         }
-        None => json!({}),
     };
-    if definition
-        .get("description")
-        .is_some_and(|description| !description.is_string() && !description.is_null())
-    {
-        return Err(invalid(
-            "Anthropic inline tool description must be a string or null",
-        ));
-    }
-    let strict = match definition.get("strict") {
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| invalid("Anthropic inline tool strict must be a boolean"))?,
-        None => false,
+    let strict = if definition.raw_source_at("/strict").is_some() {
+        definition
+            .bool_at("/strict")
+            .ok_or_else(|| invalid("Anthropic inline tool strict must be a boolean"))?
+    } else {
+        false
     };
-    let defer_loading = match definition.get("defer_loading") {
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| invalid("Anthropic inline tool defer_loading must be a boolean"))?,
-        None => false,
+    let defer_loading = if definition.raw_source_at("/defer_loading").is_some() {
+        definition
+            .bool_at("/defer_loading")
+            .ok_or_else(|| invalid("Anthropic inline tool defer_loading must be a boolean"))?
+    } else {
+        false
     };
     Ok(ToolSpec {
         tool_type: None,
-        extra: Value::Null,
+        extra: crate::protocol::JsonPayload::default(),
         name,
-        description: definition
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
+        description,
         input_schema: schema,
         strict,
         defer_loading,
@@ -498,7 +494,10 @@ fn inline_tool_spec(definition: &Value) -> Result<ToolSpec, LlmError> {
     .with_anthropic_allowed_callers(parse_inline_callers(definition)?))
 }
 
-fn add_tool_definition(definition: &Value, state: &mut ToolTimeline<'_>) -> Result<(), LlmError> {
+fn add_tool_definition(
+    definition: &JsonPayload,
+    state: &mut ToolTimeline<'_>,
+) -> Result<(), LlmError> {
     let ToolTimeline {
         direct_types,
         active_direct,
@@ -509,20 +508,20 @@ fn add_tool_definition(definition: &Value, state: &mut ToolTimeline<'_>) -> Resu
         active_inline,
         ..
     } = state;
-    if let Some(name) = definition.get("name").and_then(Value::as_str) {
-        if let Some(expected) = typed_inline_definitions.get(name) {
-            if definition != expected {
+    if let Some(name) = source_string_at(definition, "/name")? {
+        if let Some(expected) = typed_inline_definitions.get(&name) {
+            if definition.canonical_json(crate::exact_json::JsonEncoding::JavaScript)?
+                != expected.canonical_json(crate::exact_json::JsonEncoding::JavaScript)?
+            {
                 return Err(invalid(format!(
                     "inline Anthropic server tool {name:?} must exactly match its typed configuration"
                 )));
             }
-            let family = definition
-                .get("type")
-                .and_then(Value::as_str)
-                .map(tool_type_family)
+            let family = source_string_at(definition, "/type")?
+                .map(|kind| tool_type_family(&kind))
                 .ok_or_else(|| invalid("inline Anthropic server tool requires a type"))?;
             if direct_types
-                .get(name)
+                .get(&name)
                 .is_some_and(|existing| existing != &family)
             {
                 return Err(invalid(
@@ -542,10 +541,10 @@ fn add_tool_definition(definition: &Value, state: &mut ToolTimeline<'_>) -> Resu
             } else {
                 active_direct.insert(name.to_owned());
             }
-            if definition.get("defer_loading").and_then(Value::as_bool) == Some(true) {
+            if definition.bool_at("/defer_loading") == Some(true) {
                 deferred_direct.insert(name.to_owned());
             } else {
-                deferred_direct.remove(name);
+                deferred_direct.remove(&name);
             }
             inline_definitions.insert(name.to_owned(), definition.clone());
             active_inline.insert(name.to_owned());
@@ -554,10 +553,8 @@ fn add_tool_definition(definition: &Value, state: &mut ToolTimeline<'_>) -> Resu
     }
     let spec = inline_tool_spec(definition)?;
     let name = spec.name.clone();
-    let kind = definition
-        .get("type")
-        .and_then(Value::as_str)
-        .map(tool_type_family)
+    let kind = source_string_at(definition, "/type")?
+        .map(|kind| tool_type_family(&kind))
         .unwrap_or_else(|| "custom".to_owned());
     if direct_types
         .get(&name)
@@ -581,16 +578,14 @@ fn add_tool_definition(definition: &Value, state: &mut ToolTimeline<'_>) -> Resu
 }
 
 fn encode_mcp_definition(
-    definition: &Value,
+    definition: &JsonPayload,
     inline_configs: &BTreeMap<String, &AnthropicMcpConfig>,
     active_mcp: &mut BTreeSet<String>,
     seen_inline_mcp: &mut BTreeSet<String>,
-    inline_definitions: &mut BTreeMap<String, Value>,
+    inline_definitions: &mut BTreeMap<String, JsonPayload>,
     active_inline: &mut BTreeSet<String>,
 ) -> Result<(), LlmError> {
-    let server = definition
-        .get("mcp_server_name")
-        .and_then(Value::as_str)
+    let server = source_string_at(definition, "/mcp_server_name")?
         .filter(|name| valid_name(name))
         .ok_or_else(|| invalid("Anthropic MCP toolset definitions require mcp_server_name"))?
         .to_owned();
@@ -599,14 +594,25 @@ fn encode_mcp_definition(
             "inline MCP toolsets require matching typed AnthropicMcpConfig with inline placement",
         ));
     };
-    if &config.toolset_value() != definition {
+    if config
+        .toolset_value()
+        .canonical_json(crate::exact_json::JsonEncoding::JavaScript)?
+        != definition.canonical_json(crate::exact_json::JsonEncoding::JavaScript)?
+    {
         return Err(invalid(
             "inline MCP toolset definition must match its typed AnthropicMcpConfig",
         ));
     }
     let key = format!("\0mcp:{server}");
     if seen_inline_mcp.contains(&server) {
-        if inline_definitions.get(&key) == Some(definition) {
+        if inline_definitions.get(&key).is_some_and(|existing| {
+            existing
+                .canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                .ok()
+                == definition
+                    .canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                    .ok()
+        }) {
             active_mcp.insert(server);
             active_inline.insert(key);
             return Ok(());
@@ -623,7 +629,7 @@ fn encode_mcp_definition(
 }
 
 fn process_system_change(
-    value: &Value,
+    value: &JsonPayload,
     state: &mut ToolTimeline<'_>,
     paused_server_turn: bool,
 ) -> Result<(), LlmError> {
@@ -644,11 +650,9 @@ fn process_system_change(
         ));
     }
     let tool = value
-        .get("tool")
+        .payload_at("/tool")
         .ok_or_else(|| invalid("Anthropic tool changes require a tool reference or definition"))?;
-    let tool_type = tool
-        .get("type")
-        .and_then(Value::as_str)
+    let tool_type = source_string_at(&tool, "/type")?
         .ok_or_else(|| invalid("Anthropic tool changes require a typed tool field"))?;
     if kind == "tool_removal" && tool_type == "tool_definition" {
         return Err(invalid("Anthropic tool removal accepts references only"));
@@ -659,20 +663,21 @@ fn process_system_change(
             return Err(invalid("Anthropic tool definitions can only be added"));
         }
         let definition = tool
-            .get("definition")
+            .payload_at("/definition")
             .ok_or_else(|| invalid("Anthropic tool definitions require definition"))?;
-        if definition.get("type").and_then(Value::as_str) == Some("mcp_toolset") {
-            if let Some(server) = definition.get("mcp_server_name").and_then(Value::as_str) {
+        let definition_type = source_string_at(&definition, "/type")?;
+        if definition_type.as_deref() == Some("mcp_toolset") {
+            if let Some(server) = source_string_at(&definition, "/mcp_server_name")? {
                 // A whole-set addition supersedes prior member removals,
                 // whether it uses a reference or repeats its definition.
                 state
                     .mcp_tool_overrides
-                    .retain(|(name, _), _| name != server);
+                    .retain(|(name, _), _| name != &server);
             }
         }
-        match definition.get("type").and_then(Value::as_str) {
+        match definition_type.as_deref() {
             Some("mcp_toolset") => encode_mcp_definition(
-                definition,
+                &definition,
                 &mcp_configs
                     .iter()
                     .filter(|(_, config)| config.inline_toolset())
@@ -683,10 +688,10 @@ fn process_system_change(
                 inline_definitions,
                 active_inline,
             ),
-            _ => add_tool_definition(definition, state),
+            _ => add_tool_definition(&definition, state),
         }
     } else {
-        let reference_value = parse_reference(tool)?;
+        let reference_value = parse_reference(&tool)?;
         match reference_value {
             Reference::Tool(name) => {
                 if !direct_types.contains_key(&name) {
@@ -768,22 +773,17 @@ fn process_system_change(
     }
 }
 
-fn deferred_direct_addition_name(value: &Value) -> Option<String> {
+fn deferred_direct_addition_name(value: &JsonPayload) -> Option<String> {
     if system_change(value) != Some("tool_addition") {
         return None;
     }
-    let tool = value.get("tool")?;
-    match tool.get("type")?.as_str()? {
-        "tool_reference" => tool.get("name")?.as_str().map(str::to_owned),
+    let tool = value.payload_at("/tool")?;
+    match source_string_at(&tool, "/type").ok()??.as_str() {
+        "tool_reference" => source_string_at(&tool, "/name").ok()?,
         "tool_definition" => {
-            let definition = tool.get("definition")?;
-            (definition.get("type").and_then(Value::as_str) != Some("mcp_toolset"))
-                .then(|| {
-                    definition
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
+            let definition = tool.payload_at("/definition")?;
+            (source_string_at(&definition, "/type").ok()?.as_deref() != Some("mcp_toolset"))
+                .then(|| source_string_at(&definition, "/name").ok()?)
                 .flatten()
         }
         _ => None,
@@ -806,8 +806,8 @@ impl ToolTimeline<'_> {
             if !name.starts_with("\0mcp:") {
                 active_count = active_count.saturating_add(1);
                 definition_bytes = definition_bytes.saturating_add(
-                    serde_json::to_vec(definition)
-                        .map_err(|_| invalid("Anthropic inline definition is not valid JSON"))?
+                    definition
+                        .canonical_json(crate::exact_json::JsonEncoding::JavaScript)?
                         .len(),
                 );
             }
@@ -822,9 +822,13 @@ impl ToolTimeline<'_> {
                     }
                     if config.inline_toolset() {
                         active_count = active_count.saturating_add(1);
+                        let source = serde_json::to_string(tool)
+                            .map_err(|_| invalid("Anthropic pinned tool is not valid JSON"))?;
+                        let payload = JsonPayload::parse(&source)
+                            .map_err(|_| invalid("Anthropic pinned tool is not valid JSON"))?;
                         definition_bytes = definition_bytes.saturating_add(
-                            serde_json::to_vec(tool)
-                                .map_err(|_| invalid("Anthropic pinned tool is not valid JSON"))?
+                            payload
+                                .canonical_json(crate::exact_json::JsonEncoding::JavaScript)?
                                 .len(),
                         );
                     }
@@ -894,11 +898,11 @@ fn validate_programmatic_calls_at_timeline(
         else {
             continue;
         };
-        let Some(caller_type) = caller.get("type").and_then(Value::as_str) else {
+        let Some(caller_type) = caller_string_at(caller, "/type") else {
             continue;
         };
         if !matches!(
-            caller_type,
+            caller_type.as_str(),
             "code_execution_20260120" | "code_execution_20260521"
         ) {
             continue;
@@ -951,14 +955,11 @@ fn validate_inline_server_calls_at_timeline(
         else {
             continue;
         };
-        if value.get("type").and_then(Value::as_str) != Some("server_tool_use") {
+        if !value.string_is("/type", "server_tool_use") {
             continue;
         }
-        let name = value
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let (enabled, definition_name) = match name {
+        let name = value.string_at("/name").unwrap_or_default();
+        let (enabled, definition_name) = match name.as_str() {
             "code_execution" | "bash_code_execution" | "text_editor_code_execution" => {
                 (inline_execution, "code_execution")
             }
@@ -1006,39 +1007,31 @@ fn validate_pending_programmatic_definitions(
                 ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::AnthropicMessages,
                     value,
-                } if matches!(
-                    value.get("type").and_then(Value::as_str),
-                    Some(
-                        "code_execution_tool_result"
-                            | "bash_code_execution_tool_result"
-                            | "text_editor_code_execution_tool_result"
-                    )
-                ) =>
+                } if [
+                    "code_execution_tool_result",
+                    "bash_code_execution_tool_result",
+                    "text_editor_code_execution_tool_result",
+                ]
+                .iter()
+                .any(|kind| value.string_is("/type", kind)) =>
                 {
-                    if let Some(id) = value.get("tool_use_id").and_then(Value::as_str) {
-                        completed_server_tools.insert(id.to_owned(), history_position);
+                    if let Some(id) = value.string_at("/tool_use_id") {
+                        completed_server_tools.insert(id, history_position);
                     }
                 }
                 ContentBlock::ToolUse {
                     name,
                     caller: Some(caller),
                     ..
-                } if caller
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|caller| {
-                        matches!(
-                            caller,
-                            "code_execution_20260120" | "code_execution_20260521"
-                        )
-                    }) =>
+                } if caller_string_at(caller, "/type").is_some_and(|caller| {
+                    matches!(
+                        caller.as_str(),
+                        "code_execution_20260120" | "code_execution_20260521"
+                    )
+                }) =>
                 {
-                    if let Some(tool_id) = caller.get("tool_id").and_then(Value::as_str) {
-                        programmatic_calls.push((
-                            name.clone(),
-                            tool_id.to_owned(),
-                            history_position,
-                        ));
+                    if let Some(tool_id) = caller_string_at(caller, "/tool_id") {
+                        programmatic_calls.push((name.clone(), tool_id, history_position));
                     }
                 }
                 _ => {}
@@ -1079,6 +1072,10 @@ fn validate_pending_programmatic_definitions(
     Ok(())
 }
 
+fn caller_string_at(caller: &JsonPayload, pointer: &str) -> Option<String> {
+    String::from_utf16(&caller.string_units_at(pointer)?).ok()
+}
+
 fn is_programmatic_caller(caller: &AnthropicToolCaller) -> bool {
     matches!(
         caller,
@@ -1090,28 +1087,30 @@ fn is_programmatic_caller(caller: &AnthropicToolCaller) -> bool {
 /// must first run [`validate`], which checks placement and definition changes
 /// against the chronological tool timeline.
 pub(crate) fn collect_inline_tool_specs(request: &ChatRequest) -> Result<Vec<ToolSpec>, LlmError> {
-    request
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .filter_map(|block| match block {
-            ContentBlock::ProviderContent {
-                protocol: ProtocolFamily::AnthropicMessages,
-                value,
-            } if system_change(value) == Some("tool_addition")
-                && value.pointer("/tool/type").and_then(Value::as_str)
-                    == Some("tool_definition") =>
-            {
-                value.pointer("/tool/definition")
-            }
-            _ => None,
-        })
-        .filter(|definition| {
-            definition.get("type").and_then(Value::as_str) != Some("mcp_toolset")
-                && !is_typed_inline_server_definition(definition)
-        })
-        .map(inline_tool_spec)
-        .collect()
+    let mut definitions = Vec::new();
+    for block in request.messages.iter().flat_map(|message| &message.content) {
+        let ContentBlock::ProviderContent {
+            protocol: ProtocolFamily::AnthropicMessages,
+            value,
+        } = block
+        else {
+            continue;
+        };
+        if system_change(value) != Some("tool_addition")
+            || !value.string_is("/tool/type", "tool_definition")
+        {
+            continue;
+        }
+        let Some(definition) = value.payload_at("/tool/definition") else {
+            continue;
+        };
+        if source_string_at(&definition, "/type")?.as_deref() != Some("mcp_toolset")
+            && !is_typed_inline_server_definition(&definition)
+        {
+            definitions.push(inline_tool_spec(&definition)?);
+        }
+    }
+    Ok(definitions)
 }
 
 fn mcp_tool_enabled(config: &AnthropicMcpConfig, name: &str) -> bool {
@@ -1248,7 +1247,14 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             }
             typed_inline_definitions.insert(
                 "code_execution".into(),
-                crate::providers::anthropic::code_execution::inline_tool_value(),
+                JsonPayload::from_generated_value(
+                    &crate::providers::anthropic::code_execution::inline_tool_value(),
+                )
+                .map_err(|error| {
+                    invalid(format!(
+                        "inline Code Execution definition is invalid: {error}"
+                    ))
+                })?,
             );
         }
     }
@@ -1265,7 +1271,12 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             }
             typed_inline_definitions.insert(
                 "web_fetch".into(),
-                crate::providers::anthropic::web_fetch::tool_value(config)?,
+                JsonPayload::from_generated_value(
+                    &crate::providers::anthropic::web_fetch::tool_value(config)?,
+                )
+                .map_err(|error| {
+                    invalid(format!("inline Web Fetch definition is invalid: {error}"))
+                })?,
             );
         }
     }
@@ -1320,7 +1331,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
         .map(|config| config.name().to_owned())
         .collect::<BTreeSet<_>>();
     let seen_inline_mcp = BTreeSet::new();
-    let inline_definitions = BTreeMap::<String, Value>::new();
+    let inline_definitions = BTreeMap::<String, JsonPayload>::new();
     let inline_tool_history = Vec::new();
     let active_inline = BTreeSet::<String>::new();
     let mut surfaced_deferred = BTreeSet::<String>::new();
@@ -1397,12 +1408,13 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             }
             for block in &system_message.content {
                 match block {
-                    ContentBlock::Text { .. } => {}
+                    ContentBlock::Text { .. } | ContentBlock::TextJsUtf16 { .. } => {}
                     ContentBlock::ProviderContent {
                         protocol: ProtocolFamily::AnthropicMessages,
                         value,
-                    } if value.get("type").and_then(Value::as_str) == Some("text")
-                        && value.get("text").is_some_and(Value::is_string) => {}
+                    } if value.string_is("/type", "text")
+                        && value.kind_at("/text")
+                            == Some(crate::response_json::FlatJsonKind::String) => {}
                     ContentBlock::ProviderContent { protocol, value }
                         if *protocol == ProtocolFamily::AnthropicMessages
                             && system_change(value).is_some() =>

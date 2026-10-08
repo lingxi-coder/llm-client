@@ -16,6 +16,9 @@ use lingxi_llm_client::{
     LlmClientBuilder, OpenAiResponsesCodec, RequestOptions, StreamResponse, Transport, WireCodec,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -130,7 +133,7 @@ fn openai_responses_encodes_auto_container_and_requests_execution_outputs() {
         decoded.message.content[0],
         ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiResponses,
-            value: item
+            value: json_payload_fixture::generated(&item)
         }
     );
 }

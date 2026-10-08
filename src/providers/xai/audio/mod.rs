@@ -1171,7 +1171,7 @@ fn validate_transcription_request(request: &XaiTranscriptionRequest) -> Result<(
         (None, Some(_)) => {
             return Err(invalid(
                 "sample_rate is only accepted with raw audio_format",
-            ))
+            ));
         }
         (None, None) => {}
     }
@@ -1379,7 +1379,7 @@ fn parse_error_body(bytes: &[u8]) -> Value {
 
 fn map_outcome(operation: &'static str, source: LlmError) -> XaiAudioError {
     if matches!(
-        source,
+        source.classification_source(),
         LlmError::Transport { .. }
             | LlmError::TransportTimeout { .. }
             | LlmError::StreamInterrupted { .. }

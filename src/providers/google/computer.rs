@@ -264,13 +264,14 @@ pub fn decode(
         if value.format() != CALL_FORMAT {
             continue;
         }
-        let step = value.data();
+        let step: Value = serde_json::from_str(value.data().as_json_source())
+            .map_err(|error| invalid(format!("malformed Gemini native desktop call: {error}")))?;
         if step["type"] != "function_call" || !step["arguments"].is_object() {
             return Err(invalid("malformed Gemini native desktop call"));
         }
-        let id = string(step, "id")?;
-        let name = string(step, "name")?;
-        if !ids.insert(id) {
+        let id = string(&step, "id")?;
+        let name = string(&step, "name")?;
+        if !ids.insert(id.to_owned()) {
             return Err(invalid("duplicate Gemini native desktop call id"));
         }
         let action = operation(name, &step["arguments"], frame)?;
@@ -354,12 +355,31 @@ pub fn encode_receipt(
     let mut result = vec![];
     let mut terminal_image = false;
     for item in &input.results {
-        result.push(json!({"type":"text","text":if item.status==NativeExecutionStatus::Succeeded{item.content.clone()}else{format!("Computer execution {:?}: {}",item.status,item.content)}}));
+        let content = if item.status == NativeExecutionStatus::Succeeded {
+            item.content.clone()
+        } else {
+            let mut units = format!("Computer execution {:?}: ", item.status)
+                .encode_utf16()
+                .collect::<Vec<_>>();
+            units.extend(
+                item.content
+                    .string_units_at("")
+                    .ok_or_else(|| invalid("Gemini computer result text must be a root string"))?,
+            );
+            JsonPayload::string_from_utf16_code_units(&units)
+        };
+        result.push(text_result_block(&content)?);
         if let Some(blocks) = &item.blocks {
-            for block in blocks {
-                let encoded = super::interactions::encode_result_block(block)?;
-                terminal_image |=
-                    item.operation_index + 1 == call.operations.len() && encoded["type"] == "image";
+            let length = blocks
+                .array_len("")
+                .ok_or_else(|| invalid("Gemini computer result blocks must be an array"))?;
+            for index in 0..length {
+                let block = blocks
+                    .array_item(index)
+                    .ok_or_else(|| invalid("Gemini computer result block is missing"))?;
+                let encoded = super::interactions::encode_result_block(&block)?;
+                terminal_image |= item.operation_index + 1 == call.operations.len()
+                    && encoded.string_at("/type").as_deref() == Some("image");
                 result.push(encoded);
             }
         }
@@ -370,12 +390,19 @@ pub fn encode_receipt(
         ));
     }
     if !call.context.pending_safety_checks.is_empty() && executed {
-        result.insert(
-            0,
-            json!({"type":"text","text":json!({"safety_acknowledgement":true}).to_string()}),
-        );
+        let acknowledgement =
+            JsonPayload::string(&json!({"safety_acknowledgement":true}).to_string());
+        result.insert(0, text_result_block(&acknowledgement)?);
     }
-    let mut step = json!({"type":"function_result","name":call.context.member_name,"call_id":call.context.call_id,"result":result});
+    let result = array_payload_from_sources(&result)?;
+    let mut step = JsonPayload::from_generated_value(&json!({
+        "type": "function_result",
+        "name": call.context.member_name,
+        "call_id": call.context.call_id,
+        "result": []
+    }))
+    .map_err(|error| invalid(format!("could not encode Gemini computer result: {error}")))?;
+    step = step.with_object_field("result", &result)?;
     if let Some(reference) = &call.context.continuation {
         if reference.protocol != ProtocolFamily::GeminiInteractions {
             return Err(invalid(
@@ -383,9 +410,30 @@ pub fn encode_receipt(
             ));
         }
         // SDK-only association. The codec validates it and removes it from the wire.
-        step["_sdk_continuation"] = json!(reference);
+        let continuation = JsonPayload::from_generated_value(&json!(reference))
+            .map_err(|error| invalid(format!("could not encode Gemini continuation: {error}")))?;
+        step = step.with_object_field("_sdk_continuation", &continuation)?;
     }
     Ok(ContentBlock::Native {
         value: NativeExtension::new(RESULT_FORMAT, step)?,
     })
+}
+
+fn text_result_block(text: &JsonPayload) -> Result<JsonPayload, LlmError> {
+    JsonPayload::parse(r#"{"type":"text","text":null}"#)
+        .map_err(|error| invalid(format!("invalid Gemini text result template: {error}")))?
+        .with_object_field("text", text)
+}
+
+fn array_payload_from_sources(items: &[JsonPayload]) -> Result<JsonPayload, LlmError> {
+    let mut source = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            source.push(',');
+        }
+        source.push_str(item.as_json_source());
+    }
+    source.push(']');
+    JsonPayload::parse(&source)
+        .map_err(|error| invalid(format!("invalid Gemini computer result array: {error}")))
 }

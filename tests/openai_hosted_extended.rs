@@ -17,6 +17,9 @@ use lingxi_llm_client::{
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
@@ -134,18 +137,26 @@ fn hosted_web_search_uses_confirmed_filter_names_and_retains_open_page_output() 
         .iter()
         .find_map(|block| match block {
             ContentBlock::ProviderContent { value, .. }
-                if value["type"].as_str() == Some("web_search_call") =>
+                if json_payload_fixture::source_string_at(value, "/type").as_deref()
+                    == Some("web_search_call") =>
             {
                 Some(value)
             }
             _ => None,
         });
-    assert_eq!(native_search.unwrap()["action"]["type"], "open_page");
+    assert_eq!(
+        json_payload_fixture::source_string_at(native_search.unwrap(), "/action/type").as_deref(),
+        Some("open_page")
+    );
     let attribution = response.web_search.unwrap();
     assert_eq!(attribution.citations[0].url, "https://openai.com/docs");
     assert_eq!(
-        attribution.metadata["web_search_calls"][0]["action"]["type"],
-        "open_page"
+        json_payload_fixture::source_string_at(
+            &attribution.metadata,
+            "/web_search_calls/0/action/type"
+        )
+        .as_deref(),
+        Some("open_page")
     );
 }
 
@@ -206,9 +217,10 @@ fn approval_required_and_mcp_output_are_retained_without_host_tool_calls() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(native, &approval_item);
+    assert!(json_payload_fixture::source_matches(native, &approval_item));
 
-    let approval = McpApprovalRequest::from_native_item(native).unwrap();
+    let approval_value: Value = serde_json::from_str(native.as_json_source()).unwrap();
+    let approval = McpApprovalRequest::from_native_item(&approval_value).unwrap();
     assert_eq!(approval.approval_request_id, "mcpr_123");
     assert_eq!(approval.server_label, "docs");
     assert_eq!(approval.name, "fetch");
@@ -290,8 +302,12 @@ fn mcp_list_and_call_outputs_remain_native_and_never_become_client_tool_use() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(native, vec![&list, &call]);
-    assert_eq!(native[1]["output"], "page text");
+    assert!(json_payload_fixture::source_matches(native[0], &list));
+    assert!(json_payload_fixture::source_matches(native[1], &call));
+    assert_eq!(
+        json_payload_fixture::source_string_at(native[1], "/output").as_deref(),
+        Some("page text")
+    );
 }
 
 #[test]
@@ -324,11 +340,11 @@ fn mcp_settings_and_native_replay_are_validated_before_encoding() {
     foreign_native.messages = vec![lingxi_llm_client::protocol::ConversationMessage::assistant(
         vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiChat,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"mcp_approval_response",
                 "approval_request_id":"mcpr_123",
                 "approve":true
-            }),
+            })),
         }],
     )];
     assert!(encode(&foreign_native, &profile()).is_err());
@@ -369,14 +385,15 @@ fn approval_items_stream_as_native_content_and_end_as_requires_action() {
     assert_eq!(
         events
             .iter()
-            .filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if value["type"] == "mcp_approval_request"))
+            .filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("mcp_approval_request")))
             .count(),
         1
     );
     assert!(events.iter().any(|event| matches!(
         event,
         StreamEvent::ProviderContent { value, .. }
-            if value["type"] == "web_search_call" && value["action"]["type"] == "open_page"
+            if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("web_search_call")
+                && json_payload_fixture::source_string_at(value, "/action/type").as_deref() == Some("open_page")
     )));
     assert!(matches!(
         events.last(),

@@ -7,8 +7,11 @@ use crate::protocol::provider::{
 };
 use crate::protocol::ContinuationRef;
 use crate::protocol::{ConversationMessage, ProviderFileSource};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use crate::protocol::{JsonPayload, JsonPayloadFragment};
+use serde::de::DeserializeOwned;
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{value::RawValue, Value};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -66,7 +69,12 @@ pub enum LlmError {
         status: Option<u16>,
     },
     #[error("provider overloaded: {message}")]
-    Overloaded { message: String },
+    Overloaded {
+        message: String,
+        /// SDK-derived Native `vU(error)` result for the Anthropic `Rt` route.
+        /// Other provider overloads do not inherit this route-specific fact.
+        native_retry_base_eligible: bool,
+    },
     #[error("transport error: {message}")]
     Transport { message: String },
     #[error("transport timeout: {message}")]
@@ -90,6 +98,104 @@ pub enum LlmError {
     CostUnavailable { message: String },
     #[error("unsupported capability: {message}")]
     UnsupportedCapability { message: String },
+    /// Selected provider response text, while keeping its original taxonomy for
+    /// retry, timeout, and recovery decisions.
+    #[error("{source}")]
+    ProviderErrorText {
+        source: Box<LlmError>,
+        text: ProviderErrorText,
+        #[serde(skip)]
+        native_anthropic_facts: Option<NativeAnthropicErrorFacts>,
+    },
+}
+
+/// Source-backed Native Anthropic error facts attached to the selected route.
+/// These remain process-local and are never serialized with the error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeAnthropicErrorFacts {
+    pub provider_id: ProviderId,
+    pub protocol: ProtocolFamily,
+    /// Authority of the finalized request URL (host plus any explicit
+    /// non-default port). This process-local route evidence omits userinfo,
+    /// scheme, path, query, and fragment.
+    pub request_authority: Option<String>,
+    /// Current Native Hqo/gVr per-response resumable-query refusal.
+    pub thinking_resumption_refused: bool,
+    /// Whether the exact resumption beta was present on the dispatched request.
+    pub thinking_resumption_beta_requested: Option<bool>,
+    /// Native Aet matched an HTTP 400 rejection of an actually sent beta.
+    pub thinking_resumption_beta_refused: bool,
+}
+
+/// Provider error text with the exact JavaScript UTF-16 projection.
+/// `display` is the lossy UTF-8 view; `utf16_code_units` is authoritative.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderErrorText {
+    display: String,
+    utf16_code_units: Vec<u16>,
+}
+
+impl std::fmt::Display for ProviderErrorText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.display)
+    }
+}
+
+impl ProviderErrorText {
+    pub fn new(display: String, utf16_code_units: Vec<u16>) -> Option<Self> {
+        (String::from_utf16_lossy(&utf16_code_units) == display).then_some(Self {
+            display,
+            utf16_code_units,
+        })
+    }
+
+    pub fn display(&self) -> &str {
+        &self.display
+    }
+
+    pub fn utf16_code_units(&self) -> &[u16] {
+        &self.utf16_code_units
+    }
+
+    #[must_use]
+    pub fn prefixed(&self, prefix: &str) -> Self {
+        let mut display = String::with_capacity(prefix.len() + self.display.len());
+        display.push_str(prefix);
+        display.push_str(&self.display);
+        let mut units = prefix.encode_utf16().collect::<Vec<_>>();
+        units.extend_from_slice(&self.utf16_code_units);
+        Self::new(display, units).expect("prefixing preserves the UTF-16 display projection")
+    }
+}
+
+impl From<String> for ProviderErrorText {
+    fn from(display: String) -> Self {
+        let units = display.encode_utf16().collect();
+        Self::new(display, units).expect("Rust strings have valid UTF-16")
+    }
+}
+
+impl From<&str> for ProviderErrorText {
+    fn from(display: &str) -> Self {
+        display.to_owned().into()
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderErrorText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            display: String,
+            utf16_code_units: Vec<u16>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        ProviderErrorText::new(wire.display, wire.utf16_code_units).ok_or_else(|| {
+            serde::de::Error::custom("provider error UTF-16 units do not match display text")
+        })
+    }
 }
 
 /// Field-less mirror of [`LlmError`] for classification.
@@ -142,8 +248,105 @@ impl LlmErrorKind {
 }
 
 impl LlmError {
-    pub fn kind(&self) -> LlmErrorKind {
+    /// Return the original classification error beneath the response text.
+    #[must_use]
+    pub fn classification_source(&self) -> &Self {
         match self {
+            Self::ProviderErrorText { source, .. } => source.classification_source(),
+            other => other,
+        }
+    }
+
+    pub(crate) fn classification_source_mut(&mut self) -> &mut Self {
+        match self {
+            Self::ProviderErrorText { source, .. } => source.classification_source_mut(),
+            other => other,
+        }
+    }
+
+    pub(crate) fn into_classification_source(self) -> Self {
+        match self {
+            Self::ProviderErrorText { source, .. } => source.into_classification_source(),
+            other => other,
+        }
+    }
+
+    /// Return the provider-selected response text, when present.
+    #[must_use]
+    pub fn provider_error_text(&self) -> Option<&ProviderErrorText> {
+        match self {
+            Self::ProviderErrorText { text, .. } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Current Native Anthropic facts when this error came from that SDK route.
+    #[must_use]
+    pub fn native_anthropic_error_facts(&self) -> Option<&NativeAnthropicErrorFacts> {
+        match self {
+            Self::ProviderErrorText {
+                native_anthropic_facts,
+                ..
+            } => native_anthropic_facts.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Attach provider text without changing the error taxonomy or previously
+    /// attached Native facts.
+    pub fn with_provider_error_text(self, text: ProviderErrorText) -> Self {
+        let (source, native_anthropic_facts) = match self {
+            Self::ProviderErrorText {
+                source,
+                native_anthropic_facts,
+                ..
+            } => (*source, native_anthropic_facts),
+            other => (other, None),
+        };
+        Self::ProviderErrorText {
+            source: Box::new(source.into_classification_source()),
+            text,
+            native_anthropic_facts,
+        }
+    }
+
+    /// Attach route/error facts while preserving the original classification
+    /// and authoritative provider text.
+    pub fn with_native_anthropic_error(
+        self,
+        text: ProviderErrorText,
+        facts: NativeAnthropicErrorFacts,
+    ) -> Self {
+        let source = self.into_classification_source();
+        Self::ProviderErrorText {
+            source: Box::new(source),
+            text,
+            native_anthropic_facts: Some(facts),
+        }
+    }
+
+    /// Attach the selected HTTP request authority to process-local Native
+    /// Anthropic error facts, without replacing the provider text or taxonomy.
+    pub fn with_native_anthropic_request_authority(mut self, authority: Option<String>) -> Self {
+        if let Self::ProviderErrorText {
+            native_anthropic_facts: Some(facts),
+            ..
+        } = &mut self
+        {
+            facts.request_authority = authority;
+        }
+        self
+    }
+
+    pub fn with_optional_provider_error_text(self, text: Option<ProviderErrorText>) -> Self {
+        match text {
+            Some(text) => self.with_provider_error_text(text),
+            None => self,
+        }
+    }
+
+    pub fn kind(&self) -> LlmErrorKind {
+        match self.classification_source() {
             LlmError::Authentication { .. } => LlmErrorKind::Authentication,
             LlmError::PermissionDenied { .. } => LlmErrorKind::PermissionDenied,
             LlmError::InvalidRequest { .. } => LlmErrorKind::InvalidRequest,
@@ -164,6 +367,9 @@ impl LlmError {
             LlmError::StreamInterrupted { .. } => LlmErrorKind::StreamInterrupted,
             LlmError::CostUnavailable { .. } => LlmErrorKind::CostUnavailable,
             LlmError::UnsupportedCapability { .. } => LlmErrorKind::UnsupportedCapability,
+            LlmError::ProviderErrorText { .. } => {
+                unreachable!("classification_source removes carriers")
+            }
         }
     }
 }
@@ -294,8 +500,7 @@ impl Usage {
 }
 
 /// Provider-neutral stream events. Block indices are per response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StreamEvent {
     /// A complete provider-owned typed item. Preserve its native format and
     /// require a successful terminal response before caller-owned execution.
@@ -316,7 +521,7 @@ pub enum StreamEvent {
     NativeDelta {
         block: usize,
         protocol: ProtocolFamily,
-        delta: serde_json::Value,
+        delta: JsonPayload,
     },
     /// Provider-reported inference settings; may arrive before final usage.
     Inference {
@@ -331,14 +536,92 @@ pub enum StreamEvent {
     ProviderContent {
         block: usize,
         protocol: ProtocolFamily,
-        value: Value,
+        value: JsonPayload,
     },
     /// Raw provider stream frame that the codec does not interpret. This is
     /// observational data, not a content block: do not replay it as message
     /// content or execute it as a client tool call.
     ProviderEvent {
         protocol: ProtocolFamily,
-        payload: Value,
+        payload: JsonPayload,
+    },
+    Start {
+        model: String,
+        response_id: Option<ResponseId>,
+    },
+    TextDelta {
+        block: usize,
+        text: String,
+    },
+    /// Text delta decoded from a provider JSON string containing unpaired
+    /// JavaScript UTF-16 units. Exact units must survive block accumulation.
+    TextDeltaJsUtf16 {
+        block: usize,
+        text: String,
+        utf16_code_units: Vec<u16>,
+    },
+    ReasoningDelta {
+        block: usize,
+        text: String,
+    },
+    ThoughtSignature {
+        block: usize,
+        signature: String,
+    },
+    RedactedThinking {
+        block: usize,
+        data: String,
+    },
+    ToolCallDelta {
+        block: usize,
+        id: ToolUseId,
+        /// Provider-issued call ID, when one was present on the wire.
+        /// Absent for locally generated IDs and protocols that do not need it.
+        provider_id: Option<String>,
+        /// Native caller metadata when the provider routes a tool call through
+        /// another hosted tool, as Anthropic does for programmatic calls.
+        /// Keep the original object so callers can distinguish direct calls
+        /// and retain future provider fields.
+        caller: Option<JsonPayload>,
+        /// Anthropic client-toolset family for Browser/Computer member calls.
+        /// Carried from the opening content-block event to each input delta.
+        toolset_name: Option<String>,
+        name: String,
+        arguments_fragment: JsonPayloadFragment,
+    },
+    /// Search attribution records received in this frame. These are not
+    /// client-executed tool calls. Native metadata retains citation locations.
+    WebSearch {
+        result: WebSearchResult,
+    },
+    /// Provider-hosted knowledge-base retrieval. This is attribution data,
+    /// not a client tool invocation.
+    FileSearch {
+        result: FileSearchResult,
+    },
+    End {
+        stop_reason: StopReason,
+        usage: super::UsageReport,
+        inference: super::InferenceReport,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum StreamEventWithoutRawPayload {
+    Native {
+        block: usize,
+        value: super::NativeExtension,
+    },
+    NativeControl {
+        protocol: ProtocolFamily,
+        control: super::NativeExtension,
+    },
+    BlockEnd {
+        block: usize,
+    },
+    Inference {
+        report: super::InferenceReport,
     },
     Start {
         model: String,
@@ -349,8 +632,6 @@ pub enum StreamEvent {
         block: usize,
         text: String,
     },
-    /// Text delta decoded from a provider JSON string containing unpaired
-    /// JavaScript UTF-16 units. Exact units must survive block accumulation.
     TextDeltaJsUtf16 {
         block: usize,
         text: String,
@@ -372,30 +653,18 @@ pub enum StreamEvent {
     ToolCallDelta {
         block: usize,
         id: ToolUseId,
-        /// Provider-issued call ID, when one was present on the wire.
-        /// Absent for locally generated IDs and protocols that do not need it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_id: Option<String>,
-        /// Native caller metadata when the provider routes a tool call through
-        /// another hosted tool, as Anthropic does for programmatic calls.
-        /// Keep the original object so callers can distinguish direct calls
-        /// and retain future provider fields.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        caller: Option<Value>,
-        /// Anthropic client-toolset family for Browser/Computer member calls.
-        /// Carried from the opening content-block event to each input delta.
+        caller: Option<JsonPayload>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         toolset_name: Option<String>,
         name: String,
-        arguments_fragment: String,
+        arguments_fragment: JsonPayloadFragment,
     },
-    /// Search attribution records received in this frame. These are not
-    /// client-executed tool calls. Native metadata retains citation locations.
     WebSearch {
         result: WebSearchResult,
     },
-    /// Provider-hosted knowledge-base retrieval. This is attribution data,
-    /// not a client tool invocation.
     FileSearch {
         result: FileSearchResult,
     },
@@ -407,11 +676,449 @@ pub enum StreamEvent {
     },
 }
 
+impl From<StreamEventWithoutRawPayload> for StreamEvent {
+    fn from(event: StreamEventWithoutRawPayload) -> Self {
+        match event {
+            StreamEventWithoutRawPayload::Native { block, value } => Self::Native { block, value },
+            StreamEventWithoutRawPayload::NativeControl { protocol, control } => {
+                Self::NativeControl { protocol, control }
+            }
+            StreamEventWithoutRawPayload::BlockEnd { block } => Self::BlockEnd { block },
+            StreamEventWithoutRawPayload::Inference { report } => Self::Inference { report },
+            StreamEventWithoutRawPayload::Start { model, response_id } => {
+                Self::Start { model, response_id }
+            }
+            StreamEventWithoutRawPayload::TextDelta { block, text } => {
+                Self::TextDelta { block, text }
+            }
+            StreamEventWithoutRawPayload::TextDeltaJsUtf16 {
+                block,
+                text,
+                utf16_code_units,
+            } => Self::TextDeltaJsUtf16 {
+                block,
+                text,
+                utf16_code_units,
+            },
+            StreamEventWithoutRawPayload::ReasoningDelta { block, text } => {
+                Self::ReasoningDelta { block, text }
+            }
+            StreamEventWithoutRawPayload::ThoughtSignature { block, signature } => {
+                Self::ThoughtSignature { block, signature }
+            }
+            StreamEventWithoutRawPayload::RedactedThinking { block, data } => {
+                Self::RedactedThinking { block, data }
+            }
+            StreamEventWithoutRawPayload::ToolCallDelta {
+                block,
+                id,
+                provider_id,
+                caller,
+                toolset_name,
+                name,
+                arguments_fragment,
+            } => Self::ToolCallDelta {
+                block,
+                id,
+                provider_id,
+                caller,
+                toolset_name,
+                name,
+                arguments_fragment,
+            },
+            StreamEventWithoutRawPayload::WebSearch { result } => Self::WebSearch { result },
+            StreamEventWithoutRawPayload::FileSearch { result } => Self::FileSearch { result },
+            StreamEventWithoutRawPayload::End {
+                stop_reason,
+                usage,
+                inference,
+            } => Self::End {
+                stop_reason,
+                usage,
+                inference,
+            },
+        }
+    }
+}
+
+impl TryFrom<&StreamEvent> for StreamEventWithoutRawPayload {
+    type Error = ();
+
+    fn try_from(event: &StreamEvent) -> Result<Self, Self::Error> {
+        Ok(match event {
+            StreamEvent::Native { block, value } => Self::Native {
+                block: *block,
+                value: value.clone(),
+            },
+            StreamEvent::NativeControl { protocol, control } => Self::NativeControl {
+                protocol: *protocol,
+                control: control.clone(),
+            },
+            StreamEvent::BlockEnd { block } => Self::BlockEnd { block: *block },
+            StreamEvent::Inference { report } => Self::Inference {
+                report: report.clone(),
+            },
+            StreamEvent::Start { model, response_id } => Self::Start {
+                model: model.clone(),
+                response_id: response_id.clone(),
+            },
+            StreamEvent::TextDelta { block, text } => Self::TextDelta {
+                block: *block,
+                text: text.clone(),
+            },
+            StreamEvent::TextDeltaJsUtf16 {
+                block,
+                text,
+                utf16_code_units,
+            } => Self::TextDeltaJsUtf16 {
+                block: *block,
+                text: text.clone(),
+                utf16_code_units: utf16_code_units.clone(),
+            },
+            StreamEvent::ReasoningDelta { block, text } => Self::ReasoningDelta {
+                block: *block,
+                text: text.clone(),
+            },
+            StreamEvent::ThoughtSignature { block, signature } => Self::ThoughtSignature {
+                block: *block,
+                signature: signature.clone(),
+            },
+            StreamEvent::RedactedThinking { block, data } => Self::RedactedThinking {
+                block: *block,
+                data: data.clone(),
+            },
+            StreamEvent::ToolCallDelta {
+                block,
+                id,
+                provider_id,
+                caller,
+                toolset_name,
+                name,
+                arguments_fragment,
+            } => Self::ToolCallDelta {
+                block: *block,
+                id: id.clone(),
+                provider_id: provider_id.clone(),
+                caller: caller.clone(),
+                toolset_name: toolset_name.clone(),
+                name: name.clone(),
+                arguments_fragment: arguments_fragment.clone(),
+            },
+            StreamEvent::WebSearch { result } => Self::WebSearch {
+                result: result.clone(),
+            },
+            StreamEvent::FileSearch { result } => Self::FileSearch {
+                result: result.clone(),
+            },
+            StreamEvent::End {
+                stop_reason,
+                usage,
+                inference,
+            } => Self::End {
+                stop_reason: stop_reason.clone(),
+                usage: usage.clone(),
+                inference: inference.clone(),
+            },
+            StreamEvent::NativeDelta { .. }
+            | StreamEvent::ProviderContent { .. }
+            | StreamEvent::ProviderEvent { .. } => return Err(()),
+        })
+    }
+}
+
+impl Serialize for StreamEvent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::NativeDelta {
+                block,
+                protocol,
+                delta,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("event", "native_delta")?;
+                map.serialize_entry("block", block)?;
+                map.serialize_entry("protocol", protocol)?;
+                map.serialize_entry("delta", delta)?;
+                map.end()
+            }
+            Self::ProviderContent {
+                block,
+                protocol,
+                value,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("event", "provider_content")?;
+                map.serialize_entry("block", block)?;
+                map.serialize_entry("protocol", protocol)?;
+                map.serialize_entry("value", value)?;
+                map.end()
+            }
+            Self::ProviderEvent { protocol, payload } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("event", "provider_event")?;
+                map.serialize_entry("protocol", protocol)?;
+                map.serialize_entry("payload", payload)?;
+                map.end()
+            }
+            other => StreamEventWithoutRawPayload::try_from(other)
+                .expect("non-raw stream event")
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamEvent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let scanner = crate::response_json::ResponseJsonScanner::parse(
+            raw.get().as_bytes(),
+            "stream event is not valid JSON",
+        )
+        .map_err(serde::de::Error::custom)?;
+        let event = scanner
+            .string_at("/event")
+            .ok_or_else(|| serde::de::Error::custom("stream event has no string event tag"))?;
+        match event {
+            "native_delta" => Ok(Self::NativeDelta {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                protocol: required_stream_field(&scanner, "/protocol")
+                    .map_err(serde::de::Error::custom)?,
+                delta: required_stream_payload(&scanner, "/delta")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "provider_content" => Ok(Self::ProviderContent {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                protocol: required_stream_field(&scanner, "/protocol")
+                    .map_err(serde::de::Error::custom)?,
+                value: required_stream_payload(&scanner, "/value")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "provider_event" => Ok(Self::ProviderEvent {
+                protocol: required_stream_field(&scanner, "/protocol")
+                    .map_err(serde::de::Error::custom)?,
+                payload: required_stream_payload(&scanner, "/payload")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "web_search" => Ok(Self::WebSearch {
+                result: required_stream_field(&scanner, "/result")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "file_search" => Ok(Self::FileSearch {
+                result: required_stream_field(&scanner, "/result")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "native" => Ok(Self::Native {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                value: required_stream_field(&scanner, "/value")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "native_control" => Ok(Self::NativeControl {
+                protocol: required_stream_field(&scanner, "/protocol")
+                    .map_err(serde::de::Error::custom)?,
+                control: required_stream_field(&scanner, "/control")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "block_end" => Ok(Self::BlockEnd {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "inference" => Ok(Self::Inference {
+                report: required_stream_field(&scanner, "/report")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "start" => Ok(Self::Start {
+                model: required_stream_string(&scanner, "/model")
+                    .map_err(serde::de::Error::custom)?,
+                response_id: optional_stream_field(&scanner, "/response_id")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "text_delta" => Ok(Self::TextDelta {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                text: required_stream_string(&scanner, "/text")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "text_delta_js_utf16" => {
+                let block =
+                    required_stream_field(&scanner, "/block").map_err(serde::de::Error::custom)?;
+                let text = scanner
+                    .string_at("/text")
+                    .ok_or_else(|| serde::de::Error::custom("stream text is missing"))?
+                    .to_owned();
+                let utf16_code_units = scanner
+                    .string_units_at("/text")
+                    .ok_or_else(|| serde::de::Error::custom("stream text units are missing"))?;
+                Ok(Self::TextDeltaJsUtf16 {
+                    block,
+                    text,
+                    utf16_code_units,
+                })
+            }
+            "reasoning_delta" => Ok(Self::ReasoningDelta {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                text: required_stream_string(&scanner, "/text")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "thought_signature" => Ok(Self::ThoughtSignature {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                signature: required_stream_string(&scanner, "/signature")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "redacted_thinking" => Ok(Self::RedactedThinking {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                data: required_stream_string(&scanner, "/data")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "tool_call_delta" => Ok(Self::ToolCallDelta {
+                block: required_stream_field(&scanner, "/block")
+                    .map_err(serde::de::Error::custom)?,
+                id: required_stream_field(&scanner, "/id").map_err(serde::de::Error::custom)?,
+                provider_id: optional_stream_field(&scanner, "/provider_id")
+                    .map_err(serde::de::Error::custom)?,
+                caller: optional_stream_payload(&scanner, "/caller")
+                    .map_err(serde::de::Error::custom)?,
+                toolset_name: optional_stream_field(&scanner, "/toolset_name")
+                    .map_err(serde::de::Error::custom)?,
+                name: required_stream_string(&scanner, "/name")
+                    .map_err(serde::de::Error::custom)?,
+                arguments_fragment: required_stream_field(&scanner, "/arguments_fragment")
+                    .map_err(serde::de::Error::custom)?,
+            }),
+            "end" => Ok(Self::End {
+                stop_reason: required_stream_field(&scanner, "/stop_reason")
+                    .map_err(serde::de::Error::custom)?,
+                usage: required_stream_field(&scanner, "/usage")
+                    .map_err(serde::de::Error::custom)?,
+                inference: optional_stream_field(&scanner, "/inference")
+                    .map_err(serde::de::Error::custom)?
+                    .unwrap_or_default(),
+            }),
+            _ => Err(serde::de::Error::custom("unknown stream event type")),
+        }
+    }
+}
+
+fn required_stream_field<T: DeserializeOwned>(
+    scanner: &crate::response_json::ResponseJsonScanner,
+    pointer: &str,
+) -> Result<T, String> {
+    let source = scanner
+        .raw_source_at(pointer)
+        .ok_or_else(|| format!("required stream field {pointer} is missing"))?;
+    serde_json::from_str(source).map_err(|error| error.to_string())
+}
+
+fn optional_stream_field<T: DeserializeOwned>(
+    scanner: &crate::response_json::ResponseJsonScanner,
+    pointer: &str,
+) -> Result<Option<T>, String> {
+    let Some(source) = scanner.raw_source_at(pointer) else {
+        return Ok(None);
+    };
+    serde_json::from_str::<Option<T>>(source).map_err(|error| error.to_string())
+}
+
+fn required_stream_string(
+    scanner: &crate::response_json::ResponseJsonScanner,
+    pointer: &str,
+) -> Result<String, String> {
+    let units = scanner
+        .string_units_at(pointer)
+        .ok_or_else(|| format!("required stream string {pointer} is missing"))?;
+    String::from_utf16(&units)
+        .map_err(|_| format!("stream string {pointer} contains unpaired UTF-16 units"))
+}
+
+fn required_stream_payload(
+    scanner: &crate::response_json::ResponseJsonScanner,
+    pointer: &str,
+) -> Result<JsonPayload, String> {
+    let source = scanner
+        .raw_source_at(pointer)
+        .ok_or_else(|| format!("required raw stream field {pointer} is missing"))?;
+    JsonPayload::parse(source).map_err(|error| error.to_string())
+}
+
+fn optional_stream_payload(
+    scanner: &crate::response_json::ResponseJsonScanner,
+    pointer: &str,
+) -> Result<Option<JsonPayload>, String> {
+    scanner
+        .raw_source_at(pointer)
+        .map(JsonPayload::parse)
+        .transpose()
+        .map_err(|error| error.to_string())
+}
+
 /// A system-prompt block. Cache breakpoints belong to `ChatRequest.prompt_cache`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SystemBlock {
-    pub text: String,
+    text: JsonPayload,
+}
+
+impl SystemBlock {
+    /// Construct a provider system-text block from valid Unicode text.
+    pub fn new(text: impl AsRef<str>) -> Self {
+        Self {
+            text: JsonPayload::string(text.as_ref()),
+        }
+    }
+
+    /// Construct a provider system-text block while retaining exact JS UTF-16 units.
+    pub fn from_utf16_code_units(code_units: &[u16]) -> Self {
+        Self {
+            text: JsonPayload::string_from_utf16_code_units(code_units),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text
+            .root_string_code_units()
+            .is_some_and(|units| units.is_empty())
+    }
+
+    pub fn text_payload(&self) -> &JsonPayload {
+        &self.text
+    }
+
+    pub(crate) fn display_text_lossy(&self) -> String {
+        self.text
+            .display_root_string_lossy()
+            .expect("SystemBlock constructors and deserializer enforce root strings")
+    }
+}
+
+impl<'de> Deserialize<'de> for SystemBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireSystemBlock {
+            text: JsonPayload,
+        }
+
+        let wire = WireSystemBlock::deserialize(deserializer)?;
+        if !wire.text.is_root_string() {
+            return Err(serde::de::Error::custom(
+                "system block text must be a JSON string value",
+            ));
+        }
+        Ok(Self { text: wire.text })
+    }
 }
 
 /// A tool as advertised on the wire.
@@ -419,8 +1126,10 @@ pub struct SystemBlock {
 #[serde(deny_unknown_fields)]
 pub struct ToolSpec {
     pub name: String,
-    pub description: String,
-    pub input_schema: Value,
+    /// Root JSON string retained as source, including lone JavaScript UTF-16 units.
+    #[serde(deserialize_with = "deserialize_tool_description")]
+    pub description: JsonPayload,
+    pub input_schema: JsonPayload,
     #[serde(default)]
     pub strict: bool,
     /// Ask supported hosted tool search to load this definition only after
@@ -436,8 +1145,22 @@ pub struct ToolSpec {
     pub tool_type: Option<String>,
     /// Provider-specific tool fields preserved for codecs that explicitly
     /// support them. Unsupported codecs must reject rather than drop these.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub extra: Value,
+    #[serde(default, skip_serializing_if = "JsonPayload::is_root_null")]
+    pub extra: JsonPayload,
+}
+
+fn deserialize_tool_description<'de, D>(deserializer: D) -> Result<JsonPayload, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let description = JsonPayload::deserialize(deserializer)?;
+    if description.is_root_string() {
+        Ok(description)
+    } else {
+        Err(serde::de::Error::custom(
+            "tool description must be a JSON string",
+        ))
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -457,13 +1180,35 @@ pub enum ToolChoice {
 /// Unsupported controls are rejected instead of silently discarded.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchConfig {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_domains: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_domains: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_search_domains"
+    )]
+    pub allowed_domains: Vec<JsonPayload>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_search_domains"
+    )]
+    pub blocked_domains: Vec<JsonPayload>,
     /// Maximum searches per request, currently supported by Anthropic only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u32>,
+}
+
+fn deserialize_search_domains<'de, D>(deserializer: D) -> Result<Vec<JsonPayload>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let domains = Vec::<JsonPayload>::deserialize(deserializer)?;
+    if domains.iter().all(JsonPayload::is_root_string) {
+        Ok(domains)
+    } else {
+        Err(serde::de::Error::custom(
+            "web search domain filters must contain only JSON strings",
+        ))
+    }
 }
 
 /// A cited web source. Native citation spans remain in search metadata because
@@ -483,7 +1228,7 @@ pub struct WebSearchResult {
     #[serde(default)]
     pub citations: Vec<WebCitation>,
     #[serde(default)]
-    pub metadata: Value,
+    pub metadata: JsonPayload,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -493,7 +1238,7 @@ pub struct FileSearchResult {
     #[serde(default)]
     pub hits: Vec<FileSearchHit>,
     #[serde(default)]
-    pub metadata: Value,
+    pub metadata: JsonPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -509,11 +1254,36 @@ pub struct FileSearchHit {
 
 /// A tool executed by the provider. Ordinary caller-executed functions remain
 /// in `ChatRequest.tools` and require the host to return their results.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", content = "config", rename_all = "snake_case")]
 pub enum HostedTool {
     WebSearch(WebSearchConfig),
     Native(super::NativeExtension),
+}
+
+impl<'de> Deserialize<'de> for HostedTool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let payload = JsonPayload::parse(raw.get()).map_err(serde::de::Error::custom)?;
+        let kind = payload
+            .string_at("/type")
+            .ok_or_else(|| serde::de::Error::custom("hosted tool type is missing"))?;
+        let config = payload
+            .payload_at("/config")
+            .ok_or_else(|| serde::de::Error::custom("hosted tool config is missing"))?;
+        match kind.as_str() {
+            "web_search" => serde_json::from_str::<WebSearchConfig>(config.as_json_source())
+                .map(Self::WebSearch)
+                .map_err(serde::de::Error::custom),
+            "native" => serde_json::from_str::<super::NativeExtension>(config.as_json_source())
+                .map(Self::Native)
+                .map_err(serde::de::Error::custom),
+            _ => Err(serde::de::Error::custom("unknown hosted tool type")),
+        }
+    }
 }
 
 impl HostedTool {
@@ -579,8 +1349,8 @@ pub struct ChatRequest {
     #[serde(default)]
     pub stop_sequences: Vec<String>,
     /// Provider-opaque extras a codec may forward.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub metadata: Value,
+    #[serde(default, skip_serializing_if = "JsonPayload::is_root_null")]
+    pub metadata: JsonPayload,
 }
 
 impl ChatRequest {
@@ -604,7 +1374,7 @@ impl ChatRequest {
             thinking: None,
             service_tier: None,
             stop_sequences: Vec::new(),
-            metadata: Value::Null,
+            metadata: JsonPayload::default(),
         }
     }
 
@@ -659,6 +1429,10 @@ pub struct ChatResponse {
     pub native_metadata: Vec<super::NativeExtension>,
     pub stop_reason: StopReason,
     pub usage: super::UsageReport,
+    /// SDK-computed Native Anthropic resumable-query context decision. It is
+    /// execution metadata, not provider wire or model-visible data.
+    #[serde(skip)]
+    pub native_resume_context_exhausted: Option<bool>,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<ResponseId>,
@@ -848,6 +1622,107 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exact_provider_error_carrier_roundtrips_through_tagged_llm_error() {
+        let error = LlmError::InvalidRequest {
+            message: "400 bad �".into(),
+        }
+        .with_provider_error_text(
+            ProviderErrorText::new(
+                "400 bad �".into(),
+                "400 bad ".encode_utf16().chain([0xd800]).collect(),
+            )
+            .unwrap(),
+        );
+        let encoded = serde_json::to_string(&error).unwrap();
+        let decoded: LlmError = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, error);
+        assert_eq!(decoded.kind(), LlmErrorKind::InvalidRequest);
+        assert_eq!(
+            decoded.provider_error_text().unwrap().utf16_code_units(),
+            &[52, 48, 48, 32, 98, 97, 100, 32, 0xd800]
+        );
+    }
+
+    #[test]
+    fn attaching_provider_text_flattens_carriers_without_changing_classification() {
+        let first = ProviderErrorText::from("first");
+        let second = ProviderErrorText::new(
+            "second�".into(),
+            vec![
+                b's' as u16,
+                b'e' as u16,
+                b'c' as u16,
+                b'o' as u16,
+                b'n' as u16,
+                b'd' as u16,
+                0xd800,
+            ],
+        )
+        .unwrap();
+        let error = LlmError::InvalidRequest {
+            message: "first".into(),
+        }
+        .with_provider_error_text(first)
+        .with_provider_error_text(second.clone());
+        assert_eq!(error.provider_error_text(), Some(&second));
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let LlmError::ProviderErrorText { source, .. } = &error else {
+            panic!("one outer response-text carrier is expected");
+        };
+        assert!(matches!(source.as_ref(), LlmError::InvalidRequest { .. }));
+    }
+
+    #[test]
+    fn finalized_request_authority_attaches_to_native_error_facts() {
+        let facts = NativeAnthropicErrorFacts {
+            provider_id: ProviderId::from("gateway"),
+            protocol: ProtocolFamily::AnthropicMessages,
+            request_authority: None,
+            thinking_resumption_refused: false,
+            thinking_resumption_beta_requested: None,
+            thinking_resumption_beta_refused: false,
+        };
+        let error = LlmError::InvalidRequest {
+            message: "500 provider error".into(),
+        }
+        .with_native_anthropic_error(ProviderErrorText::from("500 provider error"), facts)
+        .with_native_anthropic_request_authority(Some("127.0.0.1:43123".into()));
+
+        assert_eq!(
+            error
+                .native_anthropic_error_facts()
+                .and_then(|facts| facts.request_authority.as_deref()),
+            Some("127.0.0.1:43123")
+        );
+        assert_eq!(
+            error.provider_error_text().map(ProviderErrorText::display),
+            Some("500 provider error")
+        );
+    }
+
+    #[test]
+    fn system_blocks_are_validated_exact_root_string_carriers() {
+        let source = r#"{"text":"before\ud800after"}"#;
+        let block: SystemBlock = serde_json::from_str(source).unwrap();
+        assert_eq!(
+            block.text_payload().root_string_code_units(),
+            Some(
+                "before"
+                    .encode_utf16()
+                    .chain([0xd800])
+                    .chain("after".encode_utf16())
+                    .collect()
+            )
+        );
+        assert_eq!(serde_json::to_string(&block).unwrap(), source);
+        assert!(serde_json::from_str::<SystemBlock>(r#"{"text":null}"#).is_err());
+        assert!(serde_json::from_str::<SystemBlock>(r#"{"text":"valid","extra":true}"#).is_err());
+    }
+
+    #[test]
     fn context_errors_preserve_provider_details() {
         let e = LlmError::ContextOverflow {
             message: "m".into(),
@@ -907,6 +1782,106 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn tagged_tool_call_event_keeps_deep_lone_caller_source() {
+        let depth = 16_384;
+        let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let caller_source = format!(r#"{{"deep":{nested},"future":"\ud800"}}"#);
+        let source = format!(
+            r#"{{"event":"tool_call_delta","block":1,"id":"call_1","caller":{caller_source},"name":"Read","arguments_fragment":"{{}}"}}"#
+        );
+        let event: StreamEvent = serde_json::from_str(&source).unwrap();
+        let StreamEvent::ToolCallDelta {
+            caller: Some(caller),
+            ..
+        } = &event
+        else {
+            panic!("caller carrier must be retained")
+        };
+        assert_eq!(caller.as_json_source(), caller_source);
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert!(encoded.contains(&format!("\"caller\":{caller_source}")));
+        assert_eq!(
+            serde_json::from_str::<StreamEvent>(&encoded).unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn request_metadata_and_tool_json_fields_keep_deep_and_lone_source() {
+        let depth = 16_384;
+        let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let metadata = format!(r#"{{"future":{nested},"lone":"\ud800"}}"#);
+        let schema = format!(r#"{{"type":"object","future":{nested},"lone":"\udfff"}}"#);
+        let extra = format!(r#"{{"provider_field":{nested},"lone":"\ud800"}}"#);
+        let tool = format!(
+            r#"{{"name":"read","description":"Read\ud800","input_schema":{schema},"extra":{extra}}}"#
+        );
+        let request_source =
+            format!(r#"{{"model":"m","messages":[],"metadata":{metadata},"tools":[{tool}]}}"#);
+        let request: ChatRequest = serde_json::from_str(&request_source).unwrap();
+        assert_eq!(request.metadata.as_json_source(), metadata);
+        assert_eq!(
+            request.tools[0].description.as_json_source(),
+            r#""Read\ud800""#
+        );
+        assert_eq!(request.tools[0].input_schema.as_json_source(), schema);
+        assert_eq!(request.tools[0].extra.as_json_source(), extra);
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert!(encoded.contains(&format!("\"metadata\":{metadata}")));
+        assert!(encoded.contains("\"description\":\"Read\\ud800\""));
+        assert!(encoded.contains(&format!("\"input_schema\":{schema}")));
+        assert!(encoded.contains(&format!("\"extra\":{extra}")));
+        assert!(serde_json::from_str::<ToolSpec>(
+            r#"{"name":"tool","description":{},"input_schema":{}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn hosted_native_tool_enum_keeps_deep_and_lone_payload_source() {
+        let depth = 16_384;
+        let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let data = format!(r#"{{"deep":{nested},"lone":"\ud800"}}"#);
+        let source =
+            format!(r#"{{"type":"native","config":{{"format":"test.native.v1","data":{data}}}}}"#);
+        let tool: HostedTool = serde_json::from_str(&source).unwrap();
+        let HostedTool::Native(extension) = &tool else {
+            panic!("expected a native hosted tool")
+        };
+        assert_eq!(extension.data().as_json_source(), data);
+        assert_eq!(serde_json::to_string(&tool).unwrap(), source);
+    }
+
+    #[test]
+    fn search_event_deserialization_keeps_deep_and_lone_utf16_metadata() {
+        let depth = 16_384;
+        let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        let cases = [
+            format!(r#"{{"deep":{nested},"valid":"café"}}"#),
+            r#"{"lone_key":"\ud800","\udfff":"value"}"#.to_owned(),
+        ];
+        for metadata in cases {
+            let source = format!(
+                r#"{{"event":"web_search","result":{{"citations":[],"metadata":{metadata}}}}}"#
+            );
+            let event: StreamEvent = serde_json::from_str(&source).unwrap();
+            let StreamEvent::WebSearch { result } = event else {
+                panic!("expected a web search event")
+            };
+            assert_eq!(result.metadata.as_json_source(), metadata);
+            let encoded = serde_json::to_string(&StreamEvent::WebSearch { result }).unwrap();
+            assert!(encoded.contains(&format!("\"metadata\":{metadata}")));
+        }
+        let metadata = r#"{"provider":{"extra":[1,2,3]}}"#;
+        let source = format!(r#"{{"event":"file_search","result":{{"metadata":{metadata}}}}}"#);
+        let event: StreamEvent = serde_json::from_str(&source).unwrap();
+        let StreamEvent::FileSearch { result } = event else {
+            panic!("expected a file search event")
+        };
+        assert_eq!(result.metadata.as_json_source(), metadata);
     }
 
     /// A request that is not continuing anything must not say so with a null.
@@ -993,7 +1968,7 @@ mod tests {
             temperature: None,
             thinking: None,
             stop_sequences: vec![],
-            metadata: Value::Null,
+            metadata: JsonPayload::default(),
         };
         let encoded = serde_json::to_value(&req).unwrap();
         assert_eq!(encoded["continuation"]["response_id"], "resp_abc");

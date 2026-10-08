@@ -5,7 +5,7 @@ use lingxi_llm_client::protocol::{ContentBlock, StreamEvent};
 use lingxi_llm_client::{
     AnthropicMessagesCodec, CodecContext, HttpResponse, RequestMode, WireCodec,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 const MODEL: &str = "claude-opus-5-5";
 
@@ -56,7 +56,10 @@ fn response_decode_preserves_browser_toolset_namespace() {
     assert_eq!(id.as_str(), "toolu_browser");
     assert_eq!(toolset_name, Some("browser"));
     assert_eq!(name, "screenshot");
-    assert_eq!(input["tab_id"], "tab-1");
+    assert_eq!(
+        serde_json::from_str::<Value>(input.as_json_source()).unwrap()["tab_id"],
+        "tab-1"
+    );
 }
 
 #[test]
@@ -93,14 +96,24 @@ fn stream_carries_distinct_toolset_names_on_complete_tool_input_deltas() {
             } => Some((
                 toolset_name.as_deref(),
                 name.as_str(),
-                arguments_fragment.as_str(),
+                arguments_fragment.utf16_code_units().to_vec(),
             )),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(calls.len(), 4);
-    assert_eq!(calls[0], (Some("browser"), "screenshot", ""));
-    assert_eq!(calls[1], (Some("browser"), "screenshot", "{}"));
-    assert_eq!(calls[2], (Some("computer"), "screenshot", ""));
-    assert_eq!(calls[3], (Some("computer"), "screenshot", "{}"));
+    assert_eq!(calls[0], (Some("browser"), "screenshot", vec![]));
+    assert_eq!(
+        calls[1],
+        (Some("browser"), "screenshot", "{}".encode_utf16().collect())
+    );
+    assert_eq!(calls[2], (Some("computer"), "screenshot", vec![]));
+    assert_eq!(
+        calls[3],
+        (
+            Some("computer"),
+            "screenshot",
+            "{}".encode_utf16().collect()
+        )
+    );
 }

@@ -1,9 +1,11 @@
 //! Assembly of canonical SDK events, without transport retries or host policy.
 use crate::protocol::{
-    ChatResponse, ContentBlock, ConversationMessage, FileSearchResult, InferenceReport, LlmError,
-    ResponseId, StopReason, StreamEvent, ToolUseId, UsageReport, WebSearchResult,
+    ChatResponse, ContentBlock, ConversationMessage, FileSearchResult, InferenceReport,
+    JsonPayload, JsonPayloadFragment, LlmError, ResponseId, StopReason, StreamEvent, ToolUseId,
+    UsageReport, WebSearchResult,
 };
 use crate::{ModelStream, StreamBatch};
+#[cfg(test)]
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -44,17 +46,17 @@ pub struct StreamAssemblyError {
 struct Tool {
     id: ToolUseId,
     provider_id: Option<String>,
-    caller: Option<Value>,
+    caller: Option<JsonPayload>,
     toolset_name: Option<String>,
     name: String,
-    arguments: String,
+    arguments: Vec<u16>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Block {
     text: Option<String>,
     utf16_code_units: Option<Vec<u16>>,
-    citations: Option<Option<Value>>,
+    citations: Option<Option<JsonPayload>>,
     thinking: Option<String>,
     signature: Option<String>,
     tool: Option<Tool>,
@@ -75,9 +77,10 @@ impl Block {
             }
             // Some providers omit fragments for an explicitly completed zero-argument call.
             let input = if tool.arguments.is_empty() {
-                Value::Object(Default::default())
+                JsonPayload::parse("{}").ok()?
             } else {
-                serde_json::from_str(&tool.arguments).ok()?
+                let fragment = JsonPayloadFragment::from_utf16_code_units(tool.arguments.clone());
+                JsonPayload::parse_fragments([&fragment]).ok()?
             };
             return Some(ContentBlock::ToolUse {
                 id: tool.id.clone(),
@@ -126,6 +129,7 @@ pub struct StreamAccumulator {
     inference: InferenceReport,
     web_search: Option<WebSearchResult>,
     file_search: Option<FileSearchResult>,
+    projection_error: Option<LlmError>,
 }
 impl StreamAccumulator {
     /// Completed content in block-completion order, which is the order used by
@@ -236,20 +240,38 @@ impl StreamAccumulator {
                 value,
             } => {
                 let current = self.blocks.entry(*block).or_default();
-                if *protocol == crate::protocol::ProtocolFamily::AnthropicMessages
-                    && value.get("type").and_then(Value::as_str) == Some("text")
-                    && crate::codecs::anthropic::decode::has_only_known_text_fields(value)
+                let text_projection = if *protocol
+                    == crate::protocol::ProtocolFamily::AnthropicMessages
+                    && value.string_is("/type", "text")
+                    && value.has_only_fields_at("", &["type", "text", "citations"])
                 {
-                    if let Some(text) = value.get("text").and_then(Value::as_str) {
-                        current.text = Some(text.to_owned());
-                    }
-                    current.citations = value.get("citations").map(|citations| {
-                        if citations.is_null() {
-                            None
-                        } else {
-                            Some(citations.clone())
+                    let text = value.string_at("/text");
+                    let units = value.string_units_at("/text");
+                    let citations = match value.raw_source_at("/citations") {
+                        None => Some(Ok(None)),
+                        Some(_)
+                            if value.kind_at("/citations")
+                                == Some(crate::response_json::FlatJsonKind::Null) =>
+                        {
+                            Some(Ok(Some(None)))
                         }
-                    });
+                        Some(source) => {
+                            Some(JsonPayload::parse(&source).map(|value| Some(Some(value))))
+                        }
+                    };
+                    match (text, units, citations) {
+                        (Some(text), Some(units), Some(Ok(citations))) => {
+                            Some((text, units, citations))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some((text, units, citations)) = text_projection {
+                    current.text = Some(text);
+                    current.utf16_code_units = String::from_utf16(&units).is_err().then_some(units);
+                    current.citations = citations;
                 } else {
                     current.native = Some(ContentBlock::ProviderContent {
                         protocol: *protocol,
@@ -277,7 +299,7 @@ impl StreamAccumulator {
                         caller: None,
                         toolset_name: None,
                         name: name.clone(),
-                        arguments: String::new(),
+                        arguments: Vec::new(),
                     });
                 if !id.as_str().is_empty() {
                     tool.id.clone_from(id);
@@ -294,7 +316,8 @@ impl StreamAccumulator {
                 if toolset_name.is_some() {
                     tool.toolset_name.clone_from(toolset_name);
                 }
-                tool.arguments.push_str(arguments_fragment);
+                tool.arguments
+                    .extend_from_slice(arguments_fragment.utf16_code_units());
             }
             StreamEvent::BlockEnd { block } => {
                 self.blocks.entry(*block).or_default().ended = true;
@@ -306,13 +329,25 @@ impl StreamAccumulator {
             StreamEvent::WebSearch { result } => {
                 let current = self.web_search.get_or_insert_default();
                 extend_unique(&mut current.citations, &result.citations);
-                merge_metadata(&mut current.metadata, &result.metadata);
+                match current.metadata.merge_incremental(&result.metadata) {
+                    Ok(merged) => current.metadata = merged,
+                    Err(source) if self.projection_error.is_none() => {
+                        self.projection_error = Some(source);
+                    }
+                    Err(_) => {}
+                }
             }
             StreamEvent::FileSearch { result } => {
                 let current = self.file_search.get_or_insert_default();
                 extend_unique(&mut current.queries, &result.queries);
                 extend_unique(&mut current.hits, &result.hits);
-                merge_metadata(&mut current.metadata, &result.metadata);
+                match current.metadata.merge_incremental(&result.metadata) {
+                    Ok(merged) => current.metadata = merged,
+                    Err(source) if self.projection_error.is_none() => {
+                        self.projection_error = Some(source);
+                    }
+                    Err(_) => {}
+                }
             }
             StreamEvent::End {
                 stop_reason,
@@ -348,10 +383,15 @@ impl StreamAccumulator {
     /// Accounting can change in an empty batch or the batch containing an
     /// error. Observe every successful event and retain the first error.
     pub fn observe_batch(&mut self, batch: &StreamBatch) -> Result<(), LlmError> {
-        let mut error = None;
+        let mut error = self.projection_error.clone();
         for event in &batch.events {
             match event {
-                Ok(event) => self.observe(event),
+                Ok(event) => {
+                    self.observe(event);
+                    if error.is_none() {
+                        error.clone_from(&self.projection_error);
+                    }
+                }
                 Err(source) if error.is_none() => error = Some(source.clone()),
                 Err(_) => {}
             }
@@ -389,7 +429,7 @@ impl StreamAccumulator {
             caller: tool.caller.clone(),
             toolset_name: tool.toolset_name.clone(),
             name: tool.name.clone(),
-            arguments_fragment: tool.arguments.clone(),
+            arguments_fragment: JsonPayloadFragment::from_utf16_code_units(tool.arguments.clone()),
         })
     }
 
@@ -430,7 +470,7 @@ impl StreamAccumulator {
                 Some(IncompleteTool {
                     block: *index,
                     name: tool.name.clone(),
-                    input_bytes: tool.arguments.len(),
+                    input_bytes: String::from_utf16_lossy(&tool.arguments).len(),
                     ended: terminal || block.ended,
                 })
             })
@@ -459,6 +499,7 @@ impl StreamAccumulator {
                     .clone()
                     .unwrap_or_else(|| StopReason::Other("stream_interrupted".into())),
                 usage: self.usage.clone(),
+                native_resume_context_exhausted: None,
                 model: self.model.clone(),
                 response_id: self.response_id.clone(),
                 continuation: None,
@@ -474,6 +515,12 @@ impl StreamAccumulator {
 
     pub fn finish(self) -> Result<StreamAssembly, StreamAssemblyError> {
         let result = self.snapshot();
+        if let Some(source) = self.projection_error {
+            return Err(StreamAssemblyError {
+                source,
+                partial: Box::new(result),
+            });
+        }
         if !result.terminal || !result.unfinished_blocks.is_empty() {
             return Err(StreamAssemblyError {
                 source: LlmError::StreamInterrupted {
@@ -495,21 +542,6 @@ fn extend_unique<T: Clone + PartialEq>(current: &mut Vec<T>, incoming: &[T]) {
         if !current.contains(value) {
             current.push(value.clone());
         }
-    }
-}
-
-// Provider search arrays are incremental records; scalar fields are snapshots.
-// The original events additionally preserve superseded scalar observations.
-fn merge_metadata(current: &mut Value, incoming: &Value) {
-    match (current, incoming) {
-        (Value::Object(current), Value::Object(incoming)) => {
-            for (key, value) in incoming {
-                merge_metadata(current.entry(key.clone()).or_insert(Value::Null), value);
-            }
-        }
-        (Value::Array(current), Value::Array(incoming)) => extend_unique(current, incoming),
-        (_, Value::Null) => {}
-        (current, incoming) => *current = incoming.clone(),
     }
 }
 
@@ -549,6 +581,7 @@ impl ModelStream {
         assembly
             .response
             .set_anthropic_fallback(self.anthropic_fallback().cloned());
+        assembly.response.native_resume_context_exhausted = self.native_resume_context_exhausted();
         result
     }
 }
@@ -559,12 +592,16 @@ mod tests {
     use crate::protocol::{ProtocolFamily, Usage, UsageState, WebCitation};
     use serde_json::json;
 
+    fn payload(value: Value) -> JsonPayload {
+        JsonPayload::parse(&value.to_string()).unwrap()
+    }
+
     fn tool(block: usize, fragment: &str) -> StreamEvent {
         StreamEvent::ToolCallDelta {
             block,
             id: format!("tool-{block}").into(),
             provider_id: Some("native-id".into()),
-            caller: Some(json!({"type":"code_execution", "future": true})),
+            caller: Some(payload(json!({"type":"code_execution", "future": true}))),
             toolset_name: Some("browser".into()),
             name: "read".into(),
             arguments_fragment: fragment.into(),
@@ -602,10 +639,10 @@ mod tests {
         assert!(
             matches!(&error.partial.indexed_content[&2], ContentBlock::ToolUse {
             input, caller: Some(caller), toolset_name: Some(toolset), provider_id: Some(id), thought_signature: Some(signature), ..
-        } if input == &json!({"path":"ok"}) && caller["future"] == true && toolset == "browser" && id == "native-id" && signature == "signed")
+        } if input.as_json_source() == r#"{"path":"ok"}"# && caller.raw_source_at("/future").as_deref() == Some("true") && toolset == "browser" && id == "native-id" && signature == "signed")
         );
         assert!(
-            matches!(error.partial.events.last(), Some(StreamEvent::ToolCallDelta { arguments_fragment, .. }) if arguments_fragment == "{\"path\":")
+            matches!(error.partial.events.last(), Some(StreamEvent::ToolCallDelta { arguments_fragment, .. }) if arguments_fragment.utf16_code_units() == "{\"path\":".encode_utf16().collect::<Vec<_>>().as_slice())
         );
     }
 
@@ -620,7 +657,7 @@ mod tests {
         accumulator.observe(&opening);
         accumulator.observe(&tool(0, "}"));
         assert!(
-            matches!(accumulator.tool_progress(0), Some(StreamEvent::ToolCallDelta { id, name, arguments_fragment, .. }) if id.as_str() == "tool-0" && name == "read" && arguments_fragment == "{}")
+            matches!(accumulator.tool_progress(0), Some(StreamEvent::ToolCallDelta { id, name, arguments_fragment, .. }) if id.as_str() == "tool-0" && name == "read" && arguments_fragment.utf16_code_units() == "{}".encode_utf16().collect::<Vec<_>>().as_slice())
         );
         accumulator.observe(&end());
         assert!(
@@ -635,7 +672,7 @@ mod tests {
         assert!(accumulator.snapshot().indexed_content.is_empty());
         accumulator.observe(&StreamEvent::BlockEnd { block: 1 });
         assert!(
-            matches!(&accumulator.snapshot().indexed_content[&1], ContentBlock::ToolUse { input, .. } if input == &json!({}))
+            matches!(&accumulator.snapshot().indexed_content[&1], ContentBlock::ToolUse { input, .. } if input.as_json_source() == "{}")
         );
     }
 
@@ -648,16 +685,16 @@ mod tests {
         ] {
             accumulator.observe(&StreamEvent::ProviderEvent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                payload,
+                payload: crate::protocol::JsonPayload::from_generated_value(&payload).unwrap(),
             });
         }
         assert!(accumulator.snapshot().indexed_content.is_empty());
         accumulator.observe(&StreamEvent::ProviderEvent {
             protocol: ProtocolFamily::AnthropicMessages,
-            payload: json!({"type":"content_block_stop","index":7}),
+            payload: payload(json!({"type":"content_block_stop","index":7})),
         });
         assert!(
-            matches!(&accumulator.snapshot().indexed_content[&7], ContentBlock::ProviderContent { value, .. } if value["connector_text"] == "start end" && value["source"] == "remote")
+            matches!(&accumulator.snapshot().indexed_content[&7], ContentBlock::ProviderContent { value, .. } if value.string_at("/connector_text").as_deref() == Some("start end") && value.string_at("/source").as_deref() == Some("remote"))
         );
     }
 
@@ -694,20 +731,20 @@ mod tests {
                     url: "https://example.com".into(),
                     title: None,
                 }],
-                metadata: json!({"annotations":[{"offset":7}],"future":{"a":1}}),
+                metadata: payload(json!({"annotations":[{"offset":7}],"future":{"a":1}})),
             },
         };
         accumulator.observe(&search);
         accumulator.observe(&StreamEvent::WebSearch {
             result: WebSearchResult {
                 citations: vec![],
-                metadata: json!({"annotations":[{"offset":9}],"future":{"b":2}}),
+                metadata: payload(json!({"annotations":[{"offset":9}],"future":{"b":2}})),
             },
         });
         accumulator.observe(&StreamEvent::NativeDelta {
             block: 1,
             protocol: ProtocolFamily::AnthropicMessages,
-            delta: json!({"citation":"native"}),
+            delta: payload(json!({"citation":"native"})),
         });
         let usage = UsageReport::measured(
             Usage {
@@ -728,11 +765,16 @@ mod tests {
         assert!(partial.response.message.content.is_empty());
         let search = partial.response.web_search.unwrap();
         assert_eq!(search.citations.len(), 1);
+        let annotations = search.metadata.raw_source_at("/annotations").unwrap();
+        let future = search.metadata.raw_source_at("/future").unwrap();
         assert_eq!(
-            search.metadata["annotations"],
+            serde_json::from_str::<Value>(&annotations).unwrap(),
             json!([{"offset":7},{"offset":9}])
         );
-        assert_eq!(search.metadata["future"], json!({"a":1,"b":2}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&future).unwrap(),
+            json!({"a":1,"b":2})
+        );
         assert_eq!(partial.response.usage, usage);
         assert_eq!(partial.events.len(), 3);
     }
@@ -747,7 +789,7 @@ mod tests {
         accumulator.observe(&StreamEvent::ProviderContent {
             block: 3,
             protocol: ProtocolFamily::OpenAiResponses,
-            value: json!({"type":"reasoning","encrypted_content":"opaque"}),
+            value: payload(json!({"type":"reasoning","encrypted_content":"opaque"})),
         });
         accumulator.observe(&StreamEvent::Start {
             model: "observed".into(),

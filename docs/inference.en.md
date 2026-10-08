@@ -41,6 +41,8 @@ fn inspect(client: &LlmClient) -> Result<(), LlmError> {
 
 Rule `valid_from` (inclusive) and `valid_until` (exclusive) store `PriceBoundary { local, time_zone }`, for example `local = "2027-01-01T00:00:00"` with `time_zone = "America/Los_Angeles"`. IANA rules account for DST before comparison with `PricingContext.unix_seconds`; the machine time zone is never used. Ambiguous or nonexistent local times require a valid explicit RFC 3339 offset, and invalid zones fail configuration validation. If the official zone and offset are unpublished, prices remain unknown during the possible UTC−12 to UTC+14 transition window. Quotes retain the source zone, matched rule and verification date. An omitted tier in `PricingContext` assumes standard pricing.
 
+`reasoning::ReasoningTarget` requires the selected model's `features` and connection's `inference`. Selectors and user-selection validation use these facts, falling back to provider presets only for unknown values. Explicit empty lists, per-level denial and wire restrictions remove the corresponding controls. The previous target initializer is no longer supported.
+
 ## Configure requests
 
 ```rust,no_run

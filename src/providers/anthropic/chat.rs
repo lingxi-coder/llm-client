@@ -5,10 +5,10 @@ use crate::client::{
 };
 use crate::codecs::{CodecContext, EncodeRequest, PreparedMedia, WireCodec};
 use crate::files;
+use crate::protocol::JsonPayload;
 use crate::protocol::{
     ChatRequest, LlmError, ProtocolFamily, ProviderFileSource, ProviderProfile, StreamEvent,
 };
-use serde_json::Value;
 
 pub(crate) struct Backend;
 pub(crate) static BACKEND: Backend = Backend;
@@ -181,8 +181,9 @@ fn projected_anthropic_file_request<'a>(
 pub(crate) struct StreamObservation {
     enabled: bool,
     container: Option<crate::providers::anthropic::types::AnthropicContainerMetadata>,
-    usage: Option<Value>,
-    stop_details: Option<Value>,
+    usage: Option<JsonPayload>,
+    stop_details: Option<JsonPayload>,
+    resumable: Option<JsonPayload>,
     fallback: super::fallback_response::FallbackResponse,
 }
 impl StreamObservation {
@@ -220,42 +221,49 @@ impl StreamObservation {
         else {
             return;
         };
-        if payload["type"] == "message_delta" {
-            self.fallback.observe_stop_reason(
-                payload
-                    .pointer("/delta/stop_reason")
-                    .and_then(Value::as_str),
-            );
-            self.fallback.observe_usage(&payload["usage"]);
-            if let Some(details) = payload
-                .get("delta")
-                .and_then(|delta| delta.get("stop_details"))
-            {
-                self.stop_details = (!details.is_null()).then(|| details.clone());
+        if payload.string_is("/type", "message_delta") {
+            if let Some(resumable) = super::code_execution::stream_resumable(payload) {
+                self.resumable = Some(resumable);
+            }
+            let stop_reason = payload.string_at("/delta/stop_reason");
+            self.fallback.observe_stop_reason(stop_reason.as_deref());
+            if let Some(usage) = payload.payload_at("/usage") {
+                self.fallback.observe_usage(&usage);
+            }
+            if let Some(details) = payload.payload_at("/delta/stop_details") {
+                self.stop_details = (!details.is_root_null()).then_some(details);
             }
         }
         if super::fallback_response::control_index(payload).is_some() {
-            self.fallback.observe_block(&payload["content_block"]);
+            if let Some(block) = payload.payload_at("/content_block") {
+                self.fallback.observe_block(&block);
+            }
         }
         if !self.enabled {
             return;
         }
         if let Some(usage) = super::code_execution::stream_usage(payload) {
             if let Some(current) = &mut self.usage {
-                crate::codecs::usage::fold(current, usage);
+                if let Ok(merged) = current.merge_overwriting_objects(&usage) {
+                    *current = merged;
+                }
             } else {
-                self.usage = Some(usage.clone());
+                self.usage = Some(usage);
             }
         }
         if let Some(container) = super::code_execution::stream_container(payload) {
-            self.container = (!container.is_null()).then(|| {
-                crate::providers::anthropic::types::AnthropicContainerMetadata {
-                    envelope: container.clone(),
-                }
-            });
+            if !container.is_root_null() {
+                self.container = Some(
+                    crate::providers::anthropic::types::AnthropicContainerMetadata {
+                        envelope: container,
+                    },
+                );
+            } else {
+                self.container = None;
+            }
         }
     }
-    pub(crate) fn stop_details(&self) -> Option<&Value> {
+    pub(crate) fn stop_details(&self) -> Option<&JsonPayload> {
         self.stop_details.as_ref()
     }
     pub(crate) fn fallback(&self) -> Option<&super::fallback_response::FallbackResponse> {
@@ -266,7 +274,53 @@ impl StreamObservation {
     ) -> Option<&crate::providers::anthropic::types::AnthropicContainerMetadata> {
         self.container.as_ref()
     }
-    pub(crate) fn usage(&self) -> Option<&Value> {
+    pub(crate) fn usage(&self) -> Option<&JsonPayload> {
         self.usage.as_ref()
+    }
+    pub(crate) fn resumable(&self) -> Option<&JsonPayload> {
+        self.resumable.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod resumable_observation_tests {
+    use super::StreamObservation;
+    use crate::protocol::{JsonPayload, ProtocolFamily, StreamEvent};
+
+    #[test]
+    fn stream_observation_uses_the_current_boolean_delta_merge() {
+        let mut observation = StreamObservation::default();
+        let event = |source: &str| StreamEvent::ProviderEvent {
+            protocol: ProtocolFamily::AnthropicMessages,
+            payload: JsonPayload::parse(source).unwrap(),
+        };
+        observation.observe(&event(
+            r#"{"type":"message_delta","delta":{"resumable":false},"resumable":true}"#,
+        ));
+        assert_eq!(
+            observation.resumable().map(JsonPayload::as_json_source),
+            Some("false")
+        );
+        observation.observe(&event(
+            r#"{"type":"message_delta","delta":{"resumable":null},"resumable":true}"#,
+        ));
+        assert_eq!(
+            observation.resumable().map(JsonPayload::as_json_source),
+            Some("true")
+        );
+        observation.observe(&event(
+            r#"{"type":"message_delta","delta":{"resumable":"true"},"resumable":2}"#,
+        ));
+        assert_eq!(
+            observation.resumable().map(JsonPayload::as_json_source),
+            Some("true")
+        );
+        observation.observe(&event(
+            r#"{"type":"message_start","message":{"resumable":false}}"#,
+        ));
+        assert_eq!(
+            observation.resumable().map(JsonPayload::as_json_source),
+            Some("true")
+        );
     }
 }

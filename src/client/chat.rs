@@ -1,6 +1,6 @@
 //! Conversation-facing service facade.
 use super::{ClientSource, ModelStream, RequestOptions};
-use crate::protocol::{ChatRequest, ChatResponse, LlmError, ModelListing};
+use crate::protocol::{ChatRequest, ChatResponse, LlmError, ModelCompleteInput, ModelListing};
 
 #[derive(Clone, Copy)]
 pub struct ChatService<'a> {
@@ -26,6 +26,40 @@ impl<'a> ChatService<'a> {
         options: &RequestOptions,
     ) -> Result<ChatResponse, LlmError> {
         self.client.snapshot().complete(request, options).await
+    }
+    /// Execute current Native model.complete through the configured route and
+    /// the existing SDK request/codec pipeline.
+    pub async fn model_complete(
+        self,
+        input: &ModelCompleteInput,
+        options: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        self.client.snapshot().model_complete(input, options).await
+    }
+    /// Execute current Native model.complete on one configured profile.
+    pub async fn model_complete_in(
+        self,
+        profile: &str,
+        input: &ModelCompleteInput,
+        options: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        self.client
+            .snapshot()
+            .model_complete_in(profile, input, options)
+            .await
+    }
+    /// Execute current Native model.complete on one provider-bound connection.
+    pub async fn model_complete_bound_in(
+        self,
+        profile: &str,
+        provider_id: &str,
+        input: &ModelCompleteInput,
+        options: &RequestOptions,
+    ) -> Result<ChatResponse, LlmError> {
+        self.client
+            .snapshot()
+            .model_complete_bound_in(profile, provider_id, input, options)
+            .await
     }
     pub async fn complete_in(
         self,

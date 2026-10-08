@@ -7,6 +7,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 struct Reply {
     status: u16,
     frames: Vec<Result<Vec<u8>, LlmError>>,
@@ -150,7 +153,7 @@ async fn chat_stream_decodes_provider_neutral_events_and_reconstructs_terminal_r
     let terminal = stream.next_event().await.unwrap().unwrap();
     assert!(terminal.terminal);
     assert_eq!(terminal.native["type"], "response.completed");
-    assert!(terminal.events.iter().any(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if value["type"] == "web_search_call")));
+    assert!(terminal.events.iter().any(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("web_search_call"))));
     assert!(terminal
         .events
         .iter()
@@ -162,7 +165,7 @@ async fn chat_stream_decodes_provider_neutral_events_and_reconstructs_terminal_r
         response.continuation.as_ref().unwrap().account_scope,
         "acct"
     );
-    assert!(response.message.content.iter().any(|block| matches!(block, ContentBlock::ProviderContent { value, .. } if value["type"] == "web_search_call")));
+    assert!(response.message.content.iter().any(|block| matches!(block, ContentBlock::ProviderContent { value, .. } if json_payload_fixture::source_string_at(value, "/type").as_deref() == Some("web_search_call"))));
     assert!(stream.next_event().await.unwrap().is_none());
 }
 
@@ -545,7 +548,9 @@ async fn chat_resume_rebuilds_tool_mapping_without_redelivering_history() {
     assert_eq!(delta.cursor.sequence_number, 2);
     assert!(
         matches!(delta.events.as_slice(), [StreamEvent::ToolCallDelta { id, name, arguments_fragment, .. }]
-        if id.as_str() == "call_1" && name == "weather" && arguments_fragment == "{\"city\":\"Paris\"}")
+        if id.as_str() == "call_1" && name == "weather"
+            && arguments_fragment.utf16_code_units()
+                == "{\"city\":\"Paris\"}".encode_utf16().collect::<Vec<_>>().as_slice())
     );
     let terminal = resumed.next_event().await.unwrap().unwrap();
     assert!(terminal.terminal);

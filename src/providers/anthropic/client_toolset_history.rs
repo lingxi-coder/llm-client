@@ -8,8 +8,8 @@
 //! still be declared in the current request's tool list.
 
 use crate::codecs::CodecContext;
-use crate::protocol::{ChatRequest, ContentBlock, LlmError, ToolUseId};
-use serde_json::Value;
+use crate::protocol::{ChatRequest, ContentBlock, JsonPayload, LlmError, ToolUseId};
+use crate::response_json::ResponseJsonScanner;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
@@ -32,8 +32,13 @@ pub(crate) fn has_metadata(request: &ChatRequest) -> bool {
             } => {
                 toolset_name.is_some()
                     || blocks.as_ref().is_some_and(|blocks| {
-                        blocks.iter().any(|block| {
-                            block.get("type").and_then(Value::as_str) == Some("browser_state")
+                        blocks.scanner().ok().is_some_and(|scanner| {
+                            scanner.array_len("").is_some_and(|len| {
+                                (0..len).any(|index| {
+                                    scanner.string_at(&format!("/{index}/type"))
+                                        == Some("browser_state")
+                                })
+                            })
                         })
                     })
             }
@@ -101,8 +106,13 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
 
                     let Some(toolset_name) = toolset_name.as_deref() else {
                         if blocks.as_ref().is_some_and(|blocks| {
-                            blocks.iter().any(|block| {
-                                block.get("type").and_then(Value::as_str) == Some("browser_state")
+                            blocks.scanner().ok().is_some_and(|scanner| {
+                                scanner.array_len("").is_some_and(|len| {
+                                    (0..len).any(|index| {
+                                        scanner.string_at(&format!("/{index}/type"))
+                                            == Some("browser_state")
+                                    })
+                                })
                             })
                         }) {
                             return Err(invalid(
@@ -115,7 +125,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                         toolset_name,
                         previous.map(|call| call.name.as_str()),
                         is_error.unwrap_or(false),
-                        blocks.as_deref(),
+                        blocks.as_ref(),
                     )?;
                 }
                 _ => {}
@@ -125,11 +135,11 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
     Ok(())
 }
 
-fn validate_direct_caller(caller: Option<&Value>) -> Result<(), LlmError> {
-    let Some(caller) = caller.filter(|caller| !caller.is_null()) else {
+fn validate_direct_caller(caller: Option<&JsonPayload>) -> Result<(), LlmError> {
+    let Some(caller) = caller.filter(|caller| !caller.is_root_null()) else {
         return Ok(());
     };
-    if caller.get("type").and_then(Value::as_str) != Some("direct") {
+    if caller.string_at("/type").as_deref() != Some("direct") {
         return Err(invalid(
             "Anthropic Browser and Computer toolset calls support direct callers only",
         ));
@@ -166,7 +176,7 @@ fn validate_result(
     toolset_name: &str,
     member: Option<&str>,
     is_error: bool,
-    blocks: Option<&[Value]>,
+    blocks: Option<&JsonPayload>,
 ) -> Result<(), LlmError> {
     let tab_management = toolset_name == "browser"
         && member.is_some_and(|member| {
@@ -176,11 +186,19 @@ fn validate_result(
     let mut has_text_representation = blocks.is_none();
 
     if let Some(blocks) = blocks {
-        for (index, block) in blocks.iter().enumerate() {
-            let kind = block
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("Anthropic toolset result blocks require a string type"))?;
+        blocks.validate_root_array("tool result blocks")?;
+        let scanner = blocks.scanner()?;
+        let length = scanner
+            .array_len("")
+            .ok_or_else(|| invalid("Anthropic toolset result blocks must be an array"))?;
+        for index in 0..length {
+            let block_pointer = format!("/{index}");
+            let kind =
+                required_state_string(&scanner, &format!("{block_pointer}/type"), "type", false)
+                    .map_err(|_| {
+                        invalid("Anthropic toolset result blocks require a string type")
+                    })?;
+            let kind = kind.as_str();
             let allowed = match toolset_name {
                 "browser" => matches!(kind, "text" | "image" | "browser_state"),
                 "computer" => matches!(kind, "text" | "image"),
@@ -192,7 +210,9 @@ fn validate_result(
                 )));
             }
             if kind == "text" {
-                if !block.get("text").is_some_and(Value::is_string) {
+                if scanner.kind_at(&format!("{block_pointer}/text"))
+                    != Some(crate::response_json::FlatJsonKind::String)
+                {
                     return Err(invalid(
                         "Anthropic toolset text result blocks require a string text field",
                     ));
@@ -210,7 +230,7 @@ fn validate_result(
                         "Anthropic Browser results accept at most one browser_state block",
                     ));
                 }
-                browser_state = Some((index, validate_browser_state(block)?));
+                browser_state = Some((index, validate_browser_state(&scanner, &block_pointer)?));
             }
         }
     }
@@ -230,7 +250,7 @@ fn validate_result(
                 "successful Anthropic Browser tab-management results require one browser_state block",
             ));
         };
-        if blocks.len() != 1 || browser_state.is_none() {
+        if blocks.array_len("") != Some(1) || browser_state.is_none() {
             return Err(invalid(
                 "successful Anthropic Browser tab-management results must contain exactly one browser_state block",
             ));
@@ -258,15 +278,18 @@ struct BrowserStateSummary {
     tab_opened: Vec<String>,
 }
 
-fn validate_browser_state(value: &Value) -> Result<BrowserStateSummary, LlmError> {
-    if value.get("type").and_then(Value::as_str) != Some("browser_state") {
+fn validate_browser_state(
+    scanner: &ResponseJsonScanner,
+    pointer: &str,
+) -> Result<BrowserStateSummary, LlmError> {
+    if scanner.string_at(&format!("{pointer}/type")) != Some("browser_state") {
         return Err(invalid("expected an Anthropic browser_state block"));
     }
-    let tabs = value
-        .get("tabs")
-        .and_then(Value::as_array)
+    let tabs_pointer = format!("{pointer}/tabs");
+    let tabs_len = scanner
+        .array_len(&tabs_pointer)
         .ok_or_else(|| invalid("Anthropic browser_state requires a tabs array"))?;
-    if tabs.len() > 100 {
+    if tabs_len > 100 {
         return Err(invalid(
             "Anthropic browser_state can contain at most 100 tabs",
         ));
@@ -275,23 +298,25 @@ fn validate_browser_state(value: &Value) -> Result<BrowserStateSummary, LlmError
     let mut summary = BrowserStateSummary::default();
     let mut tab_ids = HashSet::new();
     let mut active_count = 0usize;
-    for tab in tabs {
-        let object = tab
-            .as_object()
-            .ok_or_else(|| invalid("Anthropic browser_state tabs must be objects"))?;
-        let tab_id = required_state_string(object, "tab_id", true)?;
-        required_state_string(object, "title", false)?;
-        required_state_string(object, "url", false)?;
-        if !tab_ids.insert(tab_id.to_owned()) {
+    for index in 0..tabs_len {
+        let tab_pointer = format!("{tabs_pointer}/{index}");
+        if scanner.kind_at(&tab_pointer) != Some(crate::response_json::FlatJsonKind::Object) {
+            return Err(invalid("Anthropic browser_state tabs must be objects"));
+        }
+        let tab_id =
+            required_state_string(scanner, &format!("{tab_pointer}/tab_id"), "tab_id", true)?;
+        required_state_string(scanner, &format!("{tab_pointer}/title"), "title", false)?;
+        required_state_string(scanner, &format!("{tab_pointer}/url"), "url", false)?;
+        if !tab_ids.insert(tab_id.clone()) {
             return Err(invalid(
                 "Anthropic browser_state contains duplicate tab_id values",
             ));
         }
-        match object.get("active") {
-            None | Some(Value::Bool(false)) => {}
-            Some(Value::Bool(true)) => {
+        match scanner.raw_source_at(&format!("{tab_pointer}/active")) {
+            None | Some("false") => {}
+            Some("true") => {
                 active_count += 1;
-                summary.active_tab = Some(tab_id.to_owned());
+                summary.active_tab = Some(tab_id);
             }
             Some(_) => {
                 return Err(invalid(
@@ -300,63 +325,95 @@ fn validate_browser_state(value: &Value) -> Result<BrowserStateSummary, LlmError
             }
         }
     }
-    if (!tabs.is_empty() && active_count != 1) || active_count > 1 {
+    if (tabs_len > 0 && active_count != 1) || active_count > 1 {
         return Err(invalid(
             "a non-empty Anthropic browser_state tabs array requires exactly one active tab",
         ));
     }
 
-    if let Some(changes) = value
-        .get("state_changes")
-        .filter(|changes| !changes.is_null())
+    let changes_pointer = format!("{pointer}/state_changes");
+    if scanner.raw_source_at(&changes_pointer).is_some()
+        && scanner.kind_at(&changes_pointer) != Some(crate::response_json::FlatJsonKind::Null)
     {
-        let changes = changes
-            .as_array()
+        let changes_len = scanner
+            .array_len(&changes_pointer)
             .ok_or_else(|| invalid("Anthropic browser_state state_changes must be an array"))?;
-        if changes.is_empty() {
+        if changes_len == 0 {
             return Err(invalid(
                 "omit Anthropic browser_state state_changes when there is nothing to report",
             ));
         }
-        if changes.len() > 200 {
+        if changes_len > 200 {
             return Err(invalid(
                 "Anthropic browser_state can contain at most 200 state changes",
             ));
         }
         let mut download_ids = HashSet::new();
-        for change in changes {
-            let change = change
-                .as_object()
-                .ok_or_else(|| invalid("Anthropic browser_state changes must be objects"))?;
-            let kind = change
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid("Anthropic browser_state changes require a string type"))?;
-            match kind {
+        for index in 0..changes_len {
+            let change_pointer = format!("{changes_pointer}/{index}");
+            if scanner.kind_at(&change_pointer) != Some(crate::response_json::FlatJsonKind::Object)
+            {
+                return Err(invalid("Anthropic browser_state changes must be objects"));
+            }
+            let kind = required_state_string(
+                scanner,
+                &format!("{change_pointer}/type"),
+                "change type",
+                false,
+            )?;
+            match kind.as_str() {
                 "tab_opened" => {
-                    only_fields(change, &["type", "tab_id"])?;
-                    let tab_id = required_state_string(change, "tab_id", true)?;
-                    if !tab_ids.contains(tab_id) {
+                    only_fields_at(scanner, &change_pointer, &["type", "tab_id"])?;
+                    let tab_id = required_state_string(
+                        scanner,
+                        &format!("{change_pointer}/tab_id"),
+                        "tab_id",
+                        true,
+                    )?;
+                    if !tab_ids.contains(&tab_id) {
                         return Err(invalid(
                             "Anthropic tab_opened state changes must reference a tab in tabs",
                         ));
                     }
-                    summary.tab_opened.push(tab_id.to_owned());
+                    summary.tab_opened.push(tab_id);
                 }
                 "download_started" => {
-                    only_fields(change, &["type", "download_id", "url"])?;
-                    validate_download_fields(change, &mut download_ids, false, false)?;
+                    only_fields_at(scanner, &change_pointer, &["type", "download_id", "url"])?;
+                    validate_download_fields(
+                        scanner,
+                        &change_pointer,
+                        &mut download_ids,
+                        false,
+                        false,
+                    )?;
                 }
                 "download_completed" => {
-                    only_fields(
-                        change,
+                    only_fields_at(
+                        scanner,
+                        &change_pointer,
                         &["type", "download_id", "url", "path", "size_bytes"],
                     )?;
-                    validate_download_fields(change, &mut download_ids, true, false)?;
+                    validate_download_fields(
+                        scanner,
+                        &change_pointer,
+                        &mut download_ids,
+                        true,
+                        false,
+                    )?;
                 }
                 "download_failed" => {
-                    only_fields(change, &["type", "download_id", "url", "error"])?;
-                    validate_download_fields(change, &mut download_ids, false, true)?;
+                    only_fields_at(
+                        scanner,
+                        &change_pointer,
+                        &["type", "download_id", "url", "error"],
+                    )?;
+                    validate_download_fields(
+                        scanner,
+                        &change_pointer,
+                        &mut download_ids,
+                        false,
+                        true,
+                    )?;
                 }
                 _ => {
                     return Err(invalid(format!(
@@ -370,58 +427,80 @@ fn validate_browser_state(value: &Value) -> Result<BrowserStateSummary, LlmError
 }
 
 fn validate_download_fields(
-    change: &serde_json::Map<String, Value>,
+    scanner: &ResponseJsonScanner,
+    pointer: &str,
     download_ids: &mut HashSet<String>,
     allows_size: bool,
     allows_error: bool,
 ) -> Result<(), LlmError> {
-    let download_id = required_state_string(change, "download_id", true)?;
-    if !download_ids.insert(download_id.to_owned()) {
+    let download_id = required_state_string(
+        scanner,
+        &format!("{pointer}/download_id"),
+        "download_id",
+        true,
+    )?;
+    if !download_ids.insert(download_id) {
         return Err(invalid(
             "Anthropic browser_state may report a download_id only once per block",
         ));
     }
-    required_state_string(change, "url", false)?;
-    if change.contains_key("path") && allows_size {
-        optional_nullable_state_string(change, "path")?;
+    required_state_string(scanner, &format!("{pointer}/url"), "url", false)?;
+    if scanner.raw_source_at(&format!("{pointer}/path")).is_some() && allows_size {
+        optional_nullable_state_string(scanner, &format!("{pointer}/path"), "path")?;
     }
-    if let Some(size) = change.get("size_bytes") {
-        if !allows_size
-            || (!size.is_null()
-                && !size.as_f64().is_some_and(|size_bytes| {
-                    size_bytes.is_finite() && size_bytes >= 0.0 && size_bytes.fract() == 0.0
-                }))
-        {
+    let size_pointer = format!("{pointer}/size_bytes");
+    if scanner.raw_source_at(&size_pointer).is_some() {
+        let valid_size = scanner.kind_at(&size_pointer)
+            == Some(crate::response_json::FlatJsonKind::Null)
+            || scanner
+                .raw_source_at(&size_pointer)
+                .and_then(|source| source.parse::<f64>().ok())
+                .is_some_and(|size_bytes| {
+                    scanner.kind_at(&size_pointer)
+                        == Some(crate::response_json::FlatJsonKind::Number)
+                        && size_bytes.is_finite()
+                        && size_bytes >= 0.0
+                        && size_bytes.fract() == 0.0
+                });
+        if !allows_size || !valid_size {
             return Err(invalid(
                 "Anthropic download size_bytes must be null or a non-negative integer on download_completed",
             ));
         }
     }
-    if change.contains_key("error") && allows_error {
-        optional_nullable_state_string(change, "error")?;
+    if scanner.raw_source_at(&format!("{pointer}/error")).is_some() && allows_error {
+        optional_nullable_state_string(scanner, &format!("{pointer}/error"), "error")?;
     }
     Ok(())
 }
 
-fn required_state_string<'a>(
-    object: &'a serde_json::Map<String, Value>,
-    key: &str,
+fn required_state_string(
+    scanner: &ResponseJsonScanner,
+    pointer: &str,
+    field: &str,
     non_empty: bool,
-) -> Result<&'a str, LlmError> {
-    let value = object
-        .get(key)
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid(format!("Anthropic browser_state {key} must be a string")))?;
-    validate_state_string(value, key, non_empty)?;
+) -> Result<String, LlmError> {
+    let units = scanner
+        .string_units_at(pointer)
+        .ok_or_else(|| invalid(format!("Anthropic browser_state {field} must be a string")))?;
+    let value = String::from_utf16(&units).map_err(|_| {
+        invalid(format!(
+            "Anthropic browser_state {field} contains unpaired UTF-16 units"
+        ))
+    })?;
+    validate_state_string(&value, field, non_empty)?;
     Ok(value)
 }
 
 fn optional_nullable_state_string(
-    object: &serde_json::Map<String, Value>,
-    key: &str,
+    scanner: &ResponseJsonScanner,
+    pointer: &str,
+    field: &str,
 ) -> Result<(), LlmError> {
-    if object.get(key).is_some_and(|value| !value.is_null()) {
-        required_state_string(object, key, false)?;
+    if scanner.raw_source_at(pointer).is_some()
+        && scanner.kind_at(pointer) != Some(crate::response_json::FlatJsonKind::Null)
+    {
+        required_state_string(scanner, pointer, field, false)?;
     }
     Ok(())
 }
@@ -440,8 +519,19 @@ fn validate_state_string(value: &str, field: &str, non_empty: bool) -> Result<()
     Ok(())
 }
 
-fn only_fields(object: &serde_json::Map<String, Value>, allowed: &[&str]) -> Result<(), LlmError> {
-    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+fn only_fields_at(
+    scanner: &ResponseJsonScanner,
+    pointer: &str,
+    allowed: &[&str],
+) -> Result<(), LlmError> {
+    let fields = scanner
+        .object_entries_at(pointer)
+        .ok_or_else(|| invalid("Anthropic browser_state changes must be objects"))?;
+    if fields.iter().any(|(key, units)| {
+        !allowed
+            .iter()
+            .any(|allowed| key == allowed && units == &allowed.encode_utf16().collect::<Vec<_>>())
+    }) {
         return Err(invalid(
             "Anthropic browser_state change contains a field not declared for its type",
         ));

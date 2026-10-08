@@ -218,9 +218,13 @@ async fn exhausted_interrupted_429_keeps_retry_after() {
         .expect_err("both interrupted 429 responses should remain rate-limit errors");
 
     assert!(
-        matches!(error, LlmError::RateLimited { ref message, retry_after: Some(delay) }
-        if message.contains("quota unavailable") && delay == Duration::from_secs(11)),
+        matches!(error.classification_source(), LlmError::RateLimited { message, retry_after: Some(delay) }
+        if message.contains("quota unavailable") && *delay == Duration::from_secs(11)),
         "{error:?}"
+    );
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("429 quota unavailable")
     );
     assert!(primary_task
         .await
@@ -310,14 +314,23 @@ async fn interrupted_401_and_5xx_keep_their_categories_without_rate_limit_failov
 
         match expected_category {
             "authentication" => assert!(
-                matches!(error, LlmError::Authentication { .. }),
+                matches!(
+                    error.classification_source(),
+                    LlmError::Authentication { .. }
+                ),
                 "{error:?}"
             ),
             "provider_internal" => assert!(
-                matches!(error, LlmError::ProviderInternal { .. }),
+                matches!(
+                    error.classification_source(),
+                    LlmError::ProviderInternal { .. }
+                ),
                 "{error:?}"
             ),
-            "overloaded" => assert!(matches!(error, LlmError::Overloaded { .. }), "{error:?}"),
+            "overloaded" => assert!(
+                matches!(error.classification_source(), LlmError::Overloaded { .. }),
+                "{error:?}"
+            ),
             _ => unreachable!(),
         }
         assert!(primary_task
@@ -654,7 +667,7 @@ fn completion() -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 

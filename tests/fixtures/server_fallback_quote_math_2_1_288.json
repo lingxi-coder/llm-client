@@ -1,0 +1,168 @@
+{
+  "version": "2.1.288",
+  "native_sha256": "bbe93063f7a0879a1021b2891e5c9354e5b3b98433e32efe6750f7710afed750",
+  "sourceByteRanges": [
+    {
+      "label": "native cache-write, exact geo multiplier, and per-unit usage arithmetic",
+      "start": 181694466,
+      "end": 181695023,
+      "sha256": "91a37bf6986fb4bc3f612339d2631e2298a982b61eaee0539d6b927cfb7b36dd"
+    }
+  ],
+  "scope": {
+    "execution": "Actual extracted native Tx, Ox, and yQe execute in a Node VM.",
+    "supplied_facts": "All rate rows below are explicit synthetic USD-shaped test inputs. They are not vendor tariffs, catalog facts, or a claim about real billing.",
+    "limits": "Validates native arithmetic and per-request search separation. Does not verify tariff acquisition, full Mwe model selection, or actual credits/provider invoices."
+  },
+  "synthetic_rates": {
+    "fallback_a_fast": {
+      "inputTokens": 4,
+      "outputTokens": 8,
+      "promptCacheReadTokens": 2,
+      "promptCacheWriteTokens": 6,
+      "promptCacheWrite1hTokens": 12,
+      "webSearchRequests": 0.5
+    },
+    "fallback_b_fast": {
+      "inputTokens": 10,
+      "outputTokens": 16,
+      "promptCacheReadTokens": 4,
+      "promptCacheWriteTokens": 8,
+      "promptCacheWrite1hTokens": 16,
+      "webSearchRequests": 1
+    },
+    "normal_cache_write_only": {
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "promptCacheReadTokens": 0,
+      "promptCacheWriteTokens": 3,
+      "promptCacheWrite1hTokens": 99,
+      "webSearchRequests": 0
+    }
+  },
+  "cases": [
+    {
+      "name": "fallback_a_iteration_fast_rates_standard_geo",
+      "rates": {
+        "inputTokens": 4,
+        "outputTokens": 8,
+        "promptCacheReadTokens": 2,
+        "promptCacheWriteTokens": 6,
+        "promptCacheWrite1hTokens": 12,
+        "webSearchRequests": 0.5
+      },
+      "usage": {
+        "input_tokens": 11,
+        "output_tokens": 2,
+        "cache_read_input_tokens": 3,
+        "cache_creation_input_tokens": 1,
+        "inference_geo": "us-east-1"
+      },
+      "native_yQe_usd_shaped_amount": 0.00007199999999999999
+    },
+    {
+      "name": "fallback_b_iteration_fast_rates_standard_geo",
+      "rates": {
+        "inputTokens": 10,
+        "outputTokens": 16,
+        "promptCacheReadTokens": 4,
+        "promptCacheWriteTokens": 8,
+        "promptCacheWrite1hTokens": 16,
+        "webSearchRequests": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 4,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 2,
+        "inference_geo": "us-east-1"
+      },
+      "native_yQe_usd_shaped_amount": 0.00013000000000000002
+    },
+    {
+      "name": "first_model_zero_token_server_search",
+      "rates": {
+        "inputTokens": 4,
+        "outputTokens": 8,
+        "promptCacheReadTokens": 2,
+        "promptCacheWriteTokens": 6,
+        "promptCacheWrite1hTokens": 12,
+        "webSearchRequests": 0.5
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "inference_geo": "us-east-1",
+        "server_tool_use": {
+          "web_search_requests": 2,
+          "web_fetch_requests": 1
+        }
+      },
+      "native_yQe_usd_shaped_amount": 1
+    },
+    {
+      "name": "exact_us_multiplier_applies_to_tokens_but_not_search",
+      "rates": {
+        "inputTokens": 4,
+        "outputTokens": 8,
+        "promptCacheReadTokens": 2,
+        "promptCacheWriteTokens": 6,
+        "promptCacheWrite1hTokens": 12,
+        "webSearchRequests": 0.5
+      },
+      "usage": {
+        "input_tokens": 1000000,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "inference_geo": "us",
+        "server_tool_use": {
+          "web_search_requests": 2
+        }
+      },
+      "native_yQe_usd_shaped_amount": 5.4
+    },
+    {
+      "name": "non_us_region_has_no_geo_multiplier",
+      "rates": {
+        "inputTokens": 4,
+        "outputTokens": 8,
+        "promptCacheReadTokens": 2,
+        "promptCacheWriteTokens": 6,
+        "promptCacheWrite1hTokens": 12,
+        "webSearchRequests": 0.5
+      },
+      "usage": {
+        "input_tokens": 1000000,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "inference_geo": "us-east-1",
+        "server_tool_use": {
+          "web_search_requests": 2
+        }
+      },
+      "native_yQe_usd_shaped_amount": 5
+    },
+    {
+      "name": "mwe_without_cache_creation_ttl_uses_normal_cache_write_rate",
+      "rates": {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "promptCacheReadTokens": 0,
+        "promptCacheWriteTokens": 3,
+        "promptCacheWrite1hTokens": 99,
+        "webSearchRequests": 0
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 200
+      },
+      "native_yQe_usd_shaped_amount": 0.0006000000000000001
+    }
+  ]
+}

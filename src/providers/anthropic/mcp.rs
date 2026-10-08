@@ -49,9 +49,9 @@ pub(crate) fn has_mcp(request: &ChatRequest) -> bool {
                 matches!(block, ContentBlock::ProviderContent {
                     protocol: ProtocolFamily::AnthropicMessages,
                     value,
-                } if value.get("type").and_then(Value::as_str).is_some_and(|kind| {
-                    matches!(kind, "mcp_tool_use" | "mcp_tool_result" | "mcp_tool_listing")
-                }))
+                } if ["mcp_tool_use", "mcp_tool_result", "mcp_tool_listing"]
+                    .iter()
+                    .any(|kind| value.string_is("/type", kind)))
             })
 }
 
@@ -147,7 +147,7 @@ fn has_native_tool_listing(request: &ChatRequest) -> bool {
             matches!(block, ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
                 value,
-            } if value.get("type").and_then(Value::as_str) == Some("mcp_tool_listing"))
+            } if value.string_is("/type", "mcp_tool_listing"))
         })
 }
 
@@ -160,12 +160,9 @@ fn has_native_inline_mcp_addition(request: &ChatRequest) -> bool {
             matches!(block, ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
                 value,
-            } if value.get("type").and_then(Value::as_str) == Some("tool_addition")
-                && value.get("tool").and_then(|tool| tool.get("type")).and_then(Value::as_str)
-                    == Some("tool_definition")
-                && value.get("tool").and_then(|tool| tool.get("definition"))
-                    .and_then(|definition| definition.get("type"))
-                    .and_then(Value::as_str) == Some("mcp_toolset"))
+            } if value.string_is("/type", "tool_addition")
+                && value.string_is("/tool/type", "tool_definition")
+                && value.string_is("/tool/definition/type", "mcp_toolset"))
         })
 }
 
@@ -290,7 +287,12 @@ pub(crate) fn apply(request: &ChatRequest, body: &mut Map<String, Value>) -> Res
         return Err(invalid("Anthropic MCP toolsets require a tools array"));
     };
     for config in top_level_toolsets {
-        tools.push(config.toolset_value());
+        // The final WireValue writer replaces this shallow marker with the
+        // source-backed toolset, including any arbitrary pinned schema trees.
+        tools.push(json!({
+            "type":"mcp_toolset",
+            "mcp_server_name":config.name(),
+        }));
     }
     Ok(())
 }

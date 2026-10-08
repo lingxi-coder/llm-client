@@ -11,6 +11,9 @@ use lingxi_llm_client::{
 };
 use serde_json::{json, Value};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
@@ -52,10 +55,15 @@ fn tool_search(strategy: AnthropicToolSearchStrategy) -> HostedTool {
 fn tool(name: &str, defer_loading: bool) -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: name.into(),
-        description: format!("Use {name} to find or change matching records"),
-        input_schema: json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+        description: lingxi_llm_client::protocol::JsonPayload::string(&format!(
+            "Use {name} to find or change matching records"
+        )),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading,
         native_options: Vec::new(),
@@ -85,7 +93,10 @@ fn regex_and_bm25_encode_versioned_server_tools_and_deferred_definitions() {
         assert_eq!(body["tools"][2], json!({"type":kind,"name":name}));
         assert_eq!(body["tools"][0]["name"], "find_events");
         assert_eq!(body["tools"][0]["defer_loading"], true);
-        assert_eq!(body["tools"][0]["input_schema"], req.tools[0].input_schema);
+        assert_eq!(
+            body["tools"][0]["input_schema"].to_string(),
+            req.tools[0].input_schema.as_json_source()
+        );
         assert!(body["tools"][1].get("defer_loading").is_none());
         assert_eq!(body["tool_choice"], json!({"type":"auto"}));
     }
@@ -120,10 +131,10 @@ fn deferred_catalog_and_midconversation_reference_compose_with_hosted_search() {
         role: lingxi_llm_client::protocol::MessageRole::System,
         content: vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"tool_addition",
                 "tool":{"type":"tool_reference","name":"find_calendar_events"}
-            }),
+            })),
         }],
     });
 
@@ -142,7 +153,10 @@ fn deferred_catalog_and_midconversation_reference_compose_with_hosted_search() {
     assert_eq!(body["tools"].as_array().unwrap().len(), 3);
     assert_eq!(body["tools"][0]["name"], "find_calendar_events");
     assert_eq!(body["tools"][0]["defer_loading"], true);
-    assert_eq!(body["tools"][0]["input_schema"], req.tools[0].input_schema);
+    assert_eq!(
+        body["tools"][0]["input_schema"].to_string(),
+        req.tools[0].input_schema.as_json_source()
+    );
     assert_eq!(body["tools"][1]["name"], "get_current_profile");
     assert!(body["tools"][1].get("defer_loading").is_none());
     assert_eq!(body["tools"][2]["type"], "tool_search_tool_bm25_20251119");
@@ -264,11 +278,11 @@ fn tool_search_response_blocks_round_trip_unchanged() {
         vec![
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: server_use.clone(),
+                value: json_payload_fixture::generated(&server_use),
             },
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: search_result.clone(),
+                value: json_payload_fixture::generated(&search_result),
             },
         ]
     );
@@ -313,7 +327,7 @@ fn stream_emits_complete_tool_search_native_blocks() {
         .collect::<Vec<_>>();
     assert_eq!(native.len(), 2);
     assert_eq!(native[0].0, 0);
-    assert_eq!(
+    assert!(json_payload_fixture::source_matches(
         native[0].1,
         &json!({
             "type":"server_tool_use",
@@ -321,9 +335,12 @@ fn stream_emits_complete_tool_search_native_blocks() {
             "name":"tool_search_tool_regex",
             "input":{"pattern":"calendar"}
         })
-    );
+    ));
     assert_eq!(native[1].0, 1);
-    assert_eq!(native[1].1["type"], "tool_search_tool_result");
+    assert_eq!(
+        json_payload_fixture::source_string_at(native[1].1, "/type").as_deref(),
+        Some("tool_search_tool_result")
+    );
 
     let mut replay = request();
     replay.messages = vec![ConversationMessage::assistant(

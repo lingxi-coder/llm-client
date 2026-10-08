@@ -1,14 +1,14 @@
 //! JSON values that borrow request text, schemas, and inline byte payloads.
 use crate::{
     exact_json::{JavaScriptFormatter, JavaScriptValue, JsonEncoding},
-    protocol::LlmError,
+    protocol::{JsonPayload, LlmError},
     transport::HttpRequest,
 };
 use serde::{
     ser::{SerializeMap, SerializeSeq},
     Serialize, Serializer,
 };
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 use std::{
     borrow::Cow,
     fmt, io,
@@ -30,6 +30,8 @@ enum Payload<'a> {
     Text(&'a str),
     Array(Vec<WireValue<'a>>),
     Data(&'a [u8], String),
+    RawJson(&'a JsonPayload),
+    OwnedRawJson(JsonPayload),
 }
 impl<'a> From<Value> for WireValue<'a> {
     fn from(value: Value) -> Self {
@@ -66,7 +68,25 @@ impl<'a> WireValue<'a> {
             ..Value::Null.into()
         }
     }
+    pub(crate) fn raw_json(value: &'a JsonPayload) -> Self {
+        Self {
+            payload: Some(Payload::RawJson(value)),
+            ..Value::Null.into()
+        }
+    }
+    pub(crate) fn owned_raw_json(value: JsonPayload) -> Self {
+        Self {
+            payload: Some(Payload::OwnedRawJson(value)),
+            ..Value::Null.into()
+        }
+    }
     fn as_value(&self) -> &Value {
+        if matches!(
+            self.payload.as_ref(),
+            Some(Payload::RawJson(_) | Payload::OwnedRawJson(_))
+        ) {
+            panic!("opaque JsonPayload cannot be materialized as serde_json::Value");
+        }
         if self.payload.is_none() && self.fields.is_empty() {
             &self.value
         } else {
@@ -75,6 +95,12 @@ impl<'a> WireValue<'a> {
         }
     }
     fn materialize(&mut self) {
+        if matches!(
+            self.payload.as_ref(),
+            Some(Payload::RawJson(_) | Payload::OwnedRawJson(_))
+        ) {
+            panic!("opaque JsonPayload cannot be materialized as serde_json::Value");
+        }
         if self.payload.is_some() || !self.fields.is_empty() {
             let value = self.materialized.take().unwrap_or_else(|| {
                 serde_json::to_value(&*self).expect("wire values serialize as JSON")
@@ -100,11 +126,17 @@ impl<'a> WireValue<'a> {
         Some(self.fields.swap_remove(index).1)
     }
     pub(crate) fn with(mut self, field: &'static str, value: Self) -> Self {
-        if self.payload.is_some() {
+        let is_raw_json = matches!(
+            self.payload.as_ref(),
+            Some(Payload::RawJson(_) | Payload::OwnedRawJson(_))
+        );
+        if self.payload.is_some() && !is_raw_json {
             self.materialize();
         }
         self.materialized.take();
-        self.value.to_mut()[field] = Value::Null;
+        if !is_raw_json {
+            self.value.to_mut()[field] = Value::Null;
+        }
         if let Some((_, old)) = self.fields.iter_mut().find(|(key, _)| *key == field) {
             *old = value;
         } else if self.fields.is_empty() {
@@ -113,6 +145,33 @@ impl<'a> WireValue<'a> {
             self.fields.push((field, value));
         }
         self
+    }
+    /// Attach a source-backed JSON value at a bounded object path without
+    /// materializing the payload as a recursive `Value` tree.
+    pub(crate) fn with_json_path(
+        mut self,
+        path: &[&'static str],
+        payload: &'a JsonPayload,
+    ) -> Result<Self, LlmError> {
+        let Some((field, rest)) = path.split_first() else {
+            return Err(LlmError::InvalidRequest {
+                message: "raw JSON field path is empty".into(),
+            });
+        };
+        if rest.is_empty() {
+            return Ok(self.with(field, Self::raw_json(payload)));
+        }
+        let child = match self.take_field(field) {
+            Some(child) if child.value.as_ref().is_object() => child,
+            Some(_) => {
+                return Err(LlmError::InvalidRequest {
+                    message: format!("raw JSON path /{field} is not an object"),
+                });
+            }
+            None => Value::Object(Default::default()).into(),
+        };
+        let child = child.with_json_path(rest, payload)?;
+        Ok(self.with(field, child))
     }
     /// Rewrite an owned JSON array before borrowed field overlays are attached.
     pub(crate) fn map_array_field(
@@ -237,6 +296,12 @@ impl WireValue<'_> {
         encoding: JsonEncoding,
     ) -> Result<S::Ok, S::Error> {
         if let Some(payload) = &self.payload {
+            if let Payload::RawJson(value) = payload {
+                return serialize_raw_json(value, &self.fields, encoding, serializer);
+            }
+            if let Payload::OwnedRawJson(value) = payload {
+                return serialize_raw_json(value, &self.fields, encoding, serializer);
+            }
             return match payload {
                 Payload::Text(text) => serializer.serialize_str(text),
                 Payload::Data(bytes, prefix) => serializer.collect_str(&Data(bytes, prefix)),
@@ -246,6 +311,9 @@ impl WireValue<'_> {
                         seq.serialize_element(&EncodedWireValue(value, encoding))?;
                     }
                     seq.end()
+                }
+                Payload::RawJson(_) | Payload::OwnedRawJson(_) => {
+                    unreachable!("raw JSON handled above")
                 }
             };
         }
@@ -269,6 +337,48 @@ impl WireValue<'_> {
         }
         map.end()
     }
+}
+
+fn serialize_raw_json<S: Serializer>(
+    value: &JsonPayload,
+    fields: &[(&'static str, WireValue<'_>)],
+    encoding: JsonEncoding,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let encoded_fields = fields
+        .iter()
+        .map(|(key, field)| {
+            encode_wire_value(field, encoding)
+                .map(|source| (*key, source))
+                .map_err(serde::ser::Error::custom)
+        })
+        .collect::<Result<Vec<_>, S::Error>>()?;
+    let references = encoded_fields
+        .iter()
+        .map(|(key, source)| (*key, source.as_str()))
+        .collect::<Vec<_>>();
+    let canonical = value
+        .canonical_json_with_fields(encoding, &references)
+        .map_err(serde::ser::Error::custom)?;
+    let raw = RawValue::from_string(canonical).map_err(serde::ser::Error::custom)?;
+    raw.serialize(serializer)
+}
+
+fn encode_wire_value(
+    value: &WireValue<'_>,
+    encoding: JsonEncoding,
+) -> Result<String, serde_json::Error> {
+    let mut output = Vec::new();
+    match encoding {
+        JsonEncoding::Serde => {
+            serde_json::to_writer(&mut output, &EncodedWireValue(value, encoding))?
+        }
+        JsonEncoding::JavaScript => EncodedWireValue(value, encoding).serialize(
+            &mut serde_json::Serializer::with_formatter(&mut output, JavaScriptFormatter),
+        )?,
+    }
+    String::from_utf8(output)
+        .map_err(|error| <serde_json::Error as serde::ser::Error>::custom(error))
 }
 pub(crate) struct WireRequest<'a> {
     pub(crate) http: HttpRequest,

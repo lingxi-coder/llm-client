@@ -785,11 +785,15 @@ fn multipart_stream(
 }
 
 fn map_transport_error(source: LlmError) -> MiniMaxAudioError {
-    match source {
+    if matches!(
+        source.classification_source(),
         LlmError::Transport { .. }
-        | LlmError::TransportTimeout { .. }
-        | LlmError::StreamInterrupted { .. } => MiniMaxAudioError::OutcomeUnknown { source },
-        other => MiniMaxAudioError::Llm(other),
+            | LlmError::TransportTimeout { .. }
+            | LlmError::StreamInterrupted { .. }
+    ) {
+        MiniMaxAudioError::OutcomeUnknown { source }
+    } else {
+        MiniMaxAudioError::Llm(source)
     }
 }
 

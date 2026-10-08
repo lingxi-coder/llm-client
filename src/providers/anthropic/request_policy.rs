@@ -1,7 +1,10 @@
 //! Wire merging for explicit host policy overrides. Environment and feature decisions remain in the host.
-use crate::protocol::LlmError;
+use crate::protocol::{JsonPayload, LlmError, ToolChoice};
+use crate::response_json::{FlatJsonKind, JsonNodeRef, ResponseJsonScanner};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+
+pub const MIN_MANUAL_THINKING_TOKENS: u32 = 1024;
 
 /// Explicit caller identity; preserving an authenticator's identity is the
 /// default for providers that require their own User-Agent.
@@ -63,9 +66,9 @@ pub enum AnthropicRequestKind {
     #[default]
     Main,
     SideQuery,
-    /// Native `hook_prompt` classifier/completion request. The exact JSON
-    /// serializer applies Native's Anthropic body `toWellFormed` behavior at
-    /// the final egress boundary for this request kind only.
+    /// Native `hook_prompt` classifier/completion request identity.
+    /// All native Claude generation requests normalize string values only
+    /// after body assembly, at the final SDK dispatch boundary.
     HookPrompt,
 }
 
@@ -76,13 +79,15 @@ pub struct AnthropicEffortPolicy {
     pub supported: bool,
     /// Host-resolved YMe input. None means undefined; nonstrings have no wire
     /// effort. Main explicit config is inspected before this automatic value.
-    pub value: Option<Value>,
+    pub value: Option<JsonPayload>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AnthropicRequestPolicy {
     pub request_kind: AnthropicRequestKind,
-    pub extra_body: Map<String, Value>,
+    /// Source-backed object spread supplied by the host. Unknown provider
+    /// values stay in their original JSON representation until serialization.
+    pub extra_body: JsonPayload,
     pub body_betas: Vec<String>,
     pub effort: Option<AnthropicEffortPolicy>,
     /// Messages SDK virtual parameters travel in headers, including hosted variants.
@@ -91,70 +96,102 @@ pub struct AnthropicRequestPolicy {
     pub disallowed_fast_beta: Option<String>,
 }
 
+impl Default for AnthropicRequestPolicy {
+    fn default() -> Self {
+        Self {
+            request_kind: AnthropicRequestKind::Main,
+            extra_body: JsonPayload::parse("{}").expect("empty object is valid JSON"),
+            body_betas: Vec::new(),
+            effort: None,
+            message_header_parameters: false,
+            disallowed_fast_beta: None,
+        }
+    }
+}
+
 /// Native nonstream fallback owns the final stream flag after the extra-body
 /// spread. Preserve an existing property's position and clear its exact-string
 /// sidecars before serialization. Call before sealing or authentication.
-pub fn nonstream_fallback_parameters(
-    body: &mut Value,
+pub fn nonstream_fallback_parameters_source(
+    body: &mut JsonPayload,
     string_overrides: &mut BTreeMap<String, Vec<u16>>,
 ) -> Result<(), LlmError> {
-    let body = body
-        .as_object_mut()
-        .ok_or_else(|| LlmError::InvalidRequest {
-            message: "Messages request body must be an object".into(),
-        })?;
-    body.insert("stream".into(), Value::Bool(false));
+    let mut fields = source_object_fields(body)?;
+    source_set_field(&mut fields, "stream", "false".into());
+    *body = source_object_payload(fields)?;
     string_overrides.retain(|path, _| path != "/stream" && !path.starts_with("/stream/"));
     Ok(())
 }
 
 /// Native extra-body cleanup, before any automatic feature decisions. Policy
 /// admission and environment access belong to the host; wire cleanup belongs here.
-pub fn sanitize_extra_body(mut extra: Map<String, Value>) -> Result<Map<String, Value>, LlmError> {
+pub fn sanitize_extra_body(extra: JsonPayload) -> Result<JsonPayload, LlmError> {
+    let mut fields = source_object_fields(&extra)?;
     for key in ["betas", "anthropic_beta"] {
-        let Some(value) = extra.get(key) else {
+        let Some(value_source) = source_field_source(&fields, key) else {
             continue;
         };
-        let text = javascript_string(value)?;
-        let tokens: Vec<_> = text
-            .split(',')
-            .map(javascript_trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        let retained: Vec<_> = tokens
-            .iter()
-            .copied()
-            .filter(|s| !s.to_lowercase().contains("afk-mode"))
-            .collect();
-        if retained.len() == tokens.len() {
+        let value = JsonPayload::parse(value_source).map_err(|error| LlmError::InvalidRequest {
+            message: format!("extra body field {key} is invalid JSON: {error}"),
+        })?;
+        let text = source_javascript_string_units(value.scanner()?.root_node())?;
+        let tokens = split_trim_js_units(&text);
+        let token_count = tokens.len();
+        let retained = tokens
+            .into_iter()
+            .filter(|token| !contains_afk_mode(token))
+            .collect::<Vec<_>>();
+        if retained.len() == token_count {
             continue;
         }
         if retained.is_empty() {
-            extra.shift_remove(key);
+            source_remove_field(&mut fields, key);
         } else {
-            extra.insert(
-                key.into(),
-                Value::Array(
-                    retained
-                        .into_iter()
-                        .map(|s| Value::String(s.into()))
-                        .collect(),
-                ),
-            );
+            let items = retained
+                .iter()
+                .map(|token| JsonPayload::string_from_utf16_code_units(token))
+                .collect::<Vec<_>>();
+            let array =
+                JsonPayload::array_from_items(&items, crate::exact_json::JsonEncoding::JavaScript)?;
+            source_set_field(&mut fields, key, array.as_json_source().to_owned());
         }
     }
-    if let Some(Value::Object(metadata)) = extra.get_mut("metadata") {
-        if let Some(Value::String(user_id)) = metadata.get_mut("user_id") {
-            if let Some(cleaned) = super::metadata_json::remove_identity_tk(user_id) {
-                *user_id = cleaned;
+
+    if let Some(metadata_source) = source_field_source(&fields, "metadata") {
+        let metadata =
+            JsonPayload::parse(metadata_source).map_err(|error| LlmError::InvalidRequest {
+                message: format!("extra body metadata is invalid JSON: {error}"),
+            })?;
+        if metadata.kind_at("") == Some(FlatJsonKind::Object) {
+            let mut metadata_fields = source_object_fields(&metadata)?;
+            if let Some(user_id_source) = source_field_source(&metadata_fields, "user_id") {
+                let user_id = JsonPayload::parse(user_id_source).map_err(|error| {
+                    LlmError::InvalidRequest {
+                        message: format!("extra body metadata.user_id is invalid JSON: {error}"),
+                    }
+                })?;
+                if let Some(units) = user_id.root_string_code_units() {
+                    if let Ok(text) = String::from_utf16(&units) {
+                        if let Some(cleaned) = super::metadata_json::remove_identity_tk(&text) {
+                            let cleaned = JsonPayload::string(&cleaned);
+                            source_set_field(
+                                &mut metadata_fields,
+                                "user_id",
+                                cleaned.as_json_source().to_owned(),
+                            );
+                            let metadata = source_object_payload(metadata_fields)?;
+                            source_set_field(
+                                &mut fields,
+                                "metadata",
+                                metadata.as_json_source().to_owned(),
+                            );
+                        }
+                    }
+                }
             }
         }
     }
-    Ok(extra)
-}
-
-fn javascript_trim(text: &str) -> &str {
-    text.trim_matches(|c| matches!(c, '\u{0009}'..='\u{000D}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}'))
+    source_object_payload(fields)
 }
 
 fn javascript_string(value: &Value) -> Result<String, LlmError> {
@@ -195,12 +232,43 @@ impl AnthropicRequestPolicy {
     /// Update body and exact-string sidecars together before sealing/signing.
     pub fn apply(
         mut self,
-        body: &mut Value,
+        body: &mut JsonPayload,
         headers: &mut BTreeMap<String, String>,
         string_overrides: &mut BTreeMap<String, Vec<u16>>,
         url: &mut String,
     ) -> Result<(), LlmError> {
         self.extra_body = sanitize_extra_body(self.extra_body)?;
+        let explicit_extra = source_object_fields(&self.extra_body)?;
+        let body_extra = beta_body(self.extra_body.clone(), &self.body_betas)?;
+        let has_body_extra = !source_object_fields(&body_extra)?.is_empty();
+        let format_alias_requested = output_format_alias_requested(body, string_overrides)?;
+        let has_virtual_fields = ["betas", "user_profile_id", "workspace_id"]
+            .iter()
+            .any(|key| has_field(body, key));
+
+        // The default policy carries no SDK changes. Preserve the caller's
+        // exact JSON spelling and object insertion order when there is nothing
+        // to merge or normalize; rebuilding an unchanged body here would move
+        // fields such as max_tokens and invalidate the source snapshot.
+        if !has_body_extra
+            && self.effort.is_none()
+            && self.disallowed_fast_beta.is_none()
+            && !format_alias_requested
+            && !has_virtual_fields
+        {
+            if self.message_header_parameters {
+                normalize_source_message_parameters(
+                    body,
+                    headers,
+                    string_overrides,
+                    url,
+                    crate::RequestMode::Complete,
+                    None,
+                )?;
+            }
+            return Ok(());
+        }
+
         // An explicit top-level spread owns its string leaves. Main handles
         // output_config separately, retaining untouched automatic fields.
         string_overrides.retain(|pointer, _| {
@@ -219,48 +287,197 @@ impl AnthropicRequestPolicy {
                     .unwrap_or("")
                     .replace("~1", "/")
                     .replace("~0", "~");
-                return !explicit_config_contains(self.extra_body.get(&key), &field);
+                return !source_config_contains(source_field_source(&explicit_extra, &key), &field);
             }
-            !self.extra_body.contains_key(&key)
+            !explicit_extra
+                .iter()
+                .any(|(units, _)| exact_key(units, &key))
         });
-        let previous_effort = body.pointer("/output_config/effort").cloned();
-        let overrides = merge_extra(
-            body,
-            beta_body(self.extra_body, &self.body_betas),
-            self.request_kind,
-            self.effort.as_ref(),
-        );
+        let previous_effort = body.raw_source_at("/output_config/effort");
+        let overrides =
+            merge_extra_source(body, body_extra, self.request_kind, self.effort.as_ref())?;
         string_overrides.extend(overrides);
         if self.effort.is_some()
-            && (body.pointer("/output_config/effort").is_none()
-                || body.pointer("/output_config/effort") != previous_effort.as_ref())
+            && (body.raw_source_at("/output_config/effort").is_none()
+                || body.raw_source_at("/output_config/effort") != previous_effort)
         {
             string_overrides.retain(|path, _| {
                 path != "/output_config/effort" && !path.starts_with("/output_config/effort/")
             });
         }
         if self.message_header_parameters {
-            normalize_message_parameters(
+            normalize_source_message_parameters(
                 body,
                 headers,
                 string_overrides,
                 url,
                 crate::RequestMode::Complete,
+                None,
             )?;
-        } else {
-            normalize_output_format(body, string_overrides)?;
+        } else if format_alias_requested {
+            let source = crate::exact_json::serialize_json_payload_with_overrides(
+                body,
+                string_overrides,
+                crate::exact_json::JsonEncoding::JavaScript,
+            )?;
+            let source = String::from_utf8(source).map_err(|error| LlmError::InvalidRequest {
+                message: format!("canonical JSON body is not UTF-8: {error}"),
+            })?;
+            let source = JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+                message: format!("canonical JSON body is invalid: {error}"),
+            })?;
+            *body = normalize_output_format_source(source)?;
+            string_overrides.clear();
         }
         if let Some(beta) = self.disallowed_fast_beta {
-            remove_fast(body, headers, string_overrides, &beta);
+            remove_fast_source(body, headers, string_overrides, &beta)?;
         }
         Ok(())
     }
 }
 
-/// Current beta Messages SDK virtual parameters. CountTokens spreads iterable
-/// betas before appending its mandatory token-counting beta; create calls
-/// toString directly. Apply before sealing/signing the request.
+/// Normalize current Anthropic Messages SDK parameters directly on authoritative JSON source.
+/// Provider-owned subtrees remain flat/source-backed while aliases and header parameters are
+/// moved; this is the current entry point for callers that already hold a `JsonPayload`.
 pub fn normalize_message_parameters(
+    body: &mut JsonPayload,
+    headers: &mut BTreeMap<String, String>,
+    string_overrides: &mut BTreeMap<String, Vec<u16>>,
+    url: &mut String,
+    mode: crate::RequestMode,
+) -> Result<(), LlmError> {
+    normalize_source_message_parameters(body, headers, string_overrides, url, mode, None)
+}
+
+/// CountTokens variant used when the host assembles the endpoint beta list outside the body.
+/// The SDK replaces any body `betas` field with that list before applying its current header
+/// conversion, without round-tripping the source body through a mutable `Value`.
+pub fn normalize_count_tokens_message_parameters(
+    body: &mut JsonPayload,
+    headers: &mut BTreeMap<String, String>,
+    string_overrides: &mut BTreeMap<String, Vec<u16>>,
+    url: &mut String,
+    betas: &[String],
+) -> Result<(), LlmError> {
+    let mut overrides = string_overrides.clone();
+    overrides.retain(|pointer, _| pointer != "/betas" && !pointer.starts_with("/betas/"));
+    normalize_source_message_parameters(
+        body,
+        headers,
+        &mut overrides,
+        url,
+        crate::RequestMode::CountTokens,
+        Some(betas),
+    )?;
+    *string_overrides = overrides;
+    Ok(())
+}
+
+fn normalize_source_message_parameters(
+    body: &mut JsonPayload,
+    headers: &mut BTreeMap<String, String>,
+    string_overrides: &mut BTreeMap<String, Vec<u16>>,
+    url: &mut String,
+    mode: crate::RequestMode,
+    count_token_betas: Option<&[String]>,
+) -> Result<(), LlmError> {
+    let mut normalized_headers = headers.clone();
+    let mut normalized_url = url.clone();
+    let apply_output_format_alias = output_format_alias_requested(body, string_overrides)?;
+    let message_parameters =
+        source_message_header_parameters(body, string_overrides, mode, count_token_betas)?;
+    let has_virtual_fields = ["betas", "user_profile_id", "workspace_id"]
+        .iter()
+        .any(|key| has_field(body, key));
+    if apply_output_format_alias || has_virtual_fields {
+        let input = crate::exact_json::serialize_json_payload_with_overrides(
+            body,
+            string_overrides,
+            crate::exact_json::JsonEncoding::JavaScript,
+        )?;
+        let input = String::from_utf8(input).map_err(|error| LlmError::InvalidRequest {
+            message: format!("canonical JSON body is not UTF-8: {error}"),
+        })?;
+        let mut normalized_body =
+            JsonPayload::parse(&input).map_err(|error| LlmError::InvalidRequest {
+                message: format!("canonical JSON body is invalid: {error}"),
+            })?;
+
+        if apply_output_format_alias {
+            normalized_body = normalize_output_format_source(normalized_body)?;
+        }
+        normalized_body = remove_message_header_fields_source(normalized_body)?;
+        *body = normalized_body;
+        // Exact strings have been moved into the body source, so no stale or duplicate sidecar is
+        // required after the source transformation.
+        string_overrides.clear();
+    }
+    apply_message_header_parameters(&mut normalized_headers, message_parameters);
+    append_beta_query(&mut normalized_url)?;
+
+    *headers = normalized_headers;
+    *url = normalized_url;
+    Ok(())
+}
+
+/// Omit the wire's redundant `{"type":"auto"}` only for the current canonical Auto choice.
+/// The caller supplies the semantic choice; the SDK owns the exact provider JSON predicate.
+pub fn omit_default_auto_tool_choice(
+    body: &mut JsonPayload,
+    string_overrides: &mut BTreeMap<String, Vec<u16>>,
+    choice: &ToolChoice,
+) -> Result<bool, LlmError> {
+    if !matches!(choice, ToolChoice::Auto) {
+        return Ok(false);
+    }
+    let effective = crate::exact_json::serialize_json_payload_with_overrides(
+        body,
+        string_overrides,
+        crate::exact_json::JsonEncoding::JavaScript,
+    )?;
+    let effective = String::from_utf8(effective).map_err(|error| LlmError::InvalidRequest {
+        message: format!("canonical JSON body is not UTF-8: {error}"),
+    })?;
+    let effective = JsonPayload::parse(&effective).map_err(|error| LlmError::InvalidRequest {
+        message: format!("canonical JSON body is invalid: {error}"),
+    })?;
+    let scanner = effective.scanner()?;
+    let root = scanner.root_node();
+    if root.kind() != FlatJsonKind::Object {
+        return Ok(false);
+    }
+    let Some(entry) = root.object_entries().and_then(|entries| {
+        entries
+            .into_iter()
+            .find(|entry| exact_key(entry.key_units, "tool_choice"))
+    }) else {
+        return Ok(false);
+    };
+    let matches_auto = entry.value.kind() == FlatJsonKind::Object
+        && entry.value.object_entries().is_some_and(|fields| {
+            fields.len() == 1
+                && exact_key(fields[0].key_units, "type")
+                && fields[0].value.kind() == FlatJsonKind::String
+                && fields[0]
+                    .value
+                    .string_units()
+                    .is_some_and(|units| exact_key(&units, "auto"))
+        });
+    if !matches_auto {
+        return Ok(false);
+    }
+    let mut fields = source_object_fields(body)?;
+    source_remove_field(&mut fields, "tool_choice");
+    *body = source_object_payload(fields)?;
+    string_overrides
+        .retain(|pointer, _| pointer != "/tool_choice" && !pointer.starts_with("/tool_choice/"));
+    Ok(true)
+}
+
+/// Bounded SDK-created bodies still use this private Value implementation while the provider
+/// receives their generated, non-provider-owned fields. Source-bearing host requests use the
+/// public JsonPayload entry point above.
+pub(crate) fn normalize_generated_message_parameters(
     body: &mut Value,
     headers: &mut BTreeMap<String, String>,
     string_overrides: &mut BTreeMap<String, Vec<u16>>,
@@ -269,6 +486,10 @@ pub fn normalize_message_parameters(
 ) -> Result<(), LlmError> {
     normalize_output_format(body, string_overrides)?;
     materialize_message_headers(body, headers, string_overrides, mode)?;
+    append_beta_query(url)
+}
+
+fn append_beta_query(url: &mut String) -> Result<(), LlmError> {
     let mut parsed = url::Url::parse(url).map_err(|error| LlmError::InvalidRequest {
         message: format!("Invalid Messages URL: {error}"),
     })?;
@@ -289,6 +510,1029 @@ pub fn normalize_message_parameters(
         *url = parsed.into();
     }
     Ok(())
+}
+
+type SourceField = (Vec<u16>, String);
+
+fn exact_key(units: &[u16], key: &str) -> bool {
+    units.iter().copied().eq(key.encode_utf16())
+}
+
+fn source_object_fields(payload: &JsonPayload) -> Result<Vec<SourceField>, LlmError> {
+    let scanner = payload.scanner()?;
+    let root = scanner.root_node();
+    let entries = root
+        .object_entries()
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "Messages request body must be an object".into(),
+        })?;
+    entries
+        .into_iter()
+        .map(|entry| {
+            let source = crate::exact_json::serialize_json_node(
+                entry.value,
+                crate::exact_json::JsonEncoding::JavaScript,
+            )?;
+            Ok((entry.key_units.to_vec(), source))
+        })
+        .collect()
+}
+
+/// Test whether every component in a JSON object path exists. Intermediate
+/// values must be objects, while a present `null` final member still counts.
+pub fn has_field_path(payload: &JsonPayload, path: &[&str]) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    let Ok(scanner) = payload.scanner() else {
+        return false;
+    };
+    let mut node = scanner.root_node();
+    for (index, key) in path.iter().enumerate() {
+        if node.kind() != FlatJsonKind::Object {
+            return false;
+        }
+        let Some(entry) = node.object_entries().and_then(|entries| {
+            entries
+                .into_iter()
+                .find(|entry| exact_key(entry.key_units, key))
+        }) else {
+            return false;
+        };
+        if index + 1 == path.len() {
+            return true;
+        }
+        node = entry.value;
+    }
+    false
+}
+
+pub fn has_field(payload: &JsonPayload, key: &str) -> bool {
+    has_field_path(payload, &[key])
+}
+
+fn source_field_source<'a>(fields: &'a [SourceField], key: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|(units, _)| exact_key(units, key))
+        .map(|(_, source)| source.as_str())
+}
+
+fn source_config_contains(config_source: Option<&str>, field: &str) -> bool {
+    let Some(config_source) = config_source else {
+        return false;
+    };
+    let Ok(config) = JsonPayload::parse(config_source) else {
+        return false;
+    };
+    let field_units = field.encode_utf16().collect::<Vec<_>>();
+    match config.kind_at("") {
+        Some(FlatJsonKind::Object) => has_field(&config, field),
+        Some(FlatJsonKind::Array) => source_array_index(&field_units).is_some_and(|index| {
+            config
+                .array_len("")
+                .is_some_and(|length| (index as usize) < length)
+        }),
+        Some(FlatJsonKind::String) => source_array_index(&field_units).is_some_and(|index| {
+            config
+                .root_string_code_units()
+                .is_some_and(|units| (index as usize) < units.len())
+        }),
+        _ => false,
+    }
+}
+
+fn source_javascript_string_units(node: JsonNodeRef<'_>) -> Result<Vec<u16>, LlmError> {
+    use FlatJsonKind as Kind;
+    Ok(match node.kind() {
+        Kind::Null => "null".encode_utf16().collect(),
+        Kind::Boolean => node
+            .primitive_source()
+            .unwrap_or("false")
+            .encode_utf16()
+            .collect(),
+        Kind::Number => {
+            let number = node
+                .number_source()
+                .and_then(|source| source.parse::<f64>().ok())
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "extra body contains an invalid number".into(),
+                })?;
+            let text = if number.is_finite() {
+                crate::exact_json::javascript_number(number)
+            } else if number.is_sign_negative() {
+                "-Infinity".into()
+            } else {
+                "Infinity".into()
+            };
+            text.encode_utf16().collect()
+        }
+        Kind::String => node.string_units().unwrap_or_default(),
+        Kind::Array => {
+            let length = node.array_len().unwrap_or_default();
+            let mut units = Vec::new();
+            for index in 0..length {
+                if index > 0 {
+                    units.push(u16::from(b','));
+                }
+                let Some(item) = node.array_item(index) else {
+                    continue;
+                };
+                if item.kind() != Kind::Null {
+                    units.extend(source_javascript_string_units(item)?);
+                }
+            }
+            units
+        }
+        Kind::Object => {
+            if node
+                .object_entries()
+                .unwrap_or_default()
+                .iter()
+                .any(|entry| exact_key(entry.key_units, "toString"))
+            {
+                return Err(LlmError::InvalidRequest {
+                    message: "Cannot convert object to primitive value".into(),
+                });
+            }
+            "[object Object]".encode_utf16().collect()
+        }
+    })
+}
+
+fn split_trim_js_units(units: &[u16]) -> Vec<Vec<u16>> {
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    for index in 0..=units.len() {
+        if index != units.len() && units[index] != u16::from(b',') {
+            continue;
+        }
+        let mut first = start;
+        let mut last = index;
+        while first < last && is_javascript_whitespace(units[first]) {
+            first += 1;
+        }
+        while last > first && is_javascript_whitespace(units[last - 1]) {
+            last -= 1;
+        }
+        if first < last {
+            tokens.push(units[first..last].to_vec());
+        }
+        start = index + 1;
+    }
+    tokens
+}
+
+fn is_javascript_whitespace(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x0009..=0x000D
+            | 0x0020
+            | 0x00A0
+            | 0x1680
+            | 0x2000..=0x200A
+            | 0x2028..=0x2029
+            | 0x202F
+            | 0x205F
+            | 0x3000
+            | 0xFEFF
+    )
+}
+
+fn contains_afk_mode(units: &[u16]) -> bool {
+    String::from_utf16(units).is_ok_and(|text| text.to_lowercase().contains("afk-mode"))
+}
+
+fn source_object_payload(mut fields: Vec<SourceField>) -> Result<JsonPayload, LlmError> {
+    fields
+        .sort_by_key(|(key, _)| source_array_index(key).map_or((1_u8, 0_u32), |index| (0, index)));
+    let mut source = Vec::new();
+    source.push(b'{');
+    for (index, (key, value)) in fields.into_iter().enumerate() {
+        if index > 0 {
+            source.push(b',');
+        }
+        crate::exact_json::write_json_string_from_utf16(&mut source, &key);
+        source.push(b':');
+        source.extend_from_slice(value.as_bytes());
+    }
+    source.push(b'}');
+    let source = String::from_utf8(source).map_err(|error| LlmError::InvalidRequest {
+        message: format!("canonical Messages body is not UTF-8: {error}"),
+    })?;
+    JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+        message: format!("canonical Messages body is invalid: {error}"),
+    })
+}
+
+fn source_array_index(key: &[u16]) -> Option<u32> {
+    let text = String::from_utf16(key).ok()?;
+    let index = text.parse::<u32>().ok()?;
+    (index != u32::MAX && index.to_string() == text).then_some(index)
+}
+
+fn source_set_field(fields: &mut Vec<SourceField>, key: &str, source: String) {
+    source_set_field_units(fields, &key.encode_utf16().collect::<Vec<_>>(), source);
+}
+
+fn source_set_field_units(fields: &mut Vec<SourceField>, key: &[u16], source: String) {
+    if let Some((_, existing)) = fields.iter_mut().find(|(units, _)| units == key) {
+        *existing = source;
+    } else {
+        fields.push((key.to_vec(), source));
+    }
+}
+
+fn source_take_field(fields: &mut Vec<SourceField>, key: &str) -> Option<String> {
+    let index = fields.iter().position(|(units, _)| exact_key(units, key))?;
+    Some(fields.remove(index).1)
+}
+
+fn source_remove_field(fields: &mut Vec<SourceField>, key: &str) {
+    fields.retain(|(units, _)| !exact_key(units, key));
+}
+
+pub(crate) fn set_object_field_source(
+    payload: &mut JsonPayload,
+    key: &str,
+    value: &JsonPayload,
+) -> Result<(), LlmError> {
+    let mut fields = source_object_fields(payload)?;
+    source_set_field(&mut fields, key, value.as_json_source().to_owned());
+    *payload = source_object_payload(fields)?;
+    Ok(())
+}
+
+fn spread_source_config(source: Option<String>) -> Result<Vec<SourceField>, LlmError> {
+    let Some(source) = source else {
+        return Ok(Vec::new());
+    };
+    let config = JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+        message: format!("output_config is invalid JSON: {error}"),
+    })?;
+    match config.kind_at("") {
+        Some(FlatJsonKind::Object) => source_object_fields(&config),
+        Some(FlatJsonKind::Array) => Ok(config
+            .array_items()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    index.to_string().encode_utf16().collect(),
+                    value.as_json_source().to_owned(),
+                )
+            })
+            .collect()),
+        Some(FlatJsonKind::String) => Ok(config
+            .root_string_code_units()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, unit)| {
+                (
+                    index.to_string().encode_utf16().collect(),
+                    JsonPayload::string_from_utf16_code_units(&[unit])
+                        .as_json_source()
+                        .to_owned(),
+                )
+            })
+            .collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+pub fn beta_body(mut extra: JsonPayload, betas: &[String]) -> Result<JsonPayload, LlmError> {
+    let mut fields = source_object_fields(&extra)?;
+    if !betas.is_empty() {
+        let existing_source = source_take_field(&mut fields, "anthropic_beta");
+        let merged = if let Some(existing_source) = existing_source.as_deref() {
+            let existing =
+                JsonPayload::parse(existing_source).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("extra body anthropic_beta is invalid JSON: {error}"),
+                })?;
+            if existing.kind_at("") == Some(FlatJsonKind::Array) {
+                let mut items = existing.array_items().unwrap_or_default();
+                for beta in betas {
+                    let wanted = beta.encode_utf16().collect::<Vec<_>>();
+                    if !items
+                        .iter()
+                        .any(|item| item.root_string_code_units() == Some(wanted.clone()))
+                    {
+                        items.push(JsonPayload::string(beta));
+                    }
+                }
+                JsonPayload::array_from_items(&items, crate::exact_json::JsonEncoding::JavaScript)?
+            } else {
+                JsonPayload::array_from_items(
+                    &betas
+                        .iter()
+                        .map(|beta| JsonPayload::string(beta))
+                        .collect::<Vec<_>>(),
+                    crate::exact_json::JsonEncoding::JavaScript,
+                )?
+            }
+        } else {
+            JsonPayload::array_from_items(
+                &betas
+                    .iter()
+                    .map(|beta| JsonPayload::string(beta))
+                    .collect::<Vec<_>>(),
+                crate::exact_json::JsonEncoding::JavaScript,
+            )?
+        };
+        source_set_field(
+            &mut fields,
+            "anthropic_beta",
+            merged.as_json_source().to_owned(),
+        );
+    }
+    extra = source_object_payload(fields)?;
+    Ok(extra)
+}
+
+fn merge_extra_source(
+    body: &mut JsonPayload,
+    extra: JsonPayload,
+    kind: AnthropicRequestKind,
+    effort: Option<&AnthropicEffortPolicy>,
+) -> Result<BTreeMap<String, Vec<u16>>, LlmError> {
+    let main = kind == AnthropicRequestKind::Main;
+    let mut body_fields = source_object_fields(body)?;
+    let mut extra_fields = source_object_fields(&extra)?;
+    let mut output_config = if main {
+        spread_source_config(source_take_field(&mut extra_fields, "output_config"))?
+    } else {
+        Vec::new()
+    };
+
+    if main {
+        if effort.is_some_and(|policy| !policy.supported) {
+            source_remove_field(&mut output_config, "effort");
+        } else if let Some(value) = effort
+            .and_then(|policy| policy.value.as_ref())
+            .filter(|value| value.is_root_string())
+        {
+            if source_field_source(&output_config, "effort").is_none() {
+                source_set_field(
+                    &mut output_config,
+                    "effort",
+                    value.as_json_source().to_owned(),
+                );
+            }
+        }
+
+        if let Some(computed_source) = source_take_field(&mut body_fields, "output_config") {
+            let computed =
+                JsonPayload::parse(&computed_source).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("computed output_config is invalid JSON: {error}"),
+                })?;
+            if computed.kind_at("") == Some(FlatJsonKind::Object) {
+                let computed_fields = source_object_fields(&computed)?;
+                for key in ["effort", "task_budget", "format"] {
+                    if let Some(value) = source_field_source(&computed_fields, key) {
+                        if key == "effort" && effort.is_some() {
+                            continue;
+                        }
+                        if source_field_source(&output_config, key).is_none() {
+                            source_set_field(&mut output_config, key, value.to_owned());
+                        }
+                    }
+                }
+                for (key, value) in computed_fields {
+                    // The first pass deliberately consumes the computed
+                    // `effort` field when a host effort policy is present,
+                    // even when that policy removes it. Do not reintroduce
+                    // that field while copying unrecognized computed keys.
+                    if effort.is_some() && exact_key(&key, "effort") {
+                        continue;
+                    }
+                    if !output_config.iter().any(|(units, _)| units == &key) {
+                        source_set_field_units(&mut output_config, &key, value);
+                    }
+                }
+            }
+        }
+    } else {
+        let computed_source = source_take_field(&mut body_fields, "output_config");
+        if computed_source.is_some() || effort.is_some() {
+            let mut computed = match computed_source {
+                Some(source) => {
+                    let payload =
+                        JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+                            message: format!("computed output_config is invalid JSON: {error}"),
+                        })?;
+                    if payload.kind_at("") == Some(FlatJsonKind::Object) {
+                        source_object_fields(&payload)?
+                    } else {
+                        Vec::new()
+                    }
+                }
+                None => Vec::new(),
+            };
+            if let Some(policy) = effort {
+                source_remove_field(&mut computed, "effort");
+                if policy.supported {
+                    if let Some(value) =
+                        policy.value.as_ref().filter(|value| value.is_root_string())
+                    {
+                        source_set_field(
+                            &mut computed,
+                            "effort",
+                            value.as_json_source().to_owned(),
+                        );
+                    }
+                }
+            }
+            let mut ordered = Vec::new();
+            for key in ["format", "effort"] {
+                if let Some(value) = source_take_field(&mut computed, key) {
+                    source_set_field(&mut ordered, key, value);
+                }
+            }
+            for (key, value) in computed {
+                source_set_field_units(&mut ordered, &key, value);
+            }
+            if !ordered.is_empty() {
+                source_set_field(
+                    &mut body_fields,
+                    "output_config",
+                    source_object_payload(ordered)?.as_json_source().to_owned(),
+                );
+            }
+        }
+    }
+
+    let mut computed_tail = Vec::new();
+    if main {
+        for key in ["speed", "thread", "diagnostics", "stream"] {
+            if let Some(source) = source_take_field(&mut body_fields, key) {
+                computed_tail.push((key, source));
+            }
+        }
+    }
+
+    let order: &[&str] = if main {
+        &[
+            "model",
+            "messages",
+            "system",
+            "tools",
+            "tool_choice",
+            "betas",
+            "metadata",
+            "max_tokens",
+            "thinking",
+            "temperature",
+            "context_management",
+            "safeguards",
+        ]
+    } else {
+        &[
+            "model",
+            "max_tokens",
+            "system",
+            "messages",
+            "tools",
+            "tool_choice",
+            "output_config",
+            "temperature",
+            "stop_sequences",
+            "thinking",
+            "betas",
+            "metadata",
+        ]
+    };
+    let mut ordered_body = Vec::with_capacity(body_fields.len() + extra_fields.len());
+    for key in order {
+        if let Some(source) = source_take_field(&mut body_fields, key) {
+            source_set_field(&mut ordered_body, key, source);
+        }
+    }
+    ordered_body.extend(body_fields);
+    for (key, value) in extra_fields {
+        source_set_field_units(&mut ordered_body, &key, value);
+    }
+    if main && !output_config.is_empty() {
+        source_set_field(
+            &mut ordered_body,
+            "output_config",
+            source_object_payload(output_config)?
+                .as_json_source()
+                .to_owned(),
+        );
+    }
+    for (key, source) in computed_tail {
+        source_set_field(&mut ordered_body, key, source);
+    }
+
+    *body = source_object_payload(ordered_body)?;
+    Ok(BTreeMap::new())
+}
+
+fn source_field<'a>(root: JsonNodeRef<'a>, key: &str) -> Option<JsonNodeRef<'a>> {
+    root.object_entries()?
+        .into_iter()
+        .find(|entry| exact_key(entry.key_units, key))
+        .map(|entry| entry.value)
+}
+
+fn source_override_nodes(
+    scanner: &ResponseJsonScanner,
+    string_overrides: &BTreeMap<String, Vec<u16>>,
+    roots: &[&str],
+) -> Result<BTreeMap<usize, Vec<u16>>, LlmError> {
+    let mut result = BTreeMap::new();
+    for (pointer, units) in string_overrides {
+        let selected = roots.iter().any(|root| {
+            pointer == root
+                || pointer
+                    .strip_prefix(root)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        });
+        if !selected {
+            continue;
+        }
+        let node = scanner
+            .node_ref_at(pointer)
+            .filter(|node| node.kind() == FlatJsonKind::String)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: format!("UTF-16 JSON override does not target a string leaf: {pointer}"),
+            })?;
+        result.insert(node.identity(), units.clone());
+    }
+    Ok(result)
+}
+
+fn source_node_json(node: JsonNodeRef<'_>) -> Result<String, LlmError> {
+    crate::exact_json::serialize_json_node(node, crate::exact_json::JsonEncoding::JavaScript)
+}
+
+fn source_truthy(
+    node: JsonNodeRef<'_>,
+    exact_string_override: Option<&[u16]>,
+) -> Result<bool, LlmError> {
+    Ok(match node.kind() {
+        FlatJsonKind::Null => false,
+        FlatJsonKind::Boolean => node.primitive_source() == Some("true"),
+        FlatJsonKind::Number => {
+            let number = node
+                .number_source()
+                .and_then(|source| source.parse::<f64>().ok())
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Messages body contains an invalid number".into(),
+                })?;
+            number != 0.0
+        }
+        FlatJsonKind::String => !exact_string_override
+            .map(|units| units.to_vec())
+            .or_else(|| node.string_units())
+            .unwrap_or_default()
+            .is_empty(),
+        FlatJsonKind::Array | FlatJsonKind::Object => true,
+    })
+}
+
+fn output_format_alias_requested(
+    payload: &JsonPayload,
+    string_overrides: &BTreeMap<String, Vec<u16>>,
+) -> Result<bool, LlmError> {
+    let scanner = payload.scanner()?;
+    let root = scanner.root_node();
+    if root.kind() != FlatJsonKind::Object {
+        return Ok(false);
+    }
+    let Some(format) = source_field(root, "output_format") else {
+        return Ok(false);
+    };
+    let format_override =
+        source_string_override(&scanner, string_overrides, "/output_format", format)?;
+    if !source_truthy(format, format_override.as_deref())? {
+        return Ok(false);
+    }
+    if let Some(config) = source_field(root, "output_config") {
+        if config.kind() == FlatJsonKind::Object {
+            if let Some(config_format) = source_field(config, "format") {
+                let config_format_override = source_string_override(
+                    &scanner,
+                    string_overrides,
+                    "/output_config/format",
+                    config_format,
+                )?;
+                if source_truthy(config_format, config_format_override.as_deref())? {
+                    return Err(LlmError::InvalidRequest {
+                        message: "Both output_format and output_config.format were provided. Please use only output_config.format (output_format is deprecated).".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn source_string_override(
+    scanner: &ResponseJsonScanner,
+    overrides: &BTreeMap<String, Vec<u16>>,
+    pointer: &str,
+    node: JsonNodeRef<'_>,
+) -> Result<Option<Vec<u16>>, LlmError> {
+    let Some(units) = overrides.get(pointer) else {
+        return Ok(None);
+    };
+    if node.kind() != FlatJsonKind::String
+        || scanner
+            .node_ref_at(pointer)
+            .map_or(true, |selected| selected.kind() != FlatJsonKind::String)
+    {
+        return Err(LlmError::InvalidRequest {
+            message: format!("UTF-16 JSON override does not target a string leaf: {pointer}"),
+        });
+    }
+    Ok(Some(units.clone()))
+}
+
+fn spread_source_fields(node: JsonNodeRef<'_>) -> Result<Vec<SourceField>, LlmError> {
+    match node.kind() {
+        FlatJsonKind::Object => node
+            .object_entries()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| Ok((entry.key_units.to_vec(), source_node_json(entry.value)?)))
+            .collect(),
+        FlatJsonKind::Array => {
+            let length = node.array_len().unwrap_or(0);
+            (0..length)
+                .map(|index| {
+                    let value = node
+                        .array_item(index)
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Messages output_config array child disappeared".into(),
+                        })?;
+                    Ok((
+                        index.to_string().encode_utf16().collect(),
+                        source_node_json(value)?,
+                    ))
+                })
+                .collect()
+        }
+        FlatJsonKind::String => Ok(node
+            .string_units()
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, unit)| {
+                (
+                    index.to_string().encode_utf16().collect(),
+                    JsonPayload::string_from_utf16_code_units(&[unit])
+                        .as_json_source()
+                        .to_owned(),
+                )
+            })
+            .collect()),
+        FlatJsonKind::Null | FlatJsonKind::Boolean | FlatJsonKind::Number => Ok(Vec::new()),
+    }
+}
+
+fn normalize_output_format_source(payload: JsonPayload) -> Result<JsonPayload, LlmError> {
+    let scanner = payload.scanner()?;
+    let root = scanner.root_node();
+    if root.kind() != FlatJsonKind::Object {
+        return Ok(payload);
+    }
+    let Some(format) = source_field(root, "output_format") else {
+        return Ok(payload);
+    };
+    let format_source = source_node_json(format)?;
+    let mut config_fields = source_field(root, "output_config")
+        .map(spread_source_fields)
+        .transpose()?
+        .unwrap_or_default();
+    source_set_field(&mut config_fields, "format", format_source);
+    let config_source = source_object_payload(config_fields)?
+        .as_json_source()
+        .to_owned();
+
+    let mut root_fields = Vec::new();
+    let mut had_config = false;
+    for entry in root.object_entries().unwrap_or_default() {
+        if exact_key(entry.key_units, "output_format") {
+            continue;
+        }
+        if exact_key(entry.key_units, "output_config") {
+            root_fields.push((entry.key_units.to_vec(), config_source.clone()));
+            had_config = true;
+        } else {
+            root_fields.push((entry.key_units.to_vec(), source_node_json(entry.value)?));
+        }
+    }
+    if !had_config {
+        root_fields.push(("output_config".encode_utf16().collect(), config_source));
+    }
+    source_object_payload(root_fields)
+}
+
+fn source_message_header_parameters(
+    payload: &JsonPayload,
+    string_overrides: &BTreeMap<String, Vec<u16>>,
+    mode: crate::RequestMode,
+    count_token_betas: Option<&[String]>,
+) -> Result<Vec<(&'static str, Option<String>)>, LlmError> {
+    let scanner = payload.scanner()?;
+    let root = scanner.root_node();
+    if root.kind() != FlatJsonKind::Object {
+        return Ok(Vec::new());
+    }
+    let string_overrides = source_override_nodes(
+        &scanner,
+        string_overrides,
+        &["/betas", "/user_profile_id", "/workspace_id"],
+    )?;
+    let mut parameters: Vec<(&str, Option<String>)> = Vec::new();
+    for (key, header) in [
+        ("betas", "anthropic-beta"),
+        ("user_profile_id", "anthropic-user-profile-id"),
+        ("workspace_id", "anthropic-workspace-id"),
+    ] {
+        let counting = key == "betas" && mode == crate::RequestMode::CountTokens;
+        let value = source_field(root, key);
+        if counting {
+            let mut combined: Option<Vec<u16>> = None;
+            if let Some(betas) = count_token_betas {
+                for beta in betas {
+                    append_count_beta_value(&mut combined, beta.encode_utf16().collect(), header)?;
+                }
+            } else {
+                match value {
+                    None => {}
+                    Some(node) if node.kind() == FlatJsonKind::Null => {}
+                    Some(node) if node.kind() == FlatJsonKind::Array => {
+                        for index in 0..node.array_len().unwrap_or(0) {
+                            let item =
+                                node.array_item(index)
+                                    .ok_or_else(|| LlmError::InvalidRequest {
+                                        message:
+                                            "Messages count-token beta array child disappeared"
+                                                .into(),
+                                    })?;
+                            append_count_beta_value(
+                                &mut combined,
+                                javascript_string_units(item, &string_overrides)?,
+                                header,
+                            )?;
+                        }
+                    }
+                    Some(node) if node.kind() == FlatJsonKind::String => {
+                        let units = string_overrides
+                            .get(&node.identity())
+                            .cloned()
+                            .or_else(|| node.string_units())
+                            .unwrap_or_default();
+                        for units in utf16_iterable_items(&units) {
+                            append_count_beta_value(&mut combined, units, header)?;
+                        }
+                    }
+                    Some(_) => {
+                        return Err(LlmError::InvalidRequest {
+                            message: "(h ?? []) is not iterable".into(),
+                        });
+                    }
+                }
+            }
+            append_count_beta_value(
+                &mut combined,
+                TOKEN_COUNTING.encode_utf16().collect(),
+                header,
+            )?;
+            parameters.push((header, combined.map(units_to_string).transpose()?));
+            continue;
+        }
+
+        let Some(value) = value.filter(|node| node.kind() != FlatJsonKind::Null) else {
+            continue;
+        };
+        let items = if key != "betas" && value.kind() == FlatJsonKind::Array {
+            (0..value.array_len().unwrap_or(0))
+                .map(|index| {
+                    value
+                        .array_item(index)
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Messages header parameter array child disappeared".into(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![value]
+        };
+        if items.is_empty() {
+            continue;
+        }
+        let mut combined: Option<Vec<u16>> = None;
+        for item in items {
+            if item.kind() == FlatJsonKind::Null {
+                combined = None;
+                continue;
+            }
+            append_header_value(
+                &mut combined,
+                javascript_string_units(item, &string_overrides)?,
+                header,
+            )?;
+        }
+        parameters.push((header, combined.map(units_to_string).transpose()?));
+    }
+
+    Ok(parameters)
+}
+
+fn apply_message_header_parameters(
+    headers: &mut BTreeMap<String, String>,
+    parameters: Vec<(&str, Option<String>)>,
+) {
+    for (header, value) in parameters {
+        match value {
+            Some(value) => set_header(headers, header, value.trim_matches([' ', '\t', '\r', '\n'])),
+            None => headers.retain(|key, _| !key.eq_ignore_ascii_case(header)),
+        }
+    }
+}
+
+fn remove_message_header_fields_source(payload: JsonPayload) -> Result<JsonPayload, LlmError> {
+    if !payload.is_root_object() {
+        return Ok(payload);
+    }
+    let mut fields = source_object_fields(&payload)?;
+    for key in ["betas", "user_profile_id", "workspace_id"] {
+        source_remove_field(&mut fields, key);
+    }
+    source_object_payload(fields)
+}
+
+fn utf16_iterable_items(units: &[u16]) -> Vec<Vec<u16>> {
+    let mut items = Vec::new();
+    let mut index = 0;
+    while index < units.len() {
+        let unit = units[index];
+        if (0xd800..=0xdbff).contains(&unit)
+            && units
+                .get(index + 1)
+                .is_some_and(|next| (0xdc00..=0xdfff).contains(next))
+        {
+            items.push(vec![unit, units[index + 1]]);
+            index += 2;
+        } else {
+            items.push(vec![unit]);
+            index += 1;
+        }
+    }
+    items
+}
+
+fn javascript_string_units(
+    root: JsonNodeRef<'_>,
+    string_overrides: &BTreeMap<usize, Vec<u16>>,
+) -> Result<Vec<u16>, LlmError> {
+    enum Work<'a> {
+        Node(JsonNodeRef<'a>),
+        Unit(u16),
+    }
+    let mut output = Vec::new();
+    let mut stack = vec![Work::Node(root)];
+    while let Some(work) = stack.pop() {
+        match work {
+            Work::Unit(unit) => output.push(unit),
+            Work::Node(node) => match node.kind() {
+                FlatJsonKind::Null => {}
+                FlatJsonKind::Boolean => output.extend(
+                    node.primitive_source()
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Messages boolean has no source token".into(),
+                        })?
+                        .encode_utf16(),
+                ),
+                FlatJsonKind::Number => {
+                    let number = node
+                        .number_source()
+                        .and_then(|source| source.parse::<f64>().ok())
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Messages number has no valid source token".into(),
+                        })?;
+                    let text = if number.is_infinite() {
+                        if number.is_sign_negative() {
+                            "-Infinity"
+                        } else {
+                            "Infinity"
+                        }
+                        .to_owned()
+                    } else if number.is_nan() {
+                        "NaN".to_owned()
+                    } else {
+                        crate::exact_json::javascript_number(number)
+                    };
+                    output.extend(text.encode_utf16());
+                }
+                FlatJsonKind::String => output.extend(
+                    string_overrides
+                        .get(&node.identity())
+                        .cloned()
+                        .or_else(|| node.string_units())
+                        .ok_or_else(|| LlmError::InvalidRequest {
+                            message: "Messages string has no UTF-16 source units".into(),
+                        })?,
+                ),
+                FlatJsonKind::Array => {
+                    let length = node.array_len().unwrap_or(0);
+                    for index in (0..length).rev() {
+                        let child =
+                            node.array_item(index)
+                                .ok_or_else(|| LlmError::InvalidRequest {
+                                    message: "Messages array child disappeared".into(),
+                                })?;
+                        stack.push(Work::Node(child));
+                        if index > 0 {
+                            stack.push(Work::Unit(b',' as u16));
+                        }
+                    }
+                }
+                FlatJsonKind::Object => {
+                    let entries = node.object_entries().unwrap_or_default();
+                    if entries
+                        .iter()
+                        .any(|entry| exact_key(entry.key_units, "toString"))
+                    {
+                        return Err(LlmError::InvalidRequest {
+                            message: "Cannot convert object to primitive value".into(),
+                        });
+                    }
+                    output.extend("[object Object]".encode_utf16());
+                }
+            },
+        }
+    }
+    Ok(output)
+}
+
+fn append_header_value(
+    combined: &mut Option<Vec<u16>>,
+    mut units: Vec<u16>,
+    header: &str,
+) -> Result<(), LlmError> {
+    let start = units
+        .iter()
+        .position(|unit| !matches!(*unit, 0x20 | 0x09 | 0x0d | 0x0a))
+        .unwrap_or(units.len());
+    let end = units
+        .iter()
+        .rposition(|unit| !matches!(*unit, 0x20 | 0x09 | 0x0d | 0x0a))
+        .map_or(start, |index| index + 1);
+    units = units[start..end].to_vec();
+    if units
+        .iter()
+        .any(|unit| matches!(*unit, 0 | 0x0d | 0x0a) || *unit > 255)
+    {
+        return Err(LlmError::InvalidRequest {
+            message: format!("Invalid HTTP header value for {header}"),
+        });
+    }
+    match combined {
+        Some(previous) => {
+            previous.extend(", ".encode_utf16());
+            previous.extend(units);
+        }
+        None => *combined = Some(units),
+    }
+    Ok(())
+}
+
+/// CountTokens spreads `betas` into an array and joins it with commas, then
+/// trims the complete header value. Preserve whitespace inside each spread
+/// item so the final trim matches Native's string-iterator behavior.
+fn append_count_beta_value(
+    combined: &mut Option<Vec<u16>>,
+    units: Vec<u16>,
+    header: &str,
+) -> Result<(), LlmError> {
+    if units
+        .iter()
+        .any(|unit| matches!(*unit, 0 | 0x0d | 0x0a) || *unit > 255)
+    {
+        return Err(LlmError::InvalidRequest {
+            message: format!("Invalid HTTP header value for {header}"),
+        });
+    }
+    match combined {
+        Some(previous) => {
+            previous.push(b',' as u16);
+            previous.extend(units);
+        }
+        None => *combined = Some(units),
+    }
+    Ok(())
+}
+
+fn units_to_string(units: Vec<u16>) -> Result<String, LlmError> {
+    String::from_utf16(&units).map_err(|_| LlmError::InvalidRequest {
+        message: "Invalid HTTP header value contains an unpaired UTF-16 unit".into(),
+    })
 }
 
 pub const TOKEN_COUNTING: &str = "token-counting-2024-11-01";
@@ -432,7 +1676,7 @@ fn materialize_message_headers(
                     _ => {
                         return Err(LlmError::InvalidRequest {
                             message: "(h ?? []) is not iterable".into(),
-                        })
+                        });
                     }
                 };
                 betas.push(Value::String(TOKEN_COUNTING.into()));
@@ -486,208 +1730,6 @@ fn materialize_message_headers(
         }
     }
     Ok(())
-}
-
-fn explicit_config_contains(config: Option<&Value>, field: &str) -> bool {
-    match config {
-        Some(Value::Object(map)) => map.contains_key(field),
-        Some(Value::Array(items)) => {
-            array_index(field).is_some_and(|index| (index as usize) < items.len())
-        }
-        Some(Value::String(text)) => {
-            array_index(field).is_some_and(|index| (index as usize) < text.encode_utf16().count())
-        }
-        _ => false,
-    }
-}
-
-/// Minimum manual thinking budget accepted by Claude.
-pub const MIN_MANUAL_THINKING_TOKENS: u32 = 1024;
-pub fn beta_body(mut r: Map<String, Value>, betas: &[String]) -> Map<String, Value> {
-    if !betas.is_empty() {
-        match r.get_mut("anthropic_beta") {
-            // Extra body already carries the array → append only the missing
-            // entries, preserving the extra body's order (claude-code's
-            // `[...o, ...n.filter((s)=>!o.includes(s))]`).
-            Some(serde_json::Value::Array(existing)) => {
-                for b in betas {
-                    if !existing.iter().any(|v| v.as_str() == Some(b.as_str())) {
-                        existing.push(serde_json::Value::String(b.clone()));
-                    }
-                }
-            }
-            _ => {
-                r.insert(
-                    "anthropic_beta".to_string(),
-                    serde_json::Value::Array(
-                        betas
-                            .iter()
-                            .cloned()
-                            .map(serde_json::Value::String)
-                            .collect(),
-                    ),
-                );
-            }
-        }
-    }
-    r
-}
-fn merge_extra(
-    body: &mut Value,
-    mut extra: Map<String, Value>,
-    kind: AnthropicRequestKind,
-    effort: Option<&AnthropicEffortPolicy>,
-) -> BTreeMap<String, Vec<u16>> {
-    let mut overrides = BTreeMap::new();
-    let Some(body) = body.as_object_mut() else {
-        return overrides;
-    };
-    // Main builds output_config from the explicit extra config first. Native
-    // YMe/YLo/ZLo only insert automatic fields absent from that object. A side
-    // query instead spreads the entire extra body after its computed config.
-    let main = kind == AnthropicRequestKind::Main;
-    let mut output_config = if main {
-        spread_config(extra.shift_remove("output_config"), &mut overrides)
-    } else {
-        Map::new()
-    };
-    if main {
-        if effort.is_some_and(|policy| !policy.supported) {
-            output_config.shift_remove("effort");
-        } else if let Some(value) = effort
-            .and_then(|policy| policy.value.as_ref())
-            .filter(|value| value.is_string())
-        {
-            output_config
-                .entry("effort".to_owned())
-                .or_insert_with(|| value.clone());
-        }
-        if let Some(Value::Object(computed)) = body.shift_remove("output_config") {
-            let mut computed = computed;
-            for key in ["effort", "task_budget", "format"] {
-                if let Some(value) = computed.shift_remove(key) {
-                    if key == "effort" && effort.is_some() {
-                        continue;
-                    }
-                    if !output_config.contains_key(key) {
-                        output_config.insert(key.into(), value);
-                    }
-                }
-            }
-            for (key, value) in computed {
-                if !output_config.contains_key(&key) {
-                    output_config.insert(key, value);
-                }
-            }
-        }
-    }
-    if !main {
-        let computed = body.shift_remove("output_config");
-        if computed.is_some() || effort.is_some() {
-            let mut computed = computed
-                .and_then(|value| value.as_object().cloned())
-                .unwrap_or_default();
-            if let Some(policy) = effort {
-                computed.shift_remove("effort");
-                if policy.supported {
-                    if let Some(value) = policy.value.as_ref().filter(|value| value.is_string()) {
-                        computed.insert("effort".into(), value.clone());
-                    }
-                }
-            }
-            let mut ordered = Map::new();
-            for key in ["format", "effort"] {
-                if let Some(value) = computed.shift_remove(key) {
-                    ordered.insert(key.into(), value);
-                }
-            }
-            ordered.extend(computed);
-            if !ordered.is_empty() {
-                body.insert("output_config".into(), Value::Object(ordered));
-            }
-        }
-    }
-    let computed_speed = if main {
-        body.shift_remove("speed")
-    } else {
-        None
-    };
-    let computed_thread = if main {
-        body.shift_remove("thread")
-    } else {
-        None
-    };
-    let computed_diagnostics = if main {
-        body.shift_remove("diagnostics")
-    } else {
-        None
-    };
-    let computed_stream = if main {
-        body.shift_remove("stream")
-    } else {
-        None
-    };
-    let order: &[&str] = if main {
-        &[
-            "model",
-            "messages",
-            "system",
-            "tools",
-            "tool_choice",
-            "betas",
-            "metadata",
-            "max_tokens",
-            "thinking",
-            "temperature",
-            "context_management",
-            "safeguards",
-        ]
-    } else {
-        &[
-            "model",
-            "max_tokens",
-            "system",
-            "messages",
-            "tools",
-            "tool_choice",
-            "output_config",
-            "temperature",
-            "stop_sequences",
-            "thinking",
-            "betas",
-            "metadata",
-        ]
-    };
-    let mut remaining = std::mem::take(body);
-    for &key in order {
-        if let Some(value) = remaining.shift_remove(key) {
-            body.insert(key.into(), value);
-        }
-    }
-    body.extend(remaining);
-    for (k, v) in extra {
-        body.insert(k, v);
-    }
-    if main && !output_config.is_empty() {
-        body.insert("output_config".into(), Value::Object(output_config));
-    }
-    // Main's computed speed is emitted after output_config and the extra body.
-    if let Some(speed) = computed_speed {
-        body.insert("speed".to_string(), speed);
-    }
-    if let Some(thread) = computed_thread {
-        body.insert("thread".into(), thread);
-    }
-    if let Some(diagnostics) = computed_diagnostics {
-        body.insert("diagnostics".into(), diagnostics);
-    }
-    // The streaming main SDK call spreads `stream: true` over the final pd.
-    // A collision retains the extra key's position, like the computed tails.
-    if let Some(stream) = computed_stream {
-        body.insert("stream".into(), stream);
-    }
-    javascript_key_order(body);
-    overrides
 }
 
 fn spread_config(
@@ -746,16 +1788,24 @@ fn array_index(key: &str) -> Option<u32> {
         .ok()
         .filter(|&index| index != u32::MAX && index.to_string() == key)
 }
-pub fn remove_fast(
-    body: &mut Value,
+pub fn remove_fast_source(
+    body: &mut JsonPayload,
     headers: &mut std::collections::BTreeMap<String, String>,
     string_overrides: &mut BTreeMap<String, Vec<u16>>,
     beta: &str,
-) {
-    string_overrides.retain(|pointer, _| pointer != "/speed" && !pointer.starts_with("/speed/"));
-    if let Some(body) = body.as_object_mut() {
-        body.shift_remove("speed");
+) -> Result<(), LlmError> {
+    let scanner = body.scanner()?;
+    let next_body = if scanner.root_node().kind() == FlatJsonKind::Object {
+        let mut fields = source_object_fields(body)?;
+        source_remove_field(&mut fields, "speed");
+        Some(source_object_payload(fields)?)
+    } else {
+        None
+    };
+    if let Some(next_body) = next_body {
+        *body = next_body;
     }
+    string_overrides.retain(|pointer, _| pointer != "/speed" && !pointer.starts_with("/speed/"));
     let keys: Vec<_> = headers
         .keys()
         .filter(|key| key.eq_ignore_ascii_case("anthropic-beta"))
@@ -773,11 +1823,45 @@ pub fn remove_fast(
             headers.insert(key, retained);
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn payload(value: &Value) -> JsonPayload {
+        JsonPayload::from_generated_value(value).unwrap()
+    }
+
+    fn materialize(payload: &JsonPayload) -> Value {
+        serde_json::from_str(payload.as_json_source()).unwrap()
+    }
+
+    fn wire(payload: &JsonPayload, overrides: &BTreeMap<String, Vec<u16>>) -> String {
+        String::from_utf8(
+            crate::exact_json::serialize_json_payload_with_overrides(
+                payload,
+                overrides,
+                crate::exact_json::JsonEncoding::JavaScript,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn apply_value_policy(
+        policy: AnthropicRequestPolicy,
+        body: &mut Value,
+        headers: &mut BTreeMap<String, String>,
+        overrides: &mut BTreeMap<String, Vec<u16>>,
+        url: &mut String,
+    ) -> Result<(), LlmError> {
+        let mut source = payload(body);
+        policy.apply(&mut source, headers, overrides, url)?;
+        *body = materialize(&source);
+        Ok(())
+    }
 
     #[test]
     fn current_fallback_stream_flag_matches_native_final_spread_bytes() {
@@ -786,17 +1870,11 @@ mod tests {
         ))
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
-            let mut body = case["body"].clone();
+            let mut body = payload(&case["body"]);
             let mut strings = BTreeMap::new();
-            nonstream_fallback_parameters(&mut body, &mut strings).unwrap();
-            let bytes = crate::exact_json::serialize(
-                &body,
-                &strings,
-                crate::exact_json::JsonEncoding::JavaScript,
-            )
-            .unwrap();
+            nonstream_fallback_parameters_source(&mut body, &mut strings).unwrap();
             assert_eq!(
-                String::from_utf8(bytes).unwrap(),
+                wire(&body, &strings),
                 case["expected_json"].as_str().unwrap(),
                 "{case}"
             );
@@ -805,22 +1883,19 @@ mod tests {
 
     #[test]
     fn fallback_clears_overridden_stream_strings_and_retains_other_exact_strings() {
-        let mut body = serde_json::json!({"stream":"placeholder","keep":"placeholder","streaming":"unchanged"});
+        let mut body = JsonPayload::parse(
+            r#"{"stream":"placeholder","keep":"placeholder","streaming":"unchanged"}"#,
+        )
+        .unwrap();
         let mut strings = BTreeMap::from([
             ("/stream".into(), vec![0xd800]),
             ("/stream/nested".into(), vec![0xd800]),
             ("/keep".into(), vec![0xdc00]),
         ]);
-        nonstream_fallback_parameters(&mut body, &mut strings).unwrap();
+        nonstream_fallback_parameters_source(&mut body, &mut strings).unwrap();
         assert_eq!(strings, BTreeMap::from([("/keep".into(), vec![0xdc00])]));
-        let bytes = crate::exact_json::serialize(
-            &body,
-            &strings,
-            crate::exact_json::JsonEncoding::JavaScript,
-        )
-        .unwrap();
         assert_eq!(
-            String::from_utf8(bytes).unwrap(),
+            wire(&body, &strings),
             r#"{"stream":false,"keep":"\udc00","streaming":"unchanged"}"#
         );
     }
@@ -833,7 +1908,7 @@ mod tests {
         ))
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
-            let mut body = case["input"]["body"].clone();
+            let mut body = JsonPayload::from_generated_value(&case["input"]["body"]).unwrap();
             let mut headers =
                 serde_json::from_value(case["input"]["default_headers"].clone()).unwrap();
             let mut url = "https://api.anthropic.com/v1/messages/count_tokens".to_owned();
@@ -875,15 +1950,8 @@ mod tests {
                     "{case}"
                 );
                 assert_eq!(
-                    String::from_utf8(
-                        crate::exact_json::serialize(
-                            &body,
-                            &BTreeMap::new(),
-                            crate::exact_json::JsonEncoding::JavaScript
-                        )
-                        .unwrap()
-                    )
-                    .unwrap(),
+                    body.canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                        .unwrap(),
                     case["expected"]["body_json"].as_str().unwrap(),
                     "{case}"
                 );
@@ -892,21 +1960,307 @@ mod tests {
     }
 
     #[test]
+    fn source_policy_moves_virtual_fields_without_materializing_deep_or_lone_json() {
+        let deep = format!("{}0{}", "[".repeat(2048), "]".repeat(2048));
+        let source = format!(
+            r#"{{"opaque":{{"\ud800":"\udfff","deep":{deep}}},"output_config":{{"format":false,"tail":"kept"}},"output_format":{{"schema":{{"type":"object"}}}},"betas":["one","two"],"user_profile_id":["first",null,"last"]}}"#
+        );
+        let mut body = JsonPayload::parse(&source).unwrap();
+        let mut headers = BTreeMap::from([("Anthropic-User-Profile-Id".into(), "old".into())]);
+        let mut overrides = BTreeMap::new();
+        let mut url = "https://api.anthropic.com/v1/messages".to_owned();
+        normalize_message_parameters(
+            &mut body,
+            &mut headers,
+            &mut overrides,
+            &mut url,
+            crate::RequestMode::Complete,
+        )
+        .unwrap();
+
+        let serialized = body
+            .canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+            .unwrap();
+        assert!(serialized.contains(r#""\ud800":"\udfff""#));
+        assert!(serialized.contains(&deep));
+        assert!(serialized
+            .contains(r#""output_config":{"format":{"schema":{"type":"object"}},"tail":"kept"}"#));
+        assert!(!serialized.contains("output_format"));
+        assert!(!serialized.contains("\"betas\""));
+        assert!(!serialized.contains("user_profile_id"));
+        assert_eq!(headers["anthropic-beta"], "one,two");
+        assert_eq!(headers["anthropic-user-profile-id"], "last");
+        assert!(overrides.is_empty());
+        assert_eq!(url, "https://api.anthropic.com/v1/messages?beta=true");
+    }
+
+    #[test]
+    fn source_output_format_truthiness_and_alias_use_exact_override_units() {
+        let mut body = JsonPayload::parse(r#"{"output_format":""}"#).unwrap();
+        let mut overrides = BTreeMap::from([("/output_format".into(), vec![0xd800])]);
+        normalize_message_parameters(
+            &mut body,
+            &mut BTreeMap::new(),
+            &mut overrides,
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+            crate::RequestMode::Complete,
+        )
+        .unwrap();
+        assert!(overrides.is_empty());
+        assert_eq!(
+            body.canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                .unwrap(),
+            r#"{"output_config":{"format":"\ud800"}}"#
+        );
+    }
+
+    #[test]
+    fn source_count_tokens_spreads_utf16_iterables_and_is_transactional_on_error() {
+        let mut body =
+            JsonPayload::parse(r#"{"messages":[],"betas":"ab","keep":"\ud800"}"#).unwrap();
+        let mut headers = BTreeMap::new();
+        let mut overrides = BTreeMap::new();
+        let mut url =
+            "https://api.anthropic.com/v1/messages/count_tokens?beta=false&x=1".to_owned();
+        normalize_message_parameters(
+            &mut body,
+            &mut headers,
+            &mut overrides,
+            &mut url,
+            crate::RequestMode::CountTokens,
+        )
+        .unwrap();
+        assert_eq!(headers["anthropic-beta"], "a,b,token-counting-2024-11-01");
+        assert_eq!(
+            url,
+            "https://api.anthropic.com/v1/messages/count_tokens?x=1&beta=true"
+        );
+        assert!(body.as_json_source().contains(r#""keep":"\ud800""#));
+
+        let mut invalid = JsonPayload::parse(r#"{"messages":[],"betas":{}}"#).unwrap();
+        let before_body = invalid.as_json_source().to_owned();
+        let mut headers = BTreeMap::from([("anthropic-beta".into(), "original".into())]);
+        let before_headers = headers.clone();
+        let mut overrides = BTreeMap::new();
+        let mut url = "https://api.anthropic.com/v1/messages/count_tokens".to_owned();
+        let before_url = url.clone();
+        let error = normalize_message_parameters(
+            &mut invalid,
+            &mut headers,
+            &mut overrides,
+            &mut url,
+            crate::RequestMode::CountTokens,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            LlmError::InvalidRequest {
+                message: "(h ?? []) is not iterable".into()
+            }
+        );
+        assert_eq!(invalid.as_json_source(), before_body);
+        assert_eq!(headers, before_headers);
+        assert_eq!(url, before_url);
+    }
+
+    #[test]
+    fn source_output_config_spread_preserves_utf16_and_javascript_index_order() {
+        let mut body = JsonPayload::parse(
+            r#"{"output_config":"\ud800A","output_format":{"10":"ten","3":"three","2":"two"}}"#,
+        )
+        .unwrap();
+        normalize_message_parameters(
+            &mut body,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+            crate::RequestMode::Complete,
+        )
+        .unwrap();
+        assert_eq!(
+            body.canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                .unwrap(),
+            r#"{"output_config":{"0":"\ud800","1":"A","format":{"2":"two","3":"three","10":"ten"}}}"#
+        );
+
+        let mut body =
+            JsonPayload::parse(r#"{"output_config":[{"nested":true},null],"output_format":true}"#)
+                .unwrap();
+        normalize_message_parameters(
+            &mut body,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+            crate::RequestMode::Complete,
+        )
+        .unwrap();
+        assert_eq!(
+            body.canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                .unwrap(),
+            r#"{"output_config":{"0":{"nested":true},"1":null,"format":true}}"#
+        );
+    }
+
+    #[test]
+    fn default_source_policy_preserves_body_spelling_and_insertion_order() {
+        let mut body = JsonPayload::parse(
+            r#"{ "model":"m", "max_tokens":4096, "messages":[{"role":"user","content":"hi"}] }"#,
+        )
+        .unwrap();
+        let original = body.as_json_source().to_owned();
+        let mut headers = BTreeMap::from([("x-existing".into(), "kept".into())]);
+        let original_headers = headers.clone();
+        let mut overrides = BTreeMap::from([("/messages/0/content".into(), vec![0xd800])]);
+        let original_overrides = overrides.clone();
+        let mut url = "https://api.anthropic.com/v1/messages?existing=1".to_owned();
+        let original_url = url.clone();
+
+        AnthropicRequestPolicy::default()
+            .apply(&mut body, &mut headers, &mut overrides, &mut url)
+            .unwrap();
+
+        assert_eq!(body.as_json_source(), original);
+        assert_eq!(headers, original_headers);
+        assert_eq!(overrides, original_overrides);
+        assert_eq!(url, original_url);
+    }
+
+    #[test]
+    fn message_header_normalization_keeps_body_source_when_no_virtual_fields_exist() {
+        let mut body = JsonPayload::parse(
+            r#"{ "model":"m", "max_tokens":4096, "messages":[{"role":"user","content":"hi"}] }"#,
+        )
+        .unwrap();
+        let original = body.as_json_source().to_owned();
+        let mut headers = BTreeMap::new();
+        let mut overrides = BTreeMap::from([("/messages/0/content".into(), vec![0xd800])]);
+        let original_overrides = overrides.clone();
+        let mut url = "https://api.anthropic.com/v1/messages?beta=true".to_owned();
+
+        normalize_message_parameters(
+            &mut body,
+            &mut headers,
+            &mut overrides,
+            &mut url,
+            crate::RequestMode::Complete,
+        )
+        .unwrap();
+
+        assert_eq!(body.as_json_source(), original);
+        assert_eq!(overrides, original_overrides);
+    }
+
+    #[test]
+    fn source_policy_evaluates_native_number_coercion_before_json_stringification() {
+        let mut body = JsonPayload::parse(r#"{"output_format":1e400,"betas":1e400}"#).unwrap();
+        let mut headers = BTreeMap::new();
+        normalize_message_parameters(
+            &mut body,
+            &mut headers,
+            &mut BTreeMap::new(),
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+            crate::RequestMode::Complete,
+        )
+        .unwrap();
+        assert_eq!(headers["anthropic-beta"], "Infinity");
+        assert_eq!(
+            body.canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                .unwrap(),
+            r#"{"output_config":{"format":null}}"#
+        );
+
+        let mut conflict = JsonPayload::parse(
+            r#"{"output_config":{"format":1e400},"output_format":{"type":"json"}}"#,
+        )
+        .unwrap();
+        let before_body = conflict.as_json_source().to_owned();
+        let mut headers = BTreeMap::new();
+        let mut overrides = BTreeMap::new();
+        let mut url = "https://api.anthropic.com/v1/messages".to_owned();
+        let before_url = url.clone();
+        assert_eq!(
+            normalize_message_parameters(
+                &mut conflict,
+                &mut headers,
+                &mut overrides,
+                &mut url,
+                crate::RequestMode::Complete,
+            )
+            .unwrap_err(),
+            LlmError::InvalidRequest {
+                message: "Both output_format and output_config.format were provided. Please use only output_config.format (output_format is deprecated).".into()
+            }
+        );
+        assert_eq!(conflict.as_json_source(), before_body);
+        assert!(headers.is_empty());
+        assert_eq!(url, before_url);
+    }
+
+    #[test]
+    fn source_helpers_own_count_betas_and_exact_auto_tool_choice_removal() {
+        let mut body =
+            JsonPayload::parse(r#"{"model":"m","tool_choice":{"type":"auto"}}"#).unwrap();
+        let mut overrides = BTreeMap::new();
+        assert!(
+            omit_default_auto_tool_choice(&mut body, &mut overrides, &ToolChoice::Auto).unwrap()
+        );
+        assert_eq!(body.as_json_source(), r#"{"model":"m"}"#);
+        assert!(
+            !omit_default_auto_tool_choice(&mut body, &mut overrides, &ToolChoice::Any).unwrap()
+        );
+
+        let mut body =
+            JsonPayload::parse(r#"{"tool_choice":{"type":"auto","extra":true}}"#).unwrap();
+        assert!(
+            !omit_default_auto_tool_choice(&mut body, &mut overrides, &ToolChoice::Auto).unwrap()
+        );
+
+        let mut body =
+            JsonPayload::parse(r#"{"messages":[],"betas":"old","output_format":1e400}"#).unwrap();
+        let mut betas_overrides = BTreeMap::from([("/betas".into(), vec![0xd800])]);
+        let mut headers = BTreeMap::new();
+        normalize_count_tokens_message_parameters(
+            &mut body,
+            &mut headers,
+            &mut betas_overrides,
+            &mut "https://api.anthropic.com/v1/messages/count_tokens".to_owned(),
+            &["a".into(), "b".into()],
+        )
+        .unwrap();
+        assert!(betas_overrides.is_empty());
+        assert_eq!(headers["anthropic-beta"], "a,b,token-counting-2024-11-01");
+        assert_eq!(
+            body.canonical_json(crate::exact_json::JsonEncoding::JavaScript)
+                .unwrap(),
+            r#"{"messages":[],"output_config":{"format":null}}"#
+        );
+    }
+
+    #[test]
     fn native_main_and_side_templates_match_full_layout_bytes() {
-        let fixture: Value = serde_json::from_str(include_str!(
+        let fixture = JsonPayload::parse(include_str!(
             "../../../tests/fixtures/request_layout_2_1_287.json"
         ))
         .unwrap();
-        for case in fixture["cases"].as_array().unwrap() {
-            let mut body = case["input"]["base"].clone();
+        let case_count = fixture.array_len("/cases").unwrap();
+        for index in 0..case_count {
+            let case = format!("/cases/{index}");
+            let mut body = fixture
+                .payload_at(&format!("{case}/input/base"))
+                .expect("base JSON source");
+            let extra_body = fixture
+                .payload_at(&format!("{case}/input/extra"))
+                .expect("extra JSON source");
             let mut strings = BTreeMap::new();
             AnthropicRequestPolicy {
-                request_kind: if case["input"]["kind"] == "main" {
+                request_kind: if fixture.string_at(&format!("{case}/input/kind")).as_deref()
+                    == Some("main")
+                {
                     AnthropicRequestKind::Main
                 } else {
                     AnthropicRequestKind::SideQuery
                 },
-                extra_body: case["input"]["extra"].as_object().unwrap().clone(),
+                extra_body,
                 ..Default::default()
             }
             .apply(
@@ -917,17 +2271,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                String::from_utf8(
-                    crate::exact_json::serialize(
-                        &body,
-                        &strings,
-                        crate::exact_json::JsonEncoding::JavaScript
-                    )
-                    .unwrap()
-                )
-                .unwrap(),
-                case["expected"]["body_json"].as_str().unwrap(),
-                "{case}"
+                wire(&body, &strings),
+                fixture
+                    .string_at(&format!("{case}/expected/body_json"))
+                    .expect("expected body JSON source"),
+                "case {index}"
             );
         }
     }
@@ -949,12 +2297,13 @@ mod tests {
             ),
         ] {
             let mut url = source.to_owned();
+            let mut body = JsonPayload::parse(r#"{"messages":[]}"#).unwrap();
             AnthropicRequestPolicy {
                 message_header_parameters: true,
                 ..Default::default()
             }
             .apply(
-                &mut json!({"messages":[]}),
+                &mut body,
                 &mut BTreeMap::new(),
                 &mut BTreeMap::new(),
                 &mut url,
@@ -963,9 +2312,10 @@ mod tests {
             assert_eq!(url, expected);
         }
         let mut url = "https://cloud/v1/messages?custom=true".to_owned();
+        let mut body = JsonPayload::parse(r#"{"messages":[]}"#).unwrap();
         AnthropicRequestPolicy::default()
             .apply(
-                &mut json!({"messages":[]}),
+                &mut body,
                 &mut BTreeMap::new(),
                 &mut BTreeMap::new(),
                 &mut url,
@@ -1105,7 +2455,7 @@ mod tests {
         ))
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
-            let result = sanitize_extra_body(case["input"]["extra"].as_object().unwrap().clone());
+            let result = sanitize_extra_body(payload(&case["input"]["extra"]));
             if let Some(message) = case["expected"]["error"].as_str() {
                 assert_eq!(
                     result.unwrap_err(),
@@ -1122,7 +2472,7 @@ mod tests {
                     .map(|beta| beta.as_str().unwrap().to_owned())
                     .collect();
                 assert_eq!(
-                    Value::Object(beta_body(result.unwrap(), &betas)),
+                    materialize(&beta_body(result.unwrap(), &betas).unwrap()),
                     case["expected"]["value"],
                     "{case}"
                 );
@@ -1139,23 +2489,20 @@ mod tests {
                     ("/output_config/effort".into(), vec![0xD800]),
                     ("/output_config/format/description".into(), vec![0xDC00]),
                 ]);
-                AnthropicRequestPolicy {
-                    request_kind: kind,
-                    effort: Some(AnthropicEffortPolicy {
-                        supported: false,
-                        value: None,
-                    }),
-                    extra_body: if explicit {
-                        json!({"output_config":{"effort":"explicit","unknown":true}})
-                            .as_object()
-                            .unwrap()
-                            .clone()
-                    } else {
-                        Map::new()
+                apply_value_policy(
+                    AnthropicRequestPolicy {
+                        request_kind: kind,
+                        effort: Some(AnthropicEffortPolicy {
+                            supported: false,
+                            value: None,
+                        }),
+                        extra_body: if explicit {
+                            payload(&json!({"output_config":{"effort":"explicit","unknown":true}}))
+                        } else {
+                            JsonPayload::parse("{}").unwrap()
+                        },
+                        ..Default::default()
                     },
-                    ..Default::default()
-                }
-                .apply(
                     &mut body,
                     &mut BTreeMap::new(),
                     &mut strings,
@@ -1188,15 +2535,15 @@ mod tests {
                 ("/output_config/effort".into(), vec![0xD800]),
                 ("/output_config/format/description".into(), vec![0xDC00]),
             ]);
-            AnthropicRequestPolicy {
-                request_kind: kind,
-                effort: Some(AnthropicEffortPolicy {
-                    supported: true,
-                    value: Some(Value::String("low".into())),
-                }),
-                ..Default::default()
-            }
-            .apply(
+            apply_value_policy(
+                AnthropicRequestPolicy {
+                    request_kind: kind,
+                    effort: Some(AnthropicEffortPolicy {
+                        supported: true,
+                        value: Some(JsonPayload::string("low")),
+                    }),
+                    ..Default::default()
+                },
                 &mut body,
                 &mut BTreeMap::new(),
                 &mut exact,
@@ -1224,14 +2571,11 @@ mod tests {
         let mut headers = BTreeMap::from([("anthropic-beta".into(), "computed".into())]);
         let mut overrides = BTreeMap::from([("/speed".into(), vec![0xD800])]);
         let before = (body.clone(), headers.clone(), overrides.clone());
-        let result = AnthropicRequestPolicy {
-            extra_body: json!({"betas":{"toString":null}})
-                .as_object()
-                .unwrap()
-                .clone(),
-            ..Default::default()
-        }
-        .apply(
+        let result = apply_value_policy(
+            AnthropicRequestPolicy {
+                extra_body: payload(&json!({"betas":{"toString":null}})),
+                ..Default::default()
+            },
             &mut body,
             &mut headers,
             &mut overrides,
@@ -1248,7 +2592,7 @@ mod tests {
         ))
         .unwrap();
         for case in fixture["cases"].as_array().unwrap() {
-            let mut body = case["expected"]["base"].clone();
+            let mut body = payload(&case["expected"]["base"]);
             let mut headers = BTreeMap::new();
             let mut overrides = BTreeMap::new();
             AnthropicRequestPolicy {
@@ -1257,11 +2601,11 @@ mod tests {
                 } else {
                     AnthropicRequestKind::SideQuery
                 },
-                extra_body: case["input"]["extra"].as_object().unwrap().clone(),
+                extra_body: payload(&case["input"]["extra"]),
                 effort: Some(AnthropicEffortPolicy {
                     supported: case["input"]["supported"].as_bool().unwrap(),
                     value: (!case["input"]["effort"].is_null())
-                        .then(|| case["input"]["effort"].clone()),
+                        .then(|| payload(&case["input"]["effort"])),
                 }),
                 ..Default::default()
             }
@@ -1272,14 +2616,8 @@ mod tests {
                 &mut "https://api.anthropic.com/v1/messages".to_owned(),
             )
             .unwrap();
-            let wire = crate::exact_json::serialize(
-                &body,
-                &overrides,
-                crate::exact_json::JsonEncoding::JavaScript,
-            )
-            .unwrap();
             assert_eq!(
-                String::from_utf8(wire).unwrap(),
+                wire(&body, &overrides),
                 case["expected"]["body_json"].as_str().unwrap(),
                 "{:?}",
                 case["input"]
@@ -1298,8 +2636,7 @@ mod tests {
                     vec![0xD801],
                 ),
             ]);
-            AnthropicRequestPolicy { request_kind, extra_body: json!({"messages":[{"content":"new"}],"output_config":{"format":{"schema":{"description":"new"}}}}).as_object().unwrap().clone(), ..Default::default() }
-                .apply(&mut body, &mut BTreeMap::new(), &mut overrides, &mut "https://api.anthropic.com/v1/messages".to_owned()).unwrap();
+            apply_value_policy(AnthropicRequestPolicy { request_kind, extra_body: payload(&json!({"messages":[{"content":"new"}],"output_config":{"format":{"schema":{"description":"new"}}}})), ..Default::default() }, &mut body, &mut BTreeMap::new(), &mut overrides, &mut "https://api.anthropic.com/v1/messages".to_owned()).unwrap();
             assert!(overrides.is_empty());
             assert!(String::from_utf8(
                 crate::exact_json::serialize(
@@ -1314,11 +2651,11 @@ mod tests {
         }
         let mut body = json!({"":{"content":"old"}});
         let mut overrides = BTreeMap::from([("//content".into(), vec![0xD800])]);
-        AnthropicRequestPolicy {
-            extra_body: json!({"content":"new"}).as_object().unwrap().clone(),
-            ..Default::default()
-        }
-        .apply(
+        apply_value_policy(
+            AnthropicRequestPolicy {
+                extra_body: payload(&json!({"content":"new"})),
+                ..Default::default()
+            },
             &mut body,
             &mut BTreeMap::new(),
             &mut overrides,
@@ -1329,11 +2666,11 @@ mod tests {
             overrides.contains_key("//content"),
             "an empty top-level key remains untouched"
         );
-        AnthropicRequestPolicy {
-            extra_body: json!({"":{"content":"new"}}).as_object().unwrap().clone(),
-            ..Default::default()
-        }
-        .apply(
+        apply_value_policy(
+            AnthropicRequestPolicy {
+                extra_body: payload(&json!({"":{"content":"new"}})),
+                ..Default::default()
+            },
             &mut body,
             &mut BTreeMap::new(),
             &mut overrides,
@@ -1345,11 +2682,11 @@ mod tests {
 
     #[test]
     fn fast_guard_clears_exact_overrides_for_removed_speed() {
-        let mut body = json!({"speed":"fast","messages":[]});
+        let mut body = payload(&json!({"speed":"fast","messages":[]}));
         let mut overrides = BTreeMap::from([("/speed".into(), vec![0xD800])]);
-        remove_fast(&mut body, &mut BTreeMap::new(), &mut overrides, "fast");
+        remove_fast_source(&mut body, &mut BTreeMap::new(), &mut overrides, "fast").unwrap();
         assert!(overrides.is_empty());
-        assert!(crate::exact_json::serialize(
+        assert!(crate::exact_json::serialize_json_payload_with_overrides(
             &body,
             &overrides,
             crate::exact_json::JsonEncoding::JavaScript
@@ -1386,16 +2723,15 @@ mod tests {
         let mut body = json!({"speed":"fast", "output_config":{"effort":"high"}, "messages":[]});
         let mut headers = BTreeMap::new();
         let mut overrides = BTreeMap::new();
-        AnthropicRequestPolicy {
-            extra_body: json!({"speed":"slow", "output_config":{"effort":"low","unknown":true},
-                "anthropic_beta":["custom","first"], "provider_extension":{"foo":1}})
-            .as_object()
-            .unwrap()
-            .clone(),
-            body_betas: vec!["first".into(), "second".into()],
-            ..Default::default()
-        }
-        .apply(
+        apply_value_policy(
+            AnthropicRequestPolicy {
+                extra_body: payload(
+                    &json!({"speed":"slow", "output_config":{"effort":"low","unknown":true},
+                "anthropic_beta":["custom","first"], "provider_extension":{"foo":1}}),
+                ),
+                body_betas: vec!["first".into(), "second".into()],
+                ..Default::default()
+            },
             &mut body,
             &mut headers,
             &mut overrides,
@@ -1417,12 +2753,12 @@ mod tests {
         let mut body = json!({"messages":[]});
         let mut headers = BTreeMap::from([("Anthropic-Beta".into(), "oauth,fast,other".into())]);
         let mut overrides = BTreeMap::new();
-        AnthropicRequestPolicy {
-            extra_body: json!({"speed":"fast"}).as_object().unwrap().clone(),
-            disallowed_fast_beta: Some("fast".into()),
-            ..Default::default()
-        }
-        .apply(
+        apply_value_policy(
+            AnthropicRequestPolicy {
+                extra_body: payload(&json!({"speed":"fast"})),
+                disallowed_fast_beta: Some("fast".into()),
+                ..Default::default()
+            },
             &mut body,
             &mut headers,
             &mut overrides,

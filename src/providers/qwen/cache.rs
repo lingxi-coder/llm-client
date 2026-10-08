@@ -3,7 +3,7 @@
 //! message-content-only prefix caching; it is not Responses session caching.
 use crate::codecs::{json::WireValue, CodecContext};
 use crate::protocol::{
-    CachePosition, CacheTtl, ChatRequest, ContentBlock, LlmError, ProtocolFamily,
+    CachePosition, CacheTtl, ChatRequest, ContentBlock, JsonPayload, LlmError, ProtocolFamily,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -203,7 +203,9 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
         "prompt_cache_retention",
     ] {
         if extra.get(field).is_some() {
-            return Err(invalid("Qwen Chat cache controls must use prompt_cache message breakpoints, not top-level native overrides"));
+            return Err(invalid(
+                "Qwen Chat cache controls must use prompt_cache message breakpoints, not top-level native overrides",
+            ));
         }
     }
     if context.stream {
@@ -215,7 +217,9 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
                 .get("include_usage")
                 .is_some_and(|value| value != &Value::Bool(true))
             {
-                return Err(invalid("Qwen streaming requires stream_options.include_usage=true for cache accounting"));
+                return Err(invalid(
+                    "Qwen streaming requires stream_options.include_usage=true for cache accounting",
+                ));
             }
         }
     }
@@ -242,7 +246,9 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
         })
         .transpose()?;
     if !model_supported(region, scope, context.request_model()) {
-        return Err(unsupported("Qwen explicit caching is not documented for this model/region/deployment scope; scoped regions require extra.qwen_cache_deployment_scope"));
+        return Err(unsupported(
+            "Qwen explicit caching is not documented for this model/region/deployment scope; scoped regions require extra.qwen_cache_deployment_scope",
+        ));
     }
     if policy.breakpoints.len() > 4 {
         return Err(invalid("Qwen allows at most four cache breakpoints"));
@@ -258,18 +264,31 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
             return Err(invalid("duplicate Qwen cache breakpoint"));
         }
         let valid = match breakpoint.position {
-            CachePosition::Tool { .. } => return Err(unsupported("Qwen ignores standalone tool-definition cache markers; mark a system or message content block")),
-            CachePosition::System { index } => req.system.get(index).is_some_and(|s| !s.text.is_empty()),
-            CachePosition::Message { index, block } => req.messages.get(index)
-                .and_then(|message| message.content.get(block)).is_some_and(|block| match block {
-                    ContentBlock::Text { text, .. } => !text.is_empty(),
-                    ContentBlock::Image { .. } => true,
-                    ContentBlock::ToolResult { content, .. } => !content.is_empty(),
-                    _ => false,
-                }),
+            CachePosition::Tool { .. } => {
+                return Err(unsupported(
+                    "Qwen ignores standalone tool-definition cache markers; mark a system or message content block",
+                ));
+            }
+            CachePosition::System { index } => req.system.get(index).is_some_and(|s| !s.is_empty()),
+            CachePosition::Message { index, block } => {
+                req.messages
+                    .get(index)
+                    .and_then(|message| message.content.get(block))
+                    .is_some_and(|block| match block {
+                        ContentBlock::Text { text, .. }
+                        | ContentBlock::TextJsUtf16 { text, .. } => !text.is_empty(),
+                        ContentBlock::Image { .. } => true,
+                        ContentBlock::ToolResult { content, .. } => content
+                            .root_string_code_units()
+                            .is_some_and(|units| !units.is_empty()),
+                        _ => false,
+                    })
+            }
         };
         if !valid {
-            return Err(invalid("Qwen cache breakpoint must name a nonempty text, image or tool-result content block"));
+            return Err(invalid(
+                "Qwen cache breakpoint must name a nonempty text, image or tool-result content block",
+            ));
         }
     }
     Ok(())
@@ -302,6 +321,17 @@ pub(crate) fn text_content(text: &str, marked: bool) -> WireValue<'_> {
     }
 }
 
+pub(crate) fn tool_result_text_content(content: &JsonPayload, marked: bool) -> WireValue<'_> {
+    if marked {
+        WireValue::array(vec![mark(
+            WireValue::from(json!({"type":"text"})).with("text", WireValue::raw_json(content)),
+            true,
+        )])
+    } else {
+        WireValue::raw_json(content)
+    }
+}
+
 pub(crate) fn system<'a>(req: &'a ChatRequest, context: &CodecContext) -> Option<WireValue<'a>> {
     if !applies(context)
         || !req
@@ -317,11 +347,12 @@ pub(crate) fn system<'a>(req: &'a ChatRequest, context: &CodecContext) -> Option
         if index > 0 {
             parts.push(json!({"type":"text","text":"\n\n"}).into());
         }
-        if block.text.is_empty() {
+        if block.is_empty() {
             continue;
         }
         parts.push(mark(
-            WireValue::from(json!({"type":"text"})).with("text", WireValue::text(&block.text)),
+            WireValue::from(json!({"type":"text"}))
+                .with("text", WireValue::raw_json(block.text_payload())),
             marked(req, context, CachePosition::System { index }),
         ));
     }

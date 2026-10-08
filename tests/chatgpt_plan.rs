@@ -5,7 +5,7 @@ use lingxi_llm_client::client::options::{RequestAuthenticator, RequestFinalizer}
 use lingxi_llm_client::{
     codecs::openai::responses::classify_error,
     protocol::{
-        AttachmentRef, AuthStrategy, ChatRequest, ContentBlock, ImageSource, LlmError,
+        AttachmentRef, AuthStrategy, ChatRequest, ContentBlock, ImageSource, JsonPayload, LlmError,
         LlmErrorKind, ProviderProfile, Region, Secret, StreamEvent,
     },
     providers::openai::{
@@ -382,7 +382,7 @@ async fn raw_provider_audio_cannot_bypass_plan_input_validation() {
     let mut request = chat(false);
     request.messages[0].content.push(ContentBlock::ProviderContent {
         protocol: lingxi_llm_client::protocol::ProtocolFamily::OpenAiResponses,
-        value: json!({"type":"message","role":"user","content":[{"type":"input_audio","input_audio":{"data":"abc","format":"wav"}}]}),
+        value: JsonPayload::from_generated_value(&json!({"type":"message","role":"user","content":[{"type":"input_audio","input_audio":{"data":"abc","format":"wav"}}]})).expect("generated provider fixture is valid JSON"),
     });
     assert!(client
         .chat()
@@ -585,7 +585,12 @@ fn plan_error_codes_preserve_recovery_categories() {
         ("subscription_sharing_unsupported_capability", "invalid"),
         ("subscription_sharing_invalid_user", "auth"),
     ] {
-        let error = classify_error(500, &json!({"error":{"code":code,"message":"test"}}), None);
+        let error = classify_error(
+            500,
+            &json!({"error":{"code":code,"message":"test"}}),
+            None,
+            false,
+        );
         let category = match error {
             LlmError::QuotaExceeded { .. } => "quota",
             LlmError::PermissionDenied { .. } => "permission",

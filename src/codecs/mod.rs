@@ -191,6 +191,11 @@ pub trait StreamDecoder: Send {
     fn push_bytes(&mut self, bytes: &[u8]) -> Vec<Result<StreamEvent, LlmError>>;
     fn finish(&mut self) -> Vec<Result<StreamEvent, LlmError>>;
     fn usage_report(&self) -> crate::protocol::UsageReport;
+    /// SDK-derived Native Anthropic resumability fact, when usage and an
+    /// authoritative context source are available.
+    fn native_resume_context_exhausted(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Protocol event parsing is internal; framing belongs to the codec.
@@ -203,6 +208,9 @@ pub(crate) trait EventDecoder: Send {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError>;
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError>;
     fn usage_report(&self) -> crate::protocol::UsageReport;
+    fn native_resume_context_exhausted(&self) -> Option<bool> {
+        None
+    }
 }
 
 const _: Option<&dyn WireCodec> = None;

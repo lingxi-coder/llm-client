@@ -206,17 +206,27 @@ async fn request_json(transport: &dyn Transport, request: HttpRequest) -> Result
     let response = HttpExecutor::new(transport)
         .execute_bounded(request, MAX_RESPONSE_BYTES)
         .await
-        .map_err(|error| match error {
-            LlmError::TransportTimeout { .. } => LlmError::TransportTimeout {
-                message: "Copilot authorization request timed out".into(),
-            },
-            _ => LlmError::Transport {
-                message: "Copilot authorization request failed".into(),
-            },
+        .map_err(|error| {
+            let provider_text = error.provider_error_text().cloned();
+            let mapped = if matches!(
+                error.classification_source(),
+                LlmError::TransportTimeout { .. }
+            ) {
+                LlmError::TransportTimeout {
+                    message: "Copilot authorization request timed out".into(),
+                }
+            } else {
+                LlmError::Transport {
+                    message: "Copilot authorization request failed".into(),
+                }
+            };
+            mapped.with_optional_provider_error_text(provider_text)
         })?;
     if !(200..300).contains(&response.status) {
         if response.status == 404 {
-            return Err(invalid("GitHub Copilot is not available for this account: no active Copilot subscription, or your organization has not authorized this app for Copilot. Check github.com/settings/copilot."));
+            return Err(invalid(
+                "GitHub Copilot is not available for this account: no active Copilot subscription, or your organization has not authorized this app for Copilot. Check github.com/settings/copilot.",
+            ));
         }
         return Err(LlmError::Transport {
             message: format!("Copilot authorization HTTP {}", response.status),

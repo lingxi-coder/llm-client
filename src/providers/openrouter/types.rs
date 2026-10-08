@@ -1,8 +1,7 @@
 //! Provider-specific request, tool, and replay types.
 
-use crate::protocol::LlmError;
+use crate::protocol::{JsonPayload, LlmError};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 /// OpenRouter's hosted regex tool-search server tool. The BM25 variant is not
 /// included because OpenRouter currently documents only regex search.
@@ -146,7 +145,7 @@ impl OpenRouterContainerRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpenRouterContainerMetadata {
-    pub envelope: Value,
+    pub envelope: JsonPayload,
 }
 
 impl OpenRouterContainerMetadata {
@@ -154,13 +153,15 @@ impl OpenRouterContainerMetadata {
         &self,
         scope: OpenRouterContainerScope,
     ) -> Result<OpenRouterContainerRef, LlmError> {
-        let id = self
-            .envelope
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| LlmError::InvalidRequest {
-                message: "OpenRouter container metadata has no string ID to import".into(),
-            })?;
-        OpenRouterContainerRef::new(id, scope)
+        let id_units =
+            self.envelope
+                .string_units_at("/id")
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "OpenRouter container metadata has no string ID to import".into(),
+                })?;
+        let id = String::from_utf16(&id_units).map_err(|_| LlmError::InvalidRequest {
+            message: "OpenRouter container metadata has no well-formed string ID to import".into(),
+        })?;
+        OpenRouterContainerRef::new(&id, scope)
     }
 }

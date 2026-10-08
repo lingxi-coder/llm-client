@@ -4,7 +4,7 @@
 //! wire protocol details. Hosts consume these values while retaining their
 //! account state, clocks, retry policy, and UI rendering.
 
-use crate::protocol::ProtocolFamily;
+use crate::protocol::{JsonPayload, ProtocolFamily};
 use serde_json::{Map, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -104,7 +104,7 @@ impl AnthropicRateLimitHeaders {
     #[must_use]
     pub fn decode_429_error(
         headers: &[(String, String)],
-        body: Option<&Value>,
+        body: Option<&JsonPayload>,
     ) -> Option<AnthropicRateLimitError> {
         let representative_claim =
             nonempty_header(headers, "anthropic-ratelimit-unified-representative-claim");
@@ -486,24 +486,14 @@ pub struct AnthropicRateLimitError {
     pub credits_required: bool,
 }
 
-fn credits_required_from_body(body: Option<&Value>) -> (bool, Option<String>) {
-    let Some(details) = body
-        .and_then(|body| body.get("error"))
-        .and_then(|error| error.get("error"))
-        .and_then(|error| error.get("details"))
-    else {
+fn credits_required_from_body(body: Option<&JsonPayload>) -> (bool, Option<String>) {
+    let Some(body) = body else {
         return (false, None);
     };
-    if details.get("error_code").and_then(Value::as_str) != Some("credits_required") {
+    if body.string_at("/error/error/details/error_code").as_deref() != Some("credits_required") {
         return (false, None);
     }
-    (
-        true,
-        details
-            .get("disabled_reason")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-    )
+    (true, body.string_at("/error/error/details/disabled_reason"))
 }
 
 fn response_request_id(
@@ -1174,6 +1164,7 @@ mod tests {
                 "disabled_reason": "out_of_credits"
             }}}
         });
+        let body = JsonPayload::from_generated_value(&body).unwrap();
         let decoded = AnthropicRateLimitHeaders::decode_429_error(&headers, Some(&body)).unwrap();
         assert!(decoded.credits_required);
         assert_eq!(

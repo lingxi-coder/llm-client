@@ -21,12 +21,14 @@ pub(crate) fn apply(
         },
         |search, body| {
             let _ = body;
+            let allowed_domains = web_search::domain_strings(&search.allowed_domains)?;
+            let blocked_domains = web_search::domain_strings(&search.blocked_domains)?;
             let mut tool = serde_json::json!({"type":"openrouter:web_search"});
-            if !search.allowed_domains.is_empty() {
-                tool["parameters"] = serde_json::json!({"allowed_domains":search.allowed_domains});
+            if !allowed_domains.is_empty() {
+                tool["parameters"] = serde_json::json!({"allowed_domains":allowed_domains});
             }
-            if !search.blocked_domains.is_empty() {
-                tool["parameters"] = serde_json::json!({"excluded_domains":search.blocked_domains});
+            if !blocked_domains.is_empty() {
+                tool["parameters"] = serde_json::json!({"excluded_domains":blocked_domains});
             }
             Ok(Some(tool))
         },

@@ -60,10 +60,13 @@ fn encode(req: &ChatRequest, p: &ProviderProfile) -> Result<Value, LlmError> {
 fn client_tool() -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "lookup_local".into(),
-        description: "Read local data".into(),
-        input_schema: json!({"type":"object","properties":{}}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("Read local data"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object","properties":{}}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),

@@ -1,10 +1,10 @@
 //! Response and error decoding for `generateContent`.
 
 use crate::protocol::{
-    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, ProtocolFamily,
-    StopReason, ToolUseId, Usage,
+    ChatResponse, ContentBlock, ConversationMessage, JsonPayload, LlmError, MessageRole,
+    ProtocolFamily, StopReason, ToolUseId, Usage,
 };
-use crate::response_json::{content_block, ResponseJson};
+use crate::response_json::{content_block, FlatJsonKind, ResponseJson, ResponseJsonScanner};
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -14,12 +14,110 @@ use std::time::Duration;
 static NEXT_LOCAL_CALL_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatResponse, LlmError> {
-    let mut response_json = ResponseJson::parse(&resp.body, "Gemini response is not valid JSON")?;
-    let body = response_json.value.clone();
+    let scanner = match ResponseJsonScanner::parse(&resp.body, "Gemini response is not valid JSON")
+    {
+        Ok(scanner) => scanner,
+        Err(_error) if !(200..300).contains(&resp.status) => {
+            let (body, provider_text) = ResponseJson::raw_http_error(resp.status, &resp.body);
+            return Err(classify_error(resp.status, &body, retry_after(resp), false)
+                .with_provider_error_text(provider_text));
+        }
+        Err(error) => return Err(error),
+    };
     if !(200..300).contains(&resp.status) {
-        response_json.finish()?;
-        return Err(classify_error(resp.status, &body, retry_after(resp)));
+        let selected_text = scanner.provider_error_text_at("/error/message", None)?;
+        let provider_text = match &selected_text {
+            Some(text) => text.prefixed(&format!("{} ", resp.status)),
+            None => scanner.provider_error_text_or_body_at("/error/message", Some(resp.status))?,
+        };
+        let body = scanner.provider_error_classification_body(
+            "/error",
+            &["message", "status"],
+            selected_text.as_ref(),
+        );
+        return Err(classify_error(resp.status, &body, retry_after(resp), false)
+            .with_provider_error_text(provider_text));
     }
+    let part_count = scanner
+        .array_len("/candidates/0/content/parts")
+        .unwrap_or(0);
+    let mut opaque_paths = [
+        "/candidates/0/groundingMetadata",
+        "/candidates/0/urlContextMetadata",
+    ]
+    .into_iter()
+    .filter(|pointer| scanner.raw_source_at(pointer).is_some())
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let mut native_parts = HashSet::new();
+    let mut tool_parts = HashSet::new();
+    for index in 0..part_count {
+        let prefix = format!("/candidates/0/content/parts/{index}");
+        let function_call = format!("{prefix}/functionCall");
+        if scanner.kind_at(&function_call) == Some(FlatJsonKind::Object) {
+            let typed_strings_are_scalar = [
+                format!("{function_call}/name"),
+                format!("{function_call}/id"),
+                format!("{prefix}/thoughtSignature"),
+            ]
+            .iter()
+            .all(|pointer| {
+                scanner.raw_source_at(pointer).is_none()
+                    || scanner
+                        .string_units_at(pointer)
+                        .is_some_and(|units| String::from_utf16(&units).is_ok())
+            });
+            if !typed_strings_are_scalar {
+                opaque_paths.push(prefix.clone());
+                native_parts.insert(index);
+                continue;
+            }
+            let args = format!("{function_call}/args");
+            if scanner.raw_source_at(&args).is_some() {
+                opaque_paths.push(args);
+            }
+            tool_parts.insert(index);
+        } else if [
+            "executableCode",
+            "codeExecutionResult",
+            "inlineData",
+            "toolCall",
+            "toolResponse",
+        ]
+        .iter()
+        .any(|key| scanner.raw_source_at(&format!("{prefix}/{key}")).is_some())
+        {
+            opaque_paths.push(prefix);
+            native_parts.insert(index);
+        } else if [format!("{prefix}/thoughtSignature")]
+            .iter()
+            .any(|pointer| {
+                scanner.raw_source_at(pointer).is_some()
+                    && scanner
+                        .string_units_at(pointer)
+                        .is_some_and(|units| String::from_utf16(&units).is_err())
+            })
+        {
+            opaque_paths.push(prefix);
+            native_parts.insert(index);
+        }
+    }
+    let search_candidate = scanner
+        .raw_source_at("/candidates/0")
+        .and_then(|source| JsonPayload::parse(source).ok());
+    let web_search = search_candidate
+        .as_ref()
+        .and_then(crate::codecs::web_search_decode::gemini_payload);
+    let mut response_json = scanner.into_response_json_with_opaque_paths(&opaque_paths)?;
+    for pointer in [
+        "/candidates/0/groundingMetadata",
+        "/candidates/0/urlContextMetadata",
+    ] {
+        if opaque_paths.iter().any(|path| path == pointer) {
+            let _ = response_json.take_raw_json_source_at(pointer)?;
+        }
+    }
+    let body = response_json.value.clone();
     if !body.get("candidates").is_some_and(Value::is_array)
         && !body.get("promptFeedback").is_some_and(Value::is_object)
     {
@@ -44,6 +142,49 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
     let mut saw_tool_call = false;
     let mut used_ids = provider_call_ids(parts);
     for (index, part) in parts.iter().enumerate() {
+        if native_parts.contains(&index) {
+            let pointer = format!("/candidates/0/content/parts/{index}");
+            let source = response_json
+                .take_raw_json_source_at(&pointer)?
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Gemini native Part source was not retained".into(),
+                })?;
+            content.push(ContentBlock::ProviderContent {
+                protocol,
+                value: JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("Gemini native Part is invalid JSON: {error}"),
+                })?,
+            });
+            continue;
+        }
+        if tool_parts.contains(&index) {
+            saw_tool_call = true;
+            let call = part.get("functionCall").unwrap_or(&Value::Null);
+            let name = call.get("name").and_then(Value::as_str).unwrap_or_default();
+            let (id, provider_id) = call_id(call, &mut used_ids);
+            let args_pointer = format!("/candidates/0/content/parts/{index}/functionCall/args");
+            let input = response_json
+                .take_raw_json_source_at(&args_pointer)?
+                .map(JsonPayload::parse)
+                .transpose()
+                .map_err(|error| LlmError::InvalidRequest {
+                    message: format!("Gemini function-call args are invalid JSON: {error}"),
+                })?
+                .unwrap_or(JsonPayload::parse("null").expect("null is JSON"));
+            content.push(ContentBlock::ToolUse {
+                id,
+                name: name.to_owned(),
+                input,
+                provider_id,
+                caller: None,
+                toolset_name: None,
+                thought_signature: part
+                    .get("thoughtSignature")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
+            continue;
+        }
         if part.get("functionCall").is_none()
             && !part.get("executableCode").is_some()
             && !part.get("codeExecutionResult").is_some()
@@ -63,7 +204,7 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
                 continue;
             }
         }
-        if let Some(block) = decode_part(part, protocol, &mut saw_tool_call, &mut used_ids) {
+        if let Some(block) = decode_part(part) {
             content.push(block);
         }
     }
@@ -72,7 +213,7 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
     Ok(ChatResponse {
         inference: Default::default(),
         response_cache: None,
-        web_search: crate::codecs::web_search_decode::gemini(&candidate),
+        web_search,
         file_search: None,
         native_metadata: Vec::new(),
         message: ConversationMessage {
@@ -94,6 +235,7 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
             usage,
             true,
         ),
+        native_resume_context_exhausted: None,
         model: body
             .get("modelVersion")
             .and_then(Value::as_str)
@@ -133,41 +275,11 @@ pub(super) fn call_id(call: &Value, used_ids: &mut HashSet<String>) -> (ToolUseI
     }
 }
 
-fn decode_part(
-    part: &Value,
-    protocol: ProtocolFamily,
-    saw_tool_call: &mut bool,
-    used_ids: &mut HashSet<String>,
-) -> Option<ContentBlock> {
+fn decode_part(part: &Value) -> Option<ContentBlock> {
     let thought_signature = part
         .get("thoughtSignature")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    if let Some(call) = part.get("functionCall") {
-        *saw_tool_call = true;
-        let name = call.get("name").and_then(Value::as_str)?.to_owned();
-        let (id, provider_id) = call_id(call, used_ids);
-        return Some(ContentBlock::ToolUse {
-            id,
-            name,
-            input: call.get("args").cloned().unwrap_or(Value::Null),
-            provider_id,
-            caller: None,
-            toolset_name: None,
-            thought_signature,
-        });
-    }
-    if part.get("executableCode").is_some()
-        || part.get("codeExecutionResult").is_some()
-        || part.get("inlineData").is_some()
-        || part.get("toolCall").is_some()
-        || part.get("toolResponse").is_some()
-    {
-        return Some(ContentBlock::ProviderContent {
-            protocol,
-            value: part.clone(),
-        });
-    }
     let text = part.get("text").and_then(Value::as_str)?.to_owned();
     if part.get("thought").and_then(Value::as_bool) == Some(true) {
         return Some(ContentBlock::Thinking {
@@ -187,7 +299,12 @@ fn decode_part(
 /// The one that matters: this provider reports a prompt over the context window
 /// as HTTP 400 `INVALID_ARGUMENT`, not 413. Left as `InvalidRequest` the turn
 /// ends terminally instead of compacting and retrying (gate 31).
-pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) -> LlmError {
+pub fn classify_error(
+    status: u16,
+    body: &Value,
+    retry_after: Option<Duration>,
+    native_retry_base_eligible: bool,
+) -> LlmError {
     let error = body.get("error");
     let message = error
         .and_then(|e| e.get("message"))
@@ -212,7 +329,10 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
             message: display,
             retry_after,
         },
-        "UNAVAILABLE" => LlmError::Overloaded { message: display },
+        "UNAVAILABLE" => LlmError::Overloaded {
+            message: display,
+            native_retry_base_eligible,
+        },
         "INTERNAL" => LlmError::ProviderInternal { message: display },
         "INVALID_ARGUMENT" | "FAILED_PRECONDITION" => {
             if is_context_overflow(&message) {
@@ -234,7 +354,10 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
                 retry_after,
             },
             400 | 422 => LlmError::InvalidRequest { message: display },
-            503 => LlmError::Overloaded { message: display },
+            503 => LlmError::Overloaded {
+                message: display,
+                native_retry_base_eligible,
+            },
             _ => LlmError::ProviderInternal { message: display },
         },
     }
@@ -312,6 +435,31 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
 #[cfg(test)]
 mod utf16_response_tests {
     use super::*;
+
+    #[test]
+    fn http_error_text_keeps_exact_provider_units_and_classification() {
+        let error = response(
+            &HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: br#"{"error":{"status":"INVALID_ARGUMENT","message":"bad\ud800"}}"#
+                    .as_slice()
+                    .into(),
+            },
+            ProtocolFamily::GeminiGenerateContent,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(text.display(), "400 bad�");
+        assert_eq!(
+            text.utf16_code_units(),
+            &[52, 48, 48, 32, 98, 97, 100, 0xd800]
+        );
+    }
 
     #[test]
     fn completed_gemini_text_retains_lone_units() {

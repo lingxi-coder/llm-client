@@ -1,7 +1,6 @@
 //! Provider-owned Claude Code Fast organization-status transport.
-use crate::protocol::LlmError;
+use crate::protocol::{JsonPayload, LlmError};
 use crate::{HttpExecutor, HttpRequest, Transport};
-use serde_json::Value;
 use std::{fmt, time::Duration};
 
 #[derive(Clone, Copy)]
@@ -26,7 +25,7 @@ pub enum FastModeStatusError {
     #[error("Fast status transport failed: {0}")]
     Transport(#[from] LlmError),
     #[error("Fast status endpoint returned HTTP {status}")]
-    Http { status: u16, body: Value },
+    Http { status: u16, body: JsonPayload },
     #[error("Fast status response is null")]
     NullResponse,
 }
@@ -34,16 +33,25 @@ impl FastModeStatusError {
     /// Native Rbe retry trigger; the host separately checks OAuth profile scope.
     pub fn requests_oauth_refresh(&self) -> bool {
         matches!(self, Self::Http { status: 401, .. })
-            || matches!(self, Self::Http { status: 403, body: Value::String(message) } if message.contains("OAuth token has been revoked"))
+            || matches!(self, Self::Http { status: 403, body } if body.string_at("").is_some_and(|message| message.contains("OAuth token has been revoked")))
     }
 }
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|v| v != 0.0),
-        Value::String(value) => !value.is_empty(),
-        _ => true,
+fn truthy(value: Option<JsonPayload>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    match value.kind_at("") {
+        Some(crate::response_json::FlatJsonKind::Null) | None => false,
+        Some(crate::response_json::FlatJsonKind::Boolean) => value.bool_at("").unwrap_or(false),
+        Some(crate::response_json::FlatJsonKind::Number) => {
+            value.number_at("").is_some_and(|number| number != 0.0)
+        }
+        Some(crate::response_json::FlatJsonKind::String) => value
+            .root_string_code_units()
+            .is_some_and(|units| !units.is_empty()),
+        Some(
+            crate::response_json::FlatJsonKind::Array | crate::response_json::FlatJsonKind::Object,
+        ) => true,
     }
 }
 /// Native ox(): one GET, ten-second timeout, API-key or OAuth headers. The
@@ -90,28 +98,35 @@ pub async fn fetch_status(
             64 * 1024,
         )
         .await?;
-    let body: Value = serde_json::from_slice(&response.body)
-        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&response.body).into_owned()));
+    let response_text = String::from_utf8_lossy(&response.body);
+    let body =
+        JsonPayload::parse(&response_text).unwrap_or_else(|_| JsonPayload::string(&response_text));
     if !(200..300).contains(&response.status) {
         return Err(FastModeStatusError::Http {
             status: response.status,
             body,
         });
     }
-    if body.is_null() {
+    if body.kind_at("") == Some(crate::response_json::FlatJsonKind::Null) {
         return Err(FastModeStatusError::NullResponse);
     }
-    let enabled = truthy(&body["enabled"]);
+    let enabled = truthy(body.payload_at("/enabled"));
     let disabled_reason = if enabled {
         None
     } else {
+        let reason = body.string_at("/disabled_reason");
         Some(
-            match body["disabled_reason"].as_str() {
+            match reason.as_deref() {
                 Some("free") => "free",
                 Some("preference") => "preference",
                 Some("extra_usage_disabled") => "extra_usage_disabled",
                 Some("network_error") => "network_error",
-                None if body["disabled_reason"].is_null() => "preference",
+                None if body.kind_at("/disabled_reason").is_none()
+                    || body.kind_at("/disabled_reason")
+                        == Some(crate::response_json::FlatJsonKind::Null) =>
+                {
+                    "preference"
+                }
                 _ => "unknown",
             }
             .into(),

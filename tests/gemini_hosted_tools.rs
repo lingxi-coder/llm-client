@@ -22,6 +22,9 @@ use std::sync::{
     Arc,
 };
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 fn gemini_profile(model: &str) -> ProviderProfile {
@@ -138,10 +141,13 @@ fn gemini_3_functions_and_google_search_use_tool_context_circulation() {
     ];
     request.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "get_weather".into(),
-        description: "Get the weather for a city".into(),
-        input_schema: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("Get the weather for a city"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
@@ -171,10 +177,13 @@ fn preflight_refuses_undocumented_routes_models_and_tool_combinations() {
         .push(lingxi_llm_client::providers::google::native::GoogleHostedTool::CodeExecution.into());
     request.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "f".into(),
-        description: "f".into(),
-        input_schema: json!({"type": "object"}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("f"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type": "object"}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
@@ -280,7 +289,9 @@ fn maps_location_and_multimodal_constraints_are_preflighted() {
             role: lingxi_llm_client::protocol::MessageRole::Assistant,
             content: vec![ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::GeminiGenerateContent,
-                value: json!({"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}),
+                value: json_payload_fixture::generated(
+                    &json!({"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}),
+                ),
             }],
         });
     inline_history.hosted_tools.push(
@@ -334,7 +345,7 @@ fn native_code_artifact_and_server_tool_parts_round_trip_without_rewriting() {
         .zip(code_parts.as_array().unwrap())
     {
         assert!(
-            matches!(block, ContentBlock::ProviderContent { protocol: ProtocolFamily::GeminiGenerateContent, value } if value == original)
+            matches!(block, ContentBlock::ProviderContent { protocol: ProtocolFamily::GeminiGenerateContent, value } if json_payload_fixture::source_matches(value, original))
         );
     }
 
@@ -390,11 +401,13 @@ fn unary_and_stream_outputs_keep_url_maps_and_native_parts_separate() {
         .unwrap();
     let search = decoded.web_search.unwrap();
     assert_eq!(
-        search.metadata["groundingMetadata"],
+        serde_json::from_str::<Value>(search.metadata.as_json_source()).unwrap()
+            ["groundingMetadata"],
         candidate_metadata["groundingMetadata"]
     );
     assert_eq!(
-        search.metadata["urlContextMetadata"],
+        serde_json::from_str::<Value>(search.metadata.as_json_source()).unwrap()
+            ["urlContextMetadata"],
         candidate_metadata["urlContextMetadata"]
     );
     assert!(search.citations.iter().any(|citation| {
@@ -407,7 +420,7 @@ fn unary_and_stream_outputs_keep_url_maps_and_native_parts_separate() {
     assert_eq!(decoded.message.content.len(), 2);
     assert!(matches!(
         &decoded.message.content[0],
-        ContentBlock::ProviderContent { value, .. } if value == &native_part
+        ContentBlock::ProviderContent { value, .. } if json_payload_fixture::source_matches(value, &native_part)
     ));
 
     let stream_profile = gemini_profile(model);
@@ -425,13 +438,14 @@ fn unary_and_stream_outputs_keep_url_maps_and_native_parts_separate() {
     assert!(events.iter().any(|event| matches!(
         event,
         StreamEvent::ProviderContent { protocol: ProtocolFamily::GeminiGenerateContent, value, .. }
-            if value == &native_part
+            if json_payload_fixture::source_matches(value, &native_part)
     )));
     assert!(events.iter().any(|event| matches!(
         event,
         StreamEvent::WebSearch { result }
-            if result.metadata.get("groundingMetadata").is_some()
-                && result.metadata.get("urlContextMetadata").is_some()
+            if serde_json::from_str::<Value>(result.metadata.as_json_source())
+                .is_ok_and(|metadata| metadata.get("groundingMetadata").is_some()
+                    && metadata.get("urlContextMetadata").is_some())
                 && result.citations.iter().any(|citation| citation.url == "https://maps.google.com/?cid=123")
     )));
 }

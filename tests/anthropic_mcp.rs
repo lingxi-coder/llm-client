@@ -14,6 +14,9 @@ use lingxi_llm_client::{
     LlmClientBuilder, RequestMode, RequestOptions, StreamResponse, Transport, WireCodec,
 };
 use serde_json::{json, Value};
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -78,7 +81,10 @@ fn typed_connector_encodes_one_server_and_matching_toolset_with_current_beta() {
                 .with_tools([AnthropicMcpTool {
                     name: "search".into(),
                     description: Some("Search the workspace".into()),
-                    input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
+                    input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                        &json!({"type":"object","properties":{"query":{"type":"string"}}}),
+                    )
+                    .unwrap(),
                 }])
                 .unwrap()
                 .with_cache_control(AnthropicMcpCacheControl {
@@ -167,7 +173,9 @@ fn replayed_listing_is_pinned_on_first_party_and_stays_generic_on_gateways() {
         0,
         ConversationMessage::assistant(vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({"type":"mcp_tool_listing","mcp_server_name":"workspace","tools":[]}),
+            value: json_payload_fixture::generated(
+                &json!({"type":"mcp_tool_listing","mcp_server_name":"workspace","tools":[]}),
+            ),
         }]),
     );
     let (body, headers) = encode(&request, &profile()).unwrap();
@@ -243,7 +251,10 @@ fn only_effectively_deferred_mcp_tools_require_anthropic_tool_search() {
                 .with_tools([AnthropicMcpTool {
                     name: "search".into(),
                     description: None,
-                    input_schema: json!({"type":"object"}),
+                    input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                        &json!({"type":"object"}),
+                    )
+                    .unwrap(),
                 }])
                 .unwrap(),
         )
@@ -580,7 +591,9 @@ async fn uncertain_mcp_execution_is_not_retried_or_failed_over() {
         0,
         ConversationMessage::assistant(vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({"type":"mcp_tool_listing","mcp_server_name":"workspace","tools":[]}),
+            value: json_payload_fixture::generated(
+                &json!({"type":"mcp_tool_listing","mcp_server_name":"workspace","tools":[]}),
+            ),
         }]),
     );
     assert!(client
@@ -589,4 +602,41 @@ async fn uncertain_mcp_execution_is_not_retried_or_failed_over() {
         .await
         .is_err());
     assert_eq!(transport.sent.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn dynamic_mcp_schema_keeps_deep_and_lone_source_through_native_decode_and_wire() {
+    let depth = 16_384;
+    let nested = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+    let schema = format!(r#"{{"type":"object","deep":{nested},"lone":"\ud800"}}"#);
+    let config = mcp_config("workspace")
+        .with_tools([AnthropicMcpTool {
+            name: "search".into(),
+            description: Some("Search the workspace".into()),
+            input_schema: lingxi_llm_client::protocol::JsonPayload::parse(&schema).unwrap(),
+        }])
+        .unwrap();
+    let hosted = lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::Mcp(config);
+    let hosted_source = serde_json::to_string(&hosted).unwrap();
+    let extension = format!(r#"{{"format":"anthropic.hosted_tool.v1","data":{hosted_source}}}"#);
+    let request_source = format!(
+        r#"{{"model":"{MODEL}","messages":[{{"role":"user","content":[{{"type":"text","text":"Use MCP"}}]}}],"hosted_tools":[{{"type":"native","config":{extension}}}]}}"#
+    );
+    let request: ChatRequest = serde_json::from_str(&request_source).unwrap();
+    assert_eq!(
+        request
+            .anthropic_mcp_servers()
+            .next()
+            .unwrap()
+            .tools()
+            .unwrap()[0]
+            .input_schema
+            .as_json_source(),
+        schema
+    );
+    let wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &context(&profile()))
+        .unwrap();
+    let body = String::from_utf8(wire.body.to_vec()).unwrap();
+    assert!(body.contains(&format!(r#""input_schema":{schema}"#)));
 }

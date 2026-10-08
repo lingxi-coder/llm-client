@@ -660,9 +660,15 @@ impl<'a> FileService<'a> {
             .with_deadline(deadline)
             .send_stream(request)
             .await
-            .map_err(|error| match error {
-                LlmError::UnsupportedCapability { .. } => FileUploadError::Llm(error),
-                source => unknown_upload_outcome("multipart upload", source, None),
+            .map_err(|error| {
+                if matches!(
+                    error.classification_source(),
+                    LlmError::UnsupportedCapability { .. }
+                ) {
+                    FileUploadError::Llm(error)
+                } else {
+                    unknown_upload_outcome("multipart upload", error, None)
+                }
             })?;
         let response =
             crate::transport::HttpExecutor::collect_response(response, Some(1024 * 1024))
@@ -1162,11 +1168,15 @@ pub(crate) fn unknown_upload_outcome(
 /// Keep deterministic local/provider validation failures in their original
 /// class, while marking transport uncertainty so callers do not retry blind.
 pub(crate) fn buffered_upload_error(operation: &str, error: LlmError) -> LlmError {
-    match error {
+    if matches!(
+        error.classification_source(),
         LlmError::Transport { .. }
-        | LlmError::TransportTimeout { .. }
-        | LlmError::StreamInterrupted { .. } => unknown_buffered_upload_outcome(operation, error),
-        other => other,
+            | LlmError::TransportTimeout { .. }
+            | LlmError::StreamInterrupted { .. }
+    ) {
+        unknown_buffered_upload_outcome(operation, error)
+    } else {
+        error
     }
 }
 

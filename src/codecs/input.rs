@@ -21,6 +21,9 @@ pub struct CodecContext {
     account_scope: Option<String>,
     native_options: Vec<crate::protocol::NativeExtension>,
     file_validation_time: Option<std::time::SystemTime>,
+    native_anthropic_context: crate::client::NativeAnthropicContextInput,
+    native_anthropic_thinking_resumption_beta_requested: Option<bool>,
+    model_complete_empty_cache_blocks: bool,
 }
 impl CodecContext {
     /// Build a context from a wire ID. Use [`Self::for_model`] when selecting
@@ -104,6 +107,9 @@ impl CodecContext {
             account_scope: None,
             native_options: Vec::new(),
             file_validation_time: None,
+            native_anthropic_context: crate::client::NativeAnthropicContextInput::default(),
+            native_anthropic_thinking_resumption_beta_requested: None,
+            model_complete_empty_cache_blocks: false,
         }
     }
     /// Set the caller's non-secret identity for account-bound execution state.
@@ -144,9 +150,113 @@ impl CodecContext {
         self.file_validation_time = Some(now);
         self
     }
+    /// Supply exact Native context observations from the selected current
+    /// route. Unknown observations remain absent; generic directory defaults
+    /// are never promoted into Native facts.
+    pub fn with_native_anthropic_context(
+        mut self,
+        context: crate::client::NativeAnthropicContextInput,
+    ) -> Self {
+        self.native_anthropic_thinking_resumption_beta_requested = self
+            .native_anthropic_error_route()
+            .and(context.thinking_resumption_beta_requested);
+        self.native_anthropic_context = context;
+        self
+    }
+
+    /// Native's query/resumption implementation runs only on its Anthropic
+    /// Messages providers. Arbitrary Anthropic-compatible profiles remain
+    /// outside this route even when they use the same wire format.
+    pub(crate) fn native_anthropic_error_route(
+        &self,
+    ) -> Option<(crate::protocol::ProviderId, crate::protocol::ProtocolFamily)> {
+        let profile = &self.profile;
+        let selected = match (profile.protocol, profile.provider_id.as_str()) {
+            (crate::protocol::ProtocolFamily::AnthropicMessages, "anthropic")
+            | (crate::protocol::ProtocolFamily::AnthropicMessages, "anthropicAws")
+            | (crate::protocol::ProtocolFamily::AnthropicMessages, "anthropicGoogleCloud")
+            | (crate::protocol::ProtocolFamily::AnthropicMessages, "foundry")
+            | (crate::protocol::ProtocolFamily::AnthropicMessages, "gateway")
+            | (crate::protocol::ProtocolFamily::AnthropicMessages, "mantle")
+            | (crate::protocol::ProtocolFamily::BedrockClaude, _)
+            | (crate::protocol::ProtocolFamily::VertexClaude, _)
+            | (crate::protocol::ProtocolFamily::FoundryClaude, _) => true,
+            _ => false,
+        };
+        selected.then(|| (profile.provider_id.clone(), profile.protocol))
+    }
+
+    /// Native Aet consults strict membership in the request's planned `betas`
+    /// array, not the post-authentication HTTP header collection.
+    pub(crate) fn native_anthropic_thinking_resumption_beta_requested(&self) -> Option<bool> {
+        self.native_anthropic_thinking_resumption_beta_requested
+    }
+
+    pub(crate) fn set_native_anthropic_thinking_resumption_beta_requested(
+        &mut self,
+        requested: Option<bool>,
+    ) {
+        self.native_anthropic_thinking_resumption_beta_requested =
+            self.native_anthropic_error_route().and(requested);
+    }
+
+    pub(crate) fn set_native_anthropic_context_1m_beta_requested(
+        &mut self,
+        requested: Option<bool>,
+    ) {
+        self.native_anthropic_context.context_1m_beta_requested =
+            self.native_anthropic_error_route().and(requested);
+    }
+
+    /// Resolve only context sources that are present in the current request or
+    /// Native process. A missing Native registry/dynamic observation stays
+    /// unknown instead of inheriting the unrelated generic 200k fallback.
+    pub(crate) fn native_anthropic_effective_context_window(&self) -> Option<f64> {
+        self.native_anthropic_error_route()?;
+        if std::env::var("DISABLE_COMPACT").is_ok_and(|value| !value.is_empty()) {
+            if let Ok(value) = std::env::var("CLAUDE_CODE_MAX_CONTEXT_TOKENS") {
+                if let Ok(window) = value.parse::<f64>() {
+                    if window.is_finite() && window > 0.0 {
+                        return Some(window);
+                    }
+                }
+            }
+        }
+        if let Some(window) = self
+            .native_anthropic_context
+            .dynamic_context_window
+            .filter(|window| *window > 0)
+        {
+            return Some(window as f64);
+        }
+        if self.request_model.ends_with("[1m]")
+            && self.native_anthropic_context.model_supports_context_1m == Some(true)
+        {
+            return Some(1_000_000.0);
+        }
+        let one_million_beta_requested = self.native_anthropic_context.context_1m_beta_requested
+            == Some(true)
+            && self.native_anthropic_context.model_supports_context_1m == Some(true);
+        if one_million_beta_requested {
+            return Some(1_000_000.0);
+        }
+        self.native_anthropic_context
+            .model_registry_context_window
+            .filter(|window| *window > 0)
+            .map(|window| window as f64)
+    }
     pub fn file_validation_time(&self) -> std::time::SystemTime {
         self.file_validation_time
             .unwrap_or_else(std::time::SystemTime::now)
+    }
+    /// Preserve Native model.complete empty text blocks when they carry an
+    /// explicit cache marker. Other request paths retain the nonempty rule.
+    pub fn with_model_complete_empty_cache_blocks(mut self, allow: bool) -> Self {
+        self.model_complete_empty_cache_blocks = allow;
+        self
+    }
+    pub(crate) fn allows_model_complete_empty_cache_blocks(&self) -> bool {
+        self.model_complete_empty_cache_blocks
     }
     pub fn with_file_scope(mut self, scope: Option<&str>) -> Self {
         self.file_account_scope = scope.map(str::to_owned);

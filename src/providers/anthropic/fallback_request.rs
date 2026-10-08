@@ -1,9 +1,11 @@
 //! Native NHt request parameters and conversation-owned server beta latches.
 //! The caller supplies a lane admitted by its model/feature policy.
 use super::request_policy::merge_beta_header;
-use crate::protocol::LlmError;
+use crate::protocol::{JsonPayload, LlmError};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
+#[cfg(test)]
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -50,7 +52,7 @@ pub struct ServerFallbackRepairFacts {
 /// preparation and retry eligibility are evaluated separately below.
 pub fn classify_server_fallback_rejection(
     status: u16,
-    error_body: &Value,
+    error_body: &JsonPayload,
 ) -> Option<ServerFallbackRepairCause> {
     if status != 400 {
         return None;
@@ -153,7 +155,7 @@ impl RequestPolicy {
         request_model: &str,
         first_party: bool,
         state: &ServerBetaState,
-        body: &mut Value,
+        body: &mut JsonPayload,
         headers: &mut BTreeMap<String, String>,
         string_overrides: &mut BTreeMap<String, Vec<u16>>,
     ) -> Result<(), LlmError> {
@@ -225,15 +227,15 @@ impl RequestPolicy {
         }
         let lane = self.lane.as_ref().expect("admitted lane");
         let parameters = if default {
-            json!("default")
+            JsonPayload::string("default")
         } else {
-            json!([{"model":wire_model(&lane.model)}])
+            JsonPayload::from_generated_value(&json!([{"model":wire_model(&lane.model)}])).map_err(
+                |error| LlmError::InvalidRequest {
+                    message: format!("cannot encode fallback lane parameters: {error}"),
+                },
+            )?
         };
-        body.as_object_mut()
-            .ok_or_else(|| LlmError::InvalidRequest {
-                message: "Messages request body must be an object".into(),
-            })?
-            .insert("fallbacks".into(), parameters);
+        super::request_policy::set_object_field_source(body, "fallbacks", &parameters)?;
         string_overrides.retain(|path, _| path != "/fallbacks" && !path.starts_with("/fallbacks/"));
         Ok(())
     }
@@ -285,7 +287,8 @@ mod tests {
             if !initial.is_empty() {
                 headers.insert("anthropic-beta".into(), initial);
             }
-            let mut body = json!({"model":case["model"]});
+            let mut body =
+                JsonPayload::from_generated_value(&json!({"model":case["model"]})).unwrap();
             let mut strings = BTreeMap::from([("/fallbacks/0/model".into(), vec![b'x' as u16])]);
             policy
                 .apply(
@@ -297,8 +300,9 @@ mod tests {
                     &mut strings,
                 )
                 .unwrap();
+            let body_value: Value = serde_json::from_str(body.as_json_source()).unwrap();
             assert_eq!(
-                body.get("fallbacks"),
+                body_value.get("fallbacks"),
                 case["expected"]["parameters"].get("fallbacks"),
                 "{case}"
             );
@@ -312,7 +316,7 @@ mod tests {
                 case["expected"]["state"],
                 "{case}"
             );
-            if body.get("fallbacks").is_some() {
+            if super::super::request_policy::has_field(&body, "fallbacks") {
                 assert!(strings.is_empty());
             }
         }

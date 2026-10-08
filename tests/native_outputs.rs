@@ -1,5 +1,8 @@
 use lingxi_llm_client::{protocol::*, *};
 use serde_json::json;
+
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
 fn context() -> CodecContext {
     let p:ProviderProfile=serde_json::from_value(json!({"provider_id":"openai","profile_name":"openai","protocol":"open_ai_responses","base_url":"https://test.invalid","auth":"none"})).unwrap();
     CodecContext::new(&p, "test", RequestMode::Complete)
@@ -30,7 +33,7 @@ fn hosted_and_unknown_items_survive_buffered_and_fragmented_streaming_once() {
             response.message.content[0],
             ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::OpenAiResponses,
-                value: item.clone()
+                value: json_payload_fixture::generated(&item)
             }
         );
         if kind == "mcp_approval_request" {
@@ -70,7 +73,8 @@ fn hosted_and_unknown_items_survive_buffered_and_fragmented_streaming_once() {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(native, vec![&item]);
+            let expected = json_payload_fixture::generated(&item);
+            assert_eq!(native, vec![&expected]);
             if kind == "mcp_approval_request" {
                 assert!(events.iter().any(|e|matches!(e,StreamEvent::End{stop_reason:StopReason::Other(reason),..} if reason=="requires_action")));
             }

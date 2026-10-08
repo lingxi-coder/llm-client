@@ -1,7 +1,7 @@
 //! Output format encoders shared by hosted and direct protocol implementations.
 use crate::codecs::CodecContext;
 use crate::protocol::{
-    CapabilitySupport, ChatRequest, ContentBlock, LlmError, MessageRole, OutputFormat,
+    CapabilitySupport, ChatRequest, ContentBlock, JsonPayload, LlmError, MessageRole, OutputFormat,
     ProtocolFamily,
 };
 use serde_json::{json, Map, Value};
@@ -30,7 +30,7 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
     .iter()
     .any(|key| context.profile().extra["body"].get(key).is_some())
     {
-        validate_extra_fields(&fields(req, context), context)?;
+        validate_extra_fields(&fields(req, context), req, context)?;
     }
     Ok(())
 }
@@ -42,10 +42,11 @@ pub(crate) fn apply(
 ) -> Result<(), LlmError> {
     validate_contract(req, context)?;
     let fields = fields(req, context);
-    validate_extra_fields(&fields, context)?;
+    validate_extra_fields(&fields, req, context)?;
     for (key, value) in fields {
         let mut merged = value;
         if let Some(extra) = context.profile().extra["body"].get(&key) {
+            preserve_matching_schema_placeholder(req, context, &key, &mut merged, extra)?;
             super::inference::merge_json(&mut merged, extra, &key)?;
         }
         if let Some(existing) = body.get_mut(&key) {
@@ -53,6 +54,36 @@ pub(crate) fn apply(
         } else {
             body.insert(key, merged);
         }
+    }
+    Ok(())
+}
+
+fn preserve_matching_schema_placeholder(
+    req: &ChatRequest,
+    context: &CodecContext,
+    key: &str,
+    typed: &mut Value,
+    extra: &Value,
+) -> Result<(), LlmError> {
+    let OutputFormat::JsonSchema { schema, .. } = &req.output_format else {
+        return Ok(());
+    };
+    let pointer = match key {
+        "response_format" => "/json_schema/schema",
+        "text" | "output_config" => "/format/schema",
+        "generationConfig" => "/responseFormat/text/schema",
+        _ => return Ok(()),
+    };
+    let Some(native_schema) = extra.pointer(pointer) else {
+        return Ok(());
+    };
+    if !schema_matches_value(schema, native_schema, context.profile().protocol)? {
+        return Ok(());
+    }
+    if typed.pointer(pointer).is_some_and(Value::is_null) {
+        *typed
+            .pointer_mut(pointer)
+            .expect("schema placeholder path was checked") = native_schema.clone();
     }
     Ok(())
 }
@@ -113,7 +144,9 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
         OutputFormat::Text => unreachable!(),
         OutputFormat::JsonObject => {
             if anthropic {
-                return Err(unsupported("Messages requires a JSON schema; unconstrained JSON-object mode is unavailable"));
+                return Err(unsupported(
+                    "Messages requires a JSON schema; unconstrained JSON-object mode is unavailable",
+                ));
             }
         }
         OutputFormat::JsonSchema {
@@ -136,6 +169,7 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
                     "this protocol cannot express a non-strict schema output contract",
                 ));
             }
+            crate::protocol::structured::validate_request_schema(schema).map_err(invalid)?;
             if *strict {
                 let qwen_strict_output =
                     crate::providers::qwen::structured::is_qwen_openai_chat_profile(profile)
@@ -156,7 +190,6 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
                     )?;
                 }
             }
-            crate::protocol::structured::compile_request_schema(schema).map_err(invalid)?;
         }
     }
     if !anthropic
@@ -178,7 +211,12 @@ fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), Ll
 pub(crate) fn has_json_prompt_keyword(req: &ChatRequest) -> bool {
     req.system
         .iter()
-        .any(|block| contains_json_keyword(&block.text))
+        .any(|block| {
+            block
+                .text_payload()
+                .root_string_code_units()
+                .is_some_and(|units| contains_json_keyword_utf16(&units))
+        })
         || req.messages.iter().any(|message| {
             matches!(message.role, MessageRole::System | MessageRole::User)
                 && message.content.iter().any(|block| {
@@ -193,79 +231,131 @@ fn contains_json_keyword(text: &str) -> bool {
         .any(|window| window.eq_ignore_ascii_case(b"json"))
 }
 
+fn contains_json_keyword_utf16(text: &[u16]) -> bool {
+    text.windows(4).any(|window| {
+        window
+            .iter()
+            .copied()
+            .map(u8::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .is_ok_and(|bytes| bytes.eq_ignore_ascii_case(b"json"))
+    })
+}
+
 /// Reject recursive local references for Anthropic programmatic tool callers.
 /// The caller decides whether this contract applies; ordinary tool schemas do
 /// not use this helper.
-pub(crate) fn validate_no_recursive_schema_references(schema: &Value) -> Result<(), LlmError> {
-    validate_schema_references(
+pub(crate) fn validate_no_recursive_schema_references(
+    schema: &JsonPayload,
+) -> Result<(), LlmError> {
+    validate_schema_payload_references(
         schema,
         "Anthropic programmatic tool calling does not support recursive schema references",
     )
 }
 
-pub(crate) fn validate_schema_references(
-    schema: &Value,
+pub(crate) fn validate_schema_payload_references(
+    schema: &JsonPayload,
     recursive_error: &str,
 ) -> Result<(), LlmError> {
-    fn visit(
-        schema: &Value,
-        root: &Value,
-        active_refs: &mut Vec<String>,
-        completed_refs: &mut std::collections::HashSet<String>,
-        recursive_error: &str,
-    ) -> Result<(), LlmError> {
-        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+    let scanner = schema.scanner()?;
+    enum Task {
+        Visit(String),
+        LeaveReference(String),
+    }
+    let pointer_child = |parent: &str, token: &str| {
+        let escaped = token.replace('~', "~0").replace('/', "~1");
+        if parent.is_empty() {
+            format!("/{escaped}")
+        } else {
+            format!("{parent}/{escaped}")
+        }
+    };
+    let mut tasks = vec![Task::Visit(String::new())];
+    let mut active_refs = Vec::<String>::new();
+    let mut completed_refs = std::collections::HashSet::<String>::new();
+    while let Some(task) = tasks.pop() {
+        let path = match task {
+            Task::Visit(path) => path,
+            Task::LeaveReference(reference) => {
+                let popped = active_refs.pop();
+                debug_assert_eq!(popped.as_deref(), Some(reference.as_str()));
+                completed_refs.insert(reference);
+                continue;
+            }
+        };
+        let reference_path = pointer_child(&path, "$ref");
+        if let Some(units) = scanner.string_units_at(&reference_path) {
+            let reference = String::from_utf16(&units).map_err(|_| LlmError::InvalidRequest {
+                message: "tool schema references must be valid Unicode".into(),
+            })?;
             if let Some(fragment) = reference
                 .strip_prefix('#')
                 .and_then(decode_reference_fragment)
             {
-                let target = if fragment.is_empty() {
-                    Some(root)
+                let target_exists = if fragment.is_empty() {
+                    scanner.kind_at("").is_some()
                 } else {
-                    root.pointer(&fragment)
+                    fragment.starts_with('/') && scanner.kind_at(&fragment).is_some()
                 };
-                if let Some(target) = target {
+                if target_exists {
                     if active_refs.iter().any(|active| active == &fragment) {
                         return Err(unsupported(recursive_error));
                     }
                     if !completed_refs.contains(&fragment) {
                         active_refs.push(fragment.clone());
-                        visit(target, root, active_refs, completed_refs, recursive_error)?;
-                        active_refs.pop();
-                        completed_refs.insert(fragment);
+                        tasks.push(Task::LeaveReference(fragment.clone()));
+                        tasks.push(Task::Visit(fragment));
                     }
                 }
             }
         }
+
+        let mut children = Vec::new();
         for key in ["properties", "$defs", "definitions"] {
-            if let Some(children) = schema.get(key).and_then(Value::as_object) {
-                for child in children.values() {
-                    visit(child, root, active_refs, completed_refs, recursive_error)?;
+            let object_path = pointer_child(&path, key);
+            if scanner.kind_at(&object_path) != Some(crate::response_json::FlatJsonKind::Object) {
+                continue;
+            }
+            let entries = scanner.object_entries_at(&object_path).ok_or_else(|| {
+                LlmError::InvalidRequest {
+                    message: "tool schema object cannot be scanned".into(),
                 }
+            })?;
+            for (_, units) in entries {
+                let token = String::from_utf16(&units).map_err(|_| LlmError::InvalidRequest {
+                    message: "tool schema keys must be valid Unicode".into(),
+                })?;
+                children.push(pointer_child(&object_path, &token));
             }
         }
         for key in ["items", "additionalProperties"] {
-            if let Some(child) = schema.get(key).filter(|value| value.is_object()) {
-                visit(child, root, active_refs, completed_refs, recursive_error)?;
+            let child = pointer_child(&path, key);
+            if scanner.kind_at(&child) == Some(crate::response_json::FlatJsonKind::Object) {
+                children.push(child);
             }
         }
         for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
-            if let Some(children) = schema.get(key).and_then(Value::as_array) {
-                for child in children {
-                    visit(child, root, active_refs, completed_refs, recursive_error)?;
-                }
+            let array_path = pointer_child(&path, key);
+            if scanner.kind_at(&array_path) != Some(crate::response_json::FlatJsonKind::Array) {
+                continue;
             }
+            let length = scanner.array_len(&array_path).unwrap_or(0);
+            children
+                .extend((0..length).map(|index| pointer_child(&array_path, &index.to_string())));
         }
-        Ok(())
+        for child in children.into_iter().rev() {
+            tasks.push(Task::Visit(child));
+        }
     }
+    Ok(())
+}
 
-    visit(
-        schema,
-        schema,
-        &mut Vec::new(),
-        &mut std::collections::HashSet::new(),
-        recursive_error,
-    )
+pub(crate) fn validate_schema_references(
+    schema: &JsonPayload,
+    recursive_error: &str,
+) -> Result<(), LlmError> {
+    validate_schema_payload_references(schema, recursive_error)
 }
 
 /// JSON Schema references use URI fragments, while `Value::pointer` accepts a
@@ -307,12 +397,8 @@ fn fields(req: &ChatRequest, context: &CodecContext) -> Map<String, Value> {
         ProtocolFamily::GeminiInteractions => {}
         ProtocolFamily::OpenAiChat | ProtocolFamily::AzureOpenAi => {
             let value = match &req.output_format {
-                OutputFormat::JsonSchema {
-                    name,
-                    schema,
-                    strict,
-                } => {
-                    json!({"type":"json_schema","json_schema":{"name":name,"schema":schema,"strict":strict}})
+                OutputFormat::JsonSchema { name, strict, .. } => {
+                    json!({"type":"json_schema","json_schema":{"name":name,"schema":null,"strict":strict}})
                 }
                 _ => json!({"type":"json_object"}),
             };
@@ -320,11 +406,9 @@ fn fields(req: &ChatRequest, context: &CodecContext) -> Map<String, Value> {
         }
         ProtocolFamily::OpenAiResponses => {
             let format = match &req.output_format {
-                OutputFormat::JsonSchema {
-                    name,
-                    schema,
-                    strict,
-                } => json!({"type":"json_schema", "name":name, "schema":schema, "strict":strict}),
+                OutputFormat::JsonSchema { name, strict, .. } => {
+                    json!({"type":"json_schema", "name":name, "schema":null, "strict":strict})
+                }
                 _ => json!({"type":"json_object"}),
             };
             fields.insert("text".into(), json!({"format":format}));
@@ -333,18 +417,18 @@ fn fields(req: &ChatRequest, context: &CodecContext) -> Map<String, Value> {
         | ProtocolFamily::BedrockClaude
         | ProtocolFamily::VertexClaude
         | ProtocolFamily::FoundryClaude => {
-            let OutputFormat::JsonSchema { schema, .. } = &req.output_format else {
+            let OutputFormat::JsonSchema { .. } = &req.output_format else {
                 unreachable!()
             };
             fields.insert(
                 "output_config".into(),
-                json!({"format":{"type":"json_schema","schema":schema}}),
+                json!({"format":{"type":"json_schema","schema":Value::Null}}),
             );
         }
         ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini => {
             let mut text = json!({"mimeType":"application/json"});
-            if let OutputFormat::JsonSchema { schema, .. } = &req.output_format {
-                text["schema"] = schema.clone();
+            if let OutputFormat::JsonSchema { .. } = &req.output_format {
+                text["schema"] = Value::Null;
             }
             fields.insert(
                 "generationConfig".into(),
@@ -357,32 +441,61 @@ fn fields(req: &ChatRequest, context: &CodecContext) -> Map<String, Value> {
 
 fn validate_extra_fields(
     fields: &Map<String, Value>,
+    req: &ChatRequest,
     context: &CodecContext,
 ) -> Result<(), LlmError> {
     // Text-mode native conflicts are checked by validate_contract.
     if fields.is_empty() {
         return Ok(());
     }
-    let p = context.profile();
-    // A native schema must match exactly; a recursive merge must not add unvalidated constraints.
-    for (key, suffix, pointer) in [
-        ("response_format", "", "/response_format"),
-        ("text", "/format", "/text/format"),
-        ("output_config", "/format", "/output_config/format"),
+    let profile = context.profile();
+    let output_schema = match &req.output_format {
+        OutputFormat::JsonSchema { schema, .. } => Some(schema),
+        _ => None,
+    };
+    for (key, suffix, pointer, schema_suffix) in [
+        (
+            "response_format",
+            "",
+            "/response_format",
+            Some("/json_schema/schema"),
+        ),
+        ("text", "/format", "/text/format", Some("/schema")),
+        (
+            "output_config",
+            "/format",
+            "/output_config/format",
+            Some("/schema"),
+        ),
         (
             "generationConfig",
             "/responseFormat",
             "/generationConfig/responseFormat",
+            Some("/text/schema"),
         ),
     ] {
-        if let Some(native) = p.extra["body"].pointer(pointer) {
-            if Some(native) != fields.get(key).and_then(|value| value.pointer(suffix)) {
+        if let Some(native) = profile.extra["body"].pointer(pointer) {
+            let Some(expected) = fields.get(key).and_then(|value| value.pointer(suffix)) else {
+                return Err(invalid(format!("conflicting request field {pointer}")));
+            };
+            let mut native = native.clone();
+            if let (Some(schema), Some(schema_suffix)) = (output_schema, schema_suffix) {
+                if let Some(native_schema) = native.pointer(schema_suffix) {
+                    if !schema_matches_value(schema, native_schema, profile.protocol)? {
+                        return Err(invalid(format!("conflicting request field {pointer}")));
+                    }
+                    *native
+                        .pointer_mut(schema_suffix)
+                        .expect("checked schema path") = Value::Null;
+                }
+            }
+            if &native != expected {
                 return Err(invalid(format!("conflicting request field {pointer}")));
             }
         }
     }
     for key in ["responseMimeType", "responseSchema", "responseJsonSchema"] {
-        if p.extra["body"]["generationConfig"].get(key).is_some() {
+        if profile.extra["body"]["generationConfig"].get(key).is_some() {
             return Err(invalid(
                 "native Gemini output format conflicts with the typed output contract",
             ));
@@ -390,30 +503,81 @@ fn validate_extra_fields(
     }
     // Detect conflicts before attachment uploads or credential acquisition.
     for (key, value) in fields {
-        if let Some(extra) = p.extra["body"].get(key) {
+        if let Some(extra) = profile.extra["body"].get(key) {
             super::inference::merge_json(&mut value.clone(), extra, key)?;
         }
     }
     Ok(())
 }
 
+fn schema_matches_value(
+    schema: &JsonPayload,
+    value: &Value,
+    protocol: ProtocolFamily,
+) -> Result<bool, LlmError> {
+    let generated = JsonPayload::from_generated_value(value)
+        .map_err(|error| invalid(format!("native schema extension is invalid JSON: {error}")))?;
+    let encoding = crate::exact_json::JsonEncoding::for_protocol(protocol);
+    Ok(schema.canonical_json(encoding)? == generated.canonical_json(encoding)?)
+}
+
 pub(crate) fn validate_subset(
-    schema: &Value,
+    schema: &JsonPayload,
     anthropic: bool,
     gemini: bool,
     root: bool,
     native_claude: bool,
     qwen_strict_output: bool,
 ) -> Result<(), LlmError> {
-    let object = schema
-        .as_object()
-        .ok_or_else(|| invalid("structured output requires object-form schemas"))?;
-    if root && !anthropic && !gemini && (schema["type"] != "object" || object.contains_key("anyOf"))
-    {
-        return Err(invalid(
-            "strict schema output requires an object root without anyOf",
-        ));
+    use crate::response_json::{FlatJsonKind, JsonNodeRef};
+
+    fn key_is(units: &[u16], key: &str) -> bool {
+        units == key.encode_utf16().collect::<Vec<_>>().as_slice()
     }
+    fn field<'a>(node: &JsonNodeRef<'a>, key: &str) -> Option<JsonNodeRef<'a>> {
+        node.object_entries()?
+            .into_iter()
+            .find(|entry| key_is(entry.key_units, key))
+            .map(|entry| entry.value)
+    }
+    fn string_units(node: &JsonNodeRef<'_>) -> Option<Vec<u16>> {
+        (node.kind() == FlatJsonKind::String)
+            .then(|| node.string_units())
+            .flatten()
+    }
+    fn string_is(node: &JsonNodeRef<'_>, text: &str) -> bool {
+        string_units(node).is_some_and(|units| key_is(&units, text))
+    }
+    fn type_has(node: &JsonNodeRef<'_>, expected: &str) -> bool {
+        let Some(value) = field(node, "type") else {
+            return false;
+        };
+        if value.kind() == FlatJsonKind::String {
+            return string_is(&value, expected);
+        }
+        if value.kind() != FlatJsonKind::Array {
+            return false;
+        }
+        (0..value.array_len().unwrap_or(0))
+            .filter_map(|index| value.array_item(index))
+            .any(|item| string_is(&item, expected))
+    }
+    fn number_u64(node: &JsonNodeRef<'_>) -> Option<u64> {
+        node.number_source()?.parse().ok()
+    }
+    fn schema_object<'a>(
+        node: &JsonNodeRef<'a>,
+    ) -> Result<Vec<crate::response_json::JsonObjectEntryRef<'a>>, LlmError> {
+        if node.kind() != FlatJsonKind::Object {
+            return Err(invalid("structured output requires object-form schemas"));
+        }
+        node.object_entries()
+            .ok_or_else(|| invalid("structured schema object cannot be scanned"))
+    }
+
+    let scanner = schema.scanner()?;
+    let root_node = scanner.root_node();
+    let mut pending = vec![(root_node, root)];
     const COMMON: &[&str] = &[
         "$schema",
         "$defs",
@@ -431,184 +595,254 @@ pub(crate) fn validate_subset(
         "anyOf",
         "format",
     ];
-    for key in object.keys() {
-        let extra = if anthropic {
-            &["default", "allOf", "minItems", "pattern"][..]
-        } else if gemini {
-            &[
-                "minimum",
-                "maximum",
-                "prefixItems",
-                "minItems",
-                "maxItems",
-                "propertyOrdering",
-            ][..]
-        } else {
-            &[
-                "minimum",
-                "maximum",
-                "exclusiveMinimum",
-                "exclusiveMaximum",
-                "multipleOf",
-                "minItems",
-                "maxItems",
-                "pattern",
-            ][..]
-        };
-        if !COMMON.contains(&key.as_str()) && !extra.contains(&key.as_str()) {
-            return Err(unsupported(format!(
-                "schema keyword {key} is not supported by this encoder"
-            )));
-        }
-    }
-    if native_claude {
-        crate::providers::anthropic::structured::validate_native_schema_node(object)?;
-    }
-    if anthropic {
-        if schema["minItems"].as_u64().is_some_and(|n| n > 1) {
-            return Err(unsupported(
-                "Messages only supports minItems of zero or one",
-            ));
-        }
-        if schema["enum"]
-            .as_array()
-            .is_some_and(|values| values.iter().any(|v| v.is_array() || v.is_object()))
+    let anthropic_extra: &[&str] = &["default", "allOf", "minItems", "pattern"];
+    let gemini_extra: &[&str] = &[
+        "minimum",
+        "maximum",
+        "prefixItems",
+        "minItems",
+        "maxItems",
+        "propertyOrdering",
+    ];
+    let common_extra: &[&str] = &[
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minItems",
+        "maxItems",
+        "pattern",
+    ];
+    let anthropic_unsupported: &[&str] = &[
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "not",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+        "patternProperties",
+        "uniqueItems",
+        "contains",
+    ];
+    let gemini_unsupported: &[&str] = &[
+        "allOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+        "patternProperties",
+        "uniqueItems",
+        "contains",
+    ];
+    let openai_unsupported: &[&str] = &[
+        "allOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "dependentRequired",
+        "dependentSchemas",
+        "patternProperties",
+        "uniqueItems",
+        "contains",
+    ];
+
+    while let Some((node, is_root)) = pending.pop() {
+        let entries = schema_object(&node)?;
+        let has_any_of = entries.iter().any(|entry| key_is(entry.key_units, "anyOf"));
+        if is_root
+            && !anthropic
+            && !gemini
+            && (!field(&node, "type").is_some_and(|value| string_is(&value, "object"))
+                || has_any_of)
         {
-            return Err(unsupported("Messages does not support complex enum values"));
-        }
-        if schema["pattern"].as_str().is_some_and(|pattern| {
-            pattern.contains("(?")
-                || pattern.contains("\\b")
-                || pattern.contains("\\B")
-                || pattern
-                    .as_bytes()
-                    .windows(2)
-                    .any(|pair| pair[0] == b'\\' && pair[1].is_ascii_digit())
-        }) {
-            return Err(unsupported(
-                "Messages does not support this regex constraint",
-            ));
-        }
-    }
-    let unsupported_keys: &[&str] = if anthropic {
-        &[
-            "minimum",
-            "maximum",
-            "exclusiveMinimum",
-            "exclusiveMaximum",
-            "multipleOf",
-            "minLength",
-            "maxLength",
-            "not",
-            "if",
-            "then",
-            "else",
-            "dependentRequired",
-            "dependentSchemas",
-            "patternProperties",
-            "uniqueItems",
-            "contains",
-        ]
-    } else if gemini {
-        &[
-            "allOf",
-            "not",
-            "if",
-            "then",
-            "else",
-            "dependentRequired",
-            "dependentSchemas",
-            "patternProperties",
-            "uniqueItems",
-            "contains",
-        ]
-    } else {
-        &[
-            "allOf",
-            "oneOf",
-            "not",
-            "if",
-            "then",
-            "else",
-            "dependentRequired",
-            "dependentSchemas",
-            "patternProperties",
-            "uniqueItems",
-            "contains",
-        ]
-    };
-    for key in unsupported_keys {
-        if object.contains_key(*key) {
-            return Err(unsupported(format!("schema constraint {key} is not supported by this encoder; constraints are never removed")));
-        }
-    }
-    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-        if !reference.starts_with('#') {
-            return Err(invalid("only local schema references are permitted"));
-        }
-    }
-    let is_object = schema["type"] == "object"
-        || schema["type"]
-            .as_array()
-            .is_some_and(|types| types.iter().any(|t| t == "object"))
-        || object.contains_key("properties");
-    if is_object && !gemini && !qwen_strict_output {
-        if schema["additionalProperties"] != false {
             return Err(invalid(
-                "strict object schemas require additionalProperties: false",
+                "strict schema output requires an object root without anyOf",
             ));
         }
-        if !anthropic {
-            if let Some(properties) = schema["properties"].as_object() {
-                let required = schema["required"].as_array();
-                if properties
-                    .keys()
-                    .any(|key| !required.is_some_and(|r| r.iter().any(|v| v.as_str() == Some(key))))
+
+        let extra = if anthropic {
+            anthropic_extra
+        } else if gemini {
+            gemini_extra
+        } else {
+            common_extra
+        };
+        for entry in &entries {
+            let name = String::from_utf16_lossy(entry.key_units);
+            let supported = COMMON.iter().any(|key| key_is(entry.key_units, key))
+                || extra.iter().any(|key| key_is(entry.key_units, key));
+            if !supported {
+                return Err(unsupported(format!(
+                    "schema keyword {name} is not supported by this encoder"
+                )));
+            }
+            let unsupported_keys = if anthropic {
+                anthropic_unsupported
+            } else if gemini {
+                gemini_unsupported
+            } else {
+                openai_unsupported
+            };
+            if unsupported_keys
+                .iter()
+                .any(|key| key_is(entry.key_units, key))
+            {
+                return Err(unsupported(format!(
+                    "schema constraint {name} is not supported by this encoder; constraints are never removed"
+                )));
+            }
+        }
+
+        if native_claude {
+            if let Some(format) = field(&node, "format") {
+                let supported = string_units(&format)
+                    .and_then(|units| String::from_utf16(&units).ok())
+                    .is_some_and(|format| {
+                        crate::providers::anthropic::structured::messages_format_supported(&format)
+                    });
+                if !supported {
+                    return Err(unsupported("Messages does not support this string format"));
+                }
+            }
+            if let Some(all_of) = field(&node, "allOf") {
+                if all_of.kind() == FlatJsonKind::Array
+                    && (0..all_of.array_len().unwrap_or(0))
+                        .filter_map(|index| all_of.array_item(index))
+                        .any(|branch| field(&branch, "$ref").is_some())
                 {
-                    return Err(invalid(
-                        "strict OpenAI schemas require every property to be required",
+                    return Err(unsupported(
+                        "Messages does not support $ref directly inside allOf",
                     ));
                 }
             }
         }
-    }
-    for key in ["properties", "$defs", "definitions"] {
-        if let Some(map) = schema[key].as_object() {
-            for child in map.values() {
-                validate_subset(
-                    child,
-                    anthropic,
-                    gemini,
-                    false,
-                    native_claude,
-                    qwen_strict_output,
-                )?;
+
+        if let Some(reference) = field(&node, "$ref") {
+            if let Some(units) = string_units(&reference) {
+                let reference = String::from_utf16(&units)
+                    .map_err(|_| invalid("schema references must use valid Unicode"))?;
+                if !reference.starts_with('#') {
+                    return Err(invalid("only local schema references are permitted"));
+                }
             }
         }
-    }
-    for key in ["items", "additionalProperties"] {
-        if schema[key].is_object() {
-            validate_subset(
-                &schema[key],
-                anthropic,
-                gemini,
-                false,
-                native_claude,
-                qwen_strict_output,
-            )?;
+
+        if anthropic {
+            if field(&node, "minItems")
+                .and_then(|value| number_u64(&value))
+                .is_some_and(|value| value > 1)
+            {
+                return Err(unsupported(
+                    "Messages only supports minItems of zero or one",
+                ));
+            }
+            if let Some(values) = field(&node, "enum") {
+                if values.kind() == FlatJsonKind::Array
+                    && (0..values.array_len().unwrap_or(0))
+                        .filter_map(|index| values.array_item(index))
+                        .any(|value| {
+                            matches!(value.kind(), FlatJsonKind::Array | FlatJsonKind::Object)
+                        })
+                {
+                    return Err(unsupported("Messages does not support complex enum values"));
+                }
+            }
+            if let Some(pattern) = field(&node, "pattern") {
+                if let Some(units) = string_units(&pattern) {
+                    let pattern = String::from_utf16(&units)
+                        .map_err(|_| invalid("schema patterns must use valid Unicode"))?;
+                    if pattern.contains("(?")
+                        || pattern.contains("\\b")
+                        || pattern.contains("\\B")
+                        || pattern
+                            .as_bytes()
+                            .windows(2)
+                            .any(|pair| pair[0] == b'\\' && pair[1].is_ascii_digit())
+                    {
+                        return Err(unsupported(
+                            "Messages does not support this regex constraint",
+                        ));
+                    }
+                }
+            }
         }
-    }
-    for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
-        if let Some(children) = schema[key].as_array() {
-            for child in children {
-                validate_subset(
-                    child,
-                    anthropic,
-                    gemini,
-                    false,
-                    native_claude,
-                    qwen_strict_output,
-                )?;
+
+        let is_object = type_has(&node, "object") || field(&node, "properties").is_some();
+        if is_object && !gemini && !qwen_strict_output {
+            if !field(&node, "additionalProperties")
+                .is_some_and(|value| value.primitive_source() == Some("false"))
+            {
+                return Err(invalid(
+                    "strict object schemas require additionalProperties: false",
+                ));
+            }
+            if !anthropic {
+                if let Some(properties) =
+                    field(&node, "properties").filter(|value| value.kind() == FlatJsonKind::Object)
+                {
+                    let required = field(&node, "required")
+                        .filter(|value| value.kind() == FlatJsonKind::Array)
+                        .map(|array| {
+                            (0..array.array_len().unwrap_or(0))
+                                .filter_map(|index| array.array_item(index)?.string_units())
+                                .collect::<std::collections::HashSet<_>>()
+                        })
+                        .unwrap_or_default();
+                    if properties
+                        .object_entries()
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|property| !required.contains(property.key_units))
+                    {
+                        return Err(invalid(
+                            "strict OpenAI schemas require every property to be required",
+                        ));
+                    }
+                }
+            }
+        }
+
+        for key in ["properties", "$defs", "definitions"] {
+            if let Some(children) =
+                field(&node, key).filter(|value| value.kind() == FlatJsonKind::Object)
+            {
+                pending.extend(
+                    children
+                        .object_entries()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|entry| (entry.value, false)),
+                );
+            }
+        }
+        for key in ["items", "additionalProperties"] {
+            if let Some(child) =
+                field(&node, key).filter(|value| value.kind() == FlatJsonKind::Object)
+            {
+                pending.push((child, false));
+            }
+        }
+        for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+            if let Some(children) =
+                field(&node, key).filter(|value| value.kind() == FlatJsonKind::Array)
+            {
+                pending.extend(
+                    (0..children.array_len().unwrap_or(0))
+                        .filter_map(|index| children.array_item(index))
+                        .map(|child| (child, false)),
+                );
             }
         }
     }
@@ -634,10 +868,10 @@ mod tests {
             serde_json::from_value(json!({"model":"claude-opus-5-5","messages":[]})).unwrap();
         let tool = |index, strict, schema| ToolSpec {
             tool_type: None,
-            extra: Value::Null,
+            extra: JsonPayload::parse("null").unwrap(),
             name: format!("tool_{index}"),
-            description: String::new(),
-            input_schema: schema,
+            description: String::new().into(),
+            input_schema: crate::protocol::JsonPayload::from_generated_value(&schema).unwrap(),
             strict,
             defer_loading: false,
             native_options: Vec::new(),
@@ -670,13 +904,13 @@ mod tests {
         req.tools.push(tool(0, true, optional(12)));
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
-            schema: optional(12),
+            schema: JsonPayload::from_generated_value(&optional(12)).unwrap(),
             strict: true,
         };
         assert!(validate(&req, &context).is_ok());
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
-            schema: optional(13),
+            schema: JsonPayload::from_generated_value(&optional(13)).unwrap(),
             strict: true,
         };
         assert!(matches!(
@@ -698,13 +932,13 @@ mod tests {
         req.tools = vec![tool(0, true, union_schema(8))];
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
-            schema: union_schema(8),
+            schema: JsonPayload::from_generated_value(&union_schema(8)).unwrap(),
             strict: true,
         };
         assert!(validate(&req, &context).is_ok());
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
-            schema: union_schema(9),
+            schema: JsonPayload::from_generated_value(&union_schema(9)).unwrap(),
             strict: true,
         };
         assert!(matches!(
@@ -720,10 +954,11 @@ mod tests {
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
             strict: true,
-            schema: json!({
+            schema: JsonPayload::from_generated_value(&json!({
                 "type":"object","properties":{"answer":{"type":"string"}},
                 "required":["answer"],"additionalProperties":false
-            }),
+            }))
+            .unwrap(),
         };
         for protocol in [
             ProtocolFamily::OpenAiChat,
@@ -769,10 +1004,11 @@ mod tests {
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
             strict: true,
-            schema: json!({
+            schema: JsonPayload::from_generated_value(&json!({
                 "type":"object","properties":{"answer":{"type":"string"}},
                 "required":["answer"],"additionalProperties":false
-            }),
+            }))
+            .unwrap(),
         };
 
         req.messages = vec![crate::protocol::ConversationMessage::assistant(vec![
@@ -792,11 +1028,12 @@ mod tests {
             role: MessageRole::User,
             content: vec![ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: json!({
+                value: JsonPayload::from_generated_value(&json!({
                     "type":"document",
                     "source":{"type":"text","media_type":"text/plain","data":"source"},
                     "citations":{"enabled":true}
-                }),
+                }))
+                .unwrap(),
             }],
         }];
         assert!(matches!(
@@ -809,13 +1046,14 @@ mod tests {
             role: MessageRole::User,
             content: vec![ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: json!({
+                value: JsonPayload::from_generated_value(&json!({
                     "type":"search_result",
                     "source":"https://example.invalid/page",
                     "title":"Source",
                     "content":[{"type":"text","text":"source"}],
                     "citations":{"enabled":true}
-                }),
+                }))
+                .unwrap(),
             }],
         }];
         assert!(matches!(
@@ -860,10 +1098,11 @@ mod tests {
         req.output_format = OutputFormat::JsonSchema {
             name: "answer".into(),
             strict: true,
-            schema: json!({
+            schema: JsonPayload::from_generated_value(&json!({
                 "type":"object","properties":{"answer":{"type":"string"}},
                 "required":["answer"],"additionalProperties":false
-            }),
+            }))
+            .unwrap(),
         };
         req.messages = vec![crate::protocol::ConversationMessage::assistant(vec![
             ContentBlock::Text {
@@ -875,10 +1114,13 @@ mod tests {
         req.tools = (0..21)
             .map(|index| ToolSpec {
                 tool_type: None,
-                extra: Value::Null,
+                extra: JsonPayload::parse("null").unwrap(),
                 name: format!("tool_{index}"),
-                description: String::new(),
-                input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+                description: String::new().into(),
+                input_schema: crate::protocol::JsonPayload::from_generated_value(
+                    &json!({"type":"object","properties":{},"additionalProperties":false}),
+                )
+                .unwrap(),
                 strict: false,
                 defer_loading: false,
                 native_options: Vec::new(),

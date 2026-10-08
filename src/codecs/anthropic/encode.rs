@@ -148,6 +148,11 @@ pub fn request<'a>(
     if opts.stream {
         body.insert("stream".to_owned(), Value::Bool(true));
     }
+    let encoded_tools = req
+        .tools
+        .iter()
+        .map(encode_tool)
+        .collect::<Result<Vec<_>, _>>()?;
     if !req.tools.is_empty()
         || tool_search.is_some()
         || web_fetch.is_some()
@@ -159,9 +164,7 @@ pub fn request<'a>(
         body.insert(
             "tools".to_owned(),
             Value::Array(
-                req.tools
-                    .iter()
-                    .map(encode_tool)
+                std::iter::repeat_n(Value::Null, req.tools.len())
                     .chain(tool_search.map(encode_tool_search))
                     .chain(crate::providers::openrouter::server_tools::response_tool_values(req))
                     .collect(),
@@ -271,7 +274,7 @@ pub fn request<'a>(
         }
         let mut value = Value::Object(body);
         let mut count_headers = headers.into_iter().collect();
-        crate::providers::anthropic::request_policy::normalize_message_parameters(
+        crate::providers::anthropic::request_policy::normalize_generated_message_parameters(
             &mut value,
             &mut count_headers,
             &mut Default::default(),
@@ -281,23 +284,53 @@ pub fn request<'a>(
         body = value.as_object().expect("Messages body").clone();
         headers = count_headers.into_iter().collect();
     }
-    let mut body =
-        WireValue::from(Value::Object(body)).with("messages", WireValue::array(messages));
-    if !req.tools.is_empty() {
+    let mcp_toolsets = req
+        .anthropic_mcp_servers()
+        .filter(|config| !config.inline_toolset())
+        .map(|config| (config.name().to_owned(), config.toolset_value()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?
+        .with("messages", WireValue::array(messages));
+    if !req.tools.is_empty() || !mcp_toolsets.is_empty() {
         body = body.map_array_field("tools", |index, tool| {
-            let has_schema = tool.get("input_schema").is_some();
-            let tool = WireValue::from(tool);
-            match req.tools.get(index) {
-                Some(spec) if has_schema => {
-                    tool.with("input_schema", WireValue::borrowed(&spec.input_schema))
+            let cache_control = tool.get("cache_control").cloned();
+            if let Some(spec) = req.tools.get(index) {
+                let payload = &encoded_tools[index];
+                let mut tool_wire = WireValue::owned_raw_json(payload.clone());
+                if payload.raw_source_at("/input_schema").is_some() {
+                    tool_wire =
+                        tool_wire.with("input_schema", WireValue::raw_json(&spec.input_schema));
                 }
-                _ => tool,
+                // Preserve cache markers generated on the bounded placeholder
+                // while the tool's description and schema remain source-backed.
+                if let Some(cache_control) = cache_control {
+                    tool_wire = tool_wire.with("cache_control", WireValue::from(cache_control));
+                }
+                return tool_wire;
+            }
+
+            let server = (tool.get("type").and_then(Value::as_str) == Some("mcp_toolset"))
+                .then(|| tool.get("mcp_server_name").and_then(Value::as_str))
+                .flatten();
+            if let Some(toolset) = server.and_then(|server| mcp_toolsets.get(server)) {
+                let mut tool_wire = WireValue::owned_raw_json(toolset.clone());
+                // The cache encoder adds the breakpoint to the placeholder;
+                // carry it over the Native MCP source payload as well.
+                if let Some(cache_control) = cache_control {
+                    tool_wire = tool_wire.with("cache_control", WireValue::from(cache_control));
+                }
+                tool_wire
+            } else {
+                WireValue::from(tool)
             }
         });
     }
     if !req.system.is_empty() {
         body = body.map_array_field("system", |index, block| {
-            WireValue::from(block).with("text", WireValue::text(&req.system[index].text))
+            WireValue::from(block).with(
+                "text",
+                WireValue::raw_json(req.system[index].text_payload()),
+            )
         });
     }
     let mut encoded = WireRequest::new(endpoint, headers, body);
@@ -352,10 +385,16 @@ fn encode_message<'a>(
     Ok(message)
 }
 
-fn encode_text_wire_block<'a>(text: &'a str, citations: &Option<Option<Value>>) -> WireValue<'a> {
+fn encode_text_wire_block<'a>(
+    text: &'a str,
+    citations: &'a Option<Option<crate::protocol::JsonPayload>>,
+) -> WireValue<'a> {
     let mut value = WireValue::from(json!({"type":"text"})).with("text", WireValue::text(text));
     if let Some(citations) = citations {
-        value["citations"] = citations.clone().unwrap_or(Value::Null);
+        value = match citations {
+            Some(citations) => value.with("citations", WireValue::raw_json(citations)),
+            None => value.with("citations", WireValue::from(Value::Null)),
+        };
     }
     value
 }
@@ -385,7 +424,7 @@ fn encode_block<'a>(
                     message: "native content cannot be replayed on a different protocol".to_owned(),
                 });
             }
-            return Ok(WireValue::borrowed(value));
+            return Ok(WireValue::raw_json(value));
         }
         ContentBlock::Text {
             text, citations, ..
@@ -425,9 +464,9 @@ fn encode_block<'a>(
             ..
         } => {
             let mut block = WireValue::from(json!({"type": "tool_use", "id": id, "name": name}))
-                .with("input", WireValue::borrowed(input));
+                .with("input", WireValue::raw_json(input));
             if let Some(caller) = caller {
-                block = block.with("caller", WireValue::from(caller.clone()));
+                block = block.with("caller", WireValue::raw_json(caller));
             }
             if let Some(toolset_name) = toolset_name {
                 block = block.with("toolset_name", WireValue::from(json!(toolset_name)));
@@ -441,10 +480,13 @@ fn encode_block<'a>(
             blocks,
             toolset_name,
         } => {
-            let content = blocks.as_ref().map_or_else(
-                || WireValue::text(content),
-                |blocks| WireValue::array(blocks.iter().map(WireValue::borrowed).collect()),
-            );
+            content.validate_root_string("tool result content")?;
+            if let Some(blocks) = blocks {
+                blocks.validate_root_array("tool result blocks")?;
+            }
+            let content = blocks
+                .as_ref()
+                .map_or_else(|| WireValue::raw_json(content), WireValue::raw_json);
             let mut v = WireValue::from(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -542,10 +584,10 @@ fn encode_block<'a>(
     Ok(value.into())
 }
 
-fn encode_tool(t: &ToolSpec) -> Value {
+fn encode_tool(t: &ToolSpec) -> Result<crate::protocol::JsonPayload, LlmError> {
     let mut tool = json!({
         "name": t.name,
-        "description": t.description,
+        "description": Value::Null,
         "input_schema": Value::Null,
     });
     if t.strict {
@@ -571,7 +613,11 @@ fn encode_tool(t: &ToolSpec) -> Value {
                 .collect(),
         );
     }
-    crate::codecs::request_controls::tool_extensions(t, tool)
+    crate::codecs::request_controls::tool_extensions(
+        t,
+        tool,
+        crate::exact_json::JsonEncoding::JavaScript,
+    )
 }
 
 fn encode_tool_search(config: &AnthropicToolSearchConfig) -> Value {

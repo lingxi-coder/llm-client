@@ -1,6 +1,6 @@
 //! Data-only normalization of host-executed native computer protocols.
 //! The host owns permissions, execution, observation and final result publication.
-use super::{ChatRequest, ContentBlock, ContinuationRef, LlmError};
+use super::{ChatRequest, ContentBlock, ContinuationRef, JsonPayload, LlmError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -149,28 +149,29 @@ pub enum NativeComputerProvider {
     Anthropic,
     Gemini,
 }
+fn source_string_at(payload: &JsonPayload, pointer: &str) -> Option<String> {
+    String::from_utf16(&payload.string_units_at(pointer)?).ok()
+}
+
 /// Identify a native computer call without interpreting an ordinary function
 /// that happens to share a member name. Full decoding remains mandatory before
 /// execution; this helper only associates original model history blocks.
-pub fn computer_call_id(block: &ContentBlock) -> Option<&str> {
+pub fn computer_call_id(block: &ContentBlock) -> Option<String> {
     match block {
         ContentBlock::ToolUse {
             id, toolset_name, ..
-        } if toolset_name.as_deref() == Some("computer") => Some(id.as_str()),
+        } if toolset_name.as_deref() == Some("computer") => Some(id.as_str().to_owned()),
         ContentBlock::Native { value }
             if value.format()
                 == crate::providers::openai::computer::OPENAI_COMPUTER_CALL_FORMAT =>
         {
-            value.data().get("call_id").and_then(Value::as_str)
+            source_string_at(value.data(), "/call_id")
         }
         ContentBlock::Native { value }
             if value.format() == crate::providers::google::computer::CALL_FORMAT =>
         {
-            value
-                .data()
-                .get("id")
-                .and_then(Value::as_str)
-                .or_else(|| value.data().get("call_id").and_then(Value::as_str))
+            source_string_at(value.data(), "/id")
+                .or_else(|| source_string_at(value.data(), "/call_id"))
         }
         _ => None,
     }
@@ -209,9 +210,11 @@ pub enum NativeExecutionStatus {
 pub struct NativeComputerResult {
     pub operation_index: usize,
     pub status: NativeExecutionStatus,
-    /// Text and blocks after all host result hooks. No cached images are read.
-    pub content: String,
-    pub blocks: Option<Vec<Value>>,
+    /// Text after all host result hooks, kept as source until the selected
+    /// provider codec emits the completed request body.
+    pub content: JsonPayload,
+    /// Exact ordered image/text result-block array, when present.
+    pub blocks: Option<JsonPayload>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComputerReceiptInput {
@@ -422,6 +425,16 @@ impl ComputerReceiptInput {
             }
             if result.status != NativeExecutionStatus::Succeeded {
                 stopped = true;
+            }
+            if !result.content.is_root_string()
+                || result
+                    .blocks
+                    .as_ref()
+                    .is_some_and(|blocks| blocks.array_len("").is_none())
+            {
+                return Err(invalid(
+                    "native computer result text and blocks must retain their source JSON types",
+                ));
             }
         }
         Ok(())

@@ -2,7 +2,7 @@
 
 use crate::codecs::CodecContext;
 use crate::protocol::{
-    CacheTtl, ChatRequest, ContentBlock, LlmError, ProtocolFamily, ProviderProfile,
+    CacheTtl, ChatRequest, ContentBlock, JsonPayload, LlmError, ProtocolFamily, ProviderProfile,
 };
 use crate::providers::anthropic::types::{
     AnthropicFetchCaller, AnthropicFetchResponseInclusion, AnthropicWebFetchConfig,
@@ -66,17 +66,17 @@ pub(crate) fn has_fetch(request: &ChatRequest) -> bool {
             })
 }
 
-fn is_web_fetch_native_block(value: &Value) -> bool {
-    let Some(kind) = value.get("type").and_then(Value::as_str) else {
+fn is_web_fetch_native_block(value: &JsonPayload) -> bool {
+    let Some(kind) = value.string_at("/type") else {
         return false;
     };
     if matches!(
-        kind,
+        kind.as_str(),
         "web_fetch_tool_result" | "web_fetch_tool_result_error"
     ) {
         return true;
     }
-    kind == "server_tool_use" && value.get("name").and_then(Value::as_str) == Some("web_fetch")
+    kind == "server_tool_use" && value.string_is("/name", "web_fetch")
 }
 
 pub(crate) fn validate_profile_extra(profile: &ProviderProfile) -> Result<(), LlmError> {
@@ -201,11 +201,11 @@ fn has_web_fetch_reference_addition(request: &ChatRequest) -> bool {
             else {
                 return false;
             };
-            if value.get("type").and_then(Value::as_str) != Some("tool_addition") {
+            if !value.string_is("/type", "tool_addition") {
                 return false;
             }
-            value.pointer("/tool/type").and_then(Value::as_str) == Some("tool_reference")
-                && value.pointer("/tool/name").and_then(Value::as_str) == Some("web_fetch")
+            value.string_is("/tool/type", "tool_reference")
+                && value.string_is("/tool/name", "web_fetch")
         })
     })
 }
@@ -220,9 +220,16 @@ fn has_inline_web_fetch_definition(request: &ChatRequest, expected: &Value) -> b
             else {
                 return false;
             };
-            value.get("type").and_then(Value::as_str) == Some("tool_addition")
-                && value.pointer("/tool/type").and_then(Value::as_str) == Some("tool_definition")
-                && value.pointer("/tool/definition") == Some(expected)
+            if !value.string_is("/type", "tool_addition")
+                || !value.string_is("/tool/type", "tool_definition")
+            {
+                return false;
+            }
+            value
+                .raw_source_at("/tool/definition")
+                .and_then(|source| serde_json::from_str::<Value>(&source).ok())
+                .as_ref()
+                == Some(expected)
         })
     })
 }

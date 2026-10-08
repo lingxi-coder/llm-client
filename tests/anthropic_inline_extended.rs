@@ -18,6 +18,9 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 const MODEL: &str = "claude-opus-5-5";
 type Encoded = (Value, Vec<(String, String)>);
 
@@ -92,7 +95,7 @@ fn encode_with_profile(
 fn native(value: Value) -> ContentBlock {
     ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value,
+        value: json_payload_fixture::generated(&value),
     }
 }
 
@@ -144,10 +147,11 @@ fn inline_tool(name: &str, input_schema: Value, strict: bool) -> ContentBlock {
 fn spec(name: String, input_schema: Value, strict: bool) -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name,
-        description: "Tool".into(),
-        input_schema,
+        description: lingxi_llm_client::protocol::JsonPayload::string("Tool"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&input_schema)
+            .expect("schema fixture is valid JSON"),
         strict,
         defer_loading: false,
         native_options: Vec::new(),
@@ -191,12 +195,19 @@ fn programmatic_tool_call(caller_type: &str) -> ContentBlock {
     ContentBlock::ToolUse {
         id: ToolUseId::new("toolu_inline"),
         name: "lookup".into(),
-        input: json!({"id":"1"}),
+        input: lingxi_llm_client::protocol::JsonPayload::parse(&json!({"id":"1"}).to_string())
+            .unwrap(),
         provider_id: None,
-        caller: Some(json!({
-            "type":caller_type,
-            "tool_id":"srvtoolu_inline"
-        })),
+        caller: Some(
+            lingxi_llm_client::protocol::JsonPayload::parse(
+                &json!({
+                    "type":caller_type,
+                    "tool_id":"srvtoolu_inline"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        ),
         toolset_name: None,
         thought_signature: None,
     }

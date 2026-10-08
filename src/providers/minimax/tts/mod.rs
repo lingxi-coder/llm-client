@@ -432,7 +432,9 @@ pub enum MiniMaxTtsStreamError {
         #[source]
         source: LlmError,
     },
-    #[error("MiniMax TTS stream provider error after {bytes_delivered} audio bytes (code {code:?}): {message}")]
+    #[error(
+        "MiniMax TTS stream provider error after {bytes_delivered} audio bytes (code {code:?}): {message}"
+    )]
     Provider {
         bytes_delivered: u64,
         request_id: Option<String>,
@@ -1458,7 +1460,7 @@ fn invalid_response(message: &str, request_id: Option<String>, native: Value) ->
 
 fn map_outcome(source: LlmError) -> MiniMaxTtsError {
     if matches!(
-        source,
+        source.classification_source(),
         LlmError::Transport { .. }
             | LlmError::TransportTimeout { .. }
             | LlmError::StreamInterrupted { .. }

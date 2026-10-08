@@ -13,6 +13,9 @@ use std::sync::Mutex;
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 const PROFILE: &str = "foundry-anthropic";
 const ENDPOINT: &str = "https://resource-a.services.ai.azure.com/anthropic";
 const ACCOUNT: &str = "foundry-resource-a";
@@ -79,10 +82,13 @@ fn container_scope(profile: &ProviderProfile) -> AnthropicContainerScope {
 fn programmatic_tool() -> ToolSpec {
     ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "lookup".into(),
-        description: "Find one record".into(),
-        input_schema: json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("Find one record"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: vec![lingxi_llm_client::protocol::NativeExtension::from_typed(
@@ -484,11 +490,13 @@ fn foundry_anthropic_host_response_and_stream_keep_container_and_usage_metadata(
     let decoded = FoundryClaudeCodec
         .decode_response(&http, &complete_context)
         .unwrap();
-    assert_eq!(decoded.anthropic_container().unwrap().envelope, container);
     assert_eq!(
-        decoded.anthropic_usage().unwrap()["server_tool_use"]["code_execution_requests"],
-        1
+        decoded.anthropic_container().unwrap().envelope,
+        JsonPayload::from_generated_value(&container).unwrap()
     );
+    let usage: Value =
+        serde_json::from_str(decoded.anthropic_usage().unwrap().as_json_source()).unwrap();
+    assert_eq!(usage["server_tool_use"]["code_execution_requests"], 1);
 
     let stream_context = context(&profile, RequestMode::Stream);
     let mut decoder = FoundryClaudeCodec.stream_decoder(&stream_context);
@@ -506,11 +514,13 @@ fn foundry_anthropic_host_response_and_stream_keep_container_and_usage_metadata(
     events.extend(wire_api::decode_frame(&mut *decoder, br#"{"type":"message_stop"}"#).unwrap());
     assert!(events.iter().any(|event| matches!(event,
         StreamEvent::ProviderEvent { payload, .. }
-            if payload["message"]["container"]["id"] == "container_start"
+            if json_payload_fixture::source_string_at(payload, "/message/container/id").as_deref()
+                == Some("container_start")
     )));
     assert!(events.iter().any(|event| matches!(event,
         StreamEvent::ProviderEvent { payload, .. }
-            if payload["delta"]["container"]["id"] == "container_delta"
+            if json_payload_fixture::source_string_at(payload, "/delta/container/id").as_deref()
+                == Some("container_delta")
     )));
     assert!(events.iter().any(|event| matches!(event,
         StreamEvent::End { usage, .. }

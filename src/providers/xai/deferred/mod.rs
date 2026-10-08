@@ -227,11 +227,15 @@ impl PinnedDeferredService<'_> {
             .with_deadline(deadline)
             .execute_bounded(http, MAX_BODY)
             .await
-            .map_err(|source| match source {
-                LlmError::Transport { .. } | LlmError::TransportTimeout { .. } => {
+            .map_err(|source| {
+                if matches!(
+                    source.classification_source(),
+                    LlmError::Transport { .. } | LlmError::TransportTimeout { .. }
+                ) {
                     DeferredError::SubmitOutcomeUnknown { source }
+                } else {
+                    DeferredError::Llm(source)
                 }
-                other => DeferredError::Llm(other),
             })?;
         let native = parse_json(&response).map_err(|error| {
             if (200..300).contains(&response.status) {
@@ -309,7 +313,7 @@ impl PinnedDeferredService<'_> {
             Ok(response) => response,
             Err(source)
                 if matches!(
-                    source,
+                    source.classification_source(),
                     LlmError::Transport { .. }
                         | LlmError::TransportTimeout { .. }
                         | LlmError::StreamInterrupted { .. }
@@ -318,7 +322,7 @@ impl PinnedDeferredService<'_> {
                 return Err(DeferredError::FetchOutcomeUnknown {
                     reference: Box::new(reference),
                     source,
-                })
+                });
             }
             Err(other) => return Err(DeferredError::Llm(other)),
         };

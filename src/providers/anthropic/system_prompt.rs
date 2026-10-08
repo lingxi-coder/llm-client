@@ -578,7 +578,7 @@ fn resolve_prompt_cache_ttl(
 }
 
 /// One encoded block plus the cache breakpoint to apply at that position.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EncodedSystemBlock {
     /// Provider-independent block content passed into the protocol request.
     pub block: SystemBlock,
@@ -907,9 +907,9 @@ fn classify_native_sections(
     elements: &[PromptText],
     host_branding_identity: Option<&PromptText>,
 ) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
+    Option<Vec<u16>>,
+    Option<Vec<u16>>,
+    Option<Vec<u16>>,
     Vec<Vec<u16>>,
 ) {
     let mut billing_header = None;
@@ -921,11 +921,11 @@ fn classify_native_sections(
             continue;
         }
         if element.starts_with_ascii(NATIVE_BILLING_HEADER) {
-            billing_header = Some(element.display_text.clone());
+            billing_header = Some(element.utf16_code_units.clone());
         } else if is_native_brand_section(element, host_branding_identity) {
-            native_brand = Some(element.display_text.clone());
+            native_brand = Some(element.utf16_code_units.clone());
         } else if element.equals_ascii(NATIVE_REPORTING_SECTION) {
-            reporting = Some(element.display_text.clone());
+            reporting = Some(element.utf16_code_units.clone());
         } else {
             ordinary.push(element.utf16_code_units.clone());
         }
@@ -938,9 +938,9 @@ fn classify_native_sections_with_boundary(
     boundary: usize,
     host_branding_identity: Option<&PromptText>,
 ) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
+    Option<Vec<u16>>,
+    Option<Vec<u16>>,
+    Option<Vec<u16>>,
     (Vec<Vec<u16>>, Vec<Vec<u16>>),
 ) {
     let mut billing_header = None;
@@ -953,11 +953,11 @@ fn classify_native_sections_with_boundary(
             continue;
         }
         if element.starts_with_ascii(NATIVE_BILLING_HEADER) {
-            billing_header = Some(element.display_text.clone());
+            billing_header = Some(element.utf16_code_units.clone());
         } else if is_native_brand_section(element, host_branding_identity) {
-            native_brand = Some(element.display_text.clone());
+            native_brand = Some(element.utf16_code_units.clone());
         } else if element.equals_ascii(NATIVE_REPORTING_SECTION) {
-            reporting = Some(element.display_text.clone());
+            reporting = Some(element.utf16_code_units.clone());
         } else if index < boundary {
             before.push(element.utf16_code_units.clone());
         } else {
@@ -967,7 +967,7 @@ fn classify_native_sections_with_boundary(
     (billing_header, native_brand, reporting, (before, after))
 }
 
-fn join_source_units<'a>(elements: impl IntoIterator<Item = &'a [u16]>) -> String {
+fn join_source_units<'a>(elements: impl IntoIterator<Item = &'a [u16]>) -> Vec<u16> {
     let mut units = Vec::new();
     let mut first = true;
     for element in elements.into_iter().filter(|element| !element.is_empty()) {
@@ -977,10 +977,10 @@ fn join_source_units<'a>(elements: impl IntoIterator<Item = &'a [u16]>) -> Strin
         units.extend_from_slice(element);
         first = false;
     }
-    String::from_utf16_lossy(&units)
+    units
 }
 
-fn push_uncached(blocks: &mut Vec<EncodedSystemBlock>, text: Option<String>) {
+fn push_uncached(blocks: &mut Vec<EncodedSystemBlock>, text: Option<Vec<u16>>) {
     if let Some(text) = text.filter(|text| !text.is_empty()) {
         let index = blocks.len();
         blocks.push(encoded_block(text, None, None, index));
@@ -989,7 +989,7 @@ fn push_uncached(blocks: &mut Vec<EncodedSystemBlock>, text: Option<String>) {
 
 fn push_cached(
     blocks: &mut Vec<EncodedSystemBlock>,
-    text: Option<String>,
+    text: Option<Vec<u16>>,
     enabled: bool,
     ttl: CacheTtl,
     scope: Option<CacheScope>,
@@ -1001,7 +1001,7 @@ fn push_cached(
 }
 
 fn encoded_block(
-    text: String,
+    text: Vec<u16>,
     ttl: Option<CacheTtl>,
     scope: Option<CacheScope>,
     index: usize,
@@ -1012,7 +1012,7 @@ fn encoded_block(
         ttl,
     });
     EncodedSystemBlock {
-        block: SystemBlock { text },
+        block: SystemBlock::from_utf16_code_units(&text),
         cache_breakpoint,
     }
 }
@@ -1436,11 +1436,11 @@ mod tests {
         assert_eq!(
             blocks
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
             vec![
-                format!("shared {DYNAMIC_BOUNDARY} remains text").as_str(),
-                "session context"
+                format!("shared {DYNAMIC_BOUNDARY} remains text"),
+                "session context".to_owned()
             ]
         );
         assert_eq!(
@@ -1501,12 +1501,12 @@ mod tests {
         assert_eq!(
             native_layout
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
             vec![
-                identity.display_text(),
-                "static instructions",
-                "dynamic instructions"
+                identity.display_text().to_owned(),
+                "static instructions".to_owned(),
+                "dynamic instructions".to_owned()
             ]
         );
         assert_eq!(native_layout[0].cache_breakpoint, None);
@@ -1543,7 +1543,7 @@ mod tests {
         );
         assert_eq!(rewritten_layout.len(), 2);
         assert_eq!(
-            rewritten_layout[0].block.text,
+            rewritten_layout[0].block.display_text_lossy(),
             "You are LingXi, a rewritten assistant.\n\nstatic instructions"
         );
         assert_eq!(
@@ -1568,7 +1568,7 @@ mod tests {
         let untyped_layout = project(&untyped, Some(&official), ProtocolFamily::AnthropicMessages);
         assert_eq!(untyped_layout.len(), 2);
         assert_eq!(
-            untyped_layout[0].block.text,
+            untyped_layout[0].block.display_text_lossy(),
             format!("{}\n\nstatic instructions", identity.display_text())
         );
 
@@ -1596,9 +1596,12 @@ mod tests {
         assert_eq!(
             explicit_closed_layout
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
-            vec![identity.display_text(), "static instructions"]
+            vec![
+                identity.display_text().to_owned(),
+                "static instructions".to_owned()
+            ]
         );
         assert!(explicit_closed_layout.iter().all(|block| {
             block
@@ -1624,7 +1627,7 @@ mod tests {
         );
         assert_eq!(untyped_closed_layout.len(), 1);
         assert_eq!(
-            untyped_closed_layout[0].block.text,
+            untyped_closed_layout[0].block.display_text_lossy(),
             format!("{}\n\nstatic instructions", identity.display_text())
         );
 
@@ -1636,7 +1639,7 @@ mod tests {
         let custom_layout = project(&custom, Some(&official), ProtocolFamily::AnthropicMessages);
         assert_eq!(custom_layout.len(), 1);
         assert_eq!(
-            custom_layout[0].block.text,
+            custom_layout[0].block.display_text_lossy(),
             format!("{}\n\nstatic instructions", identity.display_text())
         );
 
@@ -1646,7 +1649,7 @@ mod tests {
         assert_eq!(other_provider.len(), 1);
         assert!(other_provider[0]
             .block
-            .text
+            .display_text_lossy()
             .starts_with(identity.display_text()));
     }
 
@@ -1675,9 +1678,9 @@ mod tests {
         assert_eq!(
             skipped
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
-            vec!["base\n\ndynamic"]
+            vec!["base\n\ndynamic".to_owned()]
         );
         assert_eq!(
             skipped[0]
@@ -1706,9 +1709,9 @@ mod tests {
         assert_eq!(
             honored_marker
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
-            vec!["base", "dynamic"]
+            vec!["base".to_owned(), "dynamic".to_owned()]
         );
         assert_eq!(
             honored_marker[0]
@@ -1745,7 +1748,7 @@ mod tests {
         );
         assert_eq!(custom_blocks.len(), 1);
         assert_eq!(
-            custom_blocks[0].block.text,
+            custom_blocks[0].block.display_text_lossy(),
             format!("before {DYNAMIC_BOUNDARY} after")
         );
 
@@ -1759,11 +1762,11 @@ mod tests {
             ProtocolFamily::AnthropicMessages,
             cache_policy(false),
         );
-        assert_eq!(exact_blocks[0].block.text, "�Ω�");
+        assert_eq!(exact_blocks[0].block.display_text_lossy(), "�Ω�");
     }
 
     #[test]
-    fn cold_snapshot_utf16_values_project_like_native_replacement_values() {
+    fn cold_snapshot_utf16_values_preserve_projection_units_until_provider_egress() {
         let _lock = GATE_ENV_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -1807,13 +1810,35 @@ mod tests {
             ProtocolFamily::AnthropicMessages,
             CachePolicy::default(),
         );
-        assert_eq!(exact_blocks, cold_blocks);
+        assert_ne!(exact_blocks, cold_blocks);
         assert_eq!(
             exact_blocks
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
-            vec!["snapshot prefix", "snapshot �Ω�\n\ncwd: /repo/�"]
+            vec![
+                "snapshot prefix".to_owned(),
+                "snapshot �Ω�\n\ncwd: /repo/�".to_owned()
+            ]
+        );
+        let mut exact_context_units = "snapshot ".encode_utf16().collect::<Vec<_>>();
+        exact_context_units.extend([0xd800, 0x03a9, 0xdc00]);
+        exact_context_units.extend("\n\ncwd: /repo/".encode_utf16());
+        exact_context_units.push(0xd800);
+        assert_eq!(
+            exact_blocks[1]
+                .block
+                .text_payload()
+                .root_string_code_units(),
+            Some(exact_context_units)
+        );
+        assert_eq!(
+            cold_blocks[1].block.text_payload().root_string_code_units(),
+            Some("snapshot �Ω�\n\ncwd: /repo/�".encode_utf16().collect())
+        );
+        assert_eq!(
+            exact_blocks[1].cache_breakpoint,
+            cold_blocks[1].cache_breakpoint
         );
         assert_eq!(
             exact_blocks[0]
@@ -1860,9 +1885,9 @@ mod tests {
         assert_eq!(
             claude_blocks
                 .iter()
-                .map(|block| block.block.text.as_str())
+                .map(|block| block.block.display_text_lossy())
                 .collect::<Vec<_>>(),
-            vec!["custom before\n", "\ncustom after"]
+            vec!["custom before\n".to_owned(), "\ncustom after".to_owned()]
         );
         assert_eq!(
             claude_blocks[0]
@@ -1888,7 +1913,7 @@ mod tests {
         );
         assert_eq!(openai_blocks.len(), 1);
         assert_eq!(
-            openai_blocks[0].block.text,
+            openai_blocks[0].block.display_text_lossy(),
             "custom before\n\n\n\ncustom after"
         );
 
@@ -1905,7 +1930,10 @@ mod tests {
             cache_policy(false),
         );
         assert_eq!(claude_override_blocks.len(), 1);
-        assert_eq!(claude_override_blocks[0].block.text, override_text);
+        assert_eq!(
+            claude_override_blocks[0].block.display_text_lossy(),
+            override_text
+        );
         let override_blocks = project_system_prompt(
             &override_input,
             Some(&openai),
@@ -1914,7 +1942,7 @@ mod tests {
             cache_policy(false),
         );
         assert_eq!(override_blocks.len(), 1);
-        assert_eq!(override_blocks[0].block.text, override_text);
+        assert_eq!(override_blocks[0].block.display_text_lossy(), override_text);
     }
 
     #[test]
@@ -1942,7 +1970,7 @@ mod tests {
         );
         assert_eq!(blocks.len(), 1);
         assert_eq!(
-            blocks[0].block.text,
+            blocks[0].block.display_text_lossy(),
             format!("literal {DYNAMIC_BOUNDARY} text\n\ndynamic")
         );
         assert_eq!(blocks[0].cache_breakpoint, None);
@@ -1977,12 +2005,21 @@ mod tests {
             },
         );
         assert_eq!(blocks.len(), 4);
-        assert_eq!(blocks[0].block.text, "x-anthropic-billing-header: metadata");
+        assert_eq!(
+            blocks[0].block.display_text_lossy(),
+            "x-anthropic-billing-header: metadata"
+        );
         assert_eq!(blocks[0].cache_breakpoint, None);
-        assert_eq!(blocks[1].block.text, NATIVE_BRAND_SECTIONS[0]);
-        assert_eq!(blocks[2].block.text, NATIVE_REPORTING_SECTION);
+        assert_eq!(
+            blocks[1].block.display_text_lossy(),
+            NATIVE_BRAND_SECTIONS[0]
+        );
+        assert_eq!(
+            blocks[2].block.display_text_lossy(),
+            NATIVE_REPORTING_SECTION
+        );
         assert_eq!(blocks[2].cache_breakpoint, None);
-        assert_eq!(blocks[3].block.text, "ordinary context");
+        assert_eq!(blocks[3].block.display_text_lossy(), "ordinary context");
         assert!(blocks[1..]
             .iter()
             .filter_map(|block| block.cache_breakpoint.as_ref())

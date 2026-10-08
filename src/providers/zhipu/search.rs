@@ -21,6 +21,7 @@ pub(crate) fn apply(
         },
         |search, body| {
             let _ = body;
+            let allowed_domains = web_search::domain_strings(&search.allowed_domains)?;
             let engine = match profile.extra.get("web_search_engine") {
                 None => "search_pro",
                 Some(Value::String(engine)) if !engine.trim().is_empty() => engine,
@@ -31,7 +32,7 @@ pub(crate) fn apply(
                 }
             };
             let mut tool = serde_json::json!({"type":"web_search", "web_search":{"enable":true, "search_result":true, "search_engine":engine}});
-            if let Some(domain) = search.allowed_domains.first() {
+            if let Some(domain) = allowed_domains.first() {
                 tool["web_search"]["search_domain_filter"] = serde_json::json!(domain);
             }
             Ok(Some(tool))

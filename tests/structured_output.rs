@@ -7,6 +7,9 @@ use std::sync::{
     Arc,
 };
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 fn request(format: OutputFormat) -> ChatRequest {
     let mut r: ChatRequest = serde_json::from_value(json!({"model":"test","messages":[]})).unwrap();
     r.output_format = format;
@@ -16,10 +19,11 @@ fn schema() -> OutputFormat {
     OutputFormat::JsonSchema {
         name: "answer".into(),
         strict: true,
-        schema: json!({
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object","properties":{"answer":{"type":"string"}},
             "required":["answer"],"additionalProperties":false
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
     }
 }
 fn profile(protocol: ProtocolFamily) -> ProviderProfile {
@@ -88,10 +92,13 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
     req.messages.clear();
     req.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "json_tool".into(),
-        description: "Returns JSON".into(),
-        input_schema: json!({"type":"object"}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("Returns JSON"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object"}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
@@ -138,9 +145,8 @@ fn qwen_json_object_keyword_comes_only_from_explicit_system_or_user_text() {
     ));
 
     req.messages.clear();
-    req.system.push(SystemBlock {
-        text: "Respond with JSON please.".into(),
-    });
+    req.system
+        .push(SystemBlock::new("Respond with JSON please."));
     assert!(encode_model(&OpenAiChatCodec, &req, &p, "qwen3.8-flash").is_ok());
 
     req.system.clear();
@@ -189,9 +195,8 @@ fn deepseek_json_object_requires_json_in_system_or_user_text_on_first_party_chat
     ));
 
     req.messages.clear();
-    req.system.push(SystemBlock {
-        text: "Respond with JSON please.".into(),
-    });
+    req.system
+        .push(SystemBlock::new("Respond with JSON please."));
     assert!(encode_model(&OpenAiChatCodec, &req, &deepseek, "deepseek-flash").is_ok());
 
     // Do not apply DeepSeek's first-party prompt rule to a compatible proxy.
@@ -207,12 +212,13 @@ fn qwen_strict_schema_subset_exception_is_output_only_and_model_scoped() {
     let optional_schema = OutputFormat::JsonSchema {
         name: "person".into(),
         strict: true,
-        schema: json!({
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"name":{"type":"string"},"email":{"type":"string"}},
             "required":["name"],
             "additionalProperties":true
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
     };
     let mut req = request(optional_schema.clone());
     let body = encode_model(&OpenAiChatCodec, &req, &qwen, "qwen3.8-flash").unwrap();
@@ -264,15 +270,16 @@ fn qwen_strict_schema_subset_exception_is_output_only_and_model_scoped() {
     req.output_format = OutputFormat::Text;
     req.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "capture_person".into(),
-        description: String::new(),
-        input_schema: json!({
+        description: lingxi_llm_client::protocol::JsonPayload::string(""),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"name":{"type":"string"},"email":{"type":"string"}},
             "required":["name"],
             "additionalProperties":true
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
         strict: true,
         defer_loading: false,
         native_options: Vec::new(),
@@ -318,6 +325,30 @@ fn schema_contract_is_encoded_on_each_wire_for_complete_and_stream() {
 }
 
 #[test]
+fn outbound_schema_validation_uses_flat_source_without_local_jsonschema_compilation() {
+    let mut nested = r#"{"type":"string"}"#.to_owned();
+    for _ in 0..256 {
+        nested = format!(r#"{{"type":"array","items":{nested}}}"#);
+    }
+    let schema_source = format!(
+        r#"{{"type":"object","properties":{{"deep":{nested}}},"required":["deep"],"additionalProperties":false}}"#
+    );
+    let schema = JsonPayload::parse(&schema_source).unwrap();
+    let req = request(OutputFormat::JsonSchema {
+        name: "deep_schema".into(),
+        schema,
+        strict: true,
+    });
+    let profile = profile(ProtocolFamily::OpenAiChat);
+    let context = CodecContext::new(&profile, "test", RequestMode::Complete);
+    let encoded = OpenAiChatCodec
+        .encode_request(EncodeRequest::new(&req), &context)
+        .unwrap();
+    let body = std::str::from_utf8(&encoded.body).unwrap();
+    assert!(body.contains(&schema_source));
+}
+
+#[test]
 fn old_gpt_4o_snapshot_allows_json_mode_but_rejects_json_schema() {
     let p: ProviderProfile = serde_json::from_value(json!({
         "provider_id":"openai",
@@ -359,7 +390,8 @@ fn malformed_and_unsupported_schema_is_not_silently_weakened() {
     ] {
         let r = request(OutputFormat::JsonSchema {
             name: "answer".into(),
-            schema,
+            schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&schema)
+                .unwrap(),
             strict: true,
         });
         assert!(encode(
@@ -372,7 +404,11 @@ fn malformed_and_unsupported_schema_is_not_silently_weakened() {
     }
     let mut r = request(schema());
     if let OutputFormat::JsonSchema { schema, .. } = &mut r.output_format {
-        schema["properties"]["answer"] = json!({"type":"number","minimum":10});
+        *schema = lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
+            "type":"object","properties":{"answer":{"type":"number","minimum":10}},
+            "required":["answer"],"additionalProperties":false
+        }))
+        .unwrap();
     }
     assert!(matches!(
         encode(
@@ -426,7 +462,8 @@ fn claude_preflight_rejects_recursive_refs_allof_refs_and_unlisted_formats() {
     for schema in unsupported_schemas {
         let req = request(OutputFormat::JsonSchema {
             name: "answer".into(),
-            schema,
+            schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&schema)
+                .unwrap(),
             strict: true,
         });
         assert!(matches!(
@@ -438,7 +475,7 @@ fn claude_preflight_rejects_recursive_refs_allof_refs_and_unlisted_formats() {
     let shared_ref = request(OutputFormat::JsonSchema {
         name: "shared".into(),
         strict: true,
-        schema: json!({
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{
                 "first":{"$ref":"#/$defs/shared"},
@@ -452,19 +489,21 @@ fn claude_preflight_rejects_recursive_refs_allof_refs_and_unlisted_formats() {
                 "required":["value"],
                 "additionalProperties":false
             }}
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
     });
     assert!(encode(&AnthropicMessagesCodec, &shared_ref, &p, false).is_ok());
 
     // Anthropic's documented format list remains accepted.
     let req = request(OutputFormat::JsonSchema {
         name: "answer".into(),
-        schema: json!({
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"email":{"type":"string","format":"email"}},
             "required":["email"],
             "additionalProperties":false
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
         strict: true,
     });
     assert!(encode(&AnthropicMessagesCodec, &req, &p, false).is_ok());
@@ -493,10 +532,13 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
     req.tools = (0..21)
         .map(|index| ToolSpec {
             tool_type: None,
-            extra: serde_json::Value::Null,
+            extra: lingxi_llm_client::protocol::JsonPayload::default(),
             name: format!("tool_{index}"),
-            description: String::new(),
-            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+            description: lingxi_llm_client::protocol::JsonPayload::string(""),
+            input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"type":"object","properties":{},"additionalProperties":false}),
+            )
+            .expect("schema fixture is valid JSON"),
             strict: false,
             defer_loading: false,
             native_options: Vec::new(),
@@ -509,11 +551,11 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
         role: MessageRole::User,
         content: vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"document",
                 "source":{"type":"text","media_type":"text/plain","data":"source"},
                 "citations":{"enabled":true}
-            }),
+            })),
         }],
     }];
     assert!(matches!(
@@ -526,13 +568,13 @@ fn claude_json_output_preflights_only_native_citations_and_a_final_assistant_pre
         role: MessageRole::User,
         content: vec![ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json!({
+            value: json_payload_fixture::generated(&json!({
                 "type":"search_result",
                 "source":"https://example.invalid/page",
                 "title":"Source",
                 "content":[{"type":"text","text":"source"}],
                 "citations":{"enabled":true}
-            }),
+            })),
         }],
     }];
     assert!(matches!(
@@ -583,15 +625,16 @@ fn claude_strict_tool_schemas_are_checked_for_text_output_and_non_strict_tools_a
     let mut req = request(OutputFormat::Text);
     req.tools = vec![ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "strict_tool".into(),
-        description: String::new(),
-        input_schema: json!({
+        description: lingxi_llm_client::protocol::JsonPayload::string(""),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"count":{"type":"number","minimum":1}},
             "required":["count"],
             "additionalProperties":false
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
         strict: true,
         defer_loading: false,
         native_options: Vec::new(),
@@ -605,18 +648,20 @@ fn claude_strict_tool_schemas_are_checked_for_text_output_and_non_strict_tools_a
     assert!(encode(&AnthropicMessagesCodec, &req, &p, false).is_ok());
 
     req.tools[0].strict = true;
-    req.tools[0].input_schema = json!({
-        "type":"object",
-        "properties":{"next":{"$ref":"#/$defs/node"}},
-        "required":["next"],
-        "additionalProperties":false,
-        "$defs":{"node":{
+    req.tools[0].input_schema =
+        lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"next":{"$ref":"#/$defs/node"}},
             "required":["next"],
-            "additionalProperties":false
-        }}
-    });
+            "additionalProperties":false,
+            "$defs":{"node":{
+                "type":"object",
+                "properties":{"next":{"$ref":"#/$defs/node"}},
+                "required":["next"],
+                "additionalProperties":false
+            }}
+        }))
+        .unwrap();
     assert!(matches!(
         encode(&AnthropicMessagesCodec, &req, &p, false),
         Err(LlmError::UnsupportedCapability { .. })
@@ -654,11 +699,12 @@ fn failed_parse_retains_response_and_terminal_status_is_required() {
             StructuredOutputErrorKind::Incomplete
         ));
     }
+    let parsed = response("{\"answer\":\"ok\"}", StopReason::EndTurn)
+        .structured_json(&schema())
+        .unwrap();
     assert_eq!(
-        response("{\"answer\":\"ok\"}", StopReason::EndTurn)
-            .structured_json(&schema())
-            .unwrap()["answer"],
-        "ok"
+        json_payload_fixture::source_value_at(&parsed, "/answer"),
+        Some(json!("ok"))
     );
 }
 #[test]
@@ -691,7 +737,7 @@ fn schema_properties_named_like_keywords_are_not_misclassified() {
     let output = OutputFormat::JsonSchema {
         name: "answer".into(),
         strict: true,
-        schema: json!({"type":"object","properties":{"not":{"type":"string"},"minimum":{"type":"number"}},"required":["not","minimum"],"additionalProperties":false}),
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({"type":"object","properties":{"not":{"type":"string"},"minimum":{"type":"number"}},"required":["not","minimum"],"additionalProperties":false})).unwrap(),
     };
     assert!(encode(
         &OpenAiResponsesCodec,
@@ -741,7 +787,10 @@ fn external_schema_references_are_never_retrieved_even_without_strict_mode() {
         let format = OutputFormat::JsonSchema {
             name: "answer".into(),
             strict: false,
-            schema: json!({"$ref":reference}),
+            schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"$ref":reference}),
+            )
+            .expect("schema fixture is valid JSON"),
         };
         assert!(encode(
             &OpenAiResponsesCodec,
@@ -856,7 +905,7 @@ async fn qwen_json_object_preflight_precedes_attachment_resolution_auth_and_tran
             .complete(
                 &req,
                 &RequestOptions {
-                    credential: Some(Secret::new("test-key".into())),
+                        credential: Some(Secret::new("test-key".into())),
                     ..Default::default()
                 }
             )
@@ -873,12 +922,13 @@ fn cached_schema_still_checks_protocol_strictness_capabilities_and_native_fields
     let format = OutputFormat::JsonSchema {
         name: "answer".into(),
         strict: false,
-        schema: json!({
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
             "type":"object",
             "properties":{"answer":{"type":"number","minimum":10}},
             "required":["answer"],
             "additionalProperties":false
-        }),
+        }))
+        .expect("schema fixture is valid JSON"),
     };
     let mut req = request(format);
     let mut p = profile(ProtocolFamily::OpenAiResponses);
@@ -930,7 +980,11 @@ fn mutating_a_warmed_schema_changes_local_validation_and_wire_output() {
     let answer = response("{\"answer\":\"ok\"}", StopReason::EndTurn);
     answer.structured_json(&format).unwrap();
     if let OutputFormat::JsonSchema { schema, .. } = &mut format {
-        schema["properties"]["answer"]["type"] = json!("integer");
+        *schema = lingxi_llm_client::protocol::JsonPayload::from_generated_value(&json!({
+            "type":"object","properties":{"answer":{"type":"integer"}},
+            "required":["answer"],"additionalProperties":false
+        }))
+        .unwrap();
     }
     assert!(matches!(
         answer.structured_json(&format).unwrap_err().kind,
@@ -954,7 +1008,10 @@ fn cached_compilation_does_not_cache_schema_names_or_strict_subset_validation() 
     let mut req = request(OutputFormat::JsonSchema {
         name: "answer".into(),
         strict: false,
-        schema: json!({"type":"object","properties":{"answer":{"type":"string"}}}),
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object","properties":{"answer":{"type":"string"}}}),
+        )
+        .expect("schema fixture is valid JSON"),
     });
     let p = profile(ProtocolFamily::OpenAiResponses);
     encode(&OpenAiResponsesCodec, &req, &p, false).unwrap();
@@ -980,14 +1037,17 @@ fn large_local_response_contracts_remain_supported_but_cannot_be_sent() {
     let format = OutputFormat::JsonSchema {
         name: "answer".into(),
         strict: false,
-        schema: json!({"type":"object","description":"x".repeat(1024 * 1024)}),
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object","description":"x".repeat(1024 * 1024)}),
+        )
+        .expect("schema fixture is valid JSON"),
     };
-    assert_eq!(
-        response("{}", StopReason::EndTurn)
+    assert!(json_payload_fixture::source_matches(
+        &response("{}", StopReason::EndTurn)
             .structured_json(&format)
             .unwrap(),
-        json!({})
-    );
+        &json!({})
+    ));
     let error = encode(
         &OpenAiResponsesCodec,
         &request(format),
@@ -1009,7 +1069,7 @@ fn review_regression_signed_zero_cannot_bypass_a_warm_schema_size_limit() {
     let format = |schema| OutputFormat::JsonSchema {
         name: "signed_zero".into(),
         strict: false,
-        schema,
+        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&schema).unwrap(),
     };
     let p = profile(ProtocolFamily::OpenAiChat);
     encode(&OpenAiChatCodec, &request(format(positive)), &p, false).unwrap();
@@ -1021,10 +1081,10 @@ fn review_regression_signed_zero_cannot_bypass_a_warm_schema_size_limit() {
         assert!(error.to_string().contains("output schema exceeds 1 MiB"));
     }
     // The request cap still does not restrict local response validation.
-    assert_eq!(
-        response("{}", StopReason::EndTurn)
+    assert!(json_payload_fixture::source_matches(
+        &response("{}", StopReason::EndTurn)
             .structured_json(&negative)
             .unwrap(),
-        json!({})
-    );
+        &json!({})
+    ));
 }

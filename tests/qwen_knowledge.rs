@@ -258,8 +258,14 @@ async fn lists_and_finds_knowledge_bases_using_only_the_documented_list_route() 
     let requests = mock.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].url, "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index/list?page_number=1&page_size=100");
-    assert_eq!(requests[1].url, "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index/list?page_number=2&page_size=100");
+    assert_eq!(
+        requests[0].url,
+        "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index/list?page_number=1&page_size=100"
+    );
+    assert_eq!(
+        requests[1].url,
+        "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index/list?page_number=2&page_size=100"
+    );
 }
 
 #[tokio::test]
@@ -372,8 +378,14 @@ async fn lists_details_and_deletes_only_same_knowledge_base_documents() {
 
     let requests = mock.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].url, "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index/files?index_id=index-123&page_number=1&page_size=1");
-    assert_eq!(requests[1].url, "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/list/index/file/details");
+    assert_eq!(
+        requests[0].url,
+        "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index/files?index_id=index-123&page_number=1&page_size=1"
+    );
+    assert_eq!(
+        requests[1].url,
+        "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/list/index/file/details"
+    );
     assert_eq!(
         serde_json::from_slice::<Value>(&requests[1].body).unwrap(),
         json!({"indexId":"index-123","pageNumber":1,"pageSize":1})
@@ -445,7 +457,10 @@ async fn appends_files_and_queries_import_status_once() {
         serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
         json!({"indexId":"index-123","sourceType":"DATA_CENTER_FILE","docIds":["file-2"],"chunkMode":"length","chunkSize":800,"overlapSize":100})
     );
-    assert_eq!(requests[1].url, "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index_job/status?index_id=index-123&job_id=job-9&page_number=1&page_size=10");
+    assert_eq!(
+        requests[1].url,
+        "https://llm-workspace-1.cn-beijing.maas.aliyuncs.com/api/v1/indices/rag/index_job/status?index_id=index-123&job_id=job-9&page_number=1&page_size=10"
+    );
 }
 
 #[tokio::test]

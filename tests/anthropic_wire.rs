@@ -12,6 +12,9 @@
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 use lingxi_llm_client::codecs::anthropic::classify_error;
 use lingxi_llm_client::protocol::{
     ChatRequest, ContentBlock, ConversationMessage, FailoverTriggers, LlmError, MessageRole,
@@ -76,7 +79,7 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
@@ -244,6 +247,7 @@ fn both_ways_of_saying_the_transcript_does_not_fit_become_context_overflow() {
         &json!({"error": {"type": "invalid_request_error",
                           "message": "prompt is too long: 260085 tokens > 256000 maximum"}}),
         None,
+        false,
     );
     match by_prompt {
         LlmError::ContextOverflow { actual, limit, .. } => {
@@ -257,6 +261,7 @@ fn both_ways_of_saying_the_transcript_does_not_fit_become_context_overflow() {
         &json!({"error": {"type": "request_too_large",
                           "message": "exceeds the model's context window"}}),
         None,
+        false,
     );
     assert!(matches!(by_size, LlmError::ContextOverflow { .. }));
 }
@@ -270,6 +275,7 @@ fn the_token_counts_are_read_from_the_raw_message_not_the_display_string() {
         &json!({"error": {"type": "invalid_request_error",
                           "message": "prompt is too long: 100 tokens > 50 maximum"}}),
         None,
+        false,
     );
     match err {
         LlmError::ContextOverflow { actual, limit, .. } => {
@@ -286,6 +292,7 @@ fn a_request_too_large_that_is_not_about_context_stays_request_too_large() {
         413,
         &json!({"error": {"type": "request_too_large", "message": "too many bytes"}}),
         None,
+        false,
     );
     assert!(
         matches!(err, LlmError::RequestTooLarge { .. }),
@@ -304,7 +311,12 @@ fn the_error_types_land_where_failover_expects_them() {
         ("api_error", "ProviderInternal"),
     ];
     for (kind, want) in cases {
-        let err = classify_error(500, &json!({"error": {"type": kind, "message": "x"}}), None);
+        let err = classify_error(
+            500,
+            &json!({"error": {"type": kind, "message": "x"}}),
+            None,
+            false,
+        );
         assert!(
             format!("{err:?}").starts_with(want),
             "{kind} mapped to {err:?}, wanted {want}"
@@ -322,12 +334,8 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
         citations: None,
     }]);
     req.system = vec![
-        lingxi_llm_client::protocol::SystemBlock {
-            text: "stable".to_owned(),
-        },
-        lingxi_llm_client::protocol::SystemBlock {
-            text: "volatile".to_owned(),
-        },
+        lingxi_llm_client::protocol::SystemBlock::new("stable"),
+        lingxi_llm_client::protocol::SystemBlock::new("volatile"),
     ];
     req.prompt_cache
         .breakpoints
@@ -404,20 +412,24 @@ fn a_tool_call_streamed_as_json_fragments_keeps_the_id_from_its_opening_frame() 
         r#"{"type":"message_stop"}"#,
     ]);
 
-    let fragments: Vec<&str> = events
+    let fragments: Vec<Vec<u16>> = events
         .iter()
         .filter_map(|e| match e {
             StreamEvent::ToolCallDelta {
                 id,
                 arguments_fragment,
                 ..
-            } if id.as_str() == "toolu_1" => Some(arguments_fragment.as_str()),
+            } if id.as_str() == "toolu_1" => Some(arguments_fragment.utf16_code_units().to_vec()),
             _ => None,
         })
         .collect();
     assert_eq!(
         fragments,
-        vec!["", "{\"p\":", "1}"],
+        vec![
+            "".encode_utf16().collect::<Vec<_>>(),
+            "{\"p\":".encode_utf16().collect::<Vec<_>>(),
+            "1}".encode_utf16().collect::<Vec<_>>(),
+        ],
         "only the opening frame names the call; the fragments refer to its index"
     );
     assert!(matches!(
@@ -447,7 +459,7 @@ fn an_unknown_event_type_is_tolerated() {
         Some(StreamEvent::ProviderEvent {
             protocol: lingxi_llm_client::protocol::ProtocolFamily::AnthropicMessages,
             payload,
-        }) if payload["type"] == "something_added_next_year"
+        }) if json_payload_fixture::source_string_at(payload, "/type").as_deref() == Some("something_added_next_year")
     ));
 }
 
@@ -609,7 +621,7 @@ fn a_tool_result_carries_its_error_flag() {
     let body = encode(
         &request(vec![ContentBlock::ToolResult {
             tool_use_id: ToolUseId::new("toolu_1"),
-            content: "no such file".to_owned(),
+            content: lingxi_llm_client::protocol::JsonPayload::string("no such file"),
             is_error: Some(true),
             blocks: None,
             toolset_name: None,
@@ -858,10 +870,13 @@ fn strict_tools_are_enabled_only_when_requested() {
         let mut req = request(vec![]);
         req.tools.push(lingxi_llm_client::protocol::ToolSpec {
             tool_type: None,
-            extra: serde_json::Value::Null,
+            extra: lingxi_llm_client::protocol::JsonPayload::default(),
             name: "lookup".into(),
-            description: "Lookup".into(),
-            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+            description: lingxi_llm_client::protocol::JsonPayload::string("Lookup"),
+            input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"type":"object","properties":{},"additionalProperties":false}),
+            )
+            .expect("schema fixture is valid JSON"),
             strict,
             defer_loading: false,
             native_options: Vec::new(),

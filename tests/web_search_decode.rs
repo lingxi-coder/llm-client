@@ -7,6 +7,10 @@ use lingxi_llm_client::{
 };
 use serde_json::{json, Value};
 
+fn metadata_value(metadata: &lingxi_llm_client::protocol::JsonPayload) -> Value {
+    serde_json::from_str(metadata.as_json_source()).unwrap()
+}
+
 fn response(body: Value) -> HttpResponse {
     HttpResponse {
         status: 200,
@@ -34,8 +38,14 @@ fn responses_preserves_annotations_search_actions_and_local_tools() {
     let result = OpenAiResponsesCodec.decode_response(&response(json!({"output":[call,{"type":"message","content":[{"type":"output_text","text":"News","annotations":[a]}]},{"type":"function_call","call_id":"local","name":"save","arguments":"{}"}]})), &wire_api::decode_context()).unwrap();
     let search = result.web_search.unwrap();
     assert_eq!(search.citations[0].url, "https://example.com");
-    assert_eq!(search.metadata["annotations"][0]["annotation"], a);
-    assert_eq!(search.metadata["web_search_calls"][0], call);
+    assert_eq!(
+        metadata_value(&search.metadata)["annotations"][0]["annotation"],
+        a
+    );
+    assert_eq!(
+        metadata_value(&search.metadata)["web_search_calls"][0],
+        call
+    );
     assert_eq!(result.stop_reason, StopReason::ToolUse);
     assert_eq!(
         result
@@ -91,14 +101,14 @@ fn responses_top_level_server_usage_survives_complete_and_stream() {
         .decode_response(&response(body.clone()), &wire_api::decode_context())
         .unwrap();
     assert_eq!(
-        decoded.web_search.unwrap().metadata["server_side_tool_usage"],
+        metadata_value(&decoded.web_search.unwrap().metadata)["server_side_tool_usage"],
         counts
     );
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let frame = json!({"type": "response.completed", "response": body});
     let events = wire_api::decode_frame(&mut *decoder, frame.to_string().as_bytes()).unwrap();
     assert_eq!(
-        searches(&events)[0].metadata["server_side_tool_usage"],
+        metadata_value(&searches(&events)[0].metadata)["server_side_tool_usage"],
         counts
     );
 }
@@ -107,7 +117,10 @@ fn responses_top_level_server_usage_survives_complete_and_stream() {
 fn chat_and_openrouter_nested_annotations_survive_streaming() {
     let a = json!({"type":"url_citation","url_citation":{"url":"https://example.com","title":"Source","content":"excerpt","start_index":0,"end_index":4}});
     let result = OpenAiChatCodec.decode_response(&response(json!({"choices":[{"message":{"content":"News","annotations":[a]},"finish_reason":"stop"}]})), &wire_api::decode_context()).unwrap();
-    assert_eq!(result.web_search.unwrap().metadata["annotations"][0], a);
+    assert_eq!(
+        metadata_value(&result.web_search.unwrap().metadata)["annotations"][0],
+        a
+    );
     let mut decoder = OpenAiChatCodec.stream_decoder(&wire_api::decode_context());
     let frame = json!({"choices":[{"delta":{"annotations":[a]}}]}).to_string();
     assert_eq!(
@@ -131,7 +144,10 @@ fn anthropic_search_errors_and_encrypted_attribution_are_preserved() {
         .unwrap();
     let search = result.web_search.unwrap();
     assert_eq!(search.citations.len(), 1);
-    assert_eq!(search.metadata["content"], json!([error, cited]));
+    assert_eq!(
+        metadata_value(&search.metadata)["content"],
+        json!([error, cited])
+    );
     assert_eq!(result.stop_reason, StopReason::EndTurn);
     assert!(!result
         .message
@@ -180,7 +196,10 @@ fn gemini_preserves_search_widget_supports_and_metadata_only_frames() {
         .unwrap();
     let search = result.web_search.unwrap();
     assert_eq!(search.citations.len(), 1);
-    assert_eq!(search.metadata["groundingMetadata"], metadata);
+    assert_eq!(
+        metadata_value(&search.metadata)["groundingMetadata"],
+        metadata
+    );
     let mut decoder = GeminiCodec.stream_decoder(&wire_api::decode_context());
     let events = wire_api::decode_frame(
         &mut *decoder,
@@ -191,7 +210,7 @@ fn gemini_preserves_search_widget_supports_and_metadata_only_frames() {
     .unwrap();
     assert!(searches(&events)[0].citations.is_empty());
     assert_eq!(
-        searches(&events)[0].metadata["groundingMetadata"]["webSearchQueries"],
+        metadata_value(&searches(&events)[0].metadata)["groundingMetadata"]["webSearchQueries"],
         json!(["news"])
     );
 }
@@ -266,7 +285,7 @@ fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     };
     let profile: ProviderProfile = serde_json::from_value(json!({"provider_id":"anthropic","profile_name":"anthropic","base_url":"https://api.anthropic.com","protocol":"anthropic_messages","auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m"}]})).unwrap();
     let route = ResolvedRoute {
@@ -304,7 +323,7 @@ fn native_search_counters_survive_full_and_usage_only_stream_frames() {
         )
         .unwrap();
     assert_eq!(
-        decoded.web_search.unwrap().metadata["usage"]["server_tool_use"],
+        metadata_value(&decoded.web_search.unwrap().metadata)["usage"]["server_tool_use"],
         counters
     );
     let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
@@ -316,7 +335,7 @@ fn native_search_counters_survive_full_and_usage_only_stream_frames() {
     )
     .unwrap();
     assert_eq!(
-        searches(&events)[0].metadata["usage"]["server_tool_use"],
+        metadata_value(&searches(&events)[0].metadata)["usage"]["server_tool_use"],
         counters
     );
     let mut decoder = OpenAiChatCodec.stream_decoder(&wire_api::decode_context());
@@ -328,7 +347,7 @@ fn native_search_counters_survive_full_and_usage_only_stream_frames() {
     )
     .unwrap();
     assert_eq!(
-        searches(&events)[0].metadata["usage"]["server_tool_use"],
+        metadata_value(&searches(&events)[0].metadata)["usage"]["server_tool_use"],
         counters
     );
     let decoded = OpenAiResponsesCodec
@@ -340,7 +359,8 @@ fn native_search_counters_survive_full_and_usage_only_stream_frames() {
         )
         .unwrap();
     assert_eq!(
-        decoded.web_search.unwrap().metadata["usage"]["server_side_tool_usage"]["web_search_calls"],
+        metadata_value(&decoded.web_search.unwrap().metadata)["usage"]["server_side_tool_usage"]
+            ["web_search_calls"],
         3
     );
 }

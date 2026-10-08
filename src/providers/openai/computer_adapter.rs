@@ -82,7 +82,9 @@ pub fn decode(
                     .map(|check| serde_json::to_value(check).expect("serializable safety check"))
                     .collect(),
                 continuation: continuation.cloned(),
-                opaque: value.data().clone(),
+                opaque: serde_json::from_str(value.data().as_json_source()).map_err(|error| {
+                    invalid(format!("invalid OpenAI computer call data: {error}"))
+                })?,
             },
             operations,
             requires_screenshot: true,
@@ -192,38 +194,36 @@ pub fn encode_receipt(
     let image = result
         .blocks
         .as_ref()
+        .and_then(JsonPayload::array_items)
         .and_then(|blocks| {
-            blocks.iter().rev().find(|block| {
-                block.get("type").and_then(serde_json::Value::as_str) == Some("image")
-            })
+            blocks
+                .into_iter()
+                .rev()
+                .find(|block| block.string_at("/type").as_deref() == Some("image"))
         })
         .ok_or_else(|| {
             invalid("OpenAI computer receipt requires an image in the final model-visible result")
         })?;
-    let source = image.get("source").unwrap_or(image);
-    let image_url = match source.get("type").and_then(serde_json::Value::as_str) {
+    let source = image
+        .payload_at("/source")
+        .unwrap_or_else(|| image.clone());
+    let image_url = match source.string_at("/type").as_deref() {
         Some("base64") => format!(
             "data:{};base64,{}",
             source
-                .get("media_type")
-                .and_then(serde_json::Value::as_str)
+                .string_at("/media_type")
                 .ok_or_else(|| invalid("screenshot has no media type"))?,
             source
-                .get("data")
-                .and_then(serde_json::Value::as_str)
+                .string_at("/data")
                 .ok_or_else(|| invalid("screenshot has no image data"))?
         ),
         Some("url") => source
-            .get("url")
-            .and_then(serde_json::Value::as_str)
+            .string_at("/url")
             .ok_or_else(|| invalid("screenshot has no URL"))?
             .to_owned(),
         _ => image
-            .get("image_url")
-            .and_then(|v| {
-                v.as_str()
-                    .or_else(|| v.get("url").and_then(serde_json::Value::as_str))
-            })
+            .string_at("/image_url")
+            .or_else(|| image.string_at("/image_url/url"))
             .ok_or_else(|| invalid("screenshot source cannot be represented by OpenAI"))?
             .to_owned(),
     };

@@ -141,6 +141,25 @@ impl XaiTranscriptionUrl {
 
     fn redact_llm_error(&self, error: LlmError) -> LlmError {
         match error {
+            LlmError::ProviderErrorText {
+                source,
+                text,
+                native_anthropic_facts,
+            } => {
+                let redacted_display = self.redact_text(text.display());
+                let redacted_text = if redacted_display == text.display() {
+                    text
+                } else {
+                    crate::protocol::ProviderErrorText::from(redacted_display)
+                };
+                let redacted_source = self.redact_llm_error(*source);
+                match native_anthropic_facts {
+                    Some(facts) => {
+                        redacted_source.with_native_anthropic_error(redacted_text, facts)
+                    }
+                    None => redacted_source.with_provider_error_text(redacted_text),
+                }
+            }
             LlmError::Authentication { message } => LlmError::Authentication {
                 message: self.redact_text(&message),
             },
@@ -195,8 +214,12 @@ impl XaiTranscriptionUrl {
                 message: self.redact_text(&message),
                 status,
             },
-            LlmError::Overloaded { message } => LlmError::Overloaded {
+            LlmError::Overloaded {
+                message,
+                native_retry_base_eligible,
+            } => LlmError::Overloaded {
                 message: self.redact_text(&message),
+                native_retry_base_eligible,
             },
             LlmError::Transport { message } => LlmError::Transport {
                 message: self.redact_text(&message),

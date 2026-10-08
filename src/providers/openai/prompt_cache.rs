@@ -2,7 +2,7 @@
 
 use crate::codecs::{json::WireValue, CodecContext};
 use crate::protocol::{
-    CachePosition, CacheTtl, ChatRequest, ContentBlock, LlmError, MessageRole,
+    CachePosition, CacheTtl, ChatRequest, ContentBlock, JsonPayload, LlmError, MessageRole,
     OpenAiPromptCacheMode, OpenAiPromptCacheRetention, OpenAiPromptCacheTtl, ProtocolFamily,
 };
 use serde_json::{json, Map, Value};
@@ -101,28 +101,45 @@ pub(crate) fn has_message_breakpoint(request: &ChatRequest, message: usize, bloc
     })
 }
 
-fn is_markable_input_text(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("input_text")
+fn is_markable_input_text(value: &JsonPayload) -> bool {
+    value.string_is("/type", "input_text")
         && value
-            .get("text")
-            .and_then(Value::as_str)
+            .string_units_at("/text")
             .is_some_and(|text| !text.is_empty())
-        && value
-            .get("prompt_cache_breakpoint")
-            .is_none_or(|marker| marker == &json!({"mode":"explicit"}))
+        && (value.raw_source_at("/prompt_cache_breakpoint").is_none()
+            || (value.has_only_fields_at("/prompt_cache_breakpoint", &["mode"])
+                && value.string_is("/prompt_cache_breakpoint/mode", "explicit")))
 }
 
-fn can_mark_provider_message(value: &Value) -> bool {
-    value.get("type").and_then(Value::as_str) == Some("message")
-        && value
-            .get("role")
-            .and_then(Value::as_str)
-            .is_some_and(|role| role != "assistant")
-        && value
-            .get("content")
-            .and_then(Value::as_array)
-            .and_then(|parts| parts.last())
-            .is_some_and(is_markable_input_text)
+fn can_mark_provider_message(value: &JsonPayload) -> bool {
+    if !value.string_is("/type", "message")
+        || value
+            .string_at("/role")
+            .is_none_or(|role| role == "assistant")
+    {
+        return false;
+    }
+    let Some(length) = value.array_len("/content").filter(|length| *length > 0) else {
+        return false;
+    };
+    is_markable_provider_input_text(value, &format!("/content/{}", length - 1))
+}
+
+fn is_markable_provider_input_text(value: &JsonPayload, pointer: &str) -> bool {
+    if !value.string_is(&format!("{pointer}/type"), "input_text")
+        || value
+            .string_units_at(&format!("{pointer}/text"))
+            .is_none_or(|text| text.is_empty())
+    {
+        return false;
+    }
+    let marker = format!("{pointer}/prompt_cache_breakpoint");
+    if value.raw_source_at(&marker).is_none() {
+        return true;
+    }
+    value.kind_at(&marker) == Some(crate::response_json::FlatJsonKind::Object)
+        && value.has_only_fields_at(&marker, &["mode"])
+        && value.string_is(&format!("{marker}/mode"), "explicit")
 }
 
 /// Validate the OpenAI-only policy before any request preparation or encoding.
@@ -221,7 +238,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                 CachePosition::System { index } => request
                     .system
                     .get(index)
-                    .is_some_and(|block| !block.text.is_empty()),
+                    .is_some_and(|block| !block.is_empty()),
                 CachePosition::Message { index, block } => request
                     .messages
                     .get(index)
@@ -240,8 +257,18 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                             content, blocks, ..
                         } => blocks
                             .as_ref()
-                            .and_then(|parts| parts.last())
-                            .map_or_else(|| !content.is_empty(), is_markable_input_text),
+                            .and_then(|parts| {
+                                let last = parts.array_len("")?.checked_sub(1)?;
+                                parts.array_item(last)
+                            })
+                            .map_or_else(
+                                || {
+                                    content
+                                        .root_string_code_units()
+                                        .is_some_and(|text| !text.is_empty())
+                                },
+                                |last| is_markable_input_text(&last),
+                            ),
                         ContentBlock::ProviderContent { protocol, value } => {
                             *protocol == ProtocolFamily::OpenAiResponses
                                 && can_mark_provider_message(value)
@@ -281,7 +308,7 @@ pub(crate) fn system_input<'a>(request: &'a ChatRequest) -> Option<WireValue<'a>
             );
         }
         let part = WireValue::from(json!({"type":"input_text"}))
-            .with("text", WireValue::text(&block.text));
+            .with("text", WireValue::raw_json(block.text_payload()));
         let part = if request
             .prompt_cache
             .breakpoints
@@ -333,51 +360,70 @@ pub(crate) fn tool_result_output<'a>(
     request: &ChatRequest,
     message: usize,
     block: usize,
-    content: &'a str,
-    blocks: Option<&'a [Value]>,
-) -> WireValue<'a> {
+    content: &'a JsonPayload,
+    blocks: Option<&'a JsonPayload>,
+) -> Result<WireValue<'a>, LlmError> {
+    content.validate_root_string("tool result content")?;
     let should_mark = has_message_breakpoint(request, message, block);
     let Some(blocks) = blocks else {
-        return if should_mark {
+        return Ok(if should_mark {
             WireValue::array(vec![mark_input_text(
                 WireValue::from(json!({"type":"input_text"}))
-                    .with("text", WireValue::text(content)),
+                    .with("text", WireValue::raw_json(content)),
             )])
         } else {
-            WireValue::text(content)
-        };
+            WireValue::raw_json(content)
+        });
     };
 
-    let last = blocks.len().checked_sub(1);
-    WireValue::array(
-        blocks
-            .iter()
-            .enumerate()
-            .map(|(index, part)| {
-                let part = WireValue::borrowed(part);
-                if should_mark && Some(index) == last {
-                    mark_input_text(part)
-                } else {
-                    part
-                }
+    blocks.validate_root_array("tool result blocks")?;
+    let len = blocks
+        .array_len("")
+        .ok_or_else(|| invalid("tool result blocks must be an array"))?;
+    let last = len.checked_sub(1);
+    let parts = (0..len)
+        .map(|index| {
+            let part = blocks
+                .array_item(index)
+                .ok_or_else(|| invalid("tool result block source is missing"))?;
+            let part = WireValue::owned_raw_json(part);
+            Ok(if should_mark && Some(index) == last {
+                mark_input_text(part)
+            } else {
+                part
             })
-            .collect(),
-    )
+        })
+        .collect::<Result<Vec<_>, LlmError>>()?;
+    Ok(WireValue::array(parts))
 }
 
-pub(crate) fn mark_provider_message<'a>(value: &'a Value) -> WireValue<'a> {
-    let last = value
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|parts| parts.len().checked_sub(1));
-    WireValue::borrowed(value).map_array_field("content", |index, part| {
-        let part = WireValue::from(part);
-        if Some(index) == last {
-            mark_input_text(part)
+pub(crate) fn mark_provider_message<'a>(value: &'a JsonPayload) -> Result<WireValue<'a>, LlmError> {
+    let Some(length) = value.array_len("/content") else {
+        return Err(invalid("native Responses message content must be an array"));
+    };
+    let mut parts = Vec::with_capacity(length);
+    for index in 0..length {
+        let source = value
+            .raw_source_at(&format!("/content/{index}"))
+            .ok_or_else(|| invalid("native Responses message content item is missing"))?;
+        let part = JsonPayload::parse(&source).map_err(|error| invalid(error.to_string()))?;
+        let source = if index + 1 == length {
+            part.with_canonical_fields(
+                crate::exact_json::JsonEncoding::Serde,
+                &[("prompt_cache_breakpoint", r#"{"mode":"explicit"}"#)],
+            )?
+            .canonical_json(crate::exact_json::JsonEncoding::Serde)?
         } else {
-            part
-        }
-    })
+            part.canonical_json(crate::exact_json::JsonEncoding::Serde)?
+        };
+        parts.push(source);
+    }
+    let content = format!("[{}]", parts.join(","));
+    let updated = value.with_canonical_fields(
+        crate::exact_json::JsonEncoding::Serde,
+        &[("content", &content)],
+    )?;
+    Ok(WireValue::owned_raw_json(updated))
 }
 
 pub(crate) fn apply(

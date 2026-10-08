@@ -38,7 +38,9 @@ pub(crate) fn apply_web_search(
             message: "OpenAI Responses web_search accepts at most 100 domains per filter".into(),
         });
     }
-    for domain in search.allowed_domains.iter().chain(&search.blocked_domains) {
+    let allowed_domains = crate::codecs::web_search::domain_strings(&search.allowed_domains)?;
+    let blocked_domains = crate::codecs::web_search::domain_strings(&search.blocked_domains)?;
+    for domain in allowed_domains.iter().chain(&blocked_domains) {
         if domain.trim().is_empty()
             || domain.contains("://")
             || domain.contains('/')
@@ -51,13 +53,13 @@ pub(crate) fn apply_web_search(
         }
     }
     let mut tool = json!({"type": "web_search"});
-    if !search.allowed_domains.is_empty() || !search.blocked_domains.is_empty() {
+    if !allowed_domains.is_empty() || !blocked_domains.is_empty() {
         let mut filters = Map::new();
-        if !search.allowed_domains.is_empty() {
-            filters.insert("allowed_domains".into(), json!(search.allowed_domains));
+        if !allowed_domains.is_empty() {
+            filters.insert("allowed_domains".into(), json!(allowed_domains));
         }
-        if !search.blocked_domains.is_empty() {
-            filters.insert("blocked_domains".into(), json!(search.blocked_domains));
+        if !blocked_domains.is_empty() {
+            filters.insert("blocked_domains".into(), json!(blocked_domains));
         }
         tool["filters"] = Value::Object(filters);
     }

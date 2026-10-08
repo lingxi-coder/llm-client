@@ -1,99 +1,256 @@
 //! Response and error decoding for the Messages API.
 
 use crate::protocol::{
-    ChatResponse, ContentBlock, ConversationMessage, LlmError, MessageRole, StopReason, ToolUseId,
-    Usage,
+    ChatResponse, ContentBlock, ConversationMessage, JsonPayload, LlmError, MessageRole,
+    ProtocolFamily, StopReason, ToolUseId, Usage,
 };
-use crate::response_json::{DecodedText, ResponseJson};
+use crate::response_json::{DecodedText, FlatJsonKind, ResponseJson, ResponseJsonScanner};
 use crate::transport::HttpResponse;
 use serde_json::Value;
 use std::time::Duration;
 
 pub fn response(
     resp: &HttpResponse,
+    context: Option<&crate::codecs::CodecContext>,
     retain_openrouter_container: bool,
     retain_anthropic_container: bool,
 ) -> Result<ChatResponse, LlmError> {
-    // Status and Retry-After remain authoritative when an error response has
-    // an empty, HTML or otherwise non-JSON body. Strict JSON decoding applies
-    // to successful model responses, whose content can become executable.
-    if !(200..300).contains(&resp.status) {
-        return Err(classify_error(
+    let native_route = context.and_then(crate::codecs::CodecContext::native_anthropic_error_route);
+    let is_http_error = !(200..300).contains(&resp.status);
+    let response_text =
+        (is_http_error && native_route.is_some()).then(|| ResponseJson::response_text(&resp.body));
+    let response_bytes = response_text
+        .as_deref()
+        .map(str::as_bytes)
+        .unwrap_or(&resp.body);
+    let scanner = match ResponseJsonScanner::parse(
+        response_bytes,
+        "Anthropic response is not valid JSON",
+    ) {
+        Ok(scanner) => scanner,
+        Err(_error) if is_http_error => {
+            let (body, provider_text) = if native_route.is_some() {
+                ResponseJson::native_anthropic_raw_http_error(resp.status, &resp.body)
+            } else {
+                ResponseJson::raw_http_error(resp.status, &resp.body)
+            };
+            let error = classify_error(
+                resp.status,
+                &body,
+                retry_after(resp),
+                native_route.is_some() && resp.status == 529,
+            );
+            return Err(match native_route {
+                    Some((provider_id, protocol)) => error.with_native_anthropic_error(
+                        provider_text,
+                        native_error_facts(
+                            provider_id,
+                            protocol,
+                            resp.status,
+                            context.and_then(
+                                crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
+                            ).or(Some(false)),
+                            None,
+                            None,
+                        ),
+                    ),
+                    None => error.with_provider_error_text(provider_text),
+                });
+        }
+        Err(error) => return Err(error),
+    };
+    if is_http_error {
+        let selected_text = scanner.provider_error_text_at("/error/message", None)?;
+        let native_text = native_route
+            .is_some()
+            .then(|| scanner.native_anthropic_http_error_text(Some(resp.status)))
+            .transpose()?;
+        let provider_text = match &native_text {
+            Some(text) => text.clone(),
+            None => match &selected_text {
+                Some(text) => text.prefixed(&format!("{} ", resp.status)),
+                None => {
+                    scanner.provider_error_text_or_body_at("/error/message", Some(resp.status))?
+                }
+            },
+        };
+        let body = scanner.provider_error_classification_body(
+            "/error",
+            &["type", "message"],
+            selected_text.as_ref(),
+        );
+        let error = classify_error(
             resp.status,
-            &resp.payload_value(),
+            &body,
             retry_after(resp),
-        ));
-    }
-    let mut response_json =
-        ResponseJson::parse(&resp.body, "Anthropic response is not valid JSON")?;
-    let body = response_json.value.clone();
-    if !body.get("content").is_some_and(Value::is_array) {
-        return Err(LlmError::ProviderInternal {
-            message: "provider response has no valid content array".to_owned(),
+            native_route.is_some()
+                && native_anthropic_retry_base_eligible(Some(resp.status), &scanner)?,
+        );
+        return Err(match native_route {
+            Some((provider_id, protocol)) => error.with_native_anthropic_error(
+                provider_text,
+                native_error_facts(
+                    provider_id,
+                    protocol,
+                    resp.status,
+                    context.and_then(
+                        crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
+                    ).or(Some(false)),
+                    native_text.as_ref(),
+                    Some(&scanner),
+                ),
+            ),
+            None => error.with_provider_error_text(provider_text),
         });
     }
-    let raw_content = body["content"]
-        .as_array()
-        .expect("content array checked above");
-    let mut content = raw_content
+    let body_payload = JsonPayload::parse(
+        scanner
+            .raw_source_at("")
+            .expect("a parsed provider response has a root source"),
+    )
+    .map_err(|error| LlmError::InvalidRequest {
+        message: format!("Anthropic response source is invalid JSON: {error}"),
+    })?;
+    let content_count =
+        scanner
+            .array_len("/content")
+            .ok_or_else(|| LlmError::ProviderInternal {
+                message: "provider response has no valid content array".to_owned(),
+            })?;
+    let mut opaque_paths = Vec::new();
+    let mut raw_blocks = Vec::with_capacity(content_count);
+    for index in 0..content_count {
+        let pointer = format!("/content/{index}");
+        let source = scanner
+            .raw_source_at(&pointer)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Anthropic content block source was not retained".into(),
+            })?;
+        let fallback = scanner.string_at(&format!("{pointer}/type")) == Some("fallback");
+        raw_blocks.push((fallback, source.to_owned()));
+        if !fallback {
+            opaque_paths.push(pointer);
+        }
+    }
+    for pointer in ["/usage", "/stop_details", "/container", "/resumable"] {
+        if scanner.raw_source_at(pointer).is_some() {
+            opaque_paths.push(pointer.to_owned());
+        }
+    }
+    let search_blocks = raw_blocks
         .iter()
-        .enumerate()
-        .filter(|(_, block)| {
-            !crate::providers::anthropic::fallback_response::is_fallback_block(block)
-        })
-        .map(|(index, block)| {
-            // A complete Messages block must identify its wire type. Unknown
-            // types stay native, but malformed known content must never be
-            // silently dropped and mistaken for a successfully completed turn.
-            let kind = block.get("type").and_then(Value::as_str);
-            let valid = match kind {
-                Some("text") => block.get("text").is_some_and(Value::is_string),
-                Some("redacted_thinking") => block.get("data").is_some_and(Value::is_string),
-                Some("tool_use") => {
-                    block.get("id").is_some_and(Value::is_string)
-                        && block.get("name").is_some_and(Value::is_string)
-                }
-                Some(kind) => !kind.is_empty(),
-                None => false,
-            };
-            if !valid {
-                return Err(LlmError::ProviderInternal {
-                    message: format!(
-                        "provider response contains malformed content block at index {index}"
-                    ),
-                });
+        .filter(|(fallback, _)| !fallback)
+        .filter_map(|(_, source)| JsonPayload::parse(source).ok())
+        .collect::<Vec<_>>();
+    let web_search = crate::codecs::web_search_decode::anthropic_payload_blocks(&search_blocks);
+    let usage_payload = scanner
+        .raw_source_at("/usage")
+        .map(JsonPayload::parse)
+        .transpose()
+        .map_err(|error| LlmError::InvalidRequest {
+            message: format!("Anthropic usage source is invalid JSON: {error}"),
+        })?;
+    let stop_details_payload = scanner
+        .raw_source_at("/stop_details")
+        .map(JsonPayload::parse)
+        .transpose()
+        .map_err(|error| LlmError::InvalidRequest {
+            message: format!("Anthropic stop details source is invalid JSON: {error}"),
+        })?;
+    let container_payload = scanner
+        .raw_source_at("/container")
+        .map(JsonPayload::parse)
+        .transpose()
+        .map_err(|error| LlmError::InvalidRequest {
+            message: format!("Anthropic container source is invalid JSON: {error}"),
+        })?;
+    let resumable_payload = scanner
+        .raw_source_at("/resumable")
+        .map(JsonPayload::parse)
+        .transpose()
+        .map_err(|error| LlmError::InvalidRequest {
+            message: format!("Anthropic resumable source is invalid JSON: {error}"),
+        })?;
+    let mut response_json = scanner.into_response_json_with_opaque_paths(&opaque_paths)?;
+    for pointer in ["/usage", "/stop_details", "/container", "/resumable"] {
+        if response_json.take_raw_json_source_at(pointer)?.is_some() {
+            // Their exact source is carried by the JsonPayload fields above.
+        }
+    }
+    let body = response_json.value.clone();
+    let has_valid_fallback = raw_blocks
+        .iter()
+        .filter(|(fallback, _)| *fallback)
+        .filter_map(|(_, source)| JsonPayload::parse(source).ok())
+        .any(|block| {
+            crate::providers::anthropic::fallback_response::complete_block(&block).is_some()
+        });
+    let mut content = Vec::new();
+    for (index, (fallback, source)) in raw_blocks.into_iter().enumerate() {
+        if fallback {
+            continue;
+        }
+        response_json
+            .take_raw_json_source_at(&format!("/content/{index}"))?
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Anthropic content block source was not handed to its typed carrier"
+                    .into(),
+            })?;
+        let payload = JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+            message: format!("Anthropic content block is invalid JSON: {error}"),
+        })?;
+        let kind = payload.string_at("/type");
+        let valid = match kind.as_deref() {
+            Some("text") => payload.kind_at("/text") == Some(FlatJsonKind::String),
+            Some("redacted_thinking") => payload.kind_at("/data") == Some(FlatJsonKind::String),
+            Some("tool_use") => {
+                payload.kind_at("/id") == Some(FlatJsonKind::String)
+                    && payload.kind_at("/name") == Some(FlatJsonKind::String)
             }
-            decode_response_block(&mut response_json, block, &format!("/content/{index}"))?
-                .ok_or_else(|| LlmError::ProviderInternal {
-                    message: format!(
-                        "provider response contains malformed content block at index {index}"
-                    ),
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            Some(kind) => !kind.is_empty(),
+            None => false,
+        };
+        if !valid {
+            return Err(LlmError::ProviderInternal {
+                message: format!(
+                    "provider response contains malformed content block at index {index}"
+                ),
+            });
+        }
+        if kind.as_deref() == Some("text")
+            && !has_only_known_text_fields(&payload)
+            && payload
+                .string_units_at("/text")
+                .is_some_and(|units| String::from_utf16(&units).is_err())
+        {
+            return Err(LlmError::UnsupportedCapability {
+                message: "Anthropic opaque text blocks with lone UTF-16 units cannot be replayed losslessly".into(),
+            });
+        }
+        let block = decode_source_block(payload).ok_or_else(|| LlmError::ProviderInternal {
+            message: format!("provider response contains malformed content block at index {index}"),
+        })?;
+        content.push(block);
+    }
     // Native Messages materializes a valid fallback block before removing its
     // control representation from the SDK replay. A malformed-only control
     // response has neither that materialized block nor ordinary content, so
     // preserve the native empty-response placeholder in the SDK projection.
-    if content.is_empty()
-        && !raw_content.is_empty()
-        && !raw_content.iter().any(|block| {
-            crate::providers::anthropic::fallback_response::complete_block(block).is_some()
-        })
-    {
+    if content.is_empty() && content_count > 0 && !has_valid_fallback {
         content.push(ContentBlock::Text {
             text: "(no content)".into(),
             thought_signature: None,
-            citations: Some(Some(serde_json::json!([]))),
+            citations: Some(Some(JsonPayload::parse("[]").expect("empty array is JSON"))),
         });
     }
     response_json.finish()?;
+    let typed_usage = usage_payload.as_ref().map(anthropic_usage_projection);
     let mut response = ChatResponse {
         inference: Default::default(),
         response_cache: None,
-        web_search: crate::codecs::web_search_decode::with_usage(
-            crate::codecs::web_search_decode::anthropic(&body),
-            body.get("usage"),
+        web_search: crate::codecs::web_search_decode::with_usage_payload(
+            web_search,
+            usage_payload.as_ref(),
         ),
         file_search: None,
         native_metadata: Vec::new(),
@@ -104,11 +261,17 @@ pub fn response(
         },
         stop_reason: stop_reason(body.get("stop_reason").and_then(Value::as_str)),
         usage: crate::codecs::usage::report(
-            body.get("usage"),
+            typed_usage.as_ref(),
             &crate::codecs::usage::ANTHROPIC,
             usage,
             true,
         ),
+        native_resume_context_exhausted: context.and_then(|context| {
+            native_resume_context_exhausted(
+                usage_payload.as_ref(),
+                context.native_anthropic_effective_context_window(),
+            )
+        }),
         model: body
             .get("model")
             .and_then(Value::as_str)
@@ -121,29 +284,25 @@ pub fn response(
         continuation: None,
         executed_profile: None,
     };
-    response.set_anthropic_stop_details(
-        body.get("stop_details")
-            .filter(|value| !value.is_null())
-            .cloned(),
-    );
-    if retain_anthropic_container {
-        response.set_anthropic_metadata(
-            body.get("container")
-                .filter(|container| !container.is_null())
-                .cloned()
-                .map(
-                    |envelope| crate::providers::anthropic::types::AnthropicContainerMetadata {
-                        envelope,
-                    },
-                ),
-            body.get("usage").cloned(),
-        );
-    }
+    response
+        .set_anthropic_stop_details(stop_details_payload.filter(|payload| !payload.is_root_null()));
+    let container = if retain_anthropic_container {
+        container_payload
+            .clone()
+            .filter(|container| !container.is_root_null())
+            .map(
+                |envelope| crate::providers::anthropic::types::AnthropicContainerMetadata {
+                    envelope,
+                },
+            )
+    } else {
+        None
+    };
+    response.set_anthropic_metadata(container, usage_payload.clone());
     if retain_openrouter_container {
         response.set_openrouter_container(
-            body.get("container")
-                .filter(|container| !container.is_null())
-                .cloned()
+            container_payload
+                .filter(|container| !container.is_root_null())
                 .map(
                     |envelope| crate::providers::openrouter::types::OpenRouterContainerMetadata {
                         envelope,
@@ -152,8 +311,9 @@ pub fn response(
         );
     }
     response.set_anthropic_fallback(
-        crate::providers::anthropic::fallback_response::from_nonstream_body(&body),
+        crate::providers::anthropic::fallback_response::from_nonstream_body(&body_payload),
     );
+    response.set_anthropic_resumable(resumable_payload);
     Ok(response)
 }
 
@@ -169,7 +329,7 @@ mod non_json_error_tests {
                 body: body.as_bytes().to_vec().into(),
             };
             assert!(
-                matches!(super::response(&response,false,false),Err(LlmError::RateLimited{retry_after:Some(delay),..}) if delay==Duration::from_secs(7))
+                super::response(&response, None, false, false).is_err_and(|error| matches!(error.classification_source(), LlmError::RateLimited {retry_after:Some(delay),..} if *delay == Duration::from_secs(7)))
             );
         }
     }
@@ -180,35 +340,258 @@ mod non_json_error_tests {
             headers: vec![],
             body: br#"not json"#.as_slice().into(),
         };
-        assert!(super::response(&response, false, false).is_err());
+        assert!(super::response(&response, None, false, false).is_err());
     }
 }
 
-fn decode_response_block(
-    response_json: &mut ResponseJson,
-    value: &Value,
-    pointer: &str,
-) -> Result<Option<ContentBlock>, LlmError> {
-    if value.get("type").and_then(Value::as_str) != Some("text")
-        || !has_only_known_text_fields(value)
-    {
-        return Ok(decode_block(value));
-    }
-    let Some(display) = value.get("text").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-    let decoded = response_json.take_text(&format!("{pointer}/text"), display)?;
-    let citations = value.get("citations").map(|citations| {
-        if citations.is_null() {
-            None
-        } else {
-            Some(citations.clone())
+/// Project only the counters consumed by the typed Usage/UsageReport API.
+/// The complete provider object remains in `AnthropicResponseMetadata` as a
+/// JsonPayload; this shallow view avoids recursive Value materialization.
+pub(crate) fn anthropic_usage_projection(payload: &JsonPayload) -> Value {
+    use crate::response_json::FlatJsonKind;
+
+    fn scalar(payload: &JsonPayload, pointer: &str) -> Option<Value> {
+        let kind = payload.kind_at(pointer)?;
+        if matches!(kind, FlatJsonKind::Object | FlatJsonKind::Array) {
+            return Some(if kind == FlatJsonKind::Object {
+                Value::Object(Default::default())
+            } else {
+                Value::Array(Vec::new())
+            });
         }
-    });
-    Ok(Some(text_block(decoded, citations)))
+        if kind == FlatJsonKind::String {
+            return Some(Value::String(
+                payload.string_at(pointer).unwrap_or_default(),
+            ));
+        }
+        serde_json::from_str(&payload.raw_source_at(pointer)?).ok()
+    }
+
+    fn insert_pointer(root: &mut Value, pointer: &str, value: Value) {
+        let mut parts = pointer.trim_start_matches('/').split('/').peekable();
+        let Some(mut current) = root.as_object_mut() else {
+            return;
+        };
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                current.insert(part.to_owned(), value);
+                return;
+            }
+            let child = current
+                .entry(part.to_owned())
+                .or_insert_with(|| Value::Object(Default::default()));
+            let Some(object) = child.as_object_mut() else {
+                return;
+            };
+            current = object;
+        }
+    }
+
+    if payload.is_root_null() {
+        return Value::Null;
+    }
+    if !payload.is_root_object() {
+        return scalar(payload, "").unwrap_or(Value::Null);
+    }
+
+    let mut result = Value::Object(Default::default());
+    for pointer in [
+        "/input_tokens",
+        "/output_tokens",
+        "/cache_read_input_tokens",
+        "/cache_creation_input_tokens",
+        "/total_tokens",
+        "/reasoning_output_tokens",
+        "/cache_creation",
+        "/output_tokens_details",
+        "/server_tool_use",
+        "/speed",
+        "/cache_creation/ephemeral_5m_input_tokens",
+        "/cache_creation/ephemeral_1h_input_tokens",
+        "/output_tokens_details/thinking_tokens",
+        "/server_tool_use/web_search_requests",
+        "/server_tool_use/web_fetch_requests",
+        "/server_tool_use/file_search_requests",
+        "/server_tool_use/code_execution_requests",
+    ] {
+        if let Some(value) = scalar(payload, pointer) {
+            insert_pointer(&mut result, pointer, value);
+        }
+    }
+    result
 }
 
-fn text_block(text: DecodedText, citations: Option<Option<Value>>) -> ContentBlock {
+/// Native `Rte`/`OP` usage selection followed by the `Oqo` 2048-token gate.
+/// The final context window is supplied only from a trusted Native source;
+/// absent context is not replaced with the SDK's generic advertised window.
+pub(crate) fn native_resume_context_exhausted(
+    payload: Option<&JsonPayload>,
+    context_window: Option<f64>,
+) -> Option<bool> {
+    use FlatJsonKind::{Null, Number, Object};
+
+    let payload = payload?;
+    if payload.kind_at("") != Some(Object) {
+        return None;
+    }
+
+    fn top_bucket(payload: &JsonPayload, pointer: &str) -> Option<f64> {
+        match payload.kind_at(pointer) {
+            None | Some(Null) => Some(0.0),
+            Some(Number) => payload.number_at(pointer),
+            _ => None,
+        }
+    }
+
+    fn valid_iteration_buckets(payload: &JsonPayload, pointer: &str) -> Option<[f64; 4]> {
+        let kind = payload.string_at(&format!("{pointer}/type"))?;
+        if !matches!(kind.as_str(), "message" | "fallback_message") {
+            return None;
+        }
+        let mut buckets = [0.0; 4];
+        for (index, name) in [
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let value = payload.number_at(&format!("{pointer}/{name}"))?;
+            if !value.is_finite() || value < 0.0 {
+                return None;
+            }
+            buckets[index] = value;
+        }
+        ((buckets[0] + buckets[2] + buckets[3]) > 0.0).then_some(buckets)
+    }
+
+    let names = [
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ];
+    let mut top = [0.0; 4];
+    for (index, name) in names.into_iter().enumerate() {
+        top[index] = top_bucket(payload, &format!("/{name}"))?;
+    }
+
+    // Native uses `findLast(!advisor_message && !compaction)`, then validates
+    // only that selected item; an invalid last candidate falls back to top-level.
+    let top_prompt = top[0] + top[2] + top[3];
+    let selected = if top_prompt == 0.0 {
+        None
+    } else if let Some(length) = payload.array_len("/iterations") {
+        let mut candidate = None;
+        for index in (0..length).rev() {
+            let pointer = format!("/iterations/{index}");
+            if matches!(
+                payload.string_at(&format!("{pointer}/type")).as_deref(),
+                Some("advisor_message" | "compaction")
+            ) {
+                continue;
+            }
+            candidate = Some(pointer);
+            break;
+        }
+        candidate.and_then(|pointer| valid_iteration_buckets(payload, &pointer))
+    } else {
+        None
+    };
+    let buckets = selected.unwrap_or(top);
+    let total = buckets[0] + buckets[2] + buckets[3] + buckets[1];
+    if !(total > 0.0) {
+        return Some(false);
+    }
+    let context_window = context_window.filter(|window| window.is_finite() && *window > 0.0)?;
+    Some(total + 2048.0 >= context_window)
+}
+
+fn decode_source_block(value: JsonPayload) -> Option<ContentBlock> {
+    let provider_content = || ContentBlock::ProviderContent {
+        protocol: ProtocolFamily::AnthropicMessages,
+        value: value.clone(),
+    };
+    let kind = value.string_at("/type")?;
+    match kind.as_str() {
+        "text" if value.has_only_fields_at("", &["type", "text", "citations"]) => {
+            let text = value.string_at("/text")?;
+            let utf16_code_units = value.string_units_at("/text")?;
+            let citations = payload_citations(&value).ok()?;
+            let decoded = DecodedText {
+                text,
+                utf16_code_units: String::from_utf16(&utf16_code_units)
+                    .is_err()
+                    .then_some(utf16_code_units),
+            };
+            Some(text_block(decoded, citations))
+        }
+        "tool_use" => {
+            let id = payload_scalar_string(&value, "/id")?;
+            let name = payload_scalar_string(&value, "/name")?;
+            let input = value
+                .raw_source_at("/input")
+                .map(|source| JsonPayload::parse(&source))
+                .transpose()
+                .ok()?
+                .unwrap_or(JsonPayload::parse("null").ok()?);
+            let caller = value
+                .raw_source_at("/caller")
+                .map(|source| JsonPayload::parse(&source))
+                .transpose()
+                .ok()?;
+            let toolset_name = payload_optional_scalar_string(&value, "/toolset_name")?;
+            Some(ContentBlock::ToolUse {
+                id: ToolUseId::new(id),
+                name,
+                input,
+                provider_id: None,
+                caller,
+                toolset_name,
+                thought_signature: None,
+            })
+        }
+        "thinking" if value.has_only_fields_at("", &["type", "thinking", "signature"]) => {
+            Some(ContentBlock::Thinking {
+                text: payload_scalar_string(&value, "/thinking")?,
+                signature: payload_optional_scalar_string(&value, "/signature")?,
+            })
+        }
+        "redacted_thinking" if value.has_only_fields_at("", &["type", "data"]) => {
+            Some(ContentBlock::RedactedThinking {
+                data: payload_scalar_string(&value, "/data")?,
+            })
+        }
+        _ => Some(provider_content()),
+    }
+}
+
+fn payload_scalar_string(value: &JsonPayload, pointer: &str) -> Option<String> {
+    let units = value.string_units_at(pointer)?;
+    String::from_utf16(&units).ok()
+}
+
+fn payload_optional_scalar_string(value: &JsonPayload, pointer: &str) -> Option<Option<String>> {
+    if value.raw_source_at(pointer).is_none() {
+        Some(None)
+    } else {
+        payload_scalar_string(value, pointer).map(Some)
+    }
+}
+
+fn payload_citations(value: &JsonPayload) -> Result<Option<Option<JsonPayload>>, ()> {
+    match value.raw_source_at("/citations") {
+        None => Ok(None),
+        Some(_) if value.kind_at("/citations") == Some(FlatJsonKind::Null) => Ok(Some(None)),
+        Some(source) => JsonPayload::parse(&source)
+            .map(|citations| Some(Some(citations)))
+            .map_err(|_| ()),
+    }
+}
+
+fn text_block(text: DecodedText, citations: Option<Option<JsonPayload>>) -> ContentBlock {
     match text.utf16_code_units {
         Some(utf16_code_units) => ContentBlock::TextJsUtf16 {
             text: text.text,
@@ -224,109 +607,74 @@ fn text_block(text: DecodedText, citations: Option<Option<Value>>) -> ContentBlo
     }
 }
 
-/// An unknown complete content block is retained as native provider content.
-/// Anthropic adds block types over time; keeping the block under this protocol
-/// identity allows exact replay without interpreting it as a client tool.
-pub fn decode_block(v: &Value) -> Option<ContentBlock> {
-    if crate::codecs::web_search_decode::is_anthropic_search_block(v)
-        || is_anthropic_tool_search_block(v)
-    {
-        return Some(ContentBlock::ProviderContent {
-            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-            value: v.clone(),
-        });
-    }
-
-    if v.get("type").and_then(Value::as_str) == Some("text") && !has_only_known_text_fields(v) {
-        return Some(ContentBlock::ProviderContent {
-            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-            value: v.clone(),
-        });
-    }
-
-    match v.get("type").and_then(Value::as_str) {
-        // MCP blocks carry server-owned tool identity and input. Keep the
-        // entire block native so replay retains its server name, tool ID,
-        // listing schema, and any fields added by Anthropic.
-        Some("mcp_tool_use" | "mcp_tool_result" | "mcp_tool_listing") => {
-            Some(ContentBlock::ProviderContent {
-                protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-                value: v.clone(),
-            })
-        }
-        Some("text") => Some(ContentBlock::Text {
-            text: v.get("text").and_then(Value::as_str)?.to_owned(),
-            thought_signature: None,
-            citations: v.get("citations").map(|value| {
-                if value.is_null() {
-                    None
-                } else {
-                    Some(value.clone())
-                }
-            }),
-        }),
-        Some("thinking") => Some(ContentBlock::Thinking {
-            text: v
-                .get("thinking")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            // Kept so the next turn can replay it; without it the replay is
-            // refused at encode time (gate 18).
-            signature: v
-                .get("signature")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        }),
-        Some("redacted_thinking") => Some(ContentBlock::RedactedThinking {
-            data: v.get("data").and_then(Value::as_str)?.to_owned(),
-        }),
-        Some("tool_use") => Some(ContentBlock::ToolUse {
-            id: ToolUseId::new(v.get("id").and_then(Value::as_str)?),
-            name: v.get("name").and_then(Value::as_str)?.to_owned(),
-            input: v.get("input").cloned().unwrap_or(Value::Null),
-            provider_id: None,
-            caller: v.get("caller").cloned(),
-            toolset_name: v
-                .get("toolset_name")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            thought_signature: None,
-        }),
-        Some(_) => Some(ContentBlock::ProviderContent {
-            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-            value: v.clone(),
-        }),
-        // Keep malformed or future block objects intact as well. Their type is
-        // not interpreted, but silently removing the provider value would make
-        // an otherwise replayable transcript incomplete.
-        None => Some(ContentBlock::ProviderContent {
-            protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
-            value: v.clone(),
-        }),
-    }
+/// Decode one source-backed Messages block without materializing arbitrary provider fields.
+pub fn decode_block(value: &JsonPayload) -> Option<ContentBlock> {
+    decode_source_block(value.clone())
 }
 
 /// Only these text-block fields have a typed carrier in the current SDK.
-/// Keeping any additional provider fields native avoids silently dropping new
-/// Anthropic response metadata while still making citations a first-class Text
-/// field when the block has the shape this codec understands.
-pub(crate) fn has_only_known_text_fields(block: &Value) -> bool {
-    block.as_object().is_some_and(|object| {
-        object
-            .keys()
-            .all(|key| matches!(key.as_str(), "type" | "text" | "citations"))
-    })
+pub(crate) fn has_only_known_text_fields(block: &JsonPayload) -> bool {
+    block.has_only_fields_at("", &["type", "text", "citations"])
 }
 
-pub(crate) fn is_anthropic_tool_search_block(block: &Value) -> bool {
-    match block.get("type").and_then(Value::as_str) {
-        Some("tool_search_tool_result") => true,
-        Some("server_tool_use") => block
-            .get("name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| matches!(name, "tool_search_tool_regex" | "tool_search_tool_bm25")),
-        _ => false,
+/// Mirrors 2.1.292 `vU(error)` only for the current Anthropic HTTP error
+/// route, whose provider response is constructed as Native's `Rt` error.
+///
+/// Native checks status 529 first. Otherwise `Rt.makeMessage` uses a truthy
+/// top-level string message verbatim, JSON-stringifies a truthy non-string
+/// message value, and JSON-stringifies the full body when the message is falsy.
+/// The compact marker is searched in that final message, not in arbitrary raw
+/// bytes or a nested provider error field.
+pub(super) fn native_anthropic_retry_base_eligible(
+    status: impl Into<Option<u16>>,
+    scanner: &ResponseJsonScanner,
+) -> Result<bool, LlmError> {
+    const MARKER: &str = "\"type\":\"overloaded_error\"";
+    let status = status.into();
+    if status == Some(529) {
+        return Ok(true);
+    }
+    let message = scanner.native_anthropic_http_error_text(None)?;
+    Ok(message.display().contains(MARKER))
+}
+
+fn native_error_facts(
+    provider_id: crate::protocol::ProviderId,
+    protocol: ProtocolFamily,
+    status: u16,
+    beta_requested: Option<bool>,
+    native_text: Option<&crate::protocol::ProviderErrorText>,
+    scanner: Option<&ResponseJsonScanner>,
+) -> crate::protocol::NativeAnthropicErrorFacts {
+    // `gVr` consumes apiErrorStatus and the normalized `apiError` value. The
+    // current jio path maps these two exact nested error codes to its excluded
+    // semantic reasons; `apiErrorCode` itself is a different field and is not
+    // consumed by Hqo.
+    let normalized_error_code =
+        scanner.and_then(|scanner| scanner.string_at("/error/error/details/error_code"));
+    let thinking_resumption_refused = (400..500).contains(&status)
+        && !matches!(status, 401 | 408 | 409 | 429 | 451)
+        && !matches!(
+            normalized_error_code.as_deref(),
+            Some("dlp_request_denied" | "claude_code_version_too_old")
+        );
+    crate::protocol::NativeAnthropicErrorFacts {
+        provider_id,
+        protocol,
+        request_authority: None,
+        thinking_resumption_refused,
+        thinking_resumption_beta_requested: beta_requested,
+        thinking_resumption_beta_refused: status == 400
+            && beta_requested == Some(true)
+            && native_text.is_some_and(|text| {
+                let message = text.display();
+                (message.contains("thinking-resumption-2026-07-17")
+                    && (message.contains("anthropic-beta") || message.contains("anthropic_beta")))
+                    || crate::providers::anthropic::beta_repair::capability_rejected(
+                        message,
+                        "beta_header:thinking-resumption-2026-07-17",
+                    )
+            }),
     }
 }
 
@@ -336,7 +684,27 @@ pub(crate) fn is_anthropic_tool_search_block(block: &Value) -> bool {
 /// `ContextOverflow`, because that and only that drives reactive compaction
 /// (gate 31): a `request_too_large` that mentions the context window, and an
 /// `invalid_request_error` whose message says the prompt is too long.
-pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) -> LlmError {
+pub fn classify_error(
+    status: u16,
+    body: &Value,
+    retry_after: Option<Duration>,
+    native_retry_base_eligible: bool,
+) -> LlmError {
+    classify_error_for_status(Some(status), body, retry_after, native_retry_base_eligible)
+}
+
+/// Classify an SSE-created Native `Rt` error, which has no HTTP status. The
+/// provider error text remains the separate exact Native message carrier.
+pub(crate) fn classify_stream_error(body: &Value, native_retry_base_eligible: bool) -> LlmError {
+    classify_error_for_status(None, body, None, native_retry_base_eligible)
+}
+
+fn classify_error_for_status(
+    status: Option<u16>,
+    body: &Value,
+    retry_after: Option<Duration>,
+    native_retry_base_eligible: bool,
+) -> LlmError {
     let error = body.get("error");
     let kind = error
         .and_then(|e| e.get("type"))
@@ -348,16 +716,19 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
         .unwrap_or_default()
         .to_owned();
     let display = if message.is_empty() {
-        format!("{status} {body}")
+        status.map_or_else(|| body.to_string(), |status| format!("{status} {body}"))
     } else {
-        format!("{status} {message}")
+        status.map_or_else(|| message.clone(), |status| format!("{status} {message}"))
     };
     let lower = message.to_ascii_lowercase();
 
     // Native uB classifies every HTTP 529 as overload, even when a gateway
     // supplies a different error type. Keep its diagnostic message intact.
-    if status == 529 {
-        return LlmError::Overloaded { message: display };
+    if status == Some(529) {
+        return LlmError::Overloaded {
+            message: display,
+            native_retry_base_eligible,
+        };
     }
 
     match kind {
@@ -386,28 +757,34 @@ pub fn classify_error(status: u16, body: &Value, retry_after: Option<Duration>) 
             }
         }
         "invalid_request_error" => LlmError::InvalidRequest { message: display },
-        "overloaded_error" => LlmError::Overloaded { message: display },
+        "overloaded_error" => LlmError::Overloaded {
+            message: display,
+            native_retry_base_eligible,
+        },
         "api_error" => LlmError::ProviderInternal { message: display },
         "timeout_error" => LlmError::ProviderTimeout {
             message: display,
-            status: Some(status),
+            status,
         },
         _ => match status {
-            401 => LlmError::Authentication { message: display },
-            403 => LlmError::PermissionDenied { message: display },
-            404 => LlmError::ModelUnavailable { message: display },
-            413 if lower.contains("context window") => LlmError::ContextOverflow {
+            Some(401) => LlmError::Authentication { message: display },
+            Some(403) => LlmError::PermissionDenied { message: display },
+            Some(404) => LlmError::ModelUnavailable { message: display },
+            Some(413) if lower.contains("context window") => LlmError::ContextOverflow {
                 message: display,
                 limit: None,
                 actual: None,
             },
-            413 => LlmError::RequestTooLarge { message: display },
-            429 => LlmError::RateLimited {
+            Some(413) => LlmError::RequestTooLarge { message: display },
+            Some(429) => LlmError::RateLimited {
                 message: display,
                 retry_after,
             },
-            400 | 422 => LlmError::InvalidRequest { message: display },
-            529 => LlmError::Overloaded { message: display },
+            Some(400 | 422) => LlmError::InvalidRequest { message: display },
+            Some(529) => LlmError::Overloaded {
+                message: display,
+                native_retry_base_eligible,
+            },
             _ => LlmError::ProviderInternal { message: display },
         },
     }
@@ -523,6 +900,244 @@ mod complete_response_validation_tests {
     use super::*;
     use serde_json::json;
 
+    fn native_context(beta_requested: Option<bool>) -> crate::codecs::CodecContext {
+        let profile: crate::protocol::ProviderProfile = serde_json::from_value(json!({
+            "profile_name": "native",
+            "provider_id": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "Claude",
+                "request_model": "claude-opus-5",
+                "billing_model": "claude-opus-5"
+            }]
+        }))
+        .unwrap();
+        crate::codecs::CodecContext::new(
+            &profile,
+            "claude-opus-5",
+            crate::codecs::RequestMode::Complete,
+        )
+        .with_native_anthropic_context(crate::client::NativeAnthropicContextInput {
+            thinking_resumption_beta_requested: beta_requested,
+            ..Default::default()
+        })
+    }
+
+    fn response(
+        resp: &HttpResponse,
+        retain_openrouter_container: bool,
+        retain_anthropic_container: bool,
+    ) -> Result<ChatResponse, LlmError> {
+        super::response(
+            resp,
+            Some(&native_context(None)),
+            retain_openrouter_container,
+            retain_anthropic_container,
+        )
+    }
+
+    #[test]
+    fn native_retry_base_gate_uses_rt_message_before_serialized_body() {
+        let parse = |source: &str| {
+            ResponseJsonScanner::parse(source.as_bytes(), "invalid fixture").unwrap()
+        };
+        assert!(
+            native_anthropic_retry_base_eligible(529, &parse(r#"{"message":"busy"}"#),).unwrap()
+        );
+        assert!(!native_anthropic_retry_base_eligible(
+            503,
+            &parse(r#"{"message":"busy","error":{"type":"overloaded_error"}}"#),
+        )
+        .unwrap());
+        assert!(native_anthropic_retry_base_eligible(
+            503,
+            &parse(r#"{ "error": { "type": "overloaded_error" } }"#),
+        )
+        .unwrap());
+        assert!(native_anthropic_retry_base_eligible(
+            503,
+            &parse(r#"{"message":{"type":"overloaded_error"}}"#),
+        )
+        .unwrap());
+        assert!(native_anthropic_retry_base_eligible(
+            503,
+            &parse(r#"{"message":[{"type":"overloaded_error"}]}"#),
+        )
+        .unwrap());
+        assert!(!native_anthropic_retry_base_eligible(
+            503,
+            &parse(r#"{"message":["\"type\":\"overloaded_error\""]}"#),
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn decoded_anthropic_overload_carries_the_native_rt_gate() {
+        let classify = |status, body: &str| {
+            response(
+                &HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.as_bytes().to_vec().into(),
+                },
+                false,
+                false,
+            )
+            .unwrap_err()
+        };
+        let status_529 = classify(529, r#"{"message":"busy","error":{"type":"api_error"}}"#);
+        assert!(matches!(
+            status_529.classification_source(),
+            LlmError::Overloaded {
+                native_retry_base_eligible: true,
+                ..
+            }
+        ));
+        let truthy_message = classify(
+            503,
+            r#"{"message":"busy","error":{"type":"overloaded_error"}}"#,
+        );
+        assert!(matches!(
+            truthy_message.classification_source(),
+            LlmError::Overloaded {
+                native_retry_base_eligible: false,
+                ..
+            }
+        ));
+        let serialized_body = classify(503, r#"{ "error": { "type": "overloaded_error" } }"#);
+        assert!(matches!(
+            serialized_body.classification_source(),
+            LlmError::Overloaded {
+                native_retry_base_eligible: true,
+                ..
+            }
+        ));
+        let object_message = classify(
+            503,
+            r#"{"message":{"type":"overloaded_error"},"error":{"type":"overloaded_error","message":"busy"}}"#,
+        );
+        assert!(matches!(
+            object_message.classification_source(),
+            LlmError::Overloaded {
+                native_retry_base_eligible: true,
+                ..
+            }
+        ));
+        let array_message = classify(
+            503,
+            r#"{"message":[{"type":"overloaded_error"}],"error":{"type":"overloaded_error","message":"busy"}}"#,
+        );
+        assert!(matches!(
+            array_message.classification_source(),
+            LlmError::Overloaded {
+                native_retry_base_eligible: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn native_resume_usage_gate_keeps_unknown_context_and_zero_distinct() {
+        let parse = |source: &str| JsonPayload::parse(source).unwrap();
+        let zero = parse(
+            r#"{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#,
+        );
+        assert_eq!(
+            native_resume_context_exhausted(Some(&zero), None),
+            Some(false)
+        );
+
+        let positive = parse(
+            r#"{"input_tokens":99,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}"#,
+        );
+        assert_eq!(native_resume_context_exhausted(Some(&positive), None), None);
+        assert_eq!(
+            native_resume_context_exhausted(Some(&positive), Some(2_148.0)),
+            Some(true)
+        );
+        assert_eq!(
+            native_resume_context_exhausted(Some(&positive), Some(2_149.0)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn native_resume_usage_gate_uses_last_valid_non_advisor_iteration() {
+        let selected = JsonPayload::parse(
+            r#"{"input_tokens":50,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"iterations":[{"type":"advisor_message","input_tokens":900,"output_tokens":900,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},{"type":"message","input_tokens":20,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            native_resume_context_exhausted(Some(&selected), Some(2_080.0)),
+            Some(false)
+        );
+
+        let invalid_last = JsonPayload::parse(
+            r#"{"input_tokens":50,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"iterations":[{"type":"message","input_tokens":2}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            native_resume_context_exhausted(Some(&invalid_last), Some(2_080.0)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn native_api_error_facts_separate_hqo_refusal_from_beta_latch() {
+        let decode = |status, body: &str, beta_requested: Option<bool>| {
+            super::response(
+                &HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.as_bytes().to_vec().into(),
+                },
+                Some(&native_context(beta_requested)),
+                false,
+                false,
+            )
+            .unwrap_err()
+        };
+
+        let refused = decode(
+            422,
+            r#"{"message":"prompt rejected","error":{"type":"invalid_request_error","message":"prompt rejected"}}"#,
+            None,
+        );
+        let facts = refused.native_anthropic_error_facts().unwrap();
+        assert!(facts.thinking_resumption_refused);
+        assert_eq!(facts.thinking_resumption_beta_requested, Some(false));
+        assert!(!facts.thinking_resumption_beta_refused);
+
+        let semantic_exclusion = decode(
+            400,
+            r#"{"message":"blocked","error":{"type":"invalid_request_error","message":"blocked","error":{"details":{"error_code":"dlp_request_denied"}}}}"#,
+            None,
+        );
+        assert!(
+            !semantic_exclusion
+                .native_anthropic_error_facts()
+                .unwrap()
+                .thinking_resumption_refused
+        );
+
+        let beta_rejection = decode(
+            400,
+            r#"{"message":"anthropic-beta rejected thinking-resumption-2026-07-17","error":{"type":"invalid_request_error","message":"rejected"}}"#,
+            Some(true),
+        );
+        let facts = beta_rejection.native_anthropic_error_facts().unwrap();
+        assert!(facts.thinking_resumption_refused);
+        assert_eq!(facts.thinking_resumption_beta_requested, Some(true));
+        assert!(facts.thinking_resumption_beta_refused);
+    }
+
+    fn decode_block_fixture(value: Value) -> Option<ContentBlock> {
+        let payload = JsonPayload::parse(&value.to_string()).unwrap();
+        decode_block(&payload)
+    }
+
     fn decode(content: Value) -> Result<ChatResponse, LlmError> {
         response(
             &HttpResponse {
@@ -538,6 +1153,33 @@ mod complete_response_validation_tests {
             false,
             false,
         )
+    }
+
+    #[test]
+    fn http_error_uses_native_top_message_or_complete_json_message() {
+        let error = response(
+            &HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: br#"{"error":{"type":"invalid_request_error","message":"bad\ud800"}}"#
+                    .as_slice()
+                    .into(),
+            },
+            false,
+            false,
+        )
+        .unwrap_err();
+        let LlmError::InvalidRequest { message } = error.classification_source() else {
+            panic!("HTTP 400 must retain InvalidRequest classification");
+        };
+        assert_eq!(message, "400 bad�");
+        let text = error.provider_error_text().unwrap();
+        let expected = r#"400 {"error":{"type":"invalid_request_error","message":"bad\ud800"}}"#;
+        assert_eq!(text.display(), expected);
+        assert_eq!(
+            text.utf16_code_units(),
+            expected.encode_utf16().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -570,7 +1212,8 @@ mod complete_response_validation_tests {
 
     #[test]
     fn explicit_null_citations_remain_typed_text_metadata() {
-        let block = decode_block(&json!({"type":"text","text":"x","citations":null})).unwrap();
+        let block =
+            decode_block_fixture(json!({"type":"text","text":"x","citations":null})).unwrap();
         assert!(matches!(
             block,
             ContentBlock::Text {
@@ -578,11 +1221,11 @@ mod complete_response_validation_tests {
                 ..
             }
         ));
-        let empty = decode_block(&json!({"type":"text","text":"x","citations":[]})).unwrap();
+        let empty = decode_block_fixture(json!({"type":"text","text":"x","citations":[]})).unwrap();
         assert!(
-            matches!(empty, ContentBlock::Text { citations: Some(Some(value)), .. } if value == json!([]))
+            matches!(empty, ContentBlock::Text { citations: Some(Some(value)), .. } if value.as_json_source() == "[]")
         );
-        let cited = decode_block(&json!({
+        let cited = decode_block_fixture(json!({
             "type":"text",
             "text":"x",
             "citations":[{"type":"web_search_result_location","url":"https://example.test"}]
@@ -593,7 +1236,7 @@ mod complete_response_validation_tests {
             ContentBlock::Text {
                 citations: Some(Some(value)),
                 ..
-            } if value == json!([{"type":"web_search_result_location","url":"https://example.test"}])
+            } if value.as_json_source() == r#"[{"type":"web_search_result_location","url":"https://example.test"}]"#
         ));
     }
 
@@ -612,10 +1255,10 @@ mod complete_response_validation_tests {
             "future_annotation":{"opaque":[1,2,3]}
             }),
         ] {
-            let decoded = decode_block(&raw).unwrap();
+            let decoded = decode_block_fixture(raw.clone()).unwrap();
             assert!(matches!(
                 decoded,
-                ContentBlock::ProviderContent { value, .. } if value == raw
+                ContentBlock::ProviderContent { value, .. } if value.as_json_source() == raw.to_string()
             ));
         }
     }
@@ -639,10 +1282,11 @@ mod complete_response_validation_tests {
             matches!(&decoded.message.content[0], ContentBlock::Text { text, .. } if text == "answer")
         );
         assert!(
-            matches!(&decoded.message.content[1], ContentBlock::ToolUse { name, input, .. } if name == "read" && input == &json!({"path":"a"}))
+            matches!(&decoded.message.content[1], ContentBlock::ToolUse { name, input, .. } if name == "read" && input.as_json_source() == r#"{"path":"a"}"#)
         );
         assert_eq!(decoded.message.content.len(), content.len());
         for (actual, expected) in decoded.message.content[2..].iter().zip(hosted) {
+            let expected = JsonPayload::parse(&expected.to_string()).unwrap();
             assert!(
                 matches!(actual, ContentBlock::ProviderContent { value, .. } if value == &expected)
             );
@@ -654,6 +1298,19 @@ mod complete_response_validation_tests {
 mod stop_details_tests {
     use super::*;
     use serde_json::json;
+
+    fn response(
+        resp: &HttpResponse,
+        retain_openrouter_container: bool,
+        retain_anthropic_container: bool,
+    ) -> Result<ChatResponse, LlmError> {
+        super::response(
+            resp,
+            None,
+            retain_openrouter_container,
+            retain_anthropic_container,
+        )
+    }
 
     #[test]
     fn http_529_preserves_overload_category_with_nonstandard_payloads() {
@@ -667,14 +1324,22 @@ mod stop_details_tests {
                 529,
                 &json!({"error":{"type":kind,"message":"fixture"}}),
                 None,
+                true,
             );
-            assert!(matches!(error, LlmError::Overloaded { message } if message == "529 fixture"));
+            assert!(matches!(
+                error,
+                LlmError::Overloaded {
+                    message,
+                    native_retry_base_eligible: true
+                } if message == "529 fixture"
+            ));
         }
     }
 
     #[test]
     fn stop_details_survive_decode_and_other_metadata_updates() {
-        let details = json!({"type":"refusal","future":{"reason":"blocked"}});
+        let details_value = json!({"type":"refusal","future":{"reason":"blocked"}});
+        let details = JsonPayload::from_generated_value(&details_value).unwrap();
         let wire = HttpResponse {
             status: 200,
             headers: Vec::new(),
@@ -686,9 +1351,107 @@ mod stop_details_tests {
         };
         let mut result = response(&wire, false, false).unwrap();
         assert_eq!(result.anthropic_stop_details(), Some(&details));
-        result.set_anthropic_metadata(None, Some(json!({"output_tokens":1})));
+        let resumable = JsonPayload::parse(r#"{"future":null}"#).unwrap();
+        result.set_anthropic_resumable(Some(resumable.clone()));
+        let usage = JsonPayload::from_generated_value(&json!({"output_tokens":1})).unwrap();
+        result.set_anthropic_metadata(None, Some(usage.clone()));
         assert_eq!(result.anthropic_stop_details(), Some(&details));
-        result.set_anthropic_stop_details(Some(json!({"type":"other"})));
-        assert_eq!(result.anthropic_usage(), Some(&json!({"output_tokens":1})));
+        assert_eq!(result.anthropic_resumable(), Some(&resumable));
+        result.set_anthropic_stop_details(Some(
+            JsonPayload::from_generated_value(&json!({"type":"other"})).unwrap(),
+        ));
+        assert_eq!(result.anthropic_usage(), Some(&usage));
+    }
+
+    #[test]
+    fn deep_usage_and_stop_details_stay_source_backed_during_decode() {
+        let nested = format!("{}0{}", "[".repeat(512), "]".repeat(512));
+        let source = format!(
+            r#"{{"model":"m","content":[],"stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":1,"future":"\ud800","deep":{nested}}},"stop_details":{{"future":{nested}}}}}"#
+        );
+        let wire = HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: source.into(),
+        };
+        let result = response(&wire, false, false).unwrap();
+        let usage = result.anthropic_usage().unwrap().as_json_source();
+        assert!(usage.contains(&nested));
+        assert!(usage.contains(r#""future":"\ud800""#));
+        assert!(result
+            .anthropic_stop_details()
+            .unwrap()
+            .as_json_source()
+            .contains(&nested));
+        assert_eq!(result.usage.usage.as_ref().unwrap().input_tokens, 3);
+    }
+
+    #[test]
+    fn deep_lone_surrogate_container_metadata_stays_source_backed() {
+        let nested = format!("{}0{}", "[".repeat(16_384), "]".repeat(16_384));
+        let container = format!(r#"{{"id":"container-deep","future":"\ud800","deep":{nested}}}"#);
+        let source = format!(
+            r#"{{"model":"m","content":[],"stop_reason":"end_turn","container":{container}}}"#
+        );
+        let expected = JsonPayload::parse(&container).unwrap();
+        let wire = HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: source.into(),
+        };
+
+        let mut result = response(&wire, true, true).unwrap();
+        assert_eq!(&result.anthropic_container().unwrap().envelope, &expected);
+        assert_eq!(&result.openrouter_container().unwrap().envelope, &expected);
+        assert!(result
+            .anthropic_container()
+            .unwrap()
+            .envelope
+            .as_json_source()
+            .contains(r#""future":"\ud800""#));
+
+        let wire = serde_json::to_string(&result).unwrap();
+        result = serde_json::from_str(&wire).unwrap();
+        assert_eq!(&result.anthropic_container().unwrap().envelope, &expected);
+        assert_eq!(&result.openrouter_container().unwrap().envelope, &expected);
+    }
+
+    #[test]
+    fn resumable_response_member_preserves_presence_and_arbitrary_json_source() {
+        let nested = format!("{}0{}", "[".repeat(16_384), "]".repeat(16_384));
+        for raw_value in [
+            "null".to_owned(),
+            "false".to_owned(),
+            "true".to_owned(),
+            "17".to_owned(),
+            r#""\ud800""#.to_owned(),
+            format!(r#"{{"deep":{nested},"future":"\ud800"}}"#),
+        ] {
+            let source = format!(
+                r#"{{"model":"m","content":[],"stop_reason":"max_tokens","resumable":{raw_value}}}"#
+            );
+            let wire = HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: source.into(),
+            };
+            let result = response(&wire, false, false).unwrap();
+            assert_eq!(
+                result
+                    .anthropic_resumable()
+                    .map(JsonPayload::as_json_source),
+                Some(raw_value.as_str())
+            );
+        }
+
+        let wire = HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: r#"{"model":"m","content":[],"stop_reason":"max_tokens"}"#.into(),
+        };
+        assert!(response(&wire, false, false)
+            .unwrap()
+            .anthropic_resumable()
+            .is_none());
     }
 }

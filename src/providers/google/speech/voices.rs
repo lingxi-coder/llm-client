@@ -1394,7 +1394,7 @@ fn voices_invalid(message: impl Into<String>) -> GeminiVoicesError {
 
 fn is_unknown_mutation_transport(error: &LlmError) -> bool {
     matches!(
-        error,
+        error.classification_source(),
         LlmError::Transport { .. }
             | LlmError::TransportTimeout { .. }
             | LlmError::StreamInterrupted { .. }

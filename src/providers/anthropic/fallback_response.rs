@@ -1,6 +1,7 @@
 //! Messages fallback control observations. Lane admission and session ownership
 //! belong to the caller. Applying an admitted hop changes the response model;
 //! the caller still owns its query route and session selection.
+use crate::protocol::JsonPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -61,14 +62,18 @@ pub struct ServerFallbackEvent {
     pub final_stop_reason: Option<String>,
 }
 
-fn text(block: &crate::protocol::ContentBlock) -> Option<&str> {
+fn text(block: &crate::protocol::ContentBlock) -> Option<String> {
     match block {
         crate::protocol::ContentBlock::Text { text, .. }
-        | crate::protocol::ContentBlock::TextJsUtf16 { text, .. } => Some(text),
+        | crate::protocol::ContentBlock::TextJsUtf16 { text, .. } => Some(text.clone()),
         crate::protocol::ContentBlock::ProviderContent {
             protocol: crate::protocol::ProtocolFamily::AnthropicMessages,
             value,
-        } if value["type"] == "text" => value["text"].as_str(),
+        } if value.string_is("/type", "text") => {
+            let units = value.string_units_at("/text")?;
+            String::from_utf16(&units).ok()?;
+            value.string_at("/text")
+        }
         _ => None,
     }
 }
@@ -103,7 +108,7 @@ pub fn stream_event(
         retained.sort_by_key(|(index, _)| *index);
         for (index, text) in retained {
             event.retained_blocks.push(index);
-            event.retained_text.push_str(text);
+            event.retained_text.push_str(&text);
         }
     }
     event
@@ -207,7 +212,10 @@ pub fn project_nonstream(
                 .push(crate::protocol::ContentBlock::Text {
                     text: "(no content)".into(),
                     thought_signature: None,
-                    citations: Some(Some(serde_json::json!([]))),
+                    citations: Some(Some(
+                        crate::protocol::JsonPayload::parse("[]")
+                            .expect("empty citation array is valid JSON"),
+                    )),
                 });
         }
     }
@@ -222,104 +230,96 @@ pub fn project_nonstream(
     Some(event)
 }
 
-pub fn is_fallback_block(value: &Value) -> bool {
-    value.is_object() && value["type"] == "fallback"
+pub fn is_fallback_block(value: &JsonPayload) -> bool {
+    value.string_is("/type", "fallback")
 }
 
-fn model(value: &Value) -> Option<String> {
-    value
-        .as_object()?
-        .get("model")?
-        .as_str()
-        .filter(|model| !model.is_empty())
-        .map(str::to_owned)
+fn model(value: &JsonPayload, pointer: &str) -> Option<String> {
+    value.string_at(pointer).filter(|model| !model.is_empty())
 }
 
 /// Native BHt counts UTF-16 code units, rather than bytes or Unicode scalars.
-pub fn category(trigger: &Value) -> Option<String> {
-    if !trigger.is_object() || trigger["type"] != "refusal" {
+pub fn category(trigger: &JsonPayload) -> Option<String> {
+    if !trigger.string_is("/type", "refusal") {
         return None;
     }
-    trigger["category"]
-        .as_str()
+    trigger
+        .string_at("/category")
+        .as_deref()
         .filter(|category| matches!(category.encode_utf16().count(), 1..=64))
         .map(str::to_owned)
 }
 
-pub fn complete_block(value: &Value) -> Option<FallbackHop> {
+pub fn complete_block(value: &JsonPayload) -> Option<FallbackHop> {
     is_fallback_block(value).then_some(())?;
     Some(FallbackHop {
-        from_model: model(&value["from"])?,
-        model: model(&value["to"])?,
+        from_model: model(value, "/from/model")?,
+        model: model(value, "/to/model")?,
         reason: "refusal".into(),
-        category: category(&value["trigger"]),
+        category: value.payload_at("/trigger").as_ref().and_then(category),
     })
 }
 
 /// Native dNe/HHt accept any JSON number as the control index. Do not cast it
 /// into an ordinary content index: negative/fractional indices remain controls.
-pub fn control_index(frame: &Value) -> Option<&Number> {
-    if frame["type"] != "content_block_start" || !is_fallback_block(&frame["content_block"]) {
+pub fn control_index(frame: &JsonPayload) -> Option<Number> {
+    if !frame.string_is("/type", "content_block_start")
+        || !is_fallback_block(&frame.payload_at("/content_block")?)
+    {
         return None;
     }
-    frame["index"].as_number()
+    serde_json::from_str(&frame.raw_source_at("/index")?).ok()
 }
 
-pub fn stream_start(frame: &Value) -> Option<FallbackStart> {
+pub fn stream_start(frame: &JsonPayload) -> Option<FallbackStart> {
     Some(FallbackStart {
         index: control_index(frame)?.clone(),
-        hop: complete_block(&frame["content_block"])?,
+        hop: complete_block(&frame.payload_at("/content_block")?)?,
     })
 }
 
-pub fn malformed_start(frame: &Value) -> bool {
+pub fn malformed_start(frame: &JsonPayload) -> bool {
     control_index(frame).is_some() && stream_start(frame).is_none()
 }
 
-fn counter(value: &Value) -> f64 {
+fn counter(value: Option<f64>) -> f64 {
     value
-        .as_f64()
         .filter(|value| value.is_finite() && *value >= 0.0)
         .unwrap_or(0.0)
 }
 
-pub fn usage_iterations(usage: &Value) -> UsageIterations {
+pub fn usage_iterations(usage: &JsonPayload) -> UsageIterations {
     let mut result = UsageIterations {
-        speed: usage
-            .get("speed")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        inference_geo: usage
-            .get("inference_geo")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        speed: usage.string_at("/speed"),
+        inference_geo: usage.string_at("/inference_geo"),
         web_search_requests: usage
-            .pointer("/server_tool_use/web_search_requests")
-            .and_then(Value::as_f64)
+            .number_at("/server_tool_use/web_search_requests")
             .filter(|count| count.is_finite() && *count >= 0.0),
         ..UsageIterations::default()
     };
-    let Some(iterations) = usage.get("iterations").and_then(Value::as_array) else {
+    let Some(iterations) = usage.array_len("/iterations") else {
         return result;
     };
-    for iteration in iterations {
-        let Some(kind) = iteration.get("type").and_then(Value::as_str) else {
+    for index in 0..iterations {
+        let Some(iteration) = usage.payload_at(&format!("/iterations/{index}")) else {
             continue;
         };
-        let model = iteration
-            .get("model")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let Some(kind) = iteration.string_at("/type") else {
+            continue;
+        };
+        let model = iteration.string_at("/model");
         if kind == "fallback_message" && model.is_some() {
             result.served_fallback_model.clone_from(&model);
         }
         result.entries.push(UsageIteration {
             r#type: kind.into(),
             model,
-            input_tokens: counter(&iteration["input_tokens"]),
-            output_tokens: counter(&iteration["output_tokens"]),
-            cache_read_input_tokens: counter(&iteration["cache_read_input_tokens"]),
-            cache_creation_input_tokens: counter(&iteration["cache_creation_input_tokens"]),
+            input_tokens: counter(iteration.number_at("/input_tokens")),
+            output_tokens: counter(iteration.number_at("/output_tokens")),
+            cache_read_input_tokens: counter(iteration.number_at("/cache_read_input_tokens")),
+            cache_creation_input_tokens: counter(
+                iteration.number_at("/cache_creation_input_tokens"),
+            ),
         });
     }
     result
@@ -328,38 +328,41 @@ pub fn usage_iterations(usage: &Value) -> UsageIterations {
 /// Extract fallback control and usage facts without decoding assistant content.
 /// This keeps server accounting observations available when a later content
 /// block is malformed and the ordinary response projection fails.
-pub fn from_nonstream_body(body: &Value) -> Option<FallbackResponse> {
+pub fn from_nonstream_body(body: &JsonPayload) -> Option<FallbackResponse> {
     let mut fallback = FallbackResponse {
-        final_stop_reason: body
-            .get("stop_reason")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        final_stop_reason: body.string_at("/stop_reason"),
         ..Default::default()
     };
-    if let Some(content) = body.get("content").and_then(Value::as_array) {
-        for (position, block) in content.iter().enumerate() {
-            if is_fallback_block(block) {
+    if let Some(content_len) = body.array_len("/content") {
+        for position in 0..content_len {
+            let Some(block) = body.payload_at(&format!("/content/{position}")) else {
+                continue;
+            };
+            if is_fallback_block(&block) {
                 fallback.last_control_position = Some(position);
             } else {
                 fallback.content_positions.push(position);
             }
-            fallback.observe_block(block);
+            fallback.observe_block(&block);
         }
     }
-    fallback.observe_usage(&body["usage"]);
+    if let Some(usage) = body.payload_at("/usage") {
+        fallback.observe_usage(&usage);
+    }
     fallback.observed().then_some(fallback)
 }
 
 impl FallbackResponse {
-    pub(crate) fn observe_block(&mut self, block: &Value) {
+    pub(crate) fn observe_block(&mut self, block: &JsonPayload) {
         if let Some(hop) = complete_block(block) {
             self.hops.push(hop);
         } else if is_fallback_block(block) {
             self.malformed_blocks += 1;
         }
     }
-    pub(crate) fn observe_usage(&mut self, usage: &Value) {
-        let iterations_present = usage.get("iterations").is_some_and(Value::is_array);
+    pub(crate) fn observe_usage(&mut self, usage: &JsonPayload) {
+        let iterations_present =
+            usage.kind_at("/iterations") == Some(crate::response_json::FlatJsonKind::Array);
         self.merge_usage_iterations(usage_iterations(usage), iterations_present);
     }
     pub(crate) fn observe_boundary(

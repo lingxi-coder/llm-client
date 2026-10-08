@@ -6,6 +6,9 @@
 #[path = "support/wire_api.rs"]
 mod wire_api;
 
+#[path = "support/json_payload_fixture.rs"]
+mod json_payload_fixture;
+
 use lingxi_llm_client::codecs::openai::chat::{classify_error, OpenAiChatCodec};
 use lingxi_llm_client::protocol::{
     ChatRequest, ContentBlock, ConversationMessage, DocumentSource, FailoverTriggers, ImageSource,
@@ -72,12 +75,29 @@ fn request() -> ChatRequest {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: lingxi_llm_client::protocol::JsonPayload::default(),
     }
 }
 
 fn body_of(r: &lingxi_llm_client::HttpRequest) -> Value {
     serde_json::from_slice(&r.body).unwrap()
+}
+
+#[test]
+fn provider_metadata_is_emitted_from_its_exact_json_source() {
+    let p = profile(Value::Null);
+    let mut req = request();
+    let metadata = r#"{"future":{"n":1.0,"lone":"\ud800"},"10":"ten","2":"two"}"#;
+    req.metadata = lingxi_llm_client::protocol::JsonPayload::parse(metadata).unwrap();
+    let context = wire_api::context(&p, &route().request_model, &RequestOptions::default());
+    let encoded = OpenAiChatCodec
+        .encode_request(
+            lingxi_llm_client::codecs::EncodeRequest::new(&req),
+            &context,
+        )
+        .unwrap();
+    let source = std::str::from_utf8(&encoded.body).unwrap();
+    assert!(source.contains(&format!("\"metadata\":{metadata}")));
 }
 
 #[test]
@@ -133,6 +153,7 @@ fn every_overflow_shape_becomes_context_overflow() {
         400,
         &json!({"error": {"code": "context_length_exceeded", "message": "too long"}}),
         None,
+        false,
     );
     assert!(
         matches!(by_code, LlmError::ContextOverflow { .. }),
@@ -143,6 +164,7 @@ fn every_overflow_shape_becomes_context_overflow() {
         413,
         &json!({"error": {"message": "Request exceeds the model's context window"}}),
         None,
+        false,
     );
     assert!(
         matches!(by_413, LlmError::ContextOverflow { .. }),
@@ -156,6 +178,7 @@ fn a_413_that_is_not_about_context_is_an_oversized_body() {
         413,
         &json!({"error": {"message": "payload too large"}}),
         None,
+        false,
     );
     assert!(
         matches!(err, LlmError::RequestTooLarge { .. }),
@@ -195,7 +218,7 @@ fn the_rest_of_the_taxonomy_lands_where_failover_expects_it() {
         }),
     ];
     for (status, body, want) in cases {
-        let got = classify_error(status, &body, None);
+        let got = classify_error(status, &body, None, false);
         assert!(want(&got), "status {status} mapped to {got:?}");
     }
 }
@@ -206,6 +229,7 @@ fn the_providers_own_text_survives_classification() {
         401,
         &json!({"error": {"message": "Incorrect API key provided: sk-***"}}),
         None,
+        false,
     );
     assert!(
         format!("{err}").contains("Incorrect API key provided"),
@@ -245,7 +269,10 @@ fn a_tool_result_becomes_its_own_message() {
         content: vec![ContentBlock::ToolUse {
             id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             name: "read".to_owned(),
-            input: json!({"path": "a"}),
+            input: lingxi_llm_client::protocol::JsonPayload::parse(
+                &json!({"path": "a"}).to_string(),
+            )
+            .unwrap(),
             provider_id: None,
             caller: None,
             toolset_name: None,
@@ -257,7 +284,7 @@ fn a_tool_result_becomes_its_own_message() {
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
             tool_use_id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
-            content: "contents".to_owned(),
+            content: lingxi_llm_client::protocol::JsonPayload::string("contents"),
             is_error: Some(false),
             blocks: None,
             toolset_name: None,
@@ -601,10 +628,13 @@ fn with_tools(choice: ToolChoice) -> ChatRequest {
     req.tool_choice = choice;
     req.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "read".to_owned(),
-        description: "read a file".to_owned(),
-        input_schema: json!({"type": "object"}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("read a file"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type": "object"}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
@@ -722,20 +752,23 @@ fn a_tool_call_streamed_in_fragments_keeps_the_id_from_its_first_frame() {
         "[DONE]",
     ]);
 
-    let fragments: Vec<(&str, &str)> = events
+    let fragments: Vec<(&str, Vec<u16>)> = events
         .iter()
         .filter_map(|e| match e {
             StreamEvent::ToolCallDelta {
                 id,
                 arguments_fragment,
                 ..
-            } => Some((id.as_str(), arguments_fragment.as_str())),
+            } => Some((id.as_str(), arguments_fragment.utf16_code_units().to_vec())),
             _ => None,
         })
         .collect();
     assert_eq!(
         fragments,
-        vec![("call-1", "{\"pa"), ("call-1", "th\":\"a\"}")],
+        vec![
+            ("call-1", "{\"pa".encode_utf16().collect::<Vec<_>>()),
+            ("call-1", "th\":\"a\"}".encode_utf16().collect::<Vec<_>>()),
+        ],
         "later fragments carry no id, so the decoder has to remember it"
     );
     assert!(matches!(
@@ -945,10 +978,13 @@ fn chat_preserves_explicit_tool_strictness() {
         let mut req = request();
         req.tools.push(ToolSpec {
             tool_type: None,
-            extra: serde_json::Value::Null,
+            extra: lingxi_llm_client::protocol::JsonPayload::default(),
             name: "lookup".into(),
-            description: "Lookup".into(),
-            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
+            description: lingxi_llm_client::protocol::JsonPayload::string("Lookup"),
+            input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"type":"object","properties":{},"additionalProperties":false}),
+            )
+            .expect("schema fixture is valid JSON"),
             strict,
             defer_loading: false,
             native_options: Vec::new(),
@@ -972,11 +1008,11 @@ fn billing_errors_fall_back_to_type_without_masking_known_codes() {
     for code in ["credit_balance_exhausted", "future_billing_code", ""] {
         let body = json!({"error":{"type":"insufficient_quota","code":code,"message":"balance exhausted"}});
         assert!(matches!(
-            classify_error(429, &body, None),
+            classify_error(429, &body, None, false),
             LlmError::QuotaExceeded { .. }
         ));
         assert!(matches!(
-            lingxi_llm_client::codecs::openai::responses::classify_error(429, &body, None),
+            lingxi_llm_client::codecs::openai::responses::classify_error(429, &body, None, false),
             LlmError::QuotaExceeded { .. }
         ));
     }
@@ -984,7 +1020,8 @@ fn billing_errors_fall_back_to_type_without_masking_known_codes() {
         classify_error(
             429,
             &json!({"error":{"code":"rate_limit_exceeded","type":"requests"}}),
-            None
+            None,
+            false
         ),
         LlmError::RateLimited { .. }
     ));
@@ -992,7 +1029,8 @@ fn billing_errors_fall_back_to_type_without_masking_known_codes() {
         classify_error(
             400,
             &json!({"error":{"code":"context_length_exceeded","type":"insufficient_quota"}}),
-            None
+            None,
+            false
         ),
         LlmError::ContextOverflow { .. }
     ));
@@ -1103,8 +1141,14 @@ fn streaming_chat_reasoning_preserves_detail_chunks_and_emits_native_data_once()
             1
         );
         assert!(matches!(events.last(), Some(StreamEvent::End { .. })));
-        assert_eq!(native[0].2["reasoning"], "part-0part-1part-2");
-        assert_eq!(native[0].2["reasoning_details"], json!(all_details));
+        assert_eq!(
+            json_payload_fixture::source_string_at(&native[0].2, "/reasoning").as_deref(),
+            Some("part-0part-1part-2")
+        );
+        assert_eq!(
+            json_payload_fixture::source_value_at(&native[0].2, "/reasoning_details"),
+            Some(json!(all_details))
+        );
         let (tool_block, tool) = events
             .iter()
             .find_map(|event| match event {
@@ -1119,7 +1163,10 @@ fn streaming_chat_reasoning_preserves_detail_chunks_and_emits_native_data_once()
                     ContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
-                        input: serde_json::from_str(arguments_fragment).unwrap(),
+                        input: lingxi_llm_client::protocol::JsonPayload::parse(
+                            &String::from_utf16(arguments_fragment.utf16_code_units()).unwrap(),
+                        )
+                        .unwrap(),
                         provider_id: None,
                         caller: None,
                         toolset_name: None,
@@ -1241,7 +1288,11 @@ fn chat_replay_rejects_wrong_envelopes_roles_and_protocols() {
         req.messages.push(ConversationMessage {
             native_options: Vec::new(),
             role,
-            content: vec![ContentBlock::ProviderContent { protocol, value }],
+            content: vec![ContentBlock::ProviderContent {
+                protocol,
+                value: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&value)
+                    .unwrap(),
+            }],
         });
         assert!(OpenAiChatCodec
             .encode_request(
@@ -1256,7 +1307,7 @@ fn chat_replay_rejects_wrong_envelopes_roles_and_protocols() {
     }
     let block = ContentBlock::ProviderContent {
         protocol: ProtocolFamily::OpenAiChat,
-        value: good,
+        value: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&good).unwrap(),
     };
     let req = request_with_assistant(ConversationMessage::assistant(vec![block.clone(), block]));
     assert!(matches!(

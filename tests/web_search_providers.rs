@@ -15,6 +15,10 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 mod support;
 
+fn metadata_value(metadata: &lingxi_llm_client::protocol::JsonPayload) -> Value {
+    serde_json::from_str(metadata.as_json_source()).unwrap()
+}
+
 const ADAPTERS: &[(&str, &str)] = &[
     ("kimi", "open_ai_responses"),
     ("deepseek", "anthropic_messages"),
@@ -97,10 +101,13 @@ fn provider_tools_are_opt_in_and_coexist_with_functions() {
         let mut req = request();
         req.tools.push(ToolSpec {
             tool_type: None,
-            extra: serde_json::Value::Null,
+            extra: lingxi_llm_client::protocol::JsonPayload::default(),
             name: "lookup_local".into(),
-            description: "Local lookup".into(),
-            input_schema: json!({"type":"object","properties":{}}),
+            description: lingxi_llm_client::protocol::JsonPayload::string("Local lookup"),
+            input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+                &json!({"type":"object","properties":{}}),
+            )
+            .expect("schema fixture is valid JSON"),
             strict: false,
             defer_loading: false,
             native_options: Vec::new(),
@@ -290,7 +297,7 @@ fn glm_results_survive_full_and_metadata_only_stream_frames() {
     let search = full.web_search.unwrap();
     assert_eq!(search.citations[0].url, "https://example.com/news");
     assert_eq!(search.citations[0].title.as_deref(), Some("Source"));
-    assert_eq!(search.metadata["web_search"], hits);
+    assert_eq!(metadata_value(&search.metadata)["web_search"], hits);
     for choices in [
         None,
         Some(json!([])),
@@ -314,7 +321,7 @@ fn glm_results_survive_full_and_metadata_only_stream_frames() {
             })
             .unwrap();
         assert_eq!(search.citations.len(), 1);
-        assert_eq!(search.metadata["web_search"], hits);
+        assert_eq!(metadata_value(&search.metadata)["web_search"], hits);
         assert!(!events
             .iter()
             .any(|e| matches!(e, StreamEvent::ToolCallDelta { .. })));
@@ -337,7 +344,10 @@ fn kimi_source_only_search_calls_yield_attribution_in_full_and_stream() {
     let search = full.web_search.unwrap();
     assert_eq!(search.citations[0].url, "https://example.com/news");
     assert_eq!(search.citations[0].title.as_deref(), Some("Source"));
-    assert_eq!(search.metadata["web_search_calls"][0], call);
+    assert_eq!(
+        metadata_value(&search.metadata)["web_search_calls"][0],
+        call
+    );
     for frame in [
         json!({"type":"response.output_item.done","output_index":0,"item":call}),
         json!({"type":"response.completed","response":{"output":[call]}}),
@@ -576,10 +586,13 @@ fn qwen_file_search_alone_honors_tool_choice_and_validates_named_functions() {
     ));
     req.tools.push(ToolSpec {
         tool_type: None,
-        extra: serde_json::Value::Null,
+        extra: lingxi_llm_client::protocol::JsonPayload::default(),
         name: "local_lookup".into(),
-        description: "lookup".into(),
-        input_schema: json!({"type":"object"}),
+        description: lingxi_llm_client::protocol::JsonPayload::string("lookup"),
+        input_schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(
+            &json!({"type":"object"}),
+        )
+        .expect("schema fixture is valid JSON"),
         strict: false,
         defer_loading: false,
         native_options: Vec::new(),
