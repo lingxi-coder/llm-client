@@ -190,8 +190,10 @@ fn decode_validates_entire_batch_and_receipts_enforce_stopping_and_hook_output()
             .map(|i| result(i, NativeExecutionStatus::Skipped, None))
             .collect(),
     );
-    assert!(
-        matches!(encode_computer_receipt(&calls[0],&skipped).unwrap(),ContentBlock::ToolResult{is_error:Some(true),content,toolset_name:Some(toolset),..} if content==SKIPPED_COMPUTER_ACTION && toolset=="computer")
+    assert_eq!(
+        serde_json::to_value(encode_computer_receipt(&calls[0], &skipped).unwrap()).unwrap(),
+        json!({"type":"tool_result","tool_use_id":calls[0].context.call_id,
+            "content":SKIPPED_COMPUTER_ACTION,"is_error":true,"toolset_name":"computer"})
     );
     let shot = decode_computer_calls(
         NativeComputerProvider::Anthropic,
