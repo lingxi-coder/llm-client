@@ -1,7 +1,8 @@
 //! Media inside a tool result, for wires whose tool-output slot holds text.
 //!
 //! Tool results arrive in the Anthropic content shapes Claude Code sends
-//! (`text`, `image`, `document`), and Anthropic Messages carries them as-is.
+//! (`text`, `image`, `document`), and Anthropic Messages carries them as-is
+//! unless the selected model's catalog row rules the media out.
 //! An OpenAI Chat `tool` message and a Gemini `functionResponse` hold text, so
 //! a content array placed there is billed as text, base64 included: one
 //! 900×900 PNG Read cost ~135k input tokens on DeepSeek, which bills at most
@@ -116,14 +117,24 @@ pub(crate) fn accepts_images(models: &[ModelProfile]) -> bool {
 /// Documents need an explicit declaration: a file part the endpoint rejects
 /// fails every later request that replays it.
 pub(crate) fn accepts_documents(models: &[ModelProfile]) -> bool {
-    !models.is_empty()
-        && models.iter().all(|model| {
-            model.metadata.input_modalities.iter().any(|modality| {
-                matches!(
-                    modality.to_ascii_lowercase().as_str(),
-                    "pdf" | "file" | "files" | "document"
-                )
-            }) || model.capability_support_for(crate::protocol::ModelCapability::Documents)
-                == crate::protocol::CapabilitySupport::Supported
-        })
+    !models.is_empty() && models.iter().all(declares_documents)
+}
+
+/// A wire that carries tool-result media as-is drops it only when a selected
+/// row lists input modalities without it. Rows without that metadata, such as
+/// a custom Claude profile, keep what the tool returned.
+pub(crate) fn rules_out_documents(models: &[ModelProfile]) -> bool {
+    models
+        .iter()
+        .any(|model| !model.metadata.input_modalities.is_empty() && !declares_documents(model))
+}
+
+fn declares_documents(model: &ModelProfile) -> bool {
+    model.metadata.input_modalities.iter().any(|modality| {
+        matches!(
+            modality.to_ascii_lowercase().as_str(),
+            "pdf" | "file" | "files" | "document"
+        )
+    }) || model.capability_support_for(crate::protocol::ModelCapability::Documents)
+        == crate::protocol::CapabilitySupport::Supported
 }

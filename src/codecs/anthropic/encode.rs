@@ -366,6 +366,42 @@ fn encode_optional_bool(block: &mut WireValue<'_>, field: &'static str, value: O
     }
 }
 
+/// The result's blocks with a note in place of each image or document the
+/// selected model's catalog row rules out, or `None` when every block goes
+/// as-is. Claude Code sends tool-result media verbatim, and so do Claude
+/// profiles; Anthropic-protocol endpoints serving text-only models (GLM,
+/// MiniMax, DeepSeek) would otherwise get, and bill, every replayed image.
+fn omit_media<'a>(blocks: &'a [Value], opts: &CodecContext) -> Option<Vec<WireValue<'a>>> {
+    use crate::codecs::tool_result_media::{self as tool_result_media, Piece};
+    let models = &opts.profile().models;
+    let images = tool_result_media::accepts_images(models);
+    let documents = !tool_result_media::rules_out_documents(models);
+    let note = |piece: &Piece<'_>| match piece {
+        Piece::Image(_) if !images => {
+            Some("(image omitted: this model does not accept image input)")
+        }
+        Piece::Document { .. } if !documents => {
+            Some("(document omitted: this model does not accept document input)")
+        }
+        _ => None,
+    };
+    if !blocks
+        .iter()
+        .any(|block| note(&tool_result_media::piece(block)).is_some())
+    {
+        return None;
+    }
+    Some(
+        blocks
+            .iter()
+            .map(|block| match note(&tool_result_media::piece(block)) {
+                Some(note) => json!({"type": "text", "text": note}).into(),
+                None => WireValue::borrowed(block),
+            })
+            .collect(),
+    )
+}
+
 fn encode_block<'a>(
     b: &'a ContentBlock,
     unsigned_thinking: bool,
@@ -448,8 +484,13 @@ fn encode_block<'a>(
             cache_reference,
             ..
         } => {
-            let content =
-                WireValue::tool_output(content, blocks.as_deref(), output_json.as_deref())?;
+            let content = match blocks
+                .as_deref()
+                .and_then(|blocks| omit_media(blocks, opts))
+            {
+                Some(parts) => WireValue::array(parts),
+                None => WireValue::tool_output(content, blocks.as_deref(), output_json.as_deref())?,
+            };
             let mut v = WireValue::from(json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,

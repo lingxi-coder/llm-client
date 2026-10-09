@@ -531,6 +531,15 @@ fn exact_tool_results_preserve_strings_and_content_keys_on_every_codec() {
                     bytes.contains(r#""output":[{"type":"input_text","text":"value \ud800"}]"#),
                     "{family}: {bytes}"
                 );
+            } else if family.ends_with("_gemini") || family == "gemini_generate_content" {
+                // Gemini's result slot holds text, so a text-only result is
+                // its text, the literal intact.
+                let expected = if raw.starts_with('[') {
+                    r#""result":"value \ud800""#
+                } else {
+                    raw
+                };
+                assert!(bytes.contains(expected), "{family}: {bytes}");
             } else if family == "gemini_interactions" && raw.starts_with('"') {
                 assert!(
                     bytes.contains(r#""text":"value \ud800""#),
@@ -816,9 +825,12 @@ fn text_only_tool_results_reach_text_wires_as_text() {
         ),
         ("azure_open_ai", Box::new(AzureOpenAiCodec)),
         ("open_ai_responses", Box::new(OpenAiResponsesCodec)),
+        ("gemini_generate_content", Box::new(GeminiCodec)),
+        ("vertex_gemini", Box::new(VertexGeminiCodec)),
     ] {
         let p = profile(family);
-        let context = CodecContext::new(&p, "m", RequestMode::Complete);
+        let context =
+            CodecContext::new(&p, "m", RequestMode::Complete).with_account_scope(Some("fixture"));
         let encoded = codec
             .encode_request(EncodeRequest::new(&req), &context)
             .unwrap_or_else(|error| panic!("{family}: {error}"));
@@ -828,6 +840,11 @@ fn text_only_tool_results_reach_text_wires_as_text() {
         if family == "open_ai_responses" {
             assert!(
                 bytes.contains(r#""output":[{"type":"input_text","text":"say \"hi\""},{"type":"input_text","text":"line\ttwo \u00e9"}]"#),
+                "{family}: {bytes}"
+            );
+        } else if family.contains("gemini") {
+            assert!(
+                bytes.contains(r#""response":{"result":"say \"hi\"\nline\ttwo \u00e9"}"#),
                 "{family}: {bytes}"
             );
         } else {
@@ -876,5 +893,107 @@ fn responses_tool_result_media_follows_the_selected_models_input_modalities() {
             {"type":"input_image","image_url":format!("data:image/png;base64,{PNG}")},
             {"type":"input_file","file_data":format!("data:application/pdf;base64,{PDF}"),"filename":"spec.pdf"},
         ])
+    );
+}
+
+#[test]
+fn anthropic_tool_result_media_is_omitted_only_for_models_that_rule_it_out() {
+    let raw = format!(
+        r#"[{{"type":"text","text":"value \ud800"}},{{"type":"image","source":{{"type":"base64","data":"{PNG}","media_type":"image/png"}}}},{{"type":"document","source":{{"type":"base64","data":"{PDF}","media_type":"application/pdf"}},"title":"spec.pdf"}}]"#
+    );
+    let req = request_with_result(&raw);
+    for (family, codec) in [
+        (
+            "anthropic_messages",
+            Box::new(AnthropicMessagesCodec) as Box<dyn WireCodec>,
+        ),
+        ("bedrock_claude", Box::new(BedrockClaudeCodec)),
+    ] {
+        let encode = |modalities: &[&str]| -> String {
+            let mut p = profile(family);
+            p.models[0].metadata.input_modalities =
+                modalities.iter().map(|m| (*m).into()).collect();
+            let context = CodecContext::new(&p, "m", RequestMode::Complete)
+                .with_account_scope(Some("fixture"));
+            let encoded = codec
+                .encode_request(EncodeRequest::new(&req), &context)
+                .unwrap_or_else(|error| panic!("{family}: {error}"));
+            assert_eq!(
+                codec
+                    .encoded_body_len(EncodeRequest::new(&req), &context)
+                    .unwrap(),
+                encoded.body.len(),
+                "{family}"
+            );
+            String::from_utf8(encoded.body.to_vec()).unwrap()
+        };
+
+        // Undeclared and media-capable rows send what the tool returned.
+        for modalities in [&[][..], &["text", "image", "file"]] {
+            let bytes = encode(modalities);
+            assert!(bytes.contains(&raw), "{family} {modalities:?}: {bytes}");
+        }
+        // A text-only row gets a note per media block; text keeps its literal.
+        let bytes = encode(&["text"]);
+        assert!(
+            bytes.contains(
+                r#""content":[{"type":"text","text":"value \ud800"},{"type":"text","text":"(image omitted: this model does not accept image input)"},{"type":"text","text":"(document omitted: this model does not accept document input)"}]"#
+            ),
+            "{family}: {bytes}"
+        );
+        assert!(!bytes.contains(PNG) && !bytes.contains(PDF), "{family}");
+        // An image-only row keeps the image and drops the document.
+        let bytes = encode(&["text", "image"]);
+        assert!(
+            bytes.contains(PNG) && !bytes.contains(PDF),
+            "{family}: {bytes}"
+        );
+    }
+}
+
+#[test]
+fn interactions_tool_result_documents_become_text_instead_of_failing_the_replay() {
+    let raw = format!(
+        r#"[{{"type":"text","text":"value \ud800"}},{{"type":"document","source":{{"type":"base64","data":"{PDF}","media_type":"application/pdf"}},"title":"spec.pdf"}},{{"type":"document","source":{{"type":"text","data":"plain notes","media_type":"text/plain"}}}}]"#
+    );
+    let req = request_with_result(&raw);
+    let p = profile("gemini_interactions");
+    let context =
+        CodecContext::new(&p, "m", RequestMode::Complete).with_account_scope(Some("fixture"));
+    let encoded = GeminiInteractionsCodec
+        .encode_request(EncodeRequest::new(&req), &context)
+        .unwrap();
+    let bytes = String::from_utf8(encoded.body.to_vec()).unwrap();
+    assert!(
+        bytes.contains(
+            r#""result":[{"type":"text","text":"value \ud800"},{"type":"text","text":"(document omitted: Interactions tool results carry only text and images)"},{"type":"text","text":"plain notes"}]"#
+        ),
+        "{bytes}"
+    );
+    assert!(!bytes.contains(PDF));
+    assert_eq!(
+        GeminiInteractionsCodec
+            .encoded_body_len(EncodeRequest::new(&req), &context)
+            .unwrap(),
+        encoded.body.len()
+    );
+}
+
+#[test]
+fn gemini_text_only_tool_results_without_a_carrier_are_their_text() {
+    let raw = r#"[{"type":"text","text":"a \"b\""},{"type":"text","text":"c"}]"#;
+    let mut req = media_request(raw);
+    if let ContentBlock::ToolResult { output_json, .. } = &mut req.messages[1].content[0] {
+        *output_json = None;
+    }
+    let p = profile("gemini_generate_content");
+    let context = CodecContext::new(&p, "m", RequestMode::Complete);
+    let encoded = GeminiCodec
+        .encode_request(EncodeRequest::new(&req), &context)
+        .unwrap();
+    let bytes = String::from_utf8(encoded.body.to_vec()).unwrap();
+    assert!(
+        bytes.contains(r#""response":{"result":"a \"b\"\nc"}"#),
+        "{bytes}"
     );
 }

@@ -95,6 +95,18 @@ pub(crate) fn encode_result_block(block: &Value) -> Result<Value, LlmError> {
                 _ => Err(invalid()),
             }
         }
+        // Function results carry text and images. Read returns PDFs as
+        // document blocks, and failing here would fail every later request
+        // that replays the result.
+        Some("document") => Ok(match block["source"]["type"].as_str() {
+            Some("text") if block["source"]["data"].is_string() => {
+                json!({"type":"text","text":block["source"]["data"]})
+            }
+            _ => json!({
+                "type":"text",
+                "text":"(document omitted: Interactions tool results carry only text and images)",
+            }),
+        }),
         _ => Err(invalid()),
     }
 }

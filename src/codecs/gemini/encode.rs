@@ -310,7 +310,7 @@ fn contents<'a>(
                 ..
             } = b
             {
-                if let Some(pieces) = crate::codecs::tool_result_media::pieces(blocks) {
+                if let Some(pieces) = crate::codecs::tool_result_media::slot_pieces(blocks) {
                     let text = split_tool_result_media(&pieces, &mut parts, opts);
                     parts.push(function_response(
                         tool_use_id,

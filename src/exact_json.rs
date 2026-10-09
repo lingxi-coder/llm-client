@@ -1858,7 +1858,11 @@ fn render_tool_output(
     let invalid = || LlmError::InvalidRequest {
         message: "encoded tool output differs from its exact source carrier".into(),
     };
-    if matches!(protocol, P::OpenAiChat | P::AzureOpenAi) && has_blocks {
+    if matches!(
+        protocol,
+        P::OpenAiChat | P::AzureOpenAi | P::GeminiGenerateContent | P::VertexGemini
+    ) && has_blocks
+    {
         if target.as_str() == Some(raw) {
             return serde_json::to_string(raw).map_err(|_| invalid());
         }
@@ -1962,6 +1966,19 @@ fn render_tool_output(
     for ((source, target), raw) in source_parts.iter().zip(target_parts).zip(raw_parts) {
         if tool_input_display_matches(source, target) {
             output.push(raw.get().to_owned());
+            continue;
+        }
+        let replaceable = match protocol {
+            P::AnthropicMessages | P::BedrockClaude | P::VertexClaude | P::FoundryClaude => {
+                matches!(source["type"].as_str(), Some("image" | "document"))
+            }
+            P::GeminiInteractions => source["type"] == "document",
+            _ => false,
+        };
+        if replaceable && target["type"] == "text" {
+            // Media the wire or the selected model rules out, replaced by the
+            // codec's text.
+            output.push(serde_json::to_string(target).map_err(|_| invalid())?);
             continue;
         }
         if protocol == P::GeminiInteractions
