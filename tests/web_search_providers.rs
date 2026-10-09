@@ -144,8 +144,9 @@ fn provider_domain_limits_and_engine_are_explicit() {
         ("glm", "open_ai_chat", 1),
     ] {
         let mut req = request();
-        req.hosted_web_search_mut().unwrap().allowed_domains =
-            (0..count).map(|n| format!("{n}.example.com")).collect();
+        req.hosted_web_search_mut().unwrap().allowed_domains = (0..count)
+            .map(|n| format!("{n}.example.com").into())
+            .collect();
         let mut p = profile(adapter, protocol);
         if adapter == "glm" {
             p.extra["web_search_engine"] = json!("search-prime");

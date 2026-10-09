@@ -29,11 +29,18 @@ const SUPPORTED_MODELS: &[&str] = &[
 ];
 
 const PER_MESSAGE_EFFORT_MODELS: &[&str] = &[
+    "claude-sonnet-5-5",
     "claude-fable-5-1",
     "claude-mythos-5-1",
     "claude-opus-5-5",
     "claude-opus-5",
 ];
+
+/// Pinned served models that support Native per-message effort controls.
+#[must_use]
+pub(crate) fn supports_per_message_effort(model: &str) -> bool {
+    PER_MESSAGE_EFFORT_MODELS.contains(&model)
+}
 
 fn invalid(message: impl Into<String>) -> LlmError {
     LlmError::InvalidRequest {
@@ -60,6 +67,25 @@ fn is_first_party_profile(profile: &ProviderProfile) -> bool {
 /// against the exact request model ID.
 pub(crate) fn supports_profile(profile: &ProviderProfile) -> bool {
     is_first_party_profile(profile) || profile.protocol == ProtocolFamily::VertexClaude
+}
+
+fn supports_message_options(context: &CodecContext) -> bool {
+    supports_profile(context.profile()) || context.native_anthropic_endpoint_admitted()
+}
+
+fn contains_only_per_message_effort_system_rows(request: &ChatRequest) -> bool {
+    let mut system_rows = request
+        .messages
+        .iter()
+        .filter(|message| message.role == MessageRole::System)
+        .peekable();
+    system_rows.peek().is_some()
+        && system_rows.all(|message| {
+            message
+                .anthropic_options()
+                .is_some_and(|options| options.effort.is_some() && options.clear_at.is_none())
+        })
+        && !has_tool_changes(request)
 }
 
 fn contains_inline_tool_definition(request: &ChatRequest) -> bool {
@@ -133,21 +159,28 @@ pub(crate) fn has_mcp_toolset_addition(request: &ChatRequest, server_name: &str)
 
 pub(crate) fn apply_beta_header(
     request: &ChatRequest,
-    profile: &ProviderProfile,
+    context: &CodecContext,
     headers: &mut Vec<(String, String)>,
 ) {
-    let has_clear_at = request.messages.iter().any(|message| {
-        message
-            .anthropic_options()
-            .is_some_and(|options| options.clear_at.is_some())
-    });
-    let has_effort = request.messages.iter().any(|message| {
-        message
-            .anthropic_options()
-            .is_some_and(|options| options.effort.is_some())
-    });
-    let has_tool_changes = has_tool_changes(request);
-    if !supports_profile(profile) || !(has_tool_changes || has_clear_at || has_effort) {
+    let profile = context.profile();
+    let message_options_admitted = supports_message_options(context);
+    let has_clear_at = message_options_admitted
+        && request.messages.iter().any(|message| {
+            message
+                .anthropic_options()
+                .is_some_and(|options| options.clear_at.is_some())
+        });
+    let has_effort = message_options_admitted
+        && request.messages.iter().any(|message| {
+            message
+                .anthropic_options()
+                .is_some_and(|options| options.effort.is_some())
+        });
+    let native_per_turn_effort = context.native_anthropic_main_request()
+        && contains_only_per_message_effort_system_rows(request);
+    let has_output_config = has_effort && !native_per_turn_effort;
+    let has_tool_changes = supports_profile(profile) && has_tool_changes(request);
+    if !(has_tool_changes || has_clear_at || has_effort) {
         return;
     }
     let values = headers
@@ -156,6 +189,7 @@ pub(crate) fn apply_beta_header(
         .flat_map(|(_, value)| value.split(','))
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .filter(|value| !(native_per_turn_effort && *value == OUTPUT_CONFIG_BETA))
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let mut deduplicated = Vec::new();
@@ -172,7 +206,7 @@ pub(crate) fn apply_beta_header(
     for (needed, beta) in [
         (has_tool_changes, tool_change_beta),
         (has_clear_at, SYSTEM_CLEAR_AT_BETA),
-        (has_effort, OUTPUT_CONFIG_BETA),
+        (has_output_config, OUTPUT_CONFIG_BETA),
     ] {
         if needed && !deduplicated.iter().any(|value| value == beta) {
             deduplicated.push(beta.into());
@@ -309,7 +343,7 @@ fn validate_message_options(request: &ChatRequest, context: &CodecContext) -> Re
         return Ok(());
     }
 
-    if !supports_profile(context.profile()) {
+    if !supports_message_options(context) {
         return Err(unsupported(
             "Anthropic per-message system options require the first-party Messages API or Vertex Claude",
         ));
@@ -327,8 +361,7 @@ fn validate_message_options(request: &ChatRequest, context: &CodecContext) -> Re
                 "Anthropic per-message options are supported only on system messages",
             ));
         }
-        if options.effort.is_some() && !PER_MESSAGE_EFFORT_MODELS.contains(&context.request_model())
-        {
+        if options.effort.is_some() && !supports_per_message_effort(context.request_model()) {
             return Err(unsupported(format!(
                 "Anthropic per-message effort is not documented for model {:?}",
                 context.request_model()
@@ -1151,6 +1184,11 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
         || request
             .hosted_anthropic_web_fetch()
             .is_some_and(|config| config.inline_definition);
+    let only_per_message_effort = supports_message_options(context)
+        && contains_only_per_message_effort_system_rows(request)
+        && !contains_mcp
+        && !contains_deferred_fetch
+        && !contains_typed_inline;
     if !contains_system
         && !contains_changes
         && !contains_mcp
@@ -1161,7 +1199,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
     }
 
     let profile = context.profile();
-    if !supports_profile(profile) {
+    if !supports_profile(profile) && !only_per_message_effort {
         if !contains_system && !contains_changes && !contains_inline_mcp && !contains_typed_inline {
             return Ok(());
         }
@@ -1175,7 +1213,9 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             "Vertex Claude supports reference-based mid-conversation tool changes only; inline tool definitions and MCP additions require the Claude API",
         ));
     }
-    if (contains_system || contains_changes) && !SUPPORTED_MODELS.contains(&context.request_model())
+    if !only_per_message_effort
+        && (contains_system || contains_changes)
+        && !SUPPORTED_MODELS.contains(&context.request_model())
     {
         return Err(unsupported(format!(
             "Anthropic mid-conversation system messages and tool changes are not documented for model {:?}",

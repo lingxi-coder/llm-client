@@ -302,6 +302,7 @@ impl Pinned<'_> {
                 .push("cancel");
         }
         let mut http = HttpRequest {
+            http1_header_layout: None,
             method: if cancel { "POST" } else { "GET" }.into(),
             url: url.into(),
             headers: vec![],
@@ -363,6 +364,7 @@ impl Pinned<'_> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let mut http = HttpRequest {
+            http1_header_layout: None,
             method: "DELETE".into(),
             url: url.into(),
             headers: vec![],

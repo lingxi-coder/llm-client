@@ -1114,6 +1114,7 @@ impl Pinned<'_> {
         let body = file_upload_multipart_stream(prefix, streams, suffix);
         let deadline = Deadline::after(options.total_timeout);
         let http_request = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: upload_url,
             headers: vec![
@@ -1296,6 +1297,7 @@ impl Pinned<'_> {
             return Err(invalid("GLM knowledge request exceeds the 1 MiB client limit").into());
         }
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.to_owned(),
             url: url.to_string(),
             headers: vec![

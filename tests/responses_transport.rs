@@ -22,6 +22,7 @@ async fn read_headers(stream: &mut tokio::net::TcpStream) {
 
 fn request(url: String) -> HttpRequest {
     HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url,
         headers: vec![("Authorization".into(), "Bearer private-token".into())],

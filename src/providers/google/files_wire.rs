@@ -55,6 +55,7 @@ pub fn start_upload_request(
 ) -> HttpRequest {
     let root = upload_base(base_url);
     let mut request = HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: format!("{root}/upload/v1beta/files"),
         body: serde_json::to_vec(&serde_json::json!({"file":{"display_name":display_name}}))
@@ -120,6 +121,7 @@ pub fn upload_finalize_request(upload_url: &str, bytes: Vec<u8>) -> HttpRequest 
     );
     headers.insert("x-goog-upload-offset".to_string(), "0".to_string());
     HttpRequest {
+        http1_header_layout: None,
         method: "POST".to_string(),
         url: upload_url.to_string(),
         headers: headers.into_iter().collect(),
@@ -154,6 +156,7 @@ pub fn parse_upload_response(body: &Value) -> Result<GeminiFile, LlmError> {
 pub fn file_status_request(base_url: &str, file_name: &str) -> HttpRequest {
     let root = upload_base(base_url);
     HttpRequest {
+        http1_header_layout: None,
         method: "GET".to_string(),
         url: format!("{root}/v1beta/{file_name}"),
         headers: Vec::new(),

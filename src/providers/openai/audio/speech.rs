@@ -476,6 +476,7 @@ impl Pinned<'_> {
             headers.push(("accept".into(), "text/event-stream".into()));
         }
         let http = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: endpoint.into(),
             headers,

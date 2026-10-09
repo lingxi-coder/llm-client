@@ -34,7 +34,7 @@ impl WireCodec for OpenAiResponsesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -46,7 +46,7 @@ impl WireCodec for OpenAiResponsesCodec {
         }
         encode::validate_computer_request(req, context.profile())?;
         crate::providers::openai::prompt_cache::validate(req, context)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(req, context)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         if !crate::providers::qwen::hosted::validate(
             req,

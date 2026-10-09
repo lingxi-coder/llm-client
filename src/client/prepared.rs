@@ -315,6 +315,12 @@ impl RequestDraft {
             .connect_websocket_request(handshake, transport.unwrap_or(self.call.http.as_ref()))
             .await
     }
+    /// Select HTTP/1 field serialization explicitly. The transport resolves the
+    /// layout against the final authenticated headers at dispatch time.
+    pub fn set_http1_header_layout(&mut self, layout: Option<crate::Http1HeaderLayout>) {
+        self.call.prepared.http.http1_header_layout = layout;
+    }
+
     pub fn request(&self) -> &HttpRequest {
         &self.call.prepared.http
     }
@@ -939,11 +945,13 @@ impl CollectedResponse {
     /// Decode only after the caller has retained usage_report(). This is
     /// synchronous; malformed tool JSON cannot erase the retained observation.
     pub fn decode(&self) -> Result<ChatResponse, LlmError> {
+        let request_authority = super::executor::request_authority(&self.call.prepared.http.url);
         let mut response = self
             .call
             .prepared
             .codec
-            .decode_response(&self.response, &self.call.prepared.context)?;
+            .decode_response(&self.response, &self.call.prepared.context)
+            .map_err(|error| error.with_native_anthropic_request_authority(request_authority))?;
         response.executed_profile = Some(self.call.profile.profile_name.clone());
         response.response_cache = self.call.prepared.backend.response_cache(
             &self.call.profile,

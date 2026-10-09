@@ -36,6 +36,7 @@ impl RealtimeTransport for crate::HttpTransport {
 
         let handshake = build_handshake_request(&request)?;
         let wire = crate::HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: request.endpoint.clone(),
             headers: request.headers,

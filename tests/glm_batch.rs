@@ -66,6 +66,7 @@ impl Transport for MockTransport {
             collected.extend_from_slice(&chunk?);
         }
         self.requests.lock().unwrap().push(HttpRequest {
+            http1_header_layout: None,
             method,
             url,
             headers,

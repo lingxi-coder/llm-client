@@ -277,8 +277,9 @@ fn malformed_filters_conflicting_filters_and_zero_budget_are_invalid() {
     }
     for (adapter, limit) in [("xai", 5), ("openai_responses", 100)] {
         let mut req = request();
-        req.hosted_web_search_mut().unwrap().allowed_domains =
-            (0..=limit).map(|n| format!("{n}.example.com")).collect();
+        req.hosted_web_search_mut().unwrap().allowed_domains = (0..=limit)
+            .map(|n| format!("{n}.example.com").into())
+            .collect();
         let encoded = encode(&req, &profile(adapter, "open_ai_responses"));
         assert!(
             matches!(&encoded, Err(LlmError::InvalidRequest { .. })),
@@ -457,7 +458,7 @@ fn public_web_search_methods_enable_search_without_mutating_request() {
     ));
     assert_eq!(
         req.hosted_web_search().unwrap().allowed_domains,
-        vec!["example.com"]
+        vec!["example.com".into()]
     );
     let bodies = transport.0.lock().unwrap();
     assert_eq!(bodies.len(), 2);

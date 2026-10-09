@@ -22,6 +22,14 @@ pub mod toolsets;
 pub mod types;
 pub(crate) mod web_fetch;
 pub use client::AnthropicClient;
+
+/// Whether Native per-message effort controls are supported for this exact
+/// Anthropic request model ID.
+#[must_use]
+pub fn supports_per_message_effort(model: &str) -> bool {
+    conversation::supports_per_message_effort(model)
+}
+
 pub mod native;
 pub(crate) mod search;
 pub(crate) mod structured;

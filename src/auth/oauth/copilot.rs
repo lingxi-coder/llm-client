@@ -188,6 +188,7 @@ async fn post_json(
     request_json(
         transport,
         HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url,
             headers: vec![
@@ -297,6 +298,7 @@ pub async fn exchange_copilot_token(
     let response = request_json(
         transport,
         HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: COPILOT_TOKEN_EXCHANGE_URL.into(),
             headers: vec![

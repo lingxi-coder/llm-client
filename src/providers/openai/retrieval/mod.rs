@@ -1189,6 +1189,7 @@ impl<'a> PinnedRetrievalService<'a> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: url.into(),
             headers,

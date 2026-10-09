@@ -1013,6 +1013,7 @@ impl<'a> GeminiSpeechService<'a> {
         let response = HttpExecutor::new(pinned_service.http)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: "POST".into(),
                     url: pinned_service.scope.endpoint.clone(),
                     headers: vec![
@@ -1065,6 +1066,7 @@ impl<'a> GeminiSpeechService<'a> {
 
         let response = HttpExecutor::new(pinned_service.http)
             .send(HttpRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url: pinned_service.scope.endpoint.clone(),
                 headers: vec![

@@ -315,6 +315,7 @@ impl WireCodec for FakeCodec {
         // shared by every profile using it.
         let base = &profile.base_url;
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "POST".to_owned(),
             url: format!("{base}/chat"),
             headers: vec![],
@@ -1248,7 +1249,7 @@ fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
                 "openai",
                 &req,
                 WebSearchConfig {
-                    allowed_domains: vec!["example.com".to_owned()],
+                    allowed_domains: vec!["example.com".to_owned().into()],
                     ..Default::default()
                 },
                 &with_credential("openai-secret"),
@@ -1261,7 +1262,7 @@ fn scoped_completion_stream_and_search_use_the_selected_route_and_credential() {
                 "openrouter",
                 &req,
                 WebSearchConfig {
-                    blocked_domains: vec!["blocked.example".to_owned()],
+                    blocked_domains: vec!["blocked.example".to_owned().into()],
                     ..Default::default()
                 },
                 &with_credential("openrouter-secret"),
@@ -2156,7 +2157,8 @@ mod raw_http_streams {
                 .chat()
                 .stream(&request("m-1"), &RequestOptions::default()),
         )
-        .expect_err("oversized 429 error body remains classified");
+        .err()
+        .expect("oversized 429 error body remains classified");
         assert!(matches!(
             error.classification_source(),
             LlmError::RateLimited { .. }

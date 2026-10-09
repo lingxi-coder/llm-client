@@ -36,6 +36,125 @@ pub fn apply_user_agent(headers: &mut BTreeMap<String, String>, policy: UserAgen
     set_header(headers, "user-agent", value);
 }
 
+/// Explicit Native-compatible client identity for an admitted Anthropic request.
+/// The host captures runtime/platform/session facts; this SDK policy never reads
+/// process environment or chooses whether the identity applies to a route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnthropicClientMetadata {
+    /// Runtime language reported by the selected client identity.
+    pub language: String,
+    /// Runtime name reported by the selected client identity.
+    pub runtime: String,
+    pub package_version: String,
+    pub runtime_version: String,
+    pub os: String,
+    pub arch: String,
+    /// Native SDK timeout in seconds, independent of the host turn deadline.
+    pub timeout_seconds: u64,
+    /// Host-captured origin session. The host may replace this with the
+    /// admitted request's session identity immediately before header policy.
+    pub session_id: Option<String>,
+    pub app_id: String,
+}
+
+impl AnthropicClientMetadata {
+    /// Metadata defaults captured from the controlled Claude Code 2.1.293
+    /// client. Platform labels follow that embedded SDK's mapping.
+    pub fn claude_code_2_1_293(os: &str, arch: &str) -> Self {
+        Self {
+            language: "js".into(),
+            runtime: "node".into(),
+            package_version: "0.128.0".into(),
+            runtime_version: "v26.3.0".into(),
+            os: match os.to_ascii_lowercase().as_str() {
+                "darwin" | "macos" => "MacOS".into(),
+                "win32" | "windows" => "Windows".into(),
+                "linux" => "Linux".into(),
+                "freebsd" => "FreeBSD".into(),
+                "openbsd" => "OpenBSD".into(),
+                "android" => "Android".into(),
+                value if value.contains("ios") => "iOS".into(),
+                "" => "Unknown".into(),
+                value => format!("Other:{value}"),
+            },
+            arch: match arch {
+                "aarch64" | "arm64" => "arm64".into(),
+                "x86_64" | "x64" => "x64".into(),
+                "x32" | "arm" => arch.into(),
+                "" => "unknown".into(),
+                value => format!("other:{value}"),
+            },
+            timeout_seconds: 600,
+            session_id: None,
+            app_id: "cli".into(),
+        }
+    }
+}
+
+/// Add the Native Anthropic client headers without replacing values already
+/// supplied by authentication or the caller. Header spelling is canonicalized
+/// later only when the transport has selected NativeFetch layout.
+pub fn apply_client_metadata(
+    headers: &mut BTreeMap<String, String>,
+    metadata: &AnthropicClientMetadata,
+) {
+    let default = |headers: &mut BTreeMap<String, String>, name: &str, value: &str| {
+        if !headers.keys().any(|key| key.eq_ignore_ascii_case(name)) {
+            set_header(headers, name, value);
+        }
+    };
+    for (name, value) in [
+        ("accept", "application/json"),
+        ("anthropic-dangerous-direct-browser-access", "true"),
+        ("x-app", metadata.app_id.as_str()),
+        ("x-stainless-lang", metadata.language.as_str()),
+        (
+            "x-stainless-package-version",
+            metadata.package_version.as_str(),
+        ),
+        ("x-stainless-os", metadata.os.as_str()),
+        ("x-stainless-arch", metadata.arch.as_str()),
+        ("x-stainless-runtime", metadata.runtime.as_str()),
+        (
+            "x-stainless-runtime-version",
+            metadata.runtime_version.as_str(),
+        ),
+        ("x-stainless-retry-count", "0"),
+    ] {
+        default(headers, name, value);
+    }
+    default(
+        headers,
+        "x-stainless-timeout",
+        &metadata.timeout_seconds.to_string(),
+    );
+    if let Some(session_id) = &metadata.session_id {
+        default(headers, "x-claude-code-session-id", session_id);
+    }
+}
+
+/// Canonical spellings emitted by the versioned Native Anthropic SDK client.
+/// This is applied by the authenticated request path only after the caller has
+/// selected NativeFetch layout. Unknown caller-owned names keep their spelling.
+pub fn native_fetch_header_name(name: &str) -> &str {
+    match name.to_ascii_lowercase().as_str() {
+        "accept" => "Accept",
+        "content-type" => "Content-Type",
+        "user-agent" => "User-Agent",
+        "authorization" => "Authorization",
+        "x-claude-code-session-id" => "X-Claude-Code-Session-Id",
+        "x-stainless-arch" => "X-Stainless-Arch",
+        "x-stainless-lang" => "X-Stainless-Lang",
+        "x-stainless-os" => "X-Stainless-OS",
+        "x-stainless-package-version" => "X-Stainless-Package-Version",
+        "x-stainless-retry-count" => "X-Stainless-Retry-Count",
+        "x-stainless-runtime" => "X-Stainless-Runtime",
+        "x-stainless-runtime-version" => "X-Stainless-Runtime-Version",
+        "x-stainless-timeout" => "X-Stainless-Timeout",
+        _ => name,
+    }
+}
+
 /// Preserve existing (including auth-injected) betas first, then append the
 /// caller-selected values, without duplicate beta tokens or header spellings.
 pub fn merge_beta_header(headers: &mut BTreeMap<String, String>, betas: &[String]) {
@@ -82,6 +201,37 @@ pub struct AnthropicEffortPolicy {
     pub value: Option<JsonPayload>,
 }
 
+/// Native `nxt` inputs captured by the host before Anthropic request preparation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnthropicContextManagement {
+    pub has_thinking: bool,
+    pub tool_clearing: Option<JsonPayload>,
+}
+
+impl AnthropicContextManagement {
+    /// Construct the source-backed Native 2.1.293 context-management edit list.
+    pub fn to_wire(&self) -> Result<Option<JsonPayload>, LlmError> {
+        let mut edits = Vec::new();
+        if self.has_thinking {
+            edits.push(
+                JsonPayload::parse(r#"{"type":"clear_thinking_20251015","keep":"all"}"#)
+                    .expect("static context-management edit is valid JSON"),
+            );
+        }
+        if let Some(edit) = &self.tool_clearing {
+            edits.push(edit.clone());
+        }
+        if edits.is_empty() {
+            return Ok(None);
+        }
+        let edits =
+            JsonPayload::array_from_items(&edits, crate::exact_json::JsonEncoding::JavaScript)?;
+        let mut wire = JsonPayload::parse("{}").expect("empty object is valid JSON");
+        set_object_field_source(&mut wire, "edits", &edits)?;
+        Ok(Some(wire))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AnthropicRequestPolicy {
     pub request_kind: AnthropicRequestKind,
@@ -90,6 +240,7 @@ pub struct AnthropicRequestPolicy {
     pub extra_body: JsonPayload,
     pub body_betas: Vec<String>,
     pub effort: Option<AnthropicEffortPolicy>,
+    pub context_management: Option<AnthropicContextManagement>,
     /// Messages SDK virtual parameters travel in headers, including hosted variants.
     pub message_header_parameters: bool,
     /// A beta token whose fast-mode fields must be removed for this route.
@@ -103,6 +254,7 @@ impl Default for AnthropicRequestPolicy {
             extra_body: JsonPayload::parse("{}").expect("empty object is valid JSON"),
             body_betas: Vec::new(),
             effort: None,
+            context_management: None,
             message_header_parameters: false,
             disallowed_fast_beta: None,
         }
@@ -241,33 +393,26 @@ impl AnthropicRequestPolicy {
         let explicit_extra = source_object_fields(&self.extra_body)?;
         let body_extra = beta_body(self.extra_body.clone(), &self.body_betas)?;
         let has_body_extra = !source_object_fields(&body_extra)?.is_empty();
-        let format_alias_requested = output_format_alias_requested(body, string_overrides)?;
-        let has_virtual_fields = ["betas", "user_profile_id", "workspace_id"]
+        let context_beta = "context-management-2025-06-27";
+        let context_admitted = headers
             .iter()
-            .any(|key| has_field(body, key));
-
-        // The default policy carries no SDK changes. Preserve the caller's
-        // exact JSON spelling and object insertion order when there is nothing
-        // to merge or normalize; rebuilding an unchanged body here would move
-        // fields such as max_tokens and invalidate the source snapshot.
-        if !has_body_extra
-            && self.effort.is_none()
-            && self.disallowed_fast_beta.is_none()
-            && !format_alias_requested
-            && !has_virtual_fields
-        {
-            if self.message_header_parameters {
-                normalize_source_message_parameters(
-                    body,
-                    headers,
-                    string_overrides,
-                    url,
-                    crate::RequestMode::Complete,
-                    None,
-                )?;
-            }
-            return Ok(());
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .any(|(_, value)| value.split(',').any(|beta| beta.trim() == context_beta))
+            || self.body_betas.iter().any(|beta| beta == context_beta);
+        let context_management = self
+            .context_management
+            .as_ref()
+            .filter(|_| context_admitted)
+            .map(AnthropicContextManagement::to_wire)
+            .transpose()?
+            .flatten();
+        if let Some(context_management) = &context_management {
+            set_object_field_source(body, "context_management", context_management)?;
+            string_overrides.retain(|path, _| {
+                path != "/context_management" && !path.starts_with("/context_management/")
+            });
         }
+        let format_alias_requested = output_format_alias_requested(body, string_overrides)?;
 
         // An explicit top-level spread owns its string leaves. Main handles
         // output_config separately, retaining untouched automatic fields.
@@ -2102,12 +2247,11 @@ mod tests {
     }
 
     #[test]
-    fn default_source_policy_preserves_body_spelling_and_insertion_order() {
+    fn default_source_policy_emits_native_main_template_order() {
         let mut body = JsonPayload::parse(
             r#"{ "model":"m", "max_tokens":4096, "messages":[{"role":"user","content":"hi"}] }"#,
         )
         .unwrap();
-        let original = body.as_json_source().to_owned();
         let mut headers = BTreeMap::from([("x-existing".into(), "kept".into())]);
         let original_headers = headers.clone();
         let mut overrides = BTreeMap::from([("/messages/0/content".into(), vec![0xd800])]);
@@ -2119,7 +2263,10 @@ mod tests {
             .apply(&mut body, &mut headers, &mut overrides, &mut url)
             .unwrap();
 
-        assert_eq!(body.as_json_source(), original);
+        assert_eq!(
+            body.as_json_source(),
+            r#"{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":4096}"#
+        );
         assert_eq!(headers, original_headers);
         assert_eq!(overrides, original_overrides);
         assert_eq!(url, original_url);
@@ -2768,5 +2915,220 @@ mod tests {
         assert!(overrides.is_empty());
         assert!(body.get("speed").is_none());
         assert_eq!(headers["Anthropic-Beta"], "oauth,other");
+    }
+}
+
+#[cfg(test)]
+mod native_fetch_policy_tests {
+    use super::*;
+
+    #[test]
+    fn controlled_native_293_client_metadata_adds_only_absent_defaults() {
+        let metadata = AnthropicClientMetadata::claude_code_2_1_293("darwin", "aarch64");
+        let mut headers = BTreeMap::new();
+        apply_client_metadata(&mut headers, &metadata);
+        let expected: BTreeMap<String, String> = [
+            ("accept", "application/json"),
+            ("anthropic-dangerous-direct-browser-access", "true"),
+            ("x-app", "cli"),
+            ("x-stainless-arch", "arm64"),
+            ("x-stainless-lang", "js"),
+            ("x-stainless-os", "MacOS"),
+            ("x-stainless-package-version", "0.128.0"),
+            ("x-stainless-retry-count", "0"),
+            ("x-stainless-runtime", "node"),
+            ("x-stainless-runtime-version", "v26.3.0"),
+            ("x-stainless-timeout", "600"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.into(), value.into()))
+        .collect();
+        assert_eq!(headers, expected);
+
+        let mut caller_headers = BTreeMap::from([("X-STAINLESS-RETRY-COUNT".into(), "2".into())]);
+        apply_client_metadata(&mut caller_headers, &metadata);
+        assert_eq!(caller_headers["X-STAINLESS-RETRY-COUNT"], "2");
+        assert_eq!(
+            caller_headers
+                .keys()
+                .filter(|name| name.eq_ignore_ascii_case("x-stainless-retry-count"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn native_metadata_uses_captured_session_and_preserves_explicit_header_values() {
+        let mut metadata = AnthropicClientMetadata::claude_code_2_1_293("darwin", "arm64");
+        metadata.session_id = Some("captured-session".into());
+        let mut headers = BTreeMap::new();
+        apply_client_metadata(&mut headers, &metadata);
+        assert_eq!(headers["x-claude-code-session-id"], "captured-session");
+
+        headers.insert("Accept".into(), "custom/type".into());
+        headers.remove("accept");
+        headers.insert("X-Claude-Code-Session-Id".into(), "explicit-session".into());
+        headers.remove("x-claude-code-session-id");
+        headers.insert(
+            "X-Stainless-Package-Version".into(),
+            "caller-version".into(),
+        );
+        headers.remove("x-stainless-package-version");
+        apply_client_metadata(&mut headers, &metadata);
+        assert_eq!(headers["Accept"], "custom/type");
+        assert_eq!(headers["X-Claude-Code-Session-Id"], "explicit-session");
+        assert_eq!(headers["X-Stainless-Package-Version"], "caller-version");
+    }
+
+    #[test]
+    fn native_sdk_platform_mapping_matches_supported_host_names() {
+        let linux = AnthropicClientMetadata::claude_code_2_1_293("linux", "x86_64");
+        assert_eq!((linux.os.as_str(), linux.arch.as_str()), ("Linux", "x64"));
+        let windows = AnthropicClientMetadata::claude_code_2_1_293("win32", "arm64");
+        assert_eq!(
+            (windows.os.as_str(), windows.arch.as_str()),
+            ("Windows", "arm64")
+        );
+    }
+
+    #[test]
+    fn native_fetch_header_spellings_are_selective_and_preserve_unknown_names() {
+        for (source, expected) in [
+            ("accept", "Accept"),
+            ("USER-AGENT", "User-Agent"),
+            ("authorization", "Authorization"),
+            ("x-stainless-os", "X-Stainless-OS"),
+            ("x-claude-code-session-id", "X-Claude-Code-Session-Id"),
+            ("anthropic-beta", "anthropic-beta"),
+            ("X-Custom-header", "X-Custom-header"),
+        ] {
+            assert_eq!(native_fetch_header_name(source), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_context_management_tests {
+    use super::*;
+
+    fn source(text: &str) -> JsonPayload {
+        JsonPayload::parse(text).expect("test source is valid JSON")
+    }
+
+    #[test]
+    fn thinking_clear_precedes_tool_clear_and_requires_admitted_beta() {
+        let context = AnthropicContextManagement {
+            has_thinking: true,
+            tool_clearing: Some(source(r#"{"type":"clear_tool_uses_20250919"}"#)),
+        };
+        let expected = source(
+            r#"{"edits":[{"type":"clear_thinking_20251015","keep":"all"},{"type":"clear_tool_uses_20250919"}]}"#,
+        );
+        assert_eq!(context.to_wire().unwrap(), Some(expected.clone()));
+
+        for admitted in [false, true] {
+            let mut body = source(r#"{"model":"claude-sonnet-5-5","messages":[],"stream":true}"#);
+            let mut headers = BTreeMap::new();
+            if admitted {
+                headers.insert(
+                    "anthropic-beta".into(),
+                    "context-management-2025-06-27".into(),
+                );
+            }
+            AnthropicRequestPolicy {
+                context_management: Some(context.clone()),
+                ..Default::default()
+            }
+            .apply(
+                &mut body,
+                &mut headers,
+                &mut BTreeMap::new(),
+                &mut "http://configured-base/v1/messages".into(),
+            )
+            .unwrap();
+            assert_eq!(
+                body.raw_source_at("/context_management"),
+                admitted.then(|| expected.as_json_source().to_owned())
+            );
+        }
+        assert_eq!(
+            AnthropicContextManagement::default().to_wire().unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_context_management_spread_keeps_caller_authority() {
+        let mut body = source(r#"{"messages":[]}"#);
+        let mut headers = [(
+            "anthropic-beta".into(),
+            "context-management-2025-06-27".into(),
+        )]
+        .into_iter()
+        .collect();
+        AnthropicRequestPolicy {
+            context_management: Some(AnthropicContextManagement {
+                has_thinking: true,
+                ..Default::default()
+            }),
+            extra_body: source(r#"{"context_management":{"edits":[]}}"#),
+            ..Default::default()
+        }
+        .apply(
+            &mut body,
+            &mut headers,
+            &mut BTreeMap::new(),
+            &mut "http://configured-base/v1/messages".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            body.raw_source_at("/context_management"),
+            Some(r#"{"edits":[]}"#.to_owned())
+        );
+    }
+
+    #[test]
+    fn empty_admitted_context_policy_uses_the_template_without_adding_context() {
+        let input = r#"{"extension":{"opaque":true},"messages":[],"model":"m"}"#;
+        let mut baseline = source(input);
+        let mut baseline_headers = BTreeMap::from([(
+            "anthropic-beta".into(),
+            "context-management-2025-06-27".into(),
+        )]);
+        AnthropicRequestPolicy::default()
+            .apply(
+                &mut baseline,
+                &mut baseline_headers,
+                &mut BTreeMap::new(),
+                &mut "http://configured-base/v1/messages".into(),
+            )
+            .unwrap();
+
+        let mut body = source(input);
+        let mut headers = BTreeMap::from([(
+            "anthropic-beta".into(),
+            "context-management-2025-06-27".into(),
+        )]);
+        AnthropicRequestPolicy {
+            context_management: Some(AnthropicContextManagement::default()),
+            ..Default::default()
+        }
+        .apply(
+            &mut body,
+            &mut headers,
+            &mut BTreeMap::new(),
+            &mut "http://configured-base/v1/messages".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            body.as_json_source(),
+            r#"{"model":"m","messages":[],"extension":{"opaque":true}}"#
+        );
+        assert_eq!(body, baseline);
+        assert_eq!(
+            body.raw_source_at("/extension"),
+            Some(r#"{"opaque":true}"#.to_owned())
+        );
+        assert_eq!(body.raw_source_at("/context_management"), None);
     }
 }

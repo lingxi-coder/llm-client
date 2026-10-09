@@ -868,6 +868,7 @@ impl<'a> OpenAiContainersService<'a> {
         validate_credential(credential)?;
         pinned_service.validate_file_ref(reference)?;
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url: pinned_service
                 .url(&format!("{}/content", file_path(reference)))?
@@ -994,6 +995,7 @@ impl<'a> OpenAiContainersService<'a> {
         HttpExecutor::new(self.http)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: method.into(),
                     url: url.into(),
                     headers,

@@ -226,9 +226,12 @@ fn tier_from_raw(raw: Option<&str>) -> Option<ServiceTier> {
 
 pub(crate) fn validate(
     req: &ChatRequest,
-    profile: &ProviderProfile,
-    model: &str,
+    context: &crate::codecs::CodecContext,
 ) -> Result<(), LlmError> {
+    let profile = context.profile();
+    let model = context.request_model();
+    let native_endpoint_admitted = context.native_anthropic_endpoint_admitted();
+    let native_main_request = context.native_anthropic_main_request();
     if (!req.anthropic_client_toolsets().is_empty()
         || crate::providers::anthropic::client_toolset_history::has_metadata(req))
         && !crate::providers::anthropic::client_toolsets::supports_profile(profile)
@@ -242,6 +245,7 @@ pub(crate) fn validate(
         .iter()
         .any(|message| message.anthropic_options().is_some())
         && !crate::providers::anthropic::conversation::supports_profile(profile)
+        && !native_endpoint_admitted
     {
         return Err(unsupported(
             "Anthropic per-message controls require the first-party Messages or Vertex Claude protocol",
@@ -265,7 +269,9 @@ pub(crate) fn validate(
     };
     let rw = profile.reasoning_wire();
     let thinking = effective_thinking(thinking, rw);
-    if let Some(effort) = current_message_effort(req, profile) {
+    if let Some(effort) =
+        current_message_effort(req, profile, native_endpoint_admitted, native_main_request)
+    {
         if let Some(message) = f.effort_mode_error(thinking.mode, effort) {
             return Err(invalid(message));
         }
@@ -429,7 +435,7 @@ pub(crate) fn apply(
     headers: &mut Vec<(String, String)>,
 ) -> Result<(), LlmError> {
     let p = context.profile();
-    validate(req, p, context.request_model())?;
+    validate(req, context)?;
     let (t, tier) = controls(req, p)?;
     let rw = p.reasoning_wire();
     let t = effective_thinking(t, rw);
@@ -596,10 +602,17 @@ pub(crate) fn merge_json(target: &mut Value, incoming: &Value, path: &str) -> Re
     Ok(())
 }
 
-// Per-message effort begins at the next user turn, including a tool-result
-// turn. This reports the current request without mutating its stable prefix.
-fn current_message_effort(req: &ChatRequest, profile: &ProviderProfile) -> Option<ReasoningEffort> {
-    if !crate::providers::anthropic::conversation::supports_profile(profile) {
+// History effort markers become active at the next user turn. Native main
+// requests may also carry a request-local marker as the final system row.
+fn current_message_effort(
+    req: &ChatRequest,
+    profile: &ProviderProfile,
+    native_endpoint_admitted: bool,
+    native_main_request: bool,
+) -> Option<ReasoningEffort> {
+    if !crate::providers::anthropic::conversation::supports_profile(profile)
+        && !native_endpoint_admitted
+    {
         return None;
     }
     let mut pending = None;
@@ -622,18 +635,40 @@ fn current_message_effort(req: &ChatRequest, profile: &ProviderProfile) -> Optio
             active = pending;
         }
     }
-    active
+    let native_tail_effort = native_main_request
+        .then(|| req.messages.last())
+        .flatten()
+        .filter(|message| message.role == MessageRole::System && message.content.is_empty())
+        .and_then(|message| {
+            message
+                .anthropic_options()
+                .and_then(|options| options.effort)
+        })
+        .map(|effort| match effort {
+            AnthropicMessageEffort::Low => ReasoningEffort::Low,
+            AnthropicMessageEffort::Medium => ReasoningEffort::Medium,
+            AnthropicMessageEffort::High => ReasoningEffort::High,
+            AnthropicMessageEffort::XHigh => ReasoningEffort::XHigh,
+            AnthropicMessageEffort::Max => ReasoningEffort::Max,
+        });
+    native_tail_effort.or(active)
 }
 
 pub(crate) fn requested(
     req: &ChatRequest,
-    p: &ProviderProfile,
+    context: &crate::codecs::CodecContext,
 ) -> Result<InferenceReport, LlmError> {
-    let (t, tier) = controls(req, p)?;
+    let (t, tier) = controls(req, context.profile())?;
     Ok(InferenceReport {
-        requested_effort: current_message_effort(req, p).or(t.effort),
+        requested_effort: current_message_effort(
+            req,
+            context.profile(),
+            context.native_anthropic_endpoint_admitted(),
+            context.native_anthropic_main_request(),
+        )
+        .or(t.effort),
         requested_service_tier: tier,
-        requested_raw_service_tier: raw_tier(p)?.as_str().map(str::to_owned),
+        requested_raw_service_tier: raw_tier(context.profile())?.as_str().map(str::to_owned),
         ..Default::default()
     })
 }

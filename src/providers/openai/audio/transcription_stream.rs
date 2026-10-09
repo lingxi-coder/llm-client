@@ -171,6 +171,7 @@ impl Pinned<'_> {
             options.total_timeout.unwrap_or(Duration::from_secs(120)),
         ));
         let http = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: route.transcriptions_endpoint.clone(),
             headers: vec![

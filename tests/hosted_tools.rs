@@ -97,7 +97,7 @@ fn hosted_tools_are_typed_and_replacement_preserves_other_kinds() {
     assert_eq!(req.hosted_file_search().unwrap().workspace_id, "ws");
     assert_eq!(
         req.hosted_web_search().unwrap().allowed_domains,
-        vec!["example.com"]
+        vec!["example.com".into()]
     );
     let serialized = serde_json::to_value(&req).unwrap();
     assert_eq!(serialized["hosted_tools"].as_array().unwrap().len(), 2);

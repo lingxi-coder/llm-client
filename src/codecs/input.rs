@@ -20,8 +20,10 @@ pub struct CodecContext {
     pub(crate) file_account_scope: Option<String>,
     account_scope: Option<String>,
     native_options: Vec<crate::protocol::NativeExtension>,
+    anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
     file_validation_time: Option<std::time::SystemTime>,
     native_anthropic_context: crate::client::NativeAnthropicContextInput,
+    native_anthropic_endpoint_admitted: bool,
     native_anthropic_thinking_resumption_beta_requested: Option<bool>,
     model_complete_empty_cache_blocks: bool,
 }
@@ -106,8 +108,10 @@ impl CodecContext {
             file_account_scope: None,
             account_scope: None,
             native_options: Vec::new(),
+            anthropic_request_kind: Default::default(),
             file_validation_time: None,
             native_anthropic_context: crate::client::NativeAnthropicContextInput::default(),
+            native_anthropic_endpoint_admitted: false,
             native_anthropic_thinking_resumption_beta_requested: None,
             model_complete_empty_cache_blocks: false,
         }
@@ -123,6 +127,14 @@ impl CodecContext {
     }
     pub fn native_options(&self) -> &[crate::protocol::NativeExtension] {
         &self.native_options
+    }
+    /// Bind Anthropic request-local encoding policy to the selected host call.
+    pub fn with_anthropic_request_kind(
+        mut self,
+        kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
+    ) -> Self {
+        self.anthropic_request_kind = kind;
+        self
     }
     /// Apply a request-local capability observation to this selected model.
     /// The connection's wire vocabulary and every other capability are retained.
@@ -162,6 +174,35 @@ impl CodecContext {
             .and(context.thinking_resumption_beta_requested);
         self.native_anthropic_context = context;
         self
+    }
+
+    /// Bind request-local Native Messages behavior to the exact profile
+    /// selected by the host. A mismatched profile never receives admission.
+    pub fn with_native_anthropic_endpoint_admission(
+        mut self,
+        admission: Option<&crate::client::NativeAnthropicEndpointAdmission>,
+    ) -> Self {
+        self.native_anthropic_endpoint_admitted =
+            admission.is_some_and(|admission| admission.matches_profile(&self.profile));
+        self
+    }
+
+    pub(crate) fn native_anthropic_endpoint_admitted(&self) -> bool {
+        self.native_anthropic_endpoint_admitted
+    }
+
+    /// Native-only wire normalization for a host-selected first-party main
+    /// generation. Other Anthropic-compatible routes retain their own shape.
+    pub(crate) fn native_anthropic_main_request(&self) -> bool {
+        self.native_anthropic_endpoint_admitted
+            && self.profile.protocol == crate::protocol::ProtocolFamily::AnthropicMessages
+            && self.anthropic_main_generation_request()
+    }
+
+    pub(crate) fn anthropic_main_generation_request(&self) -> bool {
+        matches!(self.mode, RequestMode::Complete | RequestMode::Stream)
+            && self.anthropic_request_kind
+                == crate::providers::anthropic::request_policy::AnthropicRequestKind::Main
     }
 
     /// Native's query/resumption implementation runs only on its Anthropic

@@ -128,6 +128,11 @@ pub fn parse_response_content(content: &[JsonPayload]) -> Vec<SearchResultEntry>
                 }
             }
             Some("web_search_tool_result") => {
+                // Text blocks are buffered so adjacent blocks can be joined,
+                // but an immediate hit/error result must stay after the text
+                // that preceded it in the provider's content array.
+                flush_text(out, text_acc);
+                *in_text = false;
                 let content = block.payload_at("/content");
                 if let Some(items) = content.as_ref().filter(|items| items.is_root_array()) {
                     let hits = (0..items.array_len("").unwrap_or_default())

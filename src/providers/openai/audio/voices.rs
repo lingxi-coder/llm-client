@@ -524,6 +524,7 @@ async fn execute_json(
         Bytes::new()
     };
     let request = HttpRequest {
+        http1_header_layout: None,
         method: method.into(),
         url: endpoint,
         headers,
@@ -563,6 +564,7 @@ async fn execute_upload(
         .ok_or_else(|| invalid("voice upload multipart size overflows"))?;
     let deadline = request_deadline(options);
     let request = HttpStreamRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: endpoint,
         headers: vec![

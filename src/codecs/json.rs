@@ -389,6 +389,7 @@ impl<'a> WireRequest<'a> {
     pub(crate) fn new(url: String, headers: Vec<(String, String)>, body: WireValue<'a>) -> Self {
         Self {
             http: HttpRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url,
                 headers,

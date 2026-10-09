@@ -785,6 +785,7 @@ impl lingxi_llm_client::images::ImageAdapter for CustomImageAdapter {
         _: bool,
     ) -> Result<HttpRequest, lingxi_llm_client::images::ImageError> {
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: format!("{}/custom-generation", route.base_url),
             headers: vec![],

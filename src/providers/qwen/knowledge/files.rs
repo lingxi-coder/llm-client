@@ -503,6 +503,7 @@ impl<'a> QwenKnowledgeService<'a> {
         // provider may sign an octet-stream Content-Type even when the caller
         // describes the file with a more specific media type.
         let request = HttpStreamRequest {
+            http1_header_layout: None,
             method: "PUT".into(),
             url: lease.upload_url.as_str().to_owned(),
             headers: lease.upload_headers.clone(),
@@ -747,6 +748,7 @@ impl<'a> QwenKnowledgeService<'a> {
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|_| invalid("Qwen file request body cannot be encoded"))?;
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: url.to_string(),
             headers: vec![

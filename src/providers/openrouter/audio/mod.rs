@@ -448,6 +448,7 @@ impl<'a> OpenRouterAudioService<'a> {
                     .with_deadline(deadline)
                     .execute_bounded(
                         HttpRequest {
+                            http1_header_layout: None,
                             method: "POST".into(),
                             url: OPENROUTER_AUDIO_TRANSCRIPTIONS_ENDPOINT.into(),
                             headers: vec![
@@ -477,6 +478,7 @@ impl<'a> OpenRouterAudioService<'a> {
                     .with_deadline(deadline)
                     .execute_stream_bounded(
                         HttpStreamRequest {
+                            http1_header_layout: None,
                             method: "POST".into(),
                             url: OPENROUTER_AUDIO_TRANSCRIPTIONS_ENDPOINT.into(),
                             headers: vec![
@@ -565,6 +567,7 @@ impl<'a> OpenRouterAudioService<'a> {
             .with_deadline(deadline)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: "POST".into(),
                     url: OPENROUTER_AUDIO_SPEECH_ENDPOINT.into(),
                     headers: vec![

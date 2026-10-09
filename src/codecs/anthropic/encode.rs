@@ -174,6 +174,10 @@ pub fn request<'a>(
             "tool_choice".to_owned(),
             encode_tool_choice(&req.tool_choice),
         );
+    } else if opts.native_anthropic_main_request() {
+        // Native Claude Code emits an explicit empty tool catalog on main
+        // Messages requests. Keep side queries and other SDK callers sparse.
+        body.insert("tools".to_owned(), Value::Array(Vec::new()));
     }
     crate::providers::anthropic::mcp::apply(req, &mut body)?;
     crate::providers::anthropic::web_fetch::apply(req, &mut body)?;
@@ -247,7 +251,7 @@ pub fn request<'a>(
     // Canonicalize after profile headers and codec-specific controls are
     // merged so the current MCP beta cannot be shadowed by a legacy value.
     crate::providers::anthropic::mcp::apply_beta_header(req, profile, &mut headers);
-    crate::providers::anthropic::conversation::apply_beta_header(req, profile, &mut headers);
+    crate::providers::anthropic::conversation::apply_beta_header(req, opts, &mut headers);
 
     let endpoint = crate::providers::openrouter::chat::messages_endpoint(profile)
         .unwrap_or_else(|| format!("{}/v1/messages", profile.base_url.trim_end_matches('/')));
@@ -487,10 +491,17 @@ fn encode_block<'a>(
             let content = blocks
                 .as_ref()
                 .map_or_else(|| WireValue::raw_json(content), WireValue::raw_json);
-            let mut v = WireValue::from(json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use_id,
-            }))
+            let mut v = if opts.native_anthropic_main_request() {
+                WireValue::from(json!({
+                    "tool_use_id": tool_use_id,
+                    "type": "tool_result",
+                }))
+            } else {
+                WireValue::from(json!({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                }))
+            }
             .with("content", content);
             encode_optional_bool(&mut v, "is_error", *is_error);
             if let Some(toolset_name) = toolset_name {

@@ -34,7 +34,7 @@ impl WireCodec for OpenAiChatCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -50,7 +50,7 @@ impl WireCodec for OpenAiChatCodec {
             context.profile(),
             context,
         )?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::inference::validate(req, context)
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::OpenAiChat

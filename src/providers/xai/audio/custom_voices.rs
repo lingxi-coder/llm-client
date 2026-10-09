@@ -521,6 +521,7 @@ impl<'a> XaiAudioService<'a> {
         let body =
             create_multipart_stream(prefix, request.audio.body, request.audio.size_bytes, suffix);
         let http = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: pinned_service.route_url("custom-voices")?,
             headers: vec![
@@ -616,6 +617,7 @@ impl<'a> XaiAudioService<'a> {
             .map_err(|_| invalid("custom voice PATCH body could not be serialized"))?;
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "PATCH".into(),
             url: pinned_service.voice_url(reference, None)?,
             headers: vec![
@@ -655,6 +657,7 @@ impl<'a> XaiAudioService<'a> {
         validate_credential(&credentials.api_key)?;
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "DELETE".into(),
             url: pinned_service.voice_url(reference, None)?,
             headers: vec![(
@@ -690,6 +693,7 @@ impl<'a> XaiAudioService<'a> {
         let url = pinned_service.voice_url(reference, Some("audio"))?;
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: "GET".into(),
             url,
             headers: vec![(
@@ -745,6 +749,7 @@ impl<'a> XaiAudioService<'a> {
     ) -> Result<StreamResponse, XaiAudioError> {
         let deadline = Deadline::after(Some(self.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url,
             headers: vec![(

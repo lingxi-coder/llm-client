@@ -24,6 +24,7 @@ fn query() -> AccountQuery {
 }
 fn req() -> HttpRequest {
     HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url: "https://example.test".into(),
         body: Bytes::new(),

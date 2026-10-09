@@ -201,6 +201,7 @@ mod tests {
     }
     fn request(body: &[u8]) -> HttpRequest {
         HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: "https://example.com/model/m/invoke".into(),
             headers: vec![],
@@ -441,6 +442,7 @@ mod copilot_contract_tests {
     #[test]
     fn injects_copilot_headers_and_strips_x_api_key() {
         let mut request = crate::HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: "https://api.githubcopilot.com/chat/completions".into(),
             headers: vec![("x-api-key".into(), "leftover".into())],

@@ -519,6 +519,7 @@ impl<'a> MiniMaxAudioService<'a> {
         let timeout = options.total_timeout.unwrap_or(DEFAULT_TIMEOUT);
         let deadline = Deadline::after(Some(timeout));
         let mut auth_request = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: self.endpoint.clone(),
             headers: {
@@ -576,6 +577,7 @@ impl<'a> MiniMaxAudioService<'a> {
             ));
         }
         let http = HttpStreamRequest {
+            http1_header_layout: None,
             method: auth_request.method,
             url: auth_request.url,
             headers: auth_request.headers,

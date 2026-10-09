@@ -15,6 +15,9 @@
 //! [`protocol`]. See [`api`] for the detailed API guide.
 #![forbid(unsafe_code)]
 
+/// Version of the `lingxi-llm-client` package compiled into this application.
+pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[doc = include_str!("../docs/api.md")]
 pub mod api {}
 
@@ -67,10 +70,10 @@ pub use client::{
     AttachmentResolver, BuildError, ChatService, ClientConfigManager, ClientSnapshot,
     CollectedResponse, DecisionError, DecisionService, FrozenPricing, LlmClient, LlmClientBuilder,
     LocalTokenCountError, LocalTokenEstimate, LocalTokenEstimateOmission, ModelStream,
-    NativeAnthropicContextInput, PreparedCall, ProviderStoreError, ProviderSyncOperation,
-    ProviderSyncResult, ReceivedCall, RequestDraft, RequestOptions, ResolveError, ResponsesSession,
-    RoutingCatalog, StreamBatch, StructuredStreamError, StructuredStreamResult, SubscriptionStatus,
-    MAX_ATTACHMENT_BYTES,
+    NativeAnthropicContextInput, NativeAnthropicEndpointAdmission, PreparedCall,
+    ProviderStoreError, ProviderSyncOperation, ProviderSyncResult, ReceivedCall, RequestDraft,
+    RequestOptions, ResolveError, ResponsesSession, RoutingCatalog, StreamBatch,
+    StructuredStreamError, StructuredStreamResult, SubscriptionStatus, MAX_ATTACHMENT_BYTES,
 };
 pub use codecs::anthropic::AnthropicMessagesCodec;
 pub use codecs::gemini::GeminiCodec;
@@ -100,8 +103,8 @@ pub use presets::{
     builtin as builtin_providers, builtin_catalog, merge as merge_providers, PresetError,
 };
 pub use transport::{
-    Clock, HttpExecutor, HttpRequest, HttpResponse, HttpStreamRequest, HttpTransport,
-    StreamResponse, SystemClock, Transport,
+    Clock, Http1HeaderLayout, HttpExecutor, HttpRequest, HttpResponse, HttpStreamRequest,
+    HttpTransport, StreamResponse, SystemClock, Transport,
 };
 
 pub mod embeddings;

@@ -590,6 +590,7 @@ impl<'a> GeminiContextCacheService<'a> {
         HttpExecutor::new(self.http)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: method.into(),
                     url: url.into(),
                     headers,

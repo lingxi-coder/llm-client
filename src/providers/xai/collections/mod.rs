@@ -760,6 +760,7 @@ impl<'a> XaiCollectionsClient<'a> {
             })
             .boxed();
         let request = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: url.into(),
             headers: vec![
@@ -1227,6 +1228,7 @@ impl<'a> XaiCollectionsClient<'a> {
         }
         let deadline = crate::runtime::Deadline::after(Some(self.config.request_timeout));
         let request = HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: url.into(),
             headers,

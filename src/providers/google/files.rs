@@ -204,6 +204,7 @@ impl FileService<'_> {
         // The resumable upload URL is a temporary bearer capability; Google's
         // documented second request does not send the API key again.
         let upload_req = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: upload_url.to_owned(),
             headers: vec![
@@ -642,6 +643,7 @@ impl FileService<'_> {
             .into());
         }
         let request = crate::transport::HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: upload_url.to_owned(),
             headers: vec![

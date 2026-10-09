@@ -563,6 +563,7 @@ impl<'a> XaiAudioService<'a> {
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let body = multipart_stream(prefix, input.body, input.size_bytes, suffix);
         let http = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: pinned_service.route_url("stt")?,
             headers: vec![
@@ -636,6 +637,7 @@ impl<'a> XaiAudioService<'a> {
             .map_err(|_| invalid("speech request could not be serialized"))?;
         let deadline = Deadline::after(Some(pinned_service.config.request_timeout));
         let http = HttpRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: pinned_service.route_url("tts")?,
             headers: vec![

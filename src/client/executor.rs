@@ -22,7 +22,7 @@ use std::{future::Future, time::Duration};
 
 use crate::providers::dispatch::{self, ChatBackend};
 
-fn request_authority(request_url: &str) -> Option<String> {
+pub(super) fn request_authority(request_url: &str) -> Option<String> {
     let url = url::Url::parse(request_url).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
         return None;
@@ -610,6 +610,10 @@ impl<'client> RequestExecutor<'client> {
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
             .with_native_anthropic_context(opts.native_anthropic_context)
+            .with_native_anthropic_endpoint_admission(
+                opts.native_anthropic_endpoint_admission.as_ref(),
+            )
+            .with_anthropic_request_kind(opts.anthropic_request_kind)
             .with_fast_capability(if profile.profile_name == route.profile_name {
                 opts.fast_capability
             } else {
@@ -702,6 +706,10 @@ impl<'client> RequestExecutor<'client> {
         );
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
             .with_native_anthropic_context(opts.native_anthropic_context)
+            .with_native_anthropic_endpoint_admission(
+                opts.native_anthropic_endpoint_admission.as_ref(),
+            )
+            .with_anthropic_request_kind(opts.anthropic_request_kind)
             .with_fast_capability(if profile.profile_name == route.profile_name {
                 opts.fast_capability
             } else {
@@ -1010,6 +1018,10 @@ impl<'client> RequestExecutor<'client> {
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
                 .with_native_anthropic_context(opts.native_anthropic_context)
+                .with_native_anthropic_endpoint_admission(
+                    opts.native_anthropic_endpoint_admission.as_ref(),
+                )
+                .with_anthropic_request_kind(opts.anthropic_request_kind)
                 .with_fast_capability(opts.fast_capability)
                 .with_account_scope(opts.account_scope.as_deref())
                 .with_file_scope(opts.file_account_scope.as_deref())

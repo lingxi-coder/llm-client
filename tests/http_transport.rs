@@ -103,6 +103,7 @@ fn rate_limit_failover_client(primary: &str, backup: &str) -> lingxi_llm_client:
 
 fn request(url: String) -> HttpRequest {
     HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url,
         headers: vec![("x-test".into(), "value".into())],
@@ -427,6 +428,7 @@ async fn configurator_cannot_enable_redirects_or_automatic_retries() {
             .await;
             let reply = if streaming {
                 http.send_stream(HttpStreamRequest {
+                    http1_header_layout: None,
                     method: "POST".into(),
                     url,
                     headers: vec![],
@@ -454,6 +456,7 @@ async fn streamed_upload_normalizes_matching_provider_content_length() {
         let reply = HttpTransport::new()
             .unwrap()
             .send_stream(HttpStreamRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url,
                 headers: vec![(name.into(), "7".into())],
@@ -491,6 +494,7 @@ async fn streamed_upload_rejects_ambiguous_framing_before_consuming_input() {
         let result = HttpTransport::new()
             .unwrap()
             .send_stream(HttpStreamRequest {
+                http1_header_layout: None,
                 method: "POST".into(),
                 url: "http://127.0.0.1:1/upload".into(),
                 headers,
@@ -732,6 +736,7 @@ async fn certificate_in_url_does_not_change_connection_or_timeout_category() {
         listener.local_addr().unwrap()
     );
     let request = || HttpRequest {
+        http1_header_layout: None,
         method: "POST".into(),
         url: url.clone(),
         headers: vec![],

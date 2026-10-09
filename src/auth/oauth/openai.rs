@@ -115,6 +115,7 @@ fn request(method: &str, url: String, content_type: Option<&str>, body: String) 
         headers.push(("content-type".into(), value.into()));
     }
     HttpRequest {
+        http1_header_layout: None,
         method: method.into(),
         url,
         headers,

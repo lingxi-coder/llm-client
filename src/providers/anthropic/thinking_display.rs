@@ -245,6 +245,39 @@ pub fn apply_request_updates(
     Ok(true)
 }
 
+/// Mark the Native headless generation body as explicitly omitting connector
+/// display updates, preserving every other source field and exact override.
+pub fn apply_omitted_display(
+    body: &mut JsonPayload,
+    string_overrides: &mut BTreeMap<String, Vec<u16>>,
+    extra_has_thinking: bool,
+) -> Result<bool, LlmError> {
+    if extra_has_thinking || super::request_policy::has_field_path(body, &["thinking", "display"]) {
+        return Ok(false);
+    }
+    let Some(thinking) = body.payload_at("/thinking") else {
+        return Ok(false);
+    };
+    if !matches!(
+        thinking.string_at("/type").as_deref(),
+        Some("adaptive" | "enabled")
+    ) {
+        return Ok(false);
+    }
+    let omitted = JsonPayload::string("omitted");
+    let thinking = super::beta_repair::update_source_object_fields(
+        &thinking,
+        &[("display", Some(omitted.as_json_source()))],
+    )?;
+    *body = super::beta_repair::update_source_object_fields(
+        body,
+        &[("thinking", Some(thinking.as_json_source()))],
+    )?;
+    string_overrides
+        .retain(|path, _| path != "/thinking/display" && !path.starts_with("/thinking/display/"));
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +388,40 @@ mod tests {
         assert_eq!(
             strings,
             BTreeMap::from([("/messages/0/content/0/text".into(), vec![0xD801])])
+        );
+    }
+
+    #[test]
+    fn omitted_display_preserves_unknown_source_fields_and_explicit_values() {
+        let mut body = JsonPayload::parse(
+            r#"{"prefix":"\ud800","thinking":{"type":"adaptive","extra":{"number":1e400}},"tail":true}"#,
+        )
+        .unwrap();
+        let mut overrides = BTreeMap::from([
+            ("/thinking/display".into(), vec![0xD800]),
+            ("/messages/0/content/0/text".into(), vec![0xD801]),
+        ]);
+        assert!(apply_omitted_display(&mut body, &mut overrides, false).unwrap());
+        assert_eq!(
+            body.as_json_source(),
+            r#"{"prefix":"\ud800","thinking":{"type":"adaptive","extra":{"number":1e400},"display":"omitted"},"tail":true}"#
+        );
+        assert!(!overrides.contains_key("/thinking/display"));
+        assert_eq!(
+            overrides.get("/messages/0/content/0/text"),
+            Some(&vec![0xD801])
+        );
+
+        let before = body.as_json_source().to_owned();
+        assert!(!apply_omitted_display(&mut body, &mut overrides, true).unwrap());
+        assert_eq!(body.as_json_source(), before);
+
+        let mut explicit =
+            JsonPayload::parse(r#"{"thinking":{"type":"adaptive","display":"updates"}}"#).unwrap();
+        assert!(!apply_omitted_display(&mut explicit, &mut overrides, false).unwrap());
+        assert_eq!(
+            explicit.as_json_source(),
+            r#"{"thinking":{"type":"adaptive","display":"updates"}}"#
         );
     }
     #[test]

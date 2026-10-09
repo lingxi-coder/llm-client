@@ -39,7 +39,7 @@ impl WireCodec for AnthropicMessagesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -54,16 +54,15 @@ impl WireCodec for AnthropicMessagesCodec {
         crate::providers::anthropic::mcp::validate(req, context)?;
         crate::providers::anthropic::web_fetch::validate(req, context)?;
         crate::providers::anthropic::code_execution::validate(req, context)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
-            .and_then(|()| {
-                crate::providers::openrouter::server_tools::validate(
-                    req,
-                    context.profile(),
-                    None,
-                    false,
-                )
-                .map(|_| ())
-            })
+        crate::codecs::inference::validate(req, context).and_then(|()| {
+            crate::providers::openrouter::server_tools::validate(
+                req,
+                context.profile(),
+                None,
+                false,
+            )
+            .map(|_| ())
+        })
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::AnthropicMessages

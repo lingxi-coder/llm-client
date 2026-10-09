@@ -2,9 +2,12 @@ use lingxi_llm_client::protocol::*;
 use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 #[path = "support/json_payload_fixture.rs"]
 mod json_payload_fixture;
+#[path = "support/mod.rs"]
+mod support;
 
 const MODEL: &str = "claude-opus-5-5";
 fn profile() -> ProviderProfile {
@@ -22,6 +25,17 @@ fn encode(
         EncodeRequest::new(r),
         &CodecContext::new(p, model, RequestMode::Complete),
     )?;
+    Ok((serde_json::from_slice(&wire.body).unwrap(), wire.headers))
+}
+fn encode_with_native_endpoint_admission(
+    r: &ChatRequest,
+    p: &ProviderProfile,
+    model: &str,
+    admission: &NativeAnthropicEndpointAdmission,
+) -> Result<(Value, Vec<(String, String)>), LlmError> {
+    let context = CodecContext::new(p, model, RequestMode::Complete)
+        .with_native_anthropic_endpoint_admission(Some(admission));
+    let wire = AnthropicMessagesCodec.encode_request(EncodeRequest::new(r), &context)?;
     Ok((serde_json::from_slice(&wire.body).unwrap(), wire.headers))
 }
 fn scoped() -> ConversationMessage {
@@ -92,6 +106,192 @@ fn never_is_preserved_and_can_carry_effort_and_text() {
         "mid-conversation-output-config-2026-07-01"
     ));
 }
+
+#[test]
+fn request_local_native_admission_is_bound_to_the_exact_first_party_profile() {
+    let custom_endpoint: ProviderProfile = serde_json::from_value(json!({
+        "provider_id":"anthropic",
+        "profile_name":"selected-native-loopback",
+        "base_url":"http://127.0.0.1:43123",
+        "protocol":"anthropic_messages",
+        "auth":"none",
+        "regions":["international"],
+        "models":[{"display_model":MODEL,"request_model":MODEL,"billing_model":MODEL}]
+    }))
+    .unwrap();
+    let mut request = req();
+    request.messages.push(effort(AnthropicMessageEffort::High));
+
+    // A protocol-compatible endpoint is not Native-admitted by itself.
+    assert!(encode(&request, &custom_endpoint, MODEL).is_err());
+
+    let admission = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+        &custom_endpoint.profile_name,
+        &custom_endpoint.base_url,
+    );
+    let (body, headers) =
+        encode_with_native_endpoint_admission(&request, &custom_endpoint, MODEL, &admission)
+            .unwrap();
+    assert_eq!(body["messages"][1]["output_config"]["effort"], "high");
+    let admitted_context = CodecContext::new(&custom_endpoint, MODEL, RequestMode::Complete)
+        .with_native_anthropic_endpoint_admission(Some(&admission));
+    assert_eq!(
+        AnthropicMessagesCodec
+            .request_inference(&request, &admitted_context)
+            .unwrap()
+            .requested_effort,
+        Some(ReasoningEffort::High)
+    );
+    let side_query_context = admitted_context.clone().with_anthropic_request_kind(
+        lingxi_llm_client::providers::anthropic::request_policy::AnthropicRequestKind::SideQuery,
+    );
+    assert_eq!(
+        AnthropicMessagesCodec
+            .request_inference(&request, &side_query_context)
+            .unwrap()
+            .requested_effort,
+        None
+    );
+    assert!(!has_beta(
+        &headers,
+        "mid-conversation-output-config-2026-07-01"
+    ));
+
+    let wrong_base = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+        &custom_endpoint.profile_name,
+        "http://127.0.0.1:43124",
+    );
+    assert!(
+        encode_with_native_endpoint_admission(&request, &custom_endpoint, MODEL, &wrong_base)
+            .is_err()
+    );
+
+    let wrong_provider: ProviderProfile = serde_json::from_value(json!({
+        "provider_id":"compatible-anthropic",
+        "profile_name":"selected-native-loopback",
+        "base_url":"http://127.0.0.1:43123",
+        "protocol":"anthropic_messages",
+        "auth":"none",
+        "regions":["international"],
+        "models":[{"display_model":MODEL,"request_model":MODEL,"billing_model":MODEL}]
+    }))
+    .unwrap();
+    assert!(
+        encode_with_native_endpoint_admission(&request, &wrong_provider, MODEL, &admission)
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn client_prepare_dispatch_preserves_admitted_per_message_effort_to_wire() {
+    let mut selected_profile = profile();
+    selected_profile.profile_name = "selected-native-loopback".into();
+    selected_profile.base_url = "http://127.0.0.1:43123".into();
+    let client = LlmClientBuilder::with_transport(
+        Arc::new(support::NoHttp),
+        std::slice::from_ref(&selected_profile),
+    )
+    .with_region(Region::International)
+    .build()
+    .unwrap();
+    let admission = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+        &selected_profile.profile_name,
+        &selected_profile.base_url,
+    );
+    let options = RequestOptions {
+        native_anthropic_endpoint_admission: Some(admission),
+        ..RequestOptions::default()
+    };
+    let mut request = req();
+    request.messages.push(effort(AnthropicMessageEffort::High));
+
+    let draft = client
+        .prepare_draft_on(
+            &selected_profile.profile_name,
+            &request,
+            &options,
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    let body = draft.semantic_body_source().unwrap();
+    assert_eq!(
+        body.string_at("/messages/1/output_config/effort")
+            .as_deref(),
+        Some("high")
+    );
+    assert_eq!(body.array_len("/tools"), Some(0));
+    assert!(!draft.request().headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("anthropic-beta")
+            && value
+                .split(',')
+                .any(|beta| beta == "mid-conversation-output-config-2026-07-01")
+    }));
+}
+
+#[test]
+fn native_main_wire_keeps_empty_tools_and_tool_result_shape() {
+    let selected_profile = profile();
+    let admission = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+        &selected_profile.profile_name,
+        &selected_profile.base_url,
+    );
+    let result = |is_error| ContentBlock::ToolResult {
+        tool_use_id: ToolUseId::new("toolu_native"),
+        content: JsonPayload::string("ok"),
+        is_error,
+        blocks: None,
+        toolset_name: None,
+    };
+    let mut request = req();
+    request.messages[0].content = vec![result(None)];
+
+    let native = CodecContext::new(&selected_profile, MODEL, RequestMode::Complete)
+        .with_native_anthropic_endpoint_admission(Some(&admission));
+    let native_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &native)
+        .unwrap();
+    let native_body = String::from_utf8(native_wire.body.to_vec()).unwrap();
+    assert!(native_body.contains("\"tools\":[]"));
+    assert!(native_body
+        .contains("\"tool_use_id\":\"toolu_native\",\"type\":\"tool_result\",\"content\":\"ok\""));
+    assert!(!native_body.contains("\"is_error\":false"));
+
+    let compatible = CodecContext::new(&selected_profile, MODEL, RequestMode::Complete);
+    let compatible_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &compatible)
+        .unwrap();
+    let compatible_body = String::from_utf8(compatible_wire.body.to_vec()).unwrap();
+    assert!(compatible_body
+        .contains("\"type\":\"tool_result\",\"tool_use_id\":\"toolu_native\",\"content\":\"ok\""));
+    assert!(!compatible_body.contains("\"is_error\":false"));
+    assert!(!compatible_body.contains("\"tools\":[]"));
+
+    let mut bash_request = req();
+    bash_request.messages[0].content = vec![result(Some(false))];
+    let bash_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&bash_request), &native)
+        .unwrap();
+    let bash_body = String::from_utf8(bash_wire.body.to_vec()).unwrap();
+    assert!(bash_body.contains(
+        "\"tool_use_id\":\"toolu_native\",\"type\":\"tool_result\",\"content\":\"ok\",\"is_error\":false"
+    ));
+
+    let side_query = CodecContext::new(&selected_profile, MODEL, RequestMode::Complete)
+        .with_native_anthropic_endpoint_admission(Some(&admission))
+        .with_anthropic_request_kind(
+            lingxi_llm_client::providers::anthropic::request_policy::AnthropicRequestKind::SideQuery,
+        );
+    let side_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&bash_request), &side_query)
+        .unwrap();
+    let side_body = String::from_utf8(side_wire.body.to_vec()).unwrap();
+    assert!(!side_body.contains("\"tools\":[]"));
+    assert!(side_body.contains(
+        "\"type\":\"tool_result\",\"tool_use_id\":\"toolu_native\",\"content\":\"ok\",\"is_error\":false"
+    ));
+}
+
 #[test]
 fn scoped_messages_reject_cache_effort_tool_changes_and_wrong_roles() {
     let mut r = req();

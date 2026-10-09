@@ -59,6 +59,7 @@ pub(crate) async fn list_models(
     }
     let deadline = Deadline::after(Some(Duration::from_secs(120)));
     let request = HttpRequest {
+        http1_header_layout: None,
         method: "GET".into(),
         url: "https://api.openai.com/v1/models".into(),
         headers: vec![

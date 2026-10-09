@@ -34,7 +34,7 @@ impl WireCodec for AzureOpenAiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -42,7 +42,7 @@ impl WireCodec for AzureOpenAiCodec {
         context: &CodecContext,
     ) -> Result<(), LlmError> {
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(req, context)?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
             req,
             context.profile(),
@@ -109,7 +109,7 @@ impl WireCodec for FoundryClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -162,7 +162,7 @@ impl WireCodec for VertexClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -228,7 +228,7 @@ impl WireCodec for VertexGeminiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -237,7 +237,7 @@ impl WireCodec for VertexGeminiCodec {
     ) -> Result<(), LlmError> {
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         gemini::encode::validate_audio_input(req)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(req, context)?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
             req,
             context.profile(),
@@ -316,7 +316,7 @@ impl WireCodec for BedrockClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<crate::protocol::InferenceReport, LlmError> {
-        crate::codecs::inference::requested(req, context.profile())
+        crate::codecs::inference::requested(req, context)
     }
     fn validate_request(
         &self,
@@ -324,7 +324,7 @@ impl WireCodec for BedrockClaudeCodec {
         context: &CodecContext,
     ) -> Result<(), LlmError> {
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::inference::validate(req, context)
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::BedrockClaude

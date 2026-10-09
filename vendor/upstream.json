@@ -1,0 +1,71 @@
+{
+  "description": "Upstream crate archive provenance for transitive, renamed HTTP/1 header-layout forks.",
+  "packages": [
+    {
+      "name": "reqwest",
+      "version": "0.12.28",
+      "vendored_package": "lingxi-reqwest",
+      "crate_sha256": "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147",
+      "upstream_vcs": {
+        "git": {
+          "sha1": "ef2768a823b28bf00e23e218e034be035b08d770",
+          "dirty": true
+        },
+        "path_in_vcs": ""
+      },
+      "license_files": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ]
+    },
+    {
+      "name": "hyper",
+      "version": "1.9.0",
+      "vendored_package": "lingxi-hyper",
+      "crate_sha256": "6299f016b246a94207e63da54dbe807655bf9e00044f73ded42c3ac5305fbcca",
+      "upstream_vcs": {
+        "git": {
+          "sha1": "0d6c7d5469baa09e2fb127ee3758a79b3271a4f0"
+        },
+        "path_in_vcs": ""
+      },
+      "license_files": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "hyper-util",
+      "version": "0.1.20",
+      "vendored_package": "lingxi-hyper-util",
+      "crate_sha256": "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0",
+      "upstream_vcs": {
+        "git": {
+          "sha1": "b23a13e2b7ee73e15ba008cd9b19dcd2d3861957"
+        },
+        "path_in_vcs": ""
+      },
+      "license_files": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "hyper-rustls",
+      "version": "0.27.5",
+      "vendored_package": "lingxi-hyper-rustls",
+      "crate_sha256": "2d191583f3da1305256f22463b9bb0471acad48a4e534a5218b9963e9c1f59b2",
+      "upstream_vcs": {
+        "git": {
+          "sha1": "426c0a7091b8ca4a938440fdb527c5a37e53a5ab"
+        },
+        "path_in_vcs": ""
+      },
+      "license_files": [
+        "LICENSE",
+        "LICENSE-APACHE",
+        "LICENSE-ISC",
+        "LICENSE-MIT"
+      ]
+    }
+  ],
+  "patch_sha256": "e08d92a12eb5e3d317aaaf5a6a26b48ed4e630920a49283f77167315349e5654"
+}

@@ -395,6 +395,7 @@ impl<'a> QwenRerankService<'a> {
         let response = HttpExecutor::new(pinned_service.transport)
             .execute_bounded(
                 HttpRequest {
+                    http1_header_layout: None,
                     method: "POST".into(),
                     url: pinned_service.scope.endpoint(),
                     headers: vec![

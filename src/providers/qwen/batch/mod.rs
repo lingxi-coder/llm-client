@@ -817,6 +817,7 @@ impl<'a> QwenBatchService<'a> {
         }
         chunks.push(Bytes::from(suffix));
         let request = HttpStreamRequest {
+            http1_header_layout: None,
             method: "POST".into(),
             url: format!("{}/files", pinned_service.scope.region.base_url()),
             headers: vec![
@@ -1143,6 +1144,7 @@ impl<'a> QwenBatchService<'a> {
             headers.push(("Content-Type".into(), "application/json".into()));
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: format!("{}{path}", self.scope.region.base_url()),
             headers,

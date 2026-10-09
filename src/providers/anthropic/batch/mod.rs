@@ -913,6 +913,7 @@ impl<'a> AnthropicBatchService<'a> {
             headers.push(("Content-Type".into(), "application/json".into()));
         }
         Ok(HttpRequest {
+            http1_header_layout: None,
             method: method.into(),
             url: format!("{}{path}", self.scope.api_base_url.trim_end_matches('/')),
             headers,

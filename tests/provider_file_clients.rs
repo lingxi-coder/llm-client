@@ -55,6 +55,7 @@ impl Transport for RecordingTransport {
         }
         assert_eq!(body.len() as u64, request.content_length);
         self.send(HttpRequest {
+            http1_header_layout: None,
             method: request.method,
             url: request.url,
             headers: request.headers,

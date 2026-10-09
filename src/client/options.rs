@@ -14,6 +14,10 @@ pub struct RequestOptions {
     /// Host-supplied Native Anthropic request kind, used only by SDK request
     /// serialization policies that are specific to an exact request route.
     pub anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
+    /// Host-admitted exact Native Anthropic endpoint for this request. This
+    /// permits only request-local first-party Messages features on the exact
+    /// selected profile; it is not inferred from a compatible wire protocol.
+    pub native_anthropic_endpoint_admission: Option<NativeAnthropicEndpointAdmission>,
     /// Trusted Native Anthropic context observations for this request.
     pub native_anthropic_context: NativeAnthropicContextInput,
     /// Typed, request-local Native model.complete gate. This is execution
@@ -68,6 +72,39 @@ pub struct RequestOptions {
     /// OpenAI/xAI `server_label` or Anthropic server `name`. Never serialized
     /// into ChatRequest/history.
     pub mcp_authorizations: BTreeMap<String, Secret<String>>,
+}
+
+/// Request-local admission for Native Anthropic Messages behavior on an
+/// explicitly selected first-party endpoint. The SDK still binds the token to
+/// the exact profile name, provider identity, protocol, and base URL before
+/// using it. Hosts must construct it only after their route policy has admitted
+/// that endpoint for the current request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeAnthropicEndpointAdmission {
+    profile_name: String,
+    base_url: String,
+}
+
+impl NativeAnthropicEndpointAdmission {
+    /// Bind an admission to the exact selected first-party Messages profile.
+    /// Host route policy remains responsible for establishing that selection.
+    #[must_use]
+    pub fn selected_first_party_messages_endpoint(
+        profile_name: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        Self {
+            profile_name: profile_name.into(),
+            base_url: base_url.into(),
+        }
+    }
+
+    pub(crate) fn matches_profile(&self, profile: &crate::protocol::ProviderProfile) -> bool {
+        profile.provider_id.as_str() == "anthropic"
+            && profile.protocol == crate::protocol::ProtocolFamily::AnthropicMessages
+            && profile.profile_name == self.profile_name
+            && profile.base_url == self.base_url
+    }
 }
 
 /// Current Native Anthropic context facts available to the SDK. `None` means
