@@ -41,6 +41,7 @@ impl WireCodec for OpenAiResponsesCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::validate_tool_wire_shapes(req)?;
         if context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan {
             crate::auth::chatgpt_plan::validate_chat_request(req)?;
         }

@@ -1,11 +1,9 @@
 use crate::codecs::{CodecContext, EventDecoder};
 use crate::protocol::*;
-use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 struct Step {
     arguments_decoder: crate::response_json::ArgumentJsonDecoder,
-    value: Value,
     source: JsonPayload,
     arguments: Vec<u16>,
     stopped: bool,
@@ -34,10 +32,12 @@ fn replace_root_fields(
         let value = if let Some(replacement) = updates.remove(entry.key_units) {
             replacement
         } else {
-            crate::exact_json::serialize_json_node(
-                entry.value,
-                crate::exact_json::JsonEncoding::Serde,
-            )?
+            scanner
+                .raw_source_for_node(entry.value)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Interactions source field has no raw JSON span".into(),
+                })?
+                .to_owned()
         };
         fields.push((entry.key_units.to_vec(), value));
     }
@@ -61,6 +61,15 @@ fn set_root_field(
     )
 }
 
+/// Assemble provider subtrees without applying outbound codec number semantics.
+fn source_array(items: &[JsonPayload]) -> Result<JsonPayload, LlmError> {
+    let invalid = |error: serde_json::Error| LlmError::InvalidRequest {
+        message: format!("Interactions source array is invalid: {error}"),
+    };
+    let source = serde_json::to_string(items).map_err(invalid)?;
+    JsonPayload::parse(&source).map_err(invalid)
+}
+
 fn append_content_part(step: &mut Step, part: JsonPayload) -> Result<(), LlmError> {
     let content =
         step.source
@@ -74,7 +83,7 @@ fn append_content_part(step: &mut Step, part: JsonPayload) -> Result<(), LlmErro
             message: "Interactions model content is not an array".into(),
         })?;
     parts.push(part);
-    let content = JsonPayload::array_from_items(&parts, crate::exact_json::JsonEncoding::Serde)?;
+    let content = source_array(&parts)?;
     step.source = set_root_field(&step.source, "content", &content)?;
     Ok(())
 }
@@ -93,15 +102,56 @@ fn merge_delta_fields(step: &mut Step, delta: &JsonPayload) -> Result<(), LlmErr
         if entry.key_units == "type".encode_utf16().collect::<Vec<_>>() {
             continue;
         }
-        let raw = crate::exact_json::serialize_json_node(
-            entry.value,
-            crate::exact_json::JsonEncoding::Serde,
-        )?;
+        let raw = scanner
+            .raw_source_for_node(entry.value)
+            .ok_or_else(|| LlmError::StreamInterrupted {
+                message: "Interactions delta field has no raw JSON span".into(),
+            })?
+            .to_owned();
         updates.push((entry.key_units.to_vec(), raw));
     }
     step.source = replace_root_fields(&step.source, updates)?;
     Ok(())
 }
+
+fn decoded_string(source: &JsonPayload, pointer: &str) -> Option<String> {
+    String::from_utf16(&source.string_units_at(pointer)?).ok()
+}
+
+fn string_is(source: &JsonPayload, pointer: &str, expected: &str) -> bool {
+    let expected_units = expected.encode_utf16().collect::<Vec<_>>();
+    source.string_units_at(pointer).as_deref() == Some(expected_units.as_slice())
+}
+
+fn append_text_delta(step: &mut Step, delta: &JsonPayload) -> Result<(), LlmError> {
+    let text_units = delta.string_units_at("/text").ok_or_else(|| {
+        InteractionsDecoder::interrupted("Interactions text delta must contain text")
+    })?;
+    let content = step
+        .source
+        .payload_at("/content")
+        .and_then(|content| content.array_items())
+        .ok_or_else(|| {
+            InteractionsDecoder::interrupted("Interactions model content is not an array")
+        })?;
+
+    let mut content = content;
+    if let Some(last) = content
+        .last_mut()
+        .filter(|part| string_is(part, "/type", "text"))
+    {
+        let mut units = last.string_units_at("/text").unwrap_or_default();
+        units.extend(text_units);
+        let text = JsonPayload::string_from_utf16_code_units(&units);
+        *last = set_root_field(last, "text", &text)?;
+        let content = source_array(&content)?;
+        step.source = set_root_field(&step.source, "content", &content)?;
+    } else {
+        append_content_part(step, delta.clone())?;
+    }
+    Ok(())
+}
+
 pub(super) struct InteractionsDecoder {
     context: CodecContext,
     steps: BTreeMap<usize, Step>,
@@ -111,6 +161,7 @@ pub(super) struct InteractionsDecoder {
     usage: UsageReport,
     buffered: usize,
 }
+
 impl InteractionsDecoder {
     pub(super) fn new(context: &CodecContext) -> Self {
         Self {
@@ -123,18 +174,21 @@ impl InteractionsDecoder {
             buffered: 0,
         }
     }
+
     fn interrupted(message: impl Into<String>) -> LlmError {
         LlmError::StreamInterrupted {
             message: message.into(),
         }
     }
-    fn index(event: &Value) -> Result<usize, LlmError> {
-        event["index"]
-            .as_u64()
+
+    fn index(event: &JsonPayload) -> Result<usize, LlmError> {
+        event
+            .unsigned_integer_at("/index")
             .and_then(|n| usize::try_from(n).ok())
             .ok_or_else(|| Self::interrupted("Interactions step event has no valid index"))
     }
 }
+
 impl EventDecoder for InteractionsDecoder {
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         if self.ended {
@@ -145,39 +199,40 @@ impl EventDecoder for InteractionsDecoder {
                 "Interactions stream ended without interaction.completed",
             ));
         }
-        let event: Value = serde_json::from_slice(frame).map_err(|error| {
-            Self::interrupted(format!("invalid Interactions stream JSON: {error}"))
-        })?;
         let event_text = std::str::from_utf8(frame).map_err(|error| {
             Self::interrupted(format!("invalid Interactions stream UTF-8: {error}"))
         })?;
-        let event_source = JsonPayload::parse(event_text).map_err(|error| {
+        let event = JsonPayload::parse(event_text).map_err(|error| {
             Self::interrupted(format!("invalid Interactions stream JSON: {error}"))
         })?;
-        let kind = event["event_type"]
-            .as_str()
+        if !event.is_root_object() {
+            return Err(Self::interrupted("Interactions event must be an object"));
+        }
+        let kind = decoded_string(&event, "/event_type")
             .ok_or_else(|| Self::interrupted("Interactions event is missing event_type"))?;
         self.buffered = self.buffered.saturating_add(frame.len());
         if self.buffered > 16 * 1024 * 1024 {
             return Err(Self::interrupted("Interactions response exceeds 16 MiB"));
         }
-        match kind {
+
+        match kind.as_str() {
             "interaction.created" => {
                 if self.started {
                     return Err(Self::interrupted("duplicate Interactions start"));
                 }
-                let id = event["interaction"]["id"]
-                    .as_str()
+                let interaction = event
+                    .payload_at("/interaction")
+                    .ok_or_else(|| Self::interrupted("Interactions start has no interaction"))?;
+                let id = decoded_string(&interaction, "/id")
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| Self::interrupted("Interactions start has no id"))?;
-                self.id = Some(id.into());
+                let model = decoded_string(&interaction, "/model")
+                    .unwrap_or_else(|| self.context.request_model().to_owned());
+                self.id = Some(id.clone());
                 self.started = true;
                 Ok(vec![StreamEvent::Start {
-                    model: event["interaction"]["model"]
-                        .as_str()
-                        .unwrap_or(self.context.request_model())
-                        .into(),
-                    response_id: Some(id.into()),
+                    model,
+                    response_id: Some(ResponseId(id)),
                 }])
             }
             "step.start" => {
@@ -185,17 +240,17 @@ impl EventDecoder for InteractionsDecoder {
                     return Err(Self::interrupted("Interactions step before start"));
                 }
                 let index = Self::index(&event)?;
-                if self.steps.contains_key(&index) || !event["step"].is_object() {
+                let mut source = event.payload_at("/step").ok_or_else(|| {
+                    Self::interrupted("Interactions step start has no source step")
+                })?;
+                if !source.is_root_object() || self.steps.contains_key(&index) {
                     return Err(Self::interrupted(
                         "duplicate or malformed Interactions step start",
                     ));
                 }
-                let mut value = event["step"].clone();
-                let mut source = event_source.payload_at("/step").ok_or_else(|| {
-                    Self::interrupted("Interactions step start has no source step")
-                })?;
-                if value["type"] == "model_output" && value.get("content").is_none() {
-                    value["content"] = json!([]);
+                if string_is(&source, "/type", "model_output")
+                    && source.payload_at("/content").is_none()
+                {
                     let defaults = JsonPayload::parse(r#"{"content":[]}"#)
                         .expect("content default is valid JSON");
                     source = source.with_missing_object_fields(
@@ -207,7 +262,6 @@ impl EventDecoder for InteractionsDecoder {
                     index,
                     Step {
                         arguments_decoder: Default::default(),
-                        value,
                         source,
                         arguments: Vec::new(),
                         stopped: false,
@@ -216,24 +270,29 @@ impl EventDecoder for InteractionsDecoder {
                 Ok(vec![])
             }
             "step.delta" => {
+                let index = Self::index(&event)?;
                 let step = self
                     .steps
-                    .get_mut(&Self::index(&event)?)
+                    .get_mut(&index)
                     .filter(|step| !step.stopped)
                     .ok_or_else(|| Self::interrupted("Interactions delta has no open step"))?;
-                let delta = &event["delta"];
-                let delta_source = event_source
+                let delta = event
                     .payload_at("/delta")
                     .ok_or_else(|| Self::interrupted("Interactions delta has no source object"))?;
-                match delta["type"].as_str() {
-                    Some("arguments_delta") if step.value["type"] == "function_call" => {
-                        let units =
-                            delta_source.string_units_at("/arguments").ok_or_else(|| {
-                                Self::interrupted("Interactions argument delta must be a string")
-                            })?;
-                        let display = delta_source
-                            .string_at("/arguments")
-                            .unwrap_or_else(|| String::from_utf16_lossy(&units));
+                if !delta.is_root_object() {
+                    return Err(Self::interrupted(
+                        "Interactions step delta must be an object",
+                    ));
+                }
+                let delta_type = decoded_string(&delta, "/type");
+                let step_is_call = string_is(&step.source, "/type", "function_call");
+                let step_is_output = string_is(&step.source, "/type", "model_output");
+                match delta_type.as_deref() {
+                    Some("arguments_delta") if step_is_call => {
+                        let units = delta.string_units_at("/arguments").ok_or_else(|| {
+                            Self::interrupted("Interactions argument delta must be a string")
+                        })?;
+                        let display = String::from_utf16_lossy(&units);
                         let fragment =
                             step.arguments_decoder
                                 .push(crate::response_json::DecodedText {
@@ -243,104 +302,31 @@ impl EventDecoder for InteractionsDecoder {
                         step.arguments
                             .extend(fragment.utf16_code_units().iter().copied());
                     }
-                    Some("text") if step.value["type"] == "model_output" => {
-                        let text_units =
-                            delta_source.string_units_at("/text").ok_or_else(|| {
-                                Self::interrupted("Interactions text delta must contain text")
-                            })?;
-                        let text = delta_source.string_at("/text").ok_or_else(|| {
-                            Self::interrupted("Interactions text delta must contain text")
-                        })?;
-                        let extend_text = step.value["content"]
-                            .as_array()
-                            .and_then(|parts| parts.last())
-                            .is_some_and(|part| part["type"] == "text");
-                        if extend_text {
-                            let last = step.value["content"]
-                                .as_array_mut()
-                                .and_then(|parts| parts.last_mut())
-                                .expect("text content was checked above");
-                            let current = last["text"].as_str().unwrap_or("").to_owned();
-                            last["text"] = json!(current + &text);
-                            let mut source_parts = step
-                                .source
-                                .payload_at("/content")
-                                .and_then(|content| content.array_items())
-                                .ok_or_else(|| {
-                                    Self::interrupted("Interactions model content is not an array")
-                                })?;
-                            let source_last = source_parts.last().cloned().ok_or_else(|| {
-                                Self::interrupted("Interactions model content is empty")
-                            })?;
-                            let mut units =
-                                source_last.string_units_at("/text").unwrap_or_default();
-                            units.extend(text_units);
-                            let exact_text = JsonPayload::string_from_utf16_code_units(&units);
-                            *source_parts.last_mut().expect("source item exists") =
-                                set_root_field(&source_last, "text", &exact_text)?;
-                            let content = JsonPayload::array_from_items(
-                                &source_parts,
-                                crate::exact_json::JsonEncoding::Serde,
-                            )?;
-                            step.source = set_root_field(&step.source, "content", &content)?;
-                        } else {
-                            step.value["content"]
-                                .as_array_mut()
-                                .ok_or_else(|| {
-                                    Self::interrupted("Interactions model content is not an array")
-                                })?
-                                .push(delta.clone());
-                            append_content_part(step, delta_source)?;
-                        }
-                    }
+                    Some("text") if step_is_output => append_text_delta(step, &delta)?,
                     Some("thought_signature") => {
-                        step.value["signature"] = delta["signature"].clone();
-                        if let Some(signature) = delta_source.payload_at("/signature") {
+                        if let Some(signature) = delta.payload_at("/signature") {
                             step.source = set_root_field(&step.source, "signature", &signature)?;
                         }
                     }
                     Some("thought_summary") => {
-                        let list = step
-                            .value
-                            .as_object_mut()
-                            .ok_or_else(|| Self::interrupted("malformed Interactions thought"))?
-                            .entry("summary")
-                            .or_insert_with(|| json!([]))
-                            .as_array_mut()
-                            .ok_or_else(|| {
+                        let content = delta.payload_at("/content").ok_or_else(|| {
+                            Self::interrupted("Interactions thought summary has no content")
+                        })?;
+                        let mut summary = match step.source.payload_at("/summary") {
+                            Some(summary) => summary.array_items().ok_or_else(|| {
                                 Self::interrupted("malformed Interactions thought summary")
-                            })?;
-                        list.push(delta["content"].clone());
-                        let mut summary = step
-                            .source
-                            .payload_at("/summary")
-                            .and_then(|summary| summary.array_items())
-                            .unwrap_or_default();
-                        if let Some(content) = delta_source.payload_at("/content") {
-                            summary.push(content);
-                            let summary = JsonPayload::array_from_items(
-                                &summary,
-                                crate::exact_json::JsonEncoding::Serde,
-                            )?;
-                            step.source = set_root_field(&step.source, "summary", &summary)?;
-                        }
+                            })?,
+                            None => Vec::new(),
+                        };
+                        summary.push(content);
+                        let summary = source_array(&summary)?;
+                        step.source = set_root_field(&step.source, "summary", &summary)?;
                     }
-                    Some("image" | "audio") if step.value["type"] == "model_output" => {
-                        step.value["content"]
-                            .as_array_mut()
-                            .ok_or_else(|| {
-                                Self::interrupted("malformed Interactions multimodal content")
-                            })?
-                            .push(delta.clone());
-                        append_content_part(step, delta_source)?;
+                    Some("image" | "audio") if step_is_output => {
+                        append_content_part(step, delta)?;
                     }
                     _ => {
-                        if !delta.is_object() {
-                            return Err(Self::interrupted(
-                                "Interactions step delta must be an object",
-                            ));
-                        }
-                        if step.value["type"] == "function_call" {
+                        if step_is_call {
                             for key in ["id", "name"] {
                                 let pointer = format!("/{key}");
                                 if step
@@ -348,7 +334,7 @@ impl EventDecoder for InteractionsDecoder {
                                     .string_units_at(&pointer)
                                     .is_some_and(|units| !units.is_empty())
                                 {
-                                    if let Some(delta_value) = delta_source.payload_at(&pointer) {
+                                    if let Some(delta_value) = delta.payload_at(&pointer) {
                                         let current = step
                                             .source
                                             .payload_at(&pointer)
@@ -361,35 +347,30 @@ impl EventDecoder for InteractionsDecoder {
                                     }
                                 }
                             }
-                            if let Some(arguments) = delta_source.payload_at("/arguments") {
+                            if let Some(arguments) = delta.payload_at("/arguments") {
                                 if arguments.is_root_string() {
                                     return Err(Self::interrupted(
                                         "Interactions argument snapshot must be a JSON value",
                                     ));
                                 }
-                                // An argument snapshot supersedes any fragments received
-                                // before it. Later fragments start a fresh JSON value.
+                                // A complete snapshot supersedes fragments received before it.
                                 step.arguments.clear();
                                 step.arguments_decoder = Default::default();
                             }
                         }
-                        for (key, value) in delta.as_object().unwrap() {
-                            if key != "type" {
-                                step.value[key] = value.clone();
-                            }
-                        }
-                        merge_delta_fields(step, &delta_source)?;
+                        merge_delta_fields(step, &delta)?;
                     }
                 }
                 Ok(vec![])
             }
             "step.stop" => {
+                let index = Self::index(&event)?;
                 let step = self
                     .steps
-                    .get_mut(&Self::index(&event)?)
+                    .get_mut(&index)
                     .filter(|step| !step.stopped)
                     .ok_or_else(|| Self::interrupted("Interactions stop has no open step"))?;
-                if step.value["type"] == "function_call" && !step.arguments.is_empty() {
+                if string_is(&step.source, "/type", "function_call") && !step.arguments.is_empty() {
                     let fragment = JsonPayloadFragment::from_utf16_code_units(std::mem::take(
                         &mut step.arguments,
                     ));
@@ -399,8 +380,6 @@ impl EventDecoder for InteractionsDecoder {
                         ))
                     })?;
                     step.source = set_root_field(&step.source, "arguments", &arguments)?;
-                    step.value["arguments"] =
-                        serde_json::from_str(arguments.as_json_source()).unwrap_or(Value::Null);
                 }
                 step.stopped = true;
                 Ok(vec![])
@@ -411,43 +390,41 @@ impl EventDecoder for InteractionsDecoder {
                         "Interactions completion before all steps stopped",
                     ));
                 }
-                let mut body = event["interaction"].clone();
-                let mut body_source = event_source.payload_at("/interaction").ok_or_else(|| {
+                let mut body_source = event.payload_at("/interaction").ok_or_else(|| {
                     Self::interrupted("Interactions terminal event has no source interaction")
                 })?;
+                if !body_source.is_root_object() {
+                    return Err(Self::interrupted(
+                        "Interactions terminal interaction is malformed",
+                    ));
+                }
                 self.usage =
                     super::decode::usage_report_source(body_source.payload_at("/usage").as_ref());
-                if body["id"].as_str() != self.id.as_deref() {
+                if decoded_string(&body_source, "/id").as_deref() != self.id.as_deref() {
                     return Err(Self::interrupted(
                         "Interactions terminal id differs from start",
                     ));
                 }
-                let streamed_values: Vec<_> =
-                    self.steps.values().map(|step| step.value.clone()).collect();
                 let streamed_sources: Vec<_> = self
                     .steps
                     .values()
                     .map(|step| step.source.clone())
                     .collect();
-                if let Some(terminal) = body.get("steps") {
-                    terminal.as_array().ok_or_else(|| {
+                if let Some(terminal_steps) = body_source.payload_at("/steps") {
+                    let terminal_len = terminal_steps.array_len("").ok_or_else(|| {
                         Self::interrupted("Interactions terminal steps must be an array")
                     })?;
-                    let terminal_len = body_source.array_len("/steps").ok_or_else(|| {
-                        Self::interrupted("Interactions terminal steps must be an array")
-                    })?;
-                    if terminal_len != streamed_values.len() {
+                    if terminal_len != streamed_sources.len() {
                         return Err(Self::interrupted(
                             "Interactions terminal calls differ from completed streamed steps",
                         ));
                     }
                     let mut confirmed_ids = std::collections::BTreeSet::new();
                     for index in 0..terminal_len {
-                        let final_step =
-                            body_source.array_item_at("/steps", index).ok_or_else(|| {
-                                Self::interrupted("Interactions terminal step source is missing")
-                            })?;
-                        if !final_step.string_is("/type", "function_call") {
+                        let final_step = terminal_steps.array_item(index).ok_or_else(|| {
+                            Self::interrupted("Interactions terminal step source is missing")
+                        })?;
+                        if !string_is(&final_step, "/type", "function_call") {
                             if final_step.string_units_at("/type")
                                 != streamed_sources[index].string_units_at("/type")
                             {
@@ -466,7 +443,7 @@ impl EventDecoder for InteractionsDecoder {
                             ));
                         }
                         let mut candidates = self.steps.values().filter(|step| {
-                            step.source.string_is("/type", "function_call")
+                            string_is(&step.source, "/type", "function_call")
                                 && step.source.string_units_at("/id").as_ref() == Some(&id)
                         });
                         let streamed_step = candidates.next().ok_or_else(|| {
@@ -499,7 +476,7 @@ impl EventDecoder for InteractionsDecoder {
                     if confirmed_ids.len()
                         != streamed_sources
                             .iter()
-                            .filter(|step| step.string_is("/type", "function_call"))
+                            .filter(|step| string_is(step, "/type", "function_call"))
                             .count()
                     {
                         return Err(Self::interrupted(
@@ -507,13 +484,10 @@ impl EventDecoder for InteractionsDecoder {
                         ));
                     }
                 } else {
-                    body["steps"] = Value::Array(streamed_values);
-                    let steps = JsonPayload::array_from_items(
-                        &streamed_sources,
-                        crate::exact_json::JsonEncoding::Serde,
-                    )?;
+                    let steps = source_array(&streamed_sources)?;
                     body_source = set_root_field(&body_source, "steps", &steps)?;
                 }
+
                 // Validation is atomic: no function/native call escapes if a later
                 // member, duplicate ID or terminal status is malformed.
                 let response = super::decode::response(&body_source, &self.context)?;
@@ -572,7 +546,7 @@ impl EventDecoder for InteractionsDecoder {
                 Ok(events)
             }
             "error" => {
-                let scanner = event_source.scanner()?;
+                let scanner = event.scanner()?;
                 let status = scanner
                     .number_source_at("/status")
                     .and_then(|status| status.parse::<u16>().ok())
@@ -596,10 +570,11 @@ impl EventDecoder for InteractionsDecoder {
             }
             _ => Ok(vec![StreamEvent::ProviderEvent {
                 protocol: ProtocolFamily::GeminiInteractions,
-                payload: event_source,
+                payload: event,
             }]),
         }
     }
+
     fn finish(&mut self) -> Result<Vec<StreamEvent>, LlmError> {
         if self.ended {
             Ok(vec![])
@@ -609,7 +584,83 @@ impl EventDecoder for InteractionsDecoder {
             ))
         }
     }
+
     fn usage_report(&self) -> UsageReport {
         self.usage.clone()
+    }
+}
+
+#[cfg(test)]
+mod source_snapshot_tests {
+    use super::InteractionsDecoder;
+    use crate::codecs::{CodecContext, EventDecoder, RequestMode};
+    use crate::protocol::{ProtocolFamily, ProviderProfile, StreamEvent};
+    use serde_json::json;
+
+    #[test]
+    fn argument_snapshot_keeps_raw_numbers_and_utf16_source_through_terminal_event() {
+        let profile: ProviderProfile = serde_json::from_value(json!({
+            "provider_id": "test",
+            "profile_name": "test",
+            "base_url": "https://example.invalid",
+            "protocol": "gemini_interactions",
+            "auth": "none",
+            "models": [{
+                "display_model": "model",
+                "request_model": "model",
+                "billing_model": "model"
+            }]
+        }))
+        .unwrap();
+        let context = CodecContext::new(&profile, "model", RequestMode::Stream);
+        assert_eq!(
+            context.profile().protocol,
+            ProtocolFamily::GeminiInteractions
+        );
+        let mut decoder = InteractionsDecoder::new(&context);
+
+        decoder
+            .decode_frame(
+                br#"{"event_type":"interaction.created","interaction":{"id":"interaction-1","model":"model"}}"#,
+            )
+            .unwrap();
+        decoder
+            .decode_frame(
+                br#"{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"call-1","name":"run","arguments":{"initial":true}}}"#,
+            )
+            .unwrap();
+        decoder
+            .decode_frame(
+                br#"{"event_type":"step.delta","index":0,"delta":{"type":"function_call","arguments":{"z":1e+03,"overflow":1e400,"\ud800":"value \udfff"}}}"#,
+            )
+            .unwrap();
+        decoder
+            .decode_frame(br#"{"event_type":"step.stop","index":0}"#)
+            .unwrap();
+        let events = decoder
+            .decode_frame(
+                br#"{"event_type":"interaction.completed","interaction":{"id":"interaction-1","status":"requires_action"}}"#,
+            )
+            .unwrap();
+
+        let expected = r#"{"z":1e+03,"overflow":1e400,"\ud800":"value \udfff"}"#;
+        let call = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::ToolCallDelta {
+                    id,
+                    provider_id,
+                    arguments_fragment,
+                    ..
+                } => Some((id, provider_id, arguments_fragment)),
+                _ => None,
+            })
+            .expect("terminal response emits the streamed function call");
+        assert_eq!(call.0.as_str(), "call-1");
+        assert_eq!(call.1.as_deref(), Some("call-1"));
+        assert_eq!(
+            call.2.utf16_code_units(),
+            expected.encode_utf16().collect::<Vec<_>>()
+        );
     }
 }

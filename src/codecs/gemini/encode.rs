@@ -112,6 +112,7 @@ pub(crate) fn request_to<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::codecs::validate_tool_wire_shapes(req)?;
     crate::codecs::reject_typed_native(req, profile.protocol)?;
     validate_audio_input(req)?;
     crate::providers::anthropic::code_execution::validate(req, opts)?;

@@ -24,6 +24,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::codecs::validate_tool_wire_shapes(req)?;
     let computer_tool = validate_computer_request(req, profile)?;
     if req.anthropic_mcp_servers().next().is_some() {
         return Err(LlmError::UnsupportedCapability {
@@ -472,7 +473,7 @@ fn encode_message<'a>(
                         "name": name,
                         // Arguments go on the wire as a JSON string, as on the
                         // Chat wire.
-                        "arguments": args.canonical_json(crate::exact_json::JsonEncoding::Serde)?,
+                        "arguments": args.as_json_source(),
                     }))
                     .into(),
                 );

@@ -11,6 +11,26 @@ use lingxi_llm_client::{
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 const RAW: &str = r#"{"\ud800":{"\udc01":"value \ud802","n":1.2300e2},"literal":"�"}"#;
+const CLAUDE_RAW: &str = r#"{"\ud800":{"\udc01":"value \ud802","n":123},"literal":"�"}"#;
+
+fn uses_javascript_number_encoding(family: &str) -> bool {
+    matches!(
+        family,
+        "anthropic_messages" | "vertex_claude" | "bedrock_claude" | "foundry_claude"
+    )
+}
+
+fn assert_payload_at(body: &JsonPayload, pointer: &str, expected: Value, label: &str) {
+    let actual = body
+        .payload_at(pointer)
+        .unwrap_or_else(|| panic!("{label}: missing JSON value at {pointer}"));
+    let expected = JsonPayload::from_generated_value(&expected).unwrap();
+    assert!(
+        actual.semantically_eq(&expected).unwrap(),
+        "{label}: {pointer} was {}",
+        actual.as_json_source()
+    );
+}
 fn profile(protocol: &str) -> ProviderProfile {
     let mut value = json!({"provider_id":"test","profile_name":"test","base_url":"https://example.invalid/v1","protocol":protocol,"auth":"none","models":[{"display_model":"m","request_model":"m","billing_model":"m"}]});
     if protocol == "azure_open_ai" {
@@ -55,6 +75,11 @@ fn tool() -> ContentBlock {
 }
 #[test]
 fn all_current_function_wires_replay_exact_argument_json() {
+    assert_eq!(
+        json_payload(RAW).as_json_source(),
+        RAW,
+        "the source carrier retains the original number token"
+    );
     for (family, codec) in [
         (
             "anthropic_messages",
@@ -87,7 +112,11 @@ fn all_current_function_wires_replay_exact_argument_json() {
             };
             assert_eq!(arguments.as_str(), Some(RAW), "{family}");
         } else {
-            assert!(bytes.contains(RAW), "{family}: {bytes}");
+            let expected = match family {
+                family if uses_javascript_number_encoding(family) => CLAUDE_RAW,
+                _ => RAW,
+            };
+            assert!(bytes.contains(expected), "{family}: {bytes}");
         }
         assert!(!bytes.contains("input_json"));
         assert!(!bytes.contains("__llmClientUtf16KeyV1_"));
@@ -137,7 +166,6 @@ fn canonical_tool_input_source_is_authoritative_and_malformed_json_is_rejected()
         .contains(r#""input":{"changed":true}"#));
     for raw in [r#"{},"injected":true"#, r#"{"broken":}"#, r#"{} {}"#] {
         assert!(JsonPayload::parse(raw).is_err());
-        assert!(JsonPayload::parse(raw).is_err());
     }
 }
 #[test]
@@ -154,7 +182,7 @@ fn request_projection_supports_body_rewrites_without_losing_input_keys() {
         JsonEncoding::JavaScript,
     )
     .unwrap();
-    assert!(String::from_utf8(encoded).unwrap().contains(RAW));
+    assert!(String::from_utf8(encoded).unwrap().contains(CLAUDE_RAW));
     let invalid_override = [("/messages/00/content/0/input".into(), vec![0xd800])]
         .into_iter()
         .collect::<BTreeMap<_, _>>();
@@ -204,6 +232,12 @@ fn surrogate_keys_preserve_source_beside_placeholder_like_provider_keys() {
 #[test]
 fn equivalent_javascript_numbers_can_change_rust_representation_without_losing_raw_json() {
     let raw = r#"{"n":1.2300e2}"#;
+    let payload = json_payload(raw);
+    assert_eq!(
+        payload.as_json_source(),
+        raw,
+        "the source carrier stays exact"
+    );
     let req = request(vec![ContentBlock::ToolUse {
         id: "t1".into(),
         name: "read".into(),
@@ -220,16 +254,17 @@ fn equivalent_javascript_numbers_can_change_rust_representation_without_losing_r
         .unwrap();
     assert!(String::from_utf8(encoded.body.to_vec())
         .unwrap()
-        .contains(raw));
+        .contains(r#""input":{"n":123}"#));
 }
 
 #[test]
-fn large_integer_json_source_is_not_rounded() {
-    for raw in [
-        r#"{"n":9007199254740993}"#,
-        r#"{"n":18446744073709551615}"#,
-        r#"{"n":-9007199254740993}"#,
+fn anthropic_javascript_number_encoding_matches_native_number_rounding() {
+    for (raw, encoded_number) in [
+        (r#"{"n":9007199254740993}"#, "9007199254740992"),
+        (r#"{"n":18446744073709551615}"#, "18446744073709552000"),
+        (r#"{"n":-9007199254740993}"#, "-9007199254740992"),
     ] {
+        assert_eq!(json_payload(raw).as_json_source(), raw);
         let req = request(vec![ContentBlock::ToolUse {
             id: "t1".into(),
             name: "read".into(),
@@ -246,7 +281,7 @@ fn large_integer_json_source_is_not_rounded() {
             .unwrap();
         assert!(String::from_utf8(encoded.body.to_vec())
             .unwrap()
-            .contains(raw));
+            .contains(&format!(r#""input":{{"n":{encoded_number}}}"#)));
     }
 }
 
@@ -328,6 +363,7 @@ fn argument_escape_state_survives_provider_sse_fragment_boundaries() {
         let p = profile(family);
         let context = CodecContext::new(&p, "m", RequestMode::Stream);
         let mut decoder = codec.stream_decoder(&context);
+        let mut accumulator = StreamAccumulator::new();
         let start: Vec<String> = match family {
             "anthropic_messages" => vec![r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"read","input":{}}}"#.into()],
             "open_ai_chat" => vec![],
@@ -335,10 +371,10 @@ fn argument_escape_state_survives_provider_sse_fragment_boundaries() {
             _ => vec![r#"{"event_type":"interaction.created","interaction":{"id":"int1"}}"#.into(), r#"{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"t1","name":"read","arguments":{}}}"#.into()],
         };
         for raw in start {
-            assert!(
-                decoder.push_bytes(&sse(&raw)).iter().all(Result::is_ok),
-                "{family}"
-            );
+            for event in decoder.push_bytes(&sse(&raw)) {
+                let event = event.unwrap_or_else(|error| panic!("{family} start: {error}"));
+                accumulator.observe(&event);
+            }
         }
         let frame = |fragment: &str| match family {
             "anthropic_messages" => format!(
@@ -354,19 +390,30 @@ fn argument_escape_state_survives_provider_sse_fragment_boundaries() {
                 r#"{{"event_type":"step.delta","index":0,"delta":{{"type":"arguments_delta","arguments":{fragment}}}}}"#
             ),
         };
+        for event in decoder.push_bytes(&sse(&frame(&prefix))) {
+            let event = event.unwrap_or_else(|error| panic!("{family} prefix: {error}"));
+            accumulator.observe(&event);
+        }
+        let suffix_events = decoder.push_bytes(&sse(&frame(suffix)));
+        let suffix_rejected = suffix_events.iter().any(Result::is_err);
+        if family != "anthropic_messages" {
+            assert!(suffix_rejected, "{family}: invalid suffix was accepted");
+            continue;
+        }
+        if !suffix_rejected {
+            for event in suffix_events {
+                accumulator.observe(&event.expect("suffix was checked as successful"));
+            }
+            accumulator.observe(&StreamEvent::BlockEnd { block: 0 });
+            accumulator.observe(&StreamEvent::End {
+                stop_reason: StopReason::ToolUse,
+                usage: Usage::default().into(),
+                inference: Default::default(),
+            });
+        }
         assert!(
-            decoder
-                .push_bytes(&sse(&frame(&prefix)))
-                .iter()
-                .all(Result::is_ok),
-            "{family}"
-        );
-        assert!(
-            decoder
-                .push_bytes(&sse(&frame(suffix)))
-                .iter()
-                .any(Result::is_err),
-            "{family}"
+            suffix_rejected || accumulator.finish().is_err(),
+            "{family}: invalid argument was accepted through its completion boundary"
         );
     }
 }
@@ -525,7 +572,12 @@ fn exact_tool_results_preserve_strings_and_content_keys_on_every_codec() {
                     "{family}: {bytes}"
                 );
             } else {
-                assert!(bytes.contains(raw), "{family}: {bytes}");
+                let expected_raw = if uses_javascript_number_encoding(family) {
+                    raw.replace("9007199254740993", "9007199254740992")
+                } else {
+                    raw.to_owned()
+                };
+                assert!(bytes.contains(&expected_raw), "{family}: {bytes}");
             }
             assert!(!bytes.contains("output_json"), "{family}");
             assert!(
@@ -562,9 +614,29 @@ fn tool_result_blocks_require_array_source_and_malformed_json_is_rejected() {
             .encode_request(EncodeRequest::new(&req), &context)
             .is_err());
     }
-    for raw in ["{}", "true", "1", r#""ok" {}"#, "[}"] {
+    assert!(
+        JsonPayload::parse("{}").is_ok(),
+        "an empty object is valid JSON"
+    );
+    for raw in [r#""ok" {}"#, "[}"] {
         assert!(JsonPayload::parse(raw).is_err(), "{raw}");
-        assert!(JsonPayload::parse(raw).is_err(), "{raw}");
+    }
+    for raw in ["true", "1"] {
+        let parsed = JsonPayload::parse(raw).expect("scalar roots are valid JSON");
+        assert_eq!(parsed.as_json_source(), raw);
+        let req = request_with_result(raw);
+        assert!(
+            AnthropicMessagesCodec
+                .validate_request(&req, &context)
+                .is_err(),
+            "valid JSON scalar is not a wire-shaped ToolResult.content: {raw}"
+        );
+        assert!(
+            AnthropicMessagesCodec
+                .encode_request(EncodeRequest::new(&req), &context)
+                .is_err(),
+            "wire encoder must reject a scalar ToolResult.content: {raw}"
+        );
     }
 }
 
@@ -693,52 +765,75 @@ fn tool_result_media_reaches_text_result_wires_as_media_parts() {
             .encode_request(EncodeRequest::new(&req), &context)
             .unwrap_or_else(|error| panic!("{family}: {error}"));
         let bytes = String::from_utf8(encoded.body.to_vec()).unwrap();
-        let body: Value = serde_json::from_slice(&encoded.body).unwrap();
+        let body = JsonPayload::parse(&bytes).expect("wire body remains valid source JSON");
         // The image is sent once, as media, never as text in the result slot.
         assert_eq!(bytes.matches(PNG).count(), 1, "{family}: {bytes}");
         match family {
             "open_ai_chat" | "azure_open_ai" => {
-                assert_eq!(
-                    body["messages"][1],
+                assert_payload_at(
+                    &body,
+                    "/messages/1",
                     json!({"role":"tool","tool_call_id":"t1","content":"Rendered frame\n(see following user message for image)"}),
-                    "{family}"
+                    family,
                 );
-                assert_eq!(
-                    body["messages"][2],
+                assert_payload_at(
+                    &body,
+                    "/messages/2",
                     json!({"role":"user","content":[
                         {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{PNG}")}},
                         {"type":"text","text":"<reminder>"},
                     ]}),
-                    "{family}"
+                    family,
                 );
             }
             "gemini_generate_content" | "vertex_gemini" => {
-                let parts = &body["contents"][1]["parts"];
-                assert_eq!(
-                    parts[0],
+                assert_payload_at(
+                    &body,
+                    "/contents/1/parts/0",
                     json!({"inlineData":{"mimeType":"image/png","data":PNG}}),
-                    "{family}"
+                    family,
                 );
-                assert_eq!(
-                    parts[1]["functionResponse"]["response"],
+                assert_payload_at(
+                    &body,
+                    "/contents/1/parts/1/functionResponse/response",
                     json!({"result":"Rendered frame\n(image provided as a separate part)"}),
-                    "{family}"
+                    family,
                 );
-                assert_eq!(parts[2], json!({"text":"<reminder>"}), "{family}");
+                assert_payload_at(
+                    &body,
+                    "/contents/1/parts/2",
+                    json!({"text":"<reminder>"}),
+                    family,
+                );
             }
             // The output carries Responses input parts in place of Anthropic's.
             "open_ai_responses" => {
-                assert_eq!(
-                    body["input"][1],
+                assert_payload_at(
+                    &body,
+                    "/input/1",
                     json!({"type":"function_call_output","call_id":"t1","output":[
                         {"type":"input_text","text":"Rendered frame"},
                         {"type":"input_image","image_url":format!("data:image/png;base64,{PNG}")},
                     ]}),
+                    family,
+                );
+            }
+            // Claude Code's own shape: the exact result is nested inside the
+            // tool-result block, followed by the independent reminder block.
+            _ => {
+                assert_eq!(
+                    body.payload_at("/messages/1/content/0/content")
+                        .expect("Anthropic tool-result content is present")
+                        .as_json_source(),
+                    raw,
+                    "{family}"
+                );
+                assert_eq!(
+                    body.string_at("/messages/1/content/1/text").as_deref(),
+                    Some("<reminder>"),
                     "{family}"
                 );
             }
-            // Claude Code's own shape: the content array inside the tool_result.
-            _ => assert!(bytes.contains(&format!(r#""content":{raw}"#)), "{bytes}"),
         }
         assert_eq!(
             codec
@@ -817,17 +912,17 @@ fn text_only_tool_results_reach_text_wires_as_text() {
         // array's JSON spelling.
         if family == "open_ai_responses" {
             assert!(
-                bytes.contains(r#""output":[{"type":"input_text","text":"say \"hi\""},{"type":"input_text","text":"line\ttwo \u00e9"}]"#),
+                bytes.contains(r#""output":[{"type":"input_text","text":"say \"hi\""},{"type":"input_text","text":"line\ttwo é"}]"#),
                 "{family}: {bytes}"
             );
         } else if family.contains("gemini") {
             assert!(
-                bytes.contains(r#""response":{"result":"say \"hi\"\nline\ttwo \u00e9"}"#),
+                bytes.contains(r#""response":{"result":"say \"hi\"\nline\ttwo é"}"#),
                 "{family}: {bytes}"
             );
         } else {
             assert!(
-                bytes.contains(r#""content":"say \"hi\"\nline\ttwo \u00e9"}"#),
+                bytes.contains(r#""content":"say \"hi\"\nline\ttwo é"}"#),
                 "{family}: {bytes}"
             );
         }

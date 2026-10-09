@@ -101,10 +101,7 @@ fn never_is_preserved_and_can_carry_effort_and_text() {
         &headers,
         "mid-conversation-system-clear-at-2026-08-21"
     ));
-    assert!(has_beta(
-        &headers,
-        "mid-conversation-output-config-2026-07-01"
-    ));
+    assert!(has_beta(&headers, "per-turn-control-2026-07-01"));
 }
 
 #[test]
@@ -122,8 +119,16 @@ fn request_local_native_admission_is_bound_to_the_exact_first_party_profile() {
     let mut request = req();
     request.messages.push(effort(AnthropicMessageEffort::High));
 
-    // A protocol-compatible endpoint is not Native-admitted by itself.
-    assert!(encode(&request, &custom_endpoint, MODEL).is_err());
+    // The configured Anthropic Messages identity supports ordinary message
+    // controls without Native endpoint admission. Native-only wire shaping
+    // remains gated on the matching request-local token.
+    let (ordinary_body, ordinary_headers) = encode(&request, &custom_endpoint, MODEL).unwrap();
+    assert_eq!(
+        ordinary_body["messages"][1]["output_config"]["effort"],
+        "high"
+    );
+    assert!(ordinary_body.get("tools").is_none());
+    assert!(has_beta(&ordinary_headers, "per-turn-control-2026-07-01"));
 
     let admission = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
         &custom_endpoint.profile_name,
@@ -133,6 +138,7 @@ fn request_local_native_admission_is_bound_to_the_exact_first_party_profile() {
         encode_with_native_endpoint_admission(&request, &custom_endpoint, MODEL, &admission)
             .unwrap();
     assert_eq!(body["messages"][1]["output_config"]["effort"], "high");
+    assert_eq!(body["tools"], json!([]));
     let admitted_context = CodecContext::new(&custom_endpoint, MODEL, RequestMode::Complete)
         .with_native_anthropic_endpoint_admission(Some(&admission));
     assert_eq!(
@@ -152,19 +158,21 @@ fn request_local_native_admission_is_bound_to_the_exact_first_party_profile() {
             .requested_effort,
         None
     );
-    assert!(!has_beta(
-        &headers,
-        "mid-conversation-output-config-2026-07-01"
-    ));
+    assert!(!has_beta(&headers, "per-turn-control-2026-07-01"));
 
     let wrong_base = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
         &custom_endpoint.profile_name,
         "http://127.0.0.1:43124",
     );
-    assert!(
+    let (wrong_base_body, wrong_base_headers) =
         encode_with_native_endpoint_admission(&request, &custom_endpoint, MODEL, &wrong_base)
-            .is_err()
+            .unwrap();
+    assert_eq!(
+        wrong_base_body["messages"][1]["output_config"]["effort"],
+        "high"
     );
+    assert!(wrong_base_body.get("tools").is_none());
+    assert!(has_beta(&wrong_base_headers, "per-turn-control-2026-07-01"));
 
     let wrong_provider: ProviderProfile = serde_json::from_value(json!({
         "provider_id":"compatible-anthropic",
@@ -225,7 +233,7 @@ async fn client_prepare_dispatch_preserves_admitted_per_message_effort_to_wire()
         name.eq_ignore_ascii_case("anthropic-beta")
             && value
                 .split(',')
-                .any(|beta| beta == "mid-conversation-output-config-2026-07-01")
+                .any(|beta| beta == "per-turn-control-2026-07-01")
     }));
 }
 
@@ -357,10 +365,7 @@ fn effort_only_groups_have_position_exception_but_mixed_groups_do_not() {
         body["messages"][0]["output_config"],
         json!({"effort":"low"})
     );
-    assert!(has_beta(
-        &headers,
-        "mid-conversation-output-config-2026-07-01"
-    ));
+    assert!(has_beta(&headers, "per-turn-control-2026-07-01"));
     r.messages
         .insert(1, ConversationMessage::system_text("Text in same group"));
     assert!(encode(&r, &profile(), MODEL).is_err());
@@ -477,7 +482,13 @@ fn unsupported_protocols_do_not_drop_anthropic_metadata() {
     }
     let mut p = profile();
     p.base_url = "https://gateway.example.test".into();
-    assert!(encode(&r, &p, MODEL).is_err());
+    let (body, headers) = encode(&r, &p, MODEL).unwrap();
+    assert_eq!(body["messages"][1]["clear_at"], "next_user_message");
+    assert!(has_beta(
+        &headers,
+        "mid-conversation-system-clear-at-2026-08-21"
+    ));
+    assert!(body.get("tools").is_none());
 }
 #[tokio::test]
 async fn invalid_message_controls_fail_before_transport() {

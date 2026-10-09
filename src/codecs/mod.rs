@@ -30,6 +30,30 @@ use crate::transport::{HttpRequest, HttpResponse};
 
 use std::sync::Arc;
 
+/// Retain the wire-field shapes that were enforced by the original typed
+/// string/array carriers, before uploads or authentication can have effects.
+pub(crate) fn validate_tool_wire_shapes(request: &ChatRequest) -> Result<(), LlmError> {
+    for tool in &request.tools {
+        if !tool.input_schema.is_root_object() {
+            return Err(LlmError::InvalidRequest {
+                message: "tool input schema must be a JSON object".into(),
+            });
+        }
+    }
+    for block in request.messages.iter().flat_map(|message| &message.content) {
+        if let crate::protocol::ContentBlock::ToolResult {
+            content, blocks, ..
+        } = block
+        {
+            content.validate_root_string("tool result content")?;
+            if let Some(blocks) = blocks {
+                blocks.validate_root_array("tool result blocks")?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A Responses continuation id is endpoint-side state, not an optional hint.
 /// Refuse it on every other wire rather than silently starting a fresh turn.
 pub(crate) fn reject_responses_continuation(

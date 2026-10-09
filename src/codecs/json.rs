@@ -359,6 +359,14 @@ fn serialize_raw_json<S: Serializer>(
     encoding: JsonEncoding,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
+    // Non-JavaScript codecs replay untouched opaque payloads verbatim, as the
+    // former validated RawValue tool-input/output path did. Claude's JSON
+    // semantics and field overlays still require source-aware serialization.
+    if encoding == JsonEncoding::Serde && fields.is_empty() {
+        let raw: &RawValue =
+            serde_json::from_str(value.as_json_source()).map_err(serde::ser::Error::custom)?;
+        return raw.serialize(serializer);
+    }
     let encoded_fields = fields
         .iter()
         .map(|(key, field)| {

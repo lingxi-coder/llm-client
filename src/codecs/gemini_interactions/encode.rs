@@ -66,6 +66,10 @@ fn result_block(block: &crate::protocol::JsonPayload) -> Result<WireValue<'stati
             let normalized = crate::providers::google::interactions::encode_result_block(block)?;
             Ok(WireValue::owned_raw_json(normalized))
         }
+        Some("document") => {
+            let normalized = crate::providers::google::interactions::encode_result_block(block)?;
+            Ok(WireValue::owned_raw_json(normalized))
+        }
         _ => Err(invalid(
             "unsupported or malformed Interactions function-result content",
         )),
@@ -93,6 +97,7 @@ fn flush_parts<'a>(
 }
 
 pub(super) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), LlmError> {
+    crate::codecs::validate_tool_wire_shapes(req)?;
     if context.mode() == RequestMode::CountTokens {
         return Err(unsupported("Interactions has no exact count endpoint"));
     }

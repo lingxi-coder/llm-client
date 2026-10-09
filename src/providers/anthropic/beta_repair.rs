@@ -343,11 +343,13 @@ pub(crate) fn update_source_object_fields(
             }
             continue;
         }
-        let value = crate::exact_json::serialize_json_node(
-            entry.value,
-            crate::exact_json::JsonEncoding::JavaScript,
-        )?;
-        fields.push((entry.key_units.to_vec(), value));
+        let value =
+            scanner
+                .raw_source_for_node(entry.value)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Anthropic request member has no source span".into(),
+                })?;
+        fields.push((entry.key_units.to_vec(), value.to_owned()));
     }
     for (key, replacement) in update_keys {
         if replacement.is_some() && !last_indices.contains_key(&key) && written.insert(key.clone())

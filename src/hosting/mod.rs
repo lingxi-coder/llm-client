@@ -41,6 +41,7 @@ impl WireCodec for AzureOpenAiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::validate_tool_wire_shapes(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::codecs::inference::validate(req, context)?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
@@ -116,6 +117,7 @@ impl WireCodec for FoundryClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::validate_tool_wire_shapes(req)?;
         AnthropicMessagesCodec.validate_request(req, context)
     }
     fn family(&self) -> ProtocolFamily {
@@ -169,6 +171,7 @@ impl WireCodec for VertexClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::validate_tool_wire_shapes(req)?;
         AnthropicMessagesCodec.validate_request(req, context)
     }
     fn family(&self) -> ProtocolFamily {
@@ -235,6 +238,7 @@ impl WireCodec for VertexGeminiCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::validate_tool_wire_shapes(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         gemini::encode::validate_audio_input(req)?;
         crate::codecs::inference::validate(req, context)?;
@@ -323,6 +327,7 @@ impl WireCodec for BedrockClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        crate::codecs::validate_tool_wire_shapes(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::codecs::inference::validate(req, context)
     }

@@ -31,6 +31,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::codecs::validate_tool_wire_shapes(req)?;
     crate::codecs::reject_typed_native(req, profile.protocol)?;
     crate::providers::anthropic::code_execution::validate(req, opts)?;
     crate::providers::qwen::cache::validate(req, opts)?;
@@ -522,7 +523,7 @@ fn encode_message<'a>(
                 "type": "function",
                 "function": {
                     "name": name,
-                    "arguments": input.canonical_json(crate::exact_json::JsonEncoding::Serde)?,
+                    "arguments": input.as_json_source(),
                 },
             })),
             ContentBlock::ToolResult {

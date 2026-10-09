@@ -23,6 +23,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::codecs::validate_tool_wire_shapes(req)?;
     crate::codecs::reject_typed_native(req, profile.protocol)?;
     crate::providers::anthropic::conversation::validate(req, opts)?;
     crate::providers::anthropic::client_toolsets::validate(req, opts)?;
@@ -459,6 +460,7 @@ fn omit_unsupported_tool_result_media(
             source.push_str(block.as_json_source());
         }
     }
+    source.push(']');
     JsonPayload::parse(&source)
         .map(Some)
         .map_err(|error| LlmError::InvalidRequest {
@@ -816,7 +818,7 @@ mod tool_result_media_tests {
                 "display_model": "model",
                 "request_model": "wire-model",
                 "billing_model": "wire-model",
-                "metadata": {"input_modalities": input_modalities}
+                "metadata": {"inputModalities": input_modalities}
             }]
         }))
         .unwrap()
