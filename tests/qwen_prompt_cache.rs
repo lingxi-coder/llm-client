@@ -548,3 +548,43 @@ async fn invalid_cache_policy_fails_before_attachment_resolution_auth_or_send() 
         (0, 0, 0)
     );
 }
+
+#[test]
+fn marked_text_only_tool_result_keeps_each_text_literal() {
+    let raw = r#"[{"type":"text","text":"a \"x\""},{"type":"text","text":"b é"}]"#;
+    let display = lingxi_llm_client::exact_json::parse_tool_output_json(raw).unwrap();
+    let mut req = request();
+    req.messages = serde_json::from_value(json!([
+        {"role":"assistant","content":[{"type":"tool_use","id":"call-1","name":"lookup","input":{}}]},
+        {"role":"user","content":[]}
+    ]))
+    .unwrap();
+    req.messages[1].content.push(ContentBlock::ToolResult {
+        cache_reference: None,
+        tool_use_id: "call-1".into(),
+        content: raw.into(),
+        is_error: None,
+        blocks: display.as_array().cloned(),
+        output_json: Some(raw.into()),
+        toolset_name: None,
+    });
+    req.prompt_cache.breakpoints = vec![breakpoint(CachePosition::Message { index: 1, block: 0 })];
+    let p = profile();
+    let ctx = context(&p, "qwen3.8-max", false);
+    let wire = OpenAiChatCodec
+        .encode_request(EncodeRequest::new(&req), &ctx)
+        .unwrap();
+    let bytes = String::from_utf8(wire.body.to_vec()).unwrap();
+    assert!(
+        bytes.contains(
+            r#""content":[{"type":"text","text":"a \"x\"\nb é","cache_control":{"type":"ephemeral"}}]"#
+        ),
+        "{bytes}"
+    );
+    assert_eq!(
+        wire.body.len(),
+        OpenAiChatCodec
+            .encoded_body_len(EncodeRequest::new(&req), &ctx)
+            .unwrap()
+    );
+}

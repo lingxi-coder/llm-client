@@ -235,7 +235,7 @@ impl<'a> Accumulator<'a> {
                 // `content` may spell out.
                 match blocks
                     .as_deref()
-                    .and_then(crate::codecs::tool_result_media::pieces)
+                    .and_then(crate::codecs::tool_result_media::slot_pieces)
                 {
                     Some(pieces) => {
                         for piece in &pieces {

@@ -519,14 +519,18 @@ fn exact_tool_results_preserve_strings_and_content_keys_on_every_codec() {
                 .unwrap_or_else(|error| panic!("{family}: {error}"));
             let bytes = String::from_utf8(encoded.body.to_vec()).unwrap();
             if matches!(family, "open_ai_chat" | "azure_open_ai") && raw.starts_with('[') {
-                let body: Value = serde_json::from_str(&bytes).unwrap();
-                let tool = body["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|message| message["role"] == "tool")
-                    .unwrap();
-                assert_eq!(tool["content"].as_str(), Some(raw), "{family}");
+                // The tool message holds the text block's text, its literal intact.
+                assert!(
+                    bytes.contains(r#""tool_call_id":"t1","content":"value \ud800"}"#),
+                    "{family}: {bytes}"
+                );
+            } else if family == "open_ai_responses" && raw.starts_with('[') {
+                // Responses parts are typed `input_text`; a key Responses does
+                // not define has nowhere to go.
+                assert!(
+                    bytes.contains(r#""output":[{"type":"input_text","text":"value \ud800"}]"#),
+                    "{family}: {bytes}"
+                );
             } else if family == "gemini_interactions" && raw.starts_with('"') {
                 assert!(
                     bytes.contains(r#""text":"value \ud800""#),
@@ -693,6 +697,7 @@ fn tool_result_media_reaches_text_result_wires_as_media_parts() {
         ("azure_open_ai", Box::new(AzureOpenAiCodec)),
         ("gemini_generate_content", Box::new(GeminiCodec)),
         ("vertex_gemini", Box::new(VertexGeminiCodec)),
+        ("open_ai_responses", Box::new(OpenAiResponsesCodec)),
         ("anthropic_messages", Box::new(AnthropicMessagesCodec)),
     ] {
         let p = profile(family);
@@ -733,6 +738,17 @@ fn tool_result_media_reaches_text_result_wires_as_media_parts() {
                     "{family}"
                 );
                 assert_eq!(parts[2], json!({"text":"<reminder>"}), "{family}");
+            }
+            // The output carries Responses input parts in place of Anthropic's.
+            "open_ai_responses" => {
+                assert_eq!(
+                    body["input"][1],
+                    json!({"type":"function_call_output","call_id":"t1","output":[
+                        {"type":"input_text","text":"Rendered frame"},
+                        {"type":"input_image","image_url":format!("data:image/png;base64,{PNG}")},
+                    ]}),
+                    "{family}"
+                );
             }
             // Claude Code's own shape: the content array inside the tool_result.
             _ => assert!(bytes.contains(&format!(r#""content":{raw}"#)), "{bytes}"),
@@ -785,6 +801,80 @@ fn tool_result_media_follows_the_selected_models_input_modalities() {
             {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{PNG}")}},
             {"type":"file","file":{"file_data":format!("data:application/pdf;base64,{PDF}"),"filename":"document"}},
             {"type":"text","text":"<reminder>"},
+        ])
+    );
+}
+
+#[test]
+fn text_only_tool_results_reach_text_wires_as_text() {
+    let raw = r#"[{"type":"text","text":"say \"hi\""},{"type":"text","text":"line\ttwo \u00e9"}]"#;
+    let req = media_request(raw);
+    for (family, codec) in [
+        (
+            "open_ai_chat",
+            Box::new(OpenAiChatCodec) as Box<dyn WireCodec>,
+        ),
+        ("azure_open_ai", Box::new(AzureOpenAiCodec)),
+        ("open_ai_responses", Box::new(OpenAiResponsesCodec)),
+    ] {
+        let p = profile(family);
+        let context = CodecContext::new(&p, "m", RequestMode::Complete);
+        let encoded = codec
+            .encode_request(EncodeRequest::new(&req), &context)
+            .unwrap_or_else(|error| panic!("{family}: {error}"));
+        let bytes = String::from_utf8(encoded.body.to_vec()).unwrap();
+        // Each text literal is sent as it arrived, never re-escaped inside the
+        // array's JSON spelling.
+        if family == "open_ai_responses" {
+            assert!(
+                bytes.contains(r#""output":[{"type":"input_text","text":"say \"hi\""},{"type":"input_text","text":"line\ttwo \u00e9"}]"#),
+                "{family}: {bytes}"
+            );
+        } else {
+            assert!(
+                bytes.contains(r#""content":"say \"hi\"\nline\ttwo \u00e9"}"#),
+                "{family}: {bytes}"
+            );
+        }
+        assert!(!bytes.contains(r#"\"type\""#), "{family}: {bytes}");
+        assert_eq!(
+            codec
+                .encoded_body_len(EncodeRequest::new(&req), &context)
+                .unwrap(),
+            encoded.body.len(),
+            "{family}"
+        );
+    }
+}
+
+#[test]
+fn responses_tool_result_media_follows_the_selected_models_input_modalities() {
+    let raw = format!(
+        r#"[{{"type":"image","source":{{"type":"base64","data":"{PNG}","media_type":"image/png"}}}},{{"type":"document","source":{{"type":"base64","data":"{PDF}","media_type":"application/pdf"}},"title":"spec.pdf"}}]"#
+    );
+    let req = media_request(&raw);
+    let encode = |modalities: &[&str]| -> Value {
+        let mut p = profile("open_ai_responses");
+        p.models[0].metadata.input_modalities = modalities.iter().map(|m| (*m).into()).collect();
+        let context = CodecContext::new(&p, "m", RequestMode::Complete);
+        let encoded = OpenAiResponsesCodec
+            .encode_request(EncodeRequest::new(&req), &context)
+            .unwrap();
+        serde_json::from_slice(&encoded.body).unwrap()
+    };
+
+    assert_eq!(
+        encode(&["text"])["input"][1]["output"],
+        json!([
+            {"type":"input_text","text":"(image omitted: this model does not accept image input)"},
+            {"type":"input_text","text":"(document omitted: this model does not accept document input)"},
+        ])
+    );
+    assert_eq!(
+        encode(&["text", "image", "pdf"])["input"][1]["output"],
+        json!([
+            {"type":"input_image","image_url":format!("data:image/png;base64,{PNG}")},
+            {"type":"input_file","file_data":format!("data:application/pdf;base64,{PDF}"),"filename":"spec.pdf"},
         ])
     );
 }

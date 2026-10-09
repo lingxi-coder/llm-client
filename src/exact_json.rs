@@ -1859,10 +1859,56 @@ fn render_tool_output(
         message: "encoded tool output differs from its exact source carrier".into(),
     };
     if matches!(protocol, P::OpenAiChat | P::AzureOpenAi) && has_blocks {
-        if target.as_str() != Some(raw) {
-            return Err(invalid());
+        if target.as_str() == Some(raw) {
+            return serde_json::to_string(raw).map_err(|_| invalid());
         }
-        return serde_json::to_string(raw).map_err(|_| invalid());
+        // Text-only blocks: the slot holds their text, one line per block.
+        let raw_parts: Vec<Box<serde_json::value::RawValue>> =
+            serde_json::from_str(raw).map_err(|_| invalid())?;
+        let mut text = String::from("\"");
+        for (index, part) in raw_parts.iter().enumerate() {
+            let literal = raw_text_literal(part.get()).ok_or_else(invalid)?;
+            if index > 0 {
+                text.push_str("\\n");
+            }
+            text.push_str(&literal[1..literal.len() - 1]);
+        }
+        text.push('"');
+        let rendered = match target {
+            Value::String(_) => text,
+            // A cache marker wraps the text in one part.
+            Value::Array(parts) if parts.len() == 1 => {
+                format!(
+                    "[{}]",
+                    render_text_part("text", &text, &parts[0]).ok_or_else(invalid)?
+                )
+            }
+            _ => return Err(invalid()),
+        };
+        return checked_render(rendered, target).ok_or_else(invalid);
+    }
+    if protocol == P::OpenAiResponses && has_blocks {
+        // Each block became its input part. A part sent as given and a text
+        // block's literal stay exact; converted media is the codec's own.
+        let source_parts = source.as_array().ok_or_else(invalid)?;
+        let raw_parts: Vec<Box<serde_json::value::RawValue>> =
+            serde_json::from_str(raw).map_err(|_| invalid())?;
+        let target_parts = target
+            .as_array()
+            .filter(|parts| parts.len() == raw_parts.len())
+            .ok_or_else(invalid)?;
+        let mut output = Vec::new();
+        for ((source, raw), target) in source_parts.iter().zip(&raw_parts).zip(target_parts) {
+            let text = (target["type"] == "input_text")
+                .then(|| raw_text_literal(raw.get()))
+                .flatten();
+            output.push(match text {
+                _ if tool_input_display_matches(source, target) => raw.get().to_owned(),
+                Some(text) => render_text_part("input_text", text, target).ok_or_else(invalid)?,
+                None => serde_json::to_string(target).map_err(|_| invalid())?,
+            });
+        }
+        return checked_render(format!("[{}]", output.join(",")), target).ok_or_else(invalid);
     }
     if tool_input_display_matches(&source, target) {
         return Ok(raw.into());
@@ -1952,6 +1998,84 @@ fn render_tool_output(
         output.push(encoded);
     }
     Ok(format!("[{}]", output.join(",")))
+}
+
+/// `rendered` when it decodes to `target`, the value the codec encoded.
+fn checked_render(rendered: String, target: &Value) -> Option<String> {
+    let decoded = parse_tool_input_json(&rendered).ok()?;
+    tool_input_display_matches(&decoded, target).then_some(rendered)
+}
+
+/// A text part of type `part_type` holding the exact `text` literal, followed
+/// by the codec's other fields of `target`, such as a cache marker.
+fn render_text_part(part_type: &str, text: &str, target: &Value) -> Option<String> {
+    let mut encoded = format!(r#"{{"type":"{part_type}","text":{text}"#);
+    for (key, value) in target.as_object()? {
+        if key != "type" && key != "text" {
+            encoded.push(',');
+            encoded.push_str(&serde_json::to_string(key).ok()?);
+            encoded.push(':');
+            encoded.push_str(&serde_json::to_string(value).ok()?);
+        }
+    }
+    encoded.push('}');
+    Some(encoded)
+}
+
+/// The undecoded `text` literal of a raw `{"type":"text",...}` block. The
+/// literal may hold escapes, such as lone surrogates, that no decoded string
+/// keeps.
+fn raw_text_literal(raw: &str) -> Option<&str> {
+    let members = raw_object_members(raw)?;
+    let field = |name: &str| {
+        members.iter().find_map(|(key, value)| {
+            (parse_tool_input_json(key).ok()?.as_str() == Some(name)).then_some(*value)
+        })
+    };
+    let kind = parse_tool_input_json(field("type")?).ok()?;
+    let text = field("text")?;
+    (kind == "text" && text.starts_with('"')).then_some(text)
+}
+
+/// The members of a raw JSON object as undecoded key and value literals.
+fn raw_object_members(raw: &str) -> Option<Vec<(&str, &str)>> {
+    let mut rest = raw.trim().strip_prefix('{')?.trim_start();
+    let mut members = Vec::new();
+    if rest == "}" {
+        return Some(members);
+    }
+    loop {
+        let key_len = raw_string_literal_len(rest)?;
+        let (key, after) = rest.split_at(key_len);
+        rest = after.trim_start().strip_prefix(':')?;
+        let mut values = serde_json::Deserializer::from_str(rest)
+            .into_iter::<Box<serde_json::value::RawValue>>();
+        values.next()?.ok()?;
+        let (value, after) = rest.split_at(values.byte_offset());
+        members.push((key, value.trim()));
+        rest = after.trim_start();
+        if let Some(after) = rest.strip_prefix(',') {
+            rest = after.trim_start();
+        } else {
+            return (rest == "}").then_some(members);
+        }
+    }
+}
+
+fn raw_string_literal_len(raw: &str) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    if bytes.first() != Some(&b'"') {
+        return None;
+    }
+    let mut index = 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'"' => return Some(index + 1),
+            _ => index += 1,
+        }
+    }
+    None
 }
 
 pub(crate) fn map_tool_schema_raw_subtrees(

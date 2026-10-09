@@ -334,10 +334,10 @@ pub(crate) fn tool_result_output<'a>(
     message: usize,
     block: usize,
     content: &'a str,
-    blocks: Option<&'a [Value]>,
+    parts: Option<Vec<WireValue<'a>>>,
 ) -> WireValue<'a> {
     let should_mark = has_message_breakpoint(request, message, block);
-    let Some(blocks) = blocks else {
+    let Some(parts) = parts else {
         return if should_mark {
             WireValue::array(vec![mark_input_text(
                 WireValue::from(json!({"type":"input_text"}))
@@ -348,13 +348,12 @@ pub(crate) fn tool_result_output<'a>(
         };
     };
 
-    let last = blocks.len().checked_sub(1);
+    let last = parts.len().checked_sub(1);
     WireValue::array(
-        blocks
-            .iter()
+        parts
+            .into_iter()
             .enumerate()
             .map(|(index, part)| {
-                let part = WireValue::borrowed(part);
                 if should_mark && Some(index) == last {
                     mark_input_text(part)
                 } else {

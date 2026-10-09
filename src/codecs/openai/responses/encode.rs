@@ -463,7 +463,9 @@ fn encode_message<'a>(
                     message_index,
                     block_index,
                     content,
-                    blocks.as_deref(),
+                    blocks
+                        .as_deref()
+                        .map(|blocks| tool_result_parts(blocks, opts)),
                 );
                 input.push(
                     WireValue::from(json!({
@@ -513,6 +515,52 @@ fn encode_message<'a>(
     }
     flush(role, &mut parts, input);
     Ok(())
+}
+
+/// A tool result's blocks as `function_call_output` input parts, one part per
+/// block. The harness hands them over in Anthropic's shapes (`text`, `image`,
+/// `document`), which the Responses API rejects in `output`; those become
+/// `input_*` parts, and any other block, such as a caller's own `input_file`,
+/// is sent as given. Media the selected model does not accept is left out,
+/// and a text part says so.
+fn tool_result_parts<'a>(blocks: &'a [Value], opts: &CodecContext) -> Vec<WireValue<'a>> {
+    use crate::codecs::tool_result_media::{self as tool_result_media, Image, Piece};
+    let models = &opts.profile().models;
+    let images = tool_result_media::accepts_images(models);
+    let documents = tool_result_media::accepts_documents(models);
+    let input_text =
+        |text: WireValue<'a>| WireValue::from(json!({"type": "input_text"})).with("text", text);
+    let note = |text: &str| input_text(Value::String(text.into()).into());
+    blocks
+        .iter()
+        .map(|block| match tool_result_media::piece(block) {
+            Piece::Text(text) => input_text(WireValue::text(text)),
+            Piece::Json(value) => WireValue::borrowed(value),
+            Piece::Image(image) if images => {
+                let url = match image {
+                    Image::Base64 { media_type, data } => {
+                        format!("data:{media_type};base64,{data}")
+                    }
+                    Image::Url(url) => url.to_owned(),
+                };
+                json!({"type": "input_image", "image_url": url}).into()
+            }
+            Piece::Image(_) => note("(image omitted: this model does not accept image input)"),
+            Piece::Document {
+                media_type,
+                data,
+                title,
+            } if documents => json!({
+                "type": "input_file",
+                "file_data": format!("data:{media_type};base64,{data}"),
+                "filename": title.unwrap_or("document"),
+            })
+            .into(),
+            Piece::Document { .. } => {
+                note("(document omitted: this model does not accept document input)")
+            }
+        })
+        .collect()
 }
 
 fn computer_tool_config(

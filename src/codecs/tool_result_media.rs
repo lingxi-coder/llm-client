@@ -43,11 +43,24 @@ pub(crate) fn pieces(blocks: &[Value]) -> Option<Vec<Piece<'_>>> {
     pieces.iter().any(Piece::is_media).then_some(pieces)
 }
 
+/// The blocks a text-only slot carries as derived text: [`pieces`], or every
+/// block when all are text. Sent as their JSON spelling, text blocks would
+/// pay for the array's quoting and escapes on every replay.
+pub(crate) fn slot_pieces(blocks: &[Value]) -> Option<Vec<Piece<'_>>> {
+    pieces(blocks).or_else(|| {
+        let pieces: Vec<_> = blocks.iter().map(piece).collect();
+        pieces
+            .iter()
+            .all(|piece| matches!(piece, Piece::Text(_)))
+            .then_some(pieces)
+    })
+}
+
 pub(crate) fn has_media(blocks: &[Value]) -> bool {
     blocks.iter().any(|block| piece(block).is_media())
 }
 
-fn piece(block: &Value) -> Piece<'_> {
+pub(crate) fn piece(block: &Value) -> Piece<'_> {
     let source = &block["source"];
     let base64 = || source["media_type"].as_str().zip(source["data"].as_str());
     match (block["type"].as_str(), source["type"].as_str()) {

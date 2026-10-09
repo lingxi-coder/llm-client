@@ -198,7 +198,10 @@ fn cache_patches_preserve_borrowed_schema_system_and_structured_tool_results() {
     req.prompt_cache = Default::default();
     let encoded = encode(&OpenAiResponsesCodec, &req, Value::Null);
     let body: Value = serde_json::from_slice(&encoded.body).unwrap();
-    assert_eq!(body["input"][3]["output"], json!([result]));
+    assert_eq!(
+        body["input"][3]["output"],
+        json!([{"type":"input_text","text":TEXT}])
+    );
 }
 
 #[test]

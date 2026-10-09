@@ -525,10 +525,10 @@ fn encode_message<'a>(
                     &mut tool_calls,
                     &mut native_reasoning,
                 );
-                let media = blocks
+                let pieces = blocks
                     .as_deref()
-                    .and_then(crate::codecs::tool_result_media::pieces);
-                let tool_content = if let Some(pieces) = media {
+                    .and_then(crate::codecs::tool_result_media::slot_pieces);
+                let tool_content = if let Some(pieces) = pieces {
                     let text = split_tool_result_media(&pieces, &mut tool_media, pdf_only_files, opts);
                     let marker = if qwen_marked {
                         Some(json!({"type":"ephemeral"}))
