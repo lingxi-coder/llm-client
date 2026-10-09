@@ -237,6 +237,7 @@ fn native_main_wire_keeps_empty_tools_and_tool_result_shape() {
         &selected_profile.base_url,
     );
     let result = |is_error| ContentBlock::ToolResult {
+        cache_reference: None,
         tool_use_id: ToolUseId::new("toolu_native"),
         content: JsonPayload::string("ok"),
         is_error,

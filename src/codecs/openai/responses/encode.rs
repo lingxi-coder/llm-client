@@ -484,12 +484,16 @@ fn encode_message<'a>(
                 ..
             } => {
                 flush(role, &mut parts, input);
+                let result_parts = blocks
+                    .as_ref()
+                    .map(|blocks| tool_result_parts(blocks, opts))
+                    .transpose()?;
                 let output = crate::providers::openai::prompt_cache::tool_result_output(
                     wire.request(),
                     message_index,
                     block_index,
                     content,
-                    blocks.as_ref(),
+                    result_parts,
                 )?;
                 input.push(
                     WireValue::from(json!({
@@ -539,6 +543,74 @@ fn encode_message<'a>(
     }
     flush(role, &mut parts, input);
     Ok(())
+}
+
+/// A tool result's blocks as `function_call_output` input parts, one part per
+/// block. The harness hands them over in Anthropic's shapes (`text`, `image`,
+/// `document`), which the Responses API rejects in `output`; those become
+/// `input_*` parts, and any other block, such as a caller's own `input_file`,
+/// is sent as given. Media the selected model does not accept is left out,
+/// and a text part says so.
+fn tool_result_parts<'a>(
+    blocks: &crate::protocol::JsonPayload,
+    opts: &CodecContext,
+) -> Result<Vec<WireValue<'a>>, LlmError> {
+    use crate::codecs::tool_result_media::{self as tool_result_media, Image, Piece};
+    let models = &opts.profile().models;
+    let images = tool_result_media::accepts_images(models);
+    let documents = tool_result_media::accepts_documents(models);
+    let input_text = |text: crate::protocol::JsonPayload| {
+        WireValue::from(json!({"type": "input_text"})).with("text", WireValue::owned_raw_json(text))
+    };
+    let note = |text: &str| input_text(crate::protocol::JsonPayload::string(text));
+    let len = blocks
+        .array_len("")
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "tool result blocks must be an array".into(),
+        })?;
+    let mut output = Vec::with_capacity(len);
+    for index in 0..len {
+        let block = blocks
+            .array_item(index)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "tool result block source is missing".into(),
+            })?;
+        output.push(match tool_result_media::piece(&block) {
+            Piece::Text(units) => input_text(
+                crate::protocol::JsonPayload::string_from_utf16_code_units(&units),
+            ),
+            Piece::Json(value) => WireValue::owned_raw_json(value),
+            Piece::Image(image) if images => {
+                let url = match image {
+                    Image::Base64 { media_type, data } => {
+                        format!("data:{media_type};base64,{data}")
+                    }
+                    Image::Url(url) => url,
+                };
+                json!({"type": "input_image", "image_url": url}).into()
+            }
+            Piece::Image(_) => note("(image omitted: this model does not accept image input)"),
+            Piece::Document {
+                media_type,
+                data,
+                title,
+            } if documents => {
+                let filename = title.as_ref().map_or_else(
+                    || crate::protocol::JsonPayload::string("document"),
+                    |units| crate::protocol::JsonPayload::string_from_utf16_code_units(units),
+                );
+                WireValue::from(json!({
+                    "type": "input_file",
+                    "file_data": format!("data:{media_type};base64,{data}"),
+                }))
+                .with("filename", WireValue::owned_raw_json(filename))
+            }
+            Piece::Document { .. } => {
+                note("(document omitted: this model does not accept document input)")
+            }
+        });
+    }
+    Ok(output)
 }
 
 fn computer_tool_config(

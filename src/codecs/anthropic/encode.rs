@@ -3,8 +3,8 @@
 use crate::codecs::json::{WireRequest, WireValue};
 use crate::codecs::{CodecContext, EncodeRequest};
 use crate::protocol::{
-    ContentBlock, ConversationMessage, DocumentSource, ImageSource, LlmError, MessageRole,
-    ProviderProfile, ToolChoice, ToolSpec,
+    ContentBlock, ConversationMessage, DocumentSource, ImageSource, JsonPayload, LlmError,
+    MessageRole, ProviderProfile, ToolChoice, ToolSpec,
 };
 use crate::providers::anthropic::types::{
     AnthropicClearAt, AnthropicMessageEffort, AnthropicToolCaller, AnthropicToolSearchConfig,
@@ -409,6 +409,63 @@ fn encode_optional_bool(block: &mut WireValue<'_>, field: &'static str, value: O
     }
 }
 
+/// Replace only media block kinds ruled out by the selected model's catalog.
+/// Every retained block is copied from the original array's JSON source, so
+/// unknown blocks, string escapes, and explicit metadata keep their spelling.
+fn omit_unsupported_tool_result_media(
+    blocks: &JsonPayload,
+    opts: &CodecContext,
+) -> Result<Option<JsonPayload>, LlmError> {
+    use crate::codecs::tool_result_media::{self, Piece};
+
+    let Some(pieces) = tool_result_media::pieces(blocks) else {
+        return Ok(None);
+    };
+    let accepts_images = tool_result_media::accepts_images(&opts.profile().models);
+    let accepts_documents = !tool_result_media::rules_out_documents(&opts.profile().models);
+    let note = |piece: &Piece| match piece {
+        Piece::Image(_) if !accepts_images => {
+            Some("(image omitted: this model does not accept image input)")
+        }
+        Piece::Document { .. } if !accepts_documents => {
+            Some("(document omitted: this model does not accept document input)")
+        }
+        _ => None,
+    };
+    if !pieces.iter().any(|piece| note(piece).is_some()) {
+        return Ok(None);
+    }
+
+    let mut source = String::from("[");
+    for (index, piece) in pieces.iter().enumerate() {
+        if index > 0 {
+            source.push(',');
+        }
+        if let Some(note) = note(piece) {
+            let block = JsonPayload::from_generated_value(&json!({
+                "type": "text",
+                "text": note,
+            }))
+            .map_err(|error| LlmError::InvalidRequest {
+                message: format!("could not encode Anthropic media omission note: {error}"),
+            })?;
+            source.push_str(block.as_json_source());
+        } else {
+            let block = blocks
+                .array_item(index)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "tool result blocks changed while encoding".into(),
+                })?;
+            source.push_str(block.as_json_source());
+        }
+    }
+    JsonPayload::parse(&source)
+        .map(Some)
+        .map_err(|error| LlmError::InvalidRequest {
+            message: format!("could not encode Anthropic tool result blocks: {error}"),
+        })
+}
+
 fn encode_block<'a>(
     b: &'a ContentBlock,
     unsigned_thinking: bool,
@@ -483,14 +540,20 @@ fn encode_block<'a>(
             is_error,
             blocks,
             toolset_name,
+            cache_reference,
+            ..
         } => {
             content.validate_root_string("tool result content")?;
             if let Some(blocks) = blocks {
                 blocks.validate_root_array("tool result blocks")?;
             }
-            let content = blocks
-                .as_ref()
-                .map_or_else(|| WireValue::raw_json(content), WireValue::raw_json);
+            let content = match blocks {
+                Some(blocks) => match omit_unsupported_tool_result_media(blocks, opts)? {
+                    Some(projected) => WireValue::owned_raw_json(projected),
+                    None => WireValue::raw_json(blocks),
+                },
+                None => WireValue::raw_json(content),
+            };
             let mut v = if opts.native_anthropic_main_request() {
                 WireValue::from(json!({
                     "tool_use_id": tool_use_id,
@@ -504,6 +567,9 @@ fn encode_block<'a>(
             }
             .with("content", content);
             encode_optional_bool(&mut v, "is_error", *is_error);
+            if let Some(cache_reference) = cache_reference {
+                v["cache_reference"] = json!(cache_reference);
+            }
             if let Some(toolset_name) = toolset_name {
                 v["toolset_name"] = json!(toolset_name);
             }
@@ -730,5 +796,72 @@ mod wire_presence_tests {
             serde_json::to_value(explicit_false).unwrap()["is_error"],
             false
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_result_media_tests {
+    use super::*;
+    use crate::codecs::{CodecContext, RequestMode};
+    use crate::protocol::ToolUseId;
+
+    fn profile(input_modalities: &[&str]) -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": "anthropic",
+            "profile_name": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "model",
+                "request_model": "wire-model",
+                "billing_model": "wire-model",
+                "metadata": {"input_modalities": input_modalities}
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn context(input_modalities: &[&str]) -> CodecContext {
+        let profile = profile(input_modalities);
+        CodecContext::new(&profile, "wire-model", RequestMode::Complete)
+    }
+
+    #[test]
+    fn text_only_models_omit_only_unsupported_media_and_keep_other_source_blocks() {
+        let blocks = JsonPayload::parse(
+            r#"[{"type":"text","text":"before"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AQ=="},"title":"report"},{"type":"future","value":1e400}]"#,
+        )
+        .unwrap();
+        let omitted = omit_unsupported_tool_result_media(&blocks, &context(&["text"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            omitted.as_json_source(),
+            r#"[{"type":"text","text":"before"},{"type":"text","text":"(image omitted: this model does not accept image input)"},{"type":"text","text":"(document omitted: this model does not accept document input)"},{"type":"future","value":1e400}]"#
+        );
+
+        let capable = context(&["text", "image", "file"]);
+        assert!(omit_unsupported_tool_result_media(&blocks, &capable)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn tool_result_preserves_cache_reference_and_explicit_false() {
+        let profile = profile(&["text"]);
+        let opts = CodecContext::new(&profile, "wire-model", RequestMode::Complete);
+        let block = ContentBlock::ToolResult {
+            tool_use_id: ToolUseId::new("toolu_123"),
+            content: JsonPayload::string("saved result"),
+            is_error: Some(false),
+            blocks: None,
+            cache_reference: Some("cache_ref_123".into()),
+            toolset_name: None,
+        };
+        let encoded = encode_block(&block, false, "wire-model", &profile, &opts).unwrap();
+        let encoded = serde_json::to_value(encoded).unwrap();
+        assert_eq!(encoded["cache_reference"], "cache_ref_123");
+        assert_eq!(encoded["is_error"], false);
     }
 }

@@ -620,6 +620,7 @@ fn thinking_config_turns_the_budget_into_the_wire_shape() {
 fn a_tool_result_carries_its_error_flag() {
     let body = encode(
         &request(vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("toolu_1"),
             content: lingxi_llm_client::protocol::JsonPayload::string("no such file"),
             is_error: Some(true),

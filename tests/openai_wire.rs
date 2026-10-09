@@ -283,6 +283,7 @@ fn a_tool_result_becomes_its_own_message() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: lingxi_llm_client::protocol::ToolUseId::new("call-1"),
             content: lingxi_llm_client::protocol::JsonPayload::string("contents"),
             is_error: Some(false),

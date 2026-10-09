@@ -303,7 +303,7 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
             RealtimeInput::CommitAudio => vec![json!({
                 "type": "input_audio_buffer.commit"
             })],
-            RealtimeInput::ToolResult { call_id, output } => {
+            RealtimeInput::ToolResult { call_id, output , .. } => {
                 vec![
                     encode_function_call_output(call_id, output)?,
                     json!({ "type": "response.create" }),

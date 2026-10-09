@@ -42,6 +42,77 @@ impl JsonPayload {
         self.0.get()
     }
 
+    /// Compare provider argument snapshots without conflating source strings,
+    /// rounding distinct integers, or depending on object member order.
+    /// Unlike `PartialEq`, this compares decoded values rather than raw bytes.
+    pub fn semantically_eq(&self, other: &Self) -> Result<bool, crate::protocol::LlmError> {
+        use crate::response_json::FlatJsonKind;
+        use std::collections::BTreeMap;
+
+        let left = self.scanner()?;
+        let right = other.scanner()?;
+        let mut pending = vec![(left.root_node(), right.root_node())];
+        while let Some((a, b)) = pending.pop() {
+            if a.kind() != b.kind() {
+                return Ok(false);
+            }
+            match a.kind() {
+                FlatJsonKind::Null | FlatJsonKind::Boolean => {
+                    if a.primitive_source() != b.primitive_source() {
+                        return Ok(false);
+                    }
+                }
+                FlatJsonKind::Number => {
+                    let a = a.number_source().expect("number node has source");
+                    let b = b.number_source().expect("number node has source");
+                    if !argument_numbers_equal(a, b) {
+                        return Ok(false);
+                    }
+                }
+                FlatJsonKind::String => {
+                    if a.string_units() != b.string_units() {
+                        return Ok(false);
+                    }
+                }
+                FlatJsonKind::Array => {
+                    if a.array_len() != b.array_len() {
+                        return Ok(false);
+                    }
+                    for index in 0..a.array_len().expect("array node has a length") {
+                        pending.push((
+                            a.array_item(index).expect("array child exists"),
+                            b.array_item(index).expect("paired array child exists"),
+                        ));
+                    }
+                }
+                FlatJsonKind::Object => {
+                    let a: BTreeMap<_, _> = a
+                        .object_entries()
+                        .expect("object node has entries")
+                        .into_iter()
+                        .map(|entry| (entry.key_units, entry.value))
+                        .collect();
+                    let mut b: BTreeMap<_, _> = b
+                        .object_entries()
+                        .expect("object node has entries")
+                        .into_iter()
+                        .map(|entry| (entry.key_units, entry.value))
+                        .collect();
+                    if a.len() != b.len() {
+                        return Ok(false);
+                    }
+                    for (key, value) in a {
+                        let Some(other) = b.remove(key) else {
+                            return Ok(false);
+                        };
+                        pending.push((value, other));
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Exact code units when this payload's root value is a JSON string.
     pub fn root_string_code_units(&self) -> Option<Vec<u16>> {
         let scanner = self.scanner().ok()?;
@@ -718,6 +789,37 @@ impl fmt::Debug for JsonPayload {
     }
 }
 
+fn argument_numbers_equal(left: &str, right: &str) -> bool {
+    let (Ok(left_number), Ok(right_number)) = (
+        serde_json::from_str::<serde_json::Number>(left),
+        serde_json::from_str::<serde_json::Number>(right),
+    ) else {
+        // Valid source numbers outside the codec's finite number range must
+        // never become equal merely because both overflow a floating point type.
+        return left == right;
+    };
+    let integer = |number: &serde_json::Number| {
+        number
+            .as_u64()
+            .map(i128::from)
+            .or_else(|| number.as_i64().map(i128::from))
+    };
+    let exact_float = |integer: i128, number: &serde_json::Number| {
+        number.as_f64().is_some_and(|float| {
+            float.is_finite()
+                && float.fract() == 0.0
+                && float as i128 == integer
+                && integer as f64 == float
+        })
+    };
+    match (integer(&left_number), integer(&right_number)) {
+        (Some(left), Some(right)) => left == right,
+        (Some(left), None) => exact_float(left, &right_number),
+        (None, Some(right)) => exact_float(right, &left_number),
+        (None, None) => left_number.as_f64() == right_number.as_f64(),
+    }
+}
+
 impl PartialEq for JsonPayload {
     fn eq(&self, other: &Self) -> bool {
         self.as_json_source() == other.as_json_source()
@@ -1195,5 +1297,33 @@ mod tests {
                 .unwrap(),
             r#"{"type":"response","items":[{"n":1}],"cache_control":{"type":"ephemeral"}}"#
         );
+    }
+
+    #[test]
+    fn argument_snapshots_compare_structure_and_exact_source_units() {
+        let equal = |left, right| {
+            JsonPayload::parse(left)
+                .unwrap()
+                .semantically_eq(&JsonPayload::parse(right).unwrap())
+                .unwrap()
+        };
+        assert!(equal(
+            r#"{"a":1,"b":[true,null]}"#,
+            r#"{"b":[true,null],"a":1.0}"#
+        ));
+        assert!(equal(
+            r#"{"\ud800":1,"\ud801":2}"#,
+            r#"{"\ud801":2,"\ud800":1}"#
+        ));
+        assert!(!equal(r#"{"x":"\ud800"}"#, r#"{"x":"\ud801"}"#));
+        assert!(!equal(r#"{"\ud800":1}"#, r#"{"\ud801":1}"#));
+        assert!(!equal("[1,2]", "[2,1]"));
+        assert!(equal(r#"{"x":0,"x":1}"#, r#"{"x":1}"#));
+        assert!(!equal("9007199254740993", "9007199254740992"));
+        assert!(!equal("9007199254740993", "9007199254740992.0"));
+        assert!(!equal("18446744073709551615", "18446744073709551614"));
+        assert!(equal("1.0", "1"));
+        assert!(equal("1e400", "1e400"));
+        assert!(!equal("1e400", "2e400"));
     }
 }

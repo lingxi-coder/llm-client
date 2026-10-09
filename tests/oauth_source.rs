@@ -28,3 +28,27 @@ fn current_native_oauth_source_cases() {
         );
     }
 }
+
+#[test]
+fn native_293_raw_token_truthiness_and_empty_fallback() {
+    for token in [" token ", " ", "\t"] {
+        let selected = select_oauth_source(OAuthSourceInputs {
+            environment_token: Some(token),
+            descriptor_token: Some("fd"),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(selected.access_token, token);
+        assert_eq!(selected.source, OAuthSource::Environment);
+    }
+
+    let selected = select_oauth_source(OAuthSourceInputs {
+        environment_token: Some(""),
+        descriptor_token: Some(" fd "),
+        stored_token: Some("stored"),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(selected.access_token, " fd ");
+    assert_eq!(selected.source, OAuthSource::Descriptor);
+}

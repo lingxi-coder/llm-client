@@ -83,6 +83,8 @@ pub enum ContentBlock {
         /// Structured blocks when the result is an array (an MCP result with
         /// images or resources). Sent verbatim when present.
         blocks: Option<JsonPayload>,
+        /// Anthropic cache reference for this exact tool-result receipt.
+        cache_reference: Option<String>,
         /// Anthropic client-toolset family of the paired call, echoed on
         /// Browser/Computer member results.
         toolset_name: Option<String>,
@@ -186,6 +188,7 @@ impl Serialize for ContentBlock {
                 content,
                 is_error,
                 blocks,
+                cache_reference,
                 toolset_name,
             } => {
                 content
@@ -201,6 +204,7 @@ impl Serialize for ContentBlock {
                 map.serialize_entry("content", content)?;
                 serialize_some(&mut map, "is_error", is_error)?;
                 serialize_some(&mut map, "blocks", blocks)?;
+                serialize_some(&mut map, "cache_reference", cache_reference)?;
                 serialize_some(&mut map, "toolset_name", toolset_name)?;
             }
             Self::Thinking { text, signature } => {
@@ -328,6 +332,7 @@ fn decode_content_block(source: &str) -> Result<ContentBlock, String> {
                     Ok::<_, String>(blocks)
                 })
                 .transpose()?,
+            cache_reference: optional_string("/cache_reference")?,
             toolset_name: optional_string("/toolset_name")?,
         }),
         "native" => Ok(ContentBlock::Native {
@@ -724,6 +729,7 @@ mod tests {
     #[test]
     fn tool_result_round_trips_with_and_without_blocks() {
         let b = ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("toolu_1"),
             content: "ok".into(),
             is_error: Some(false),
@@ -742,6 +748,7 @@ mod tests {
             content,
             is_error: None,
             blocks: Some(blocks),
+            cache_reference: None,
             toolset_name: None,
         };
         let encoded = serde_json::to_string(&exact).unwrap();
@@ -755,6 +762,7 @@ mod tests {
             content: JsonPayload::parse("{}").unwrap(),
             is_error: None,
             blocks: None,
+            cache_reference: None,
             toolset_name: None,
         };
         assert!(serde_json::to_string(&invalid_content).is_err());
@@ -763,6 +771,7 @@ mod tests {
             content: JsonPayload::string("fallback"),
             is_error: None,
             blocks: Some(JsonPayload::parse("{}").unwrap()),
+            cache_reference: None,
             toolset_name: None,
         };
         assert!(serde_json::to_string(&invalid_blocks).is_err());
@@ -898,6 +907,7 @@ mod tests {
         );
 
         let result_block = ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("toolu_browser"),
             content: "done".into(),
             is_error: Some(false),
@@ -909,6 +919,21 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ContentBlock>(&result_json).unwrap(),
             result_block
+        );
+
+        let cached_result = ContentBlock::ToolResult {
+            tool_use_id: ToolUseId::new("toolu_cached"),
+            content: JsonPayload::string("done"),
+            is_error: None,
+            blocks: None,
+            cache_reference: Some("cache_ref_1".into()),
+            toolset_name: None,
+        };
+        let cached_json = serde_json::to_string(&cached_result).unwrap();
+        assert!(cached_json.contains("\"cache_reference\":\"cache_ref_1\""));
+        assert_eq!(
+            serde_json::from_str::<ContentBlock>(&cached_json).unwrap(),
+            cached_result
         );
 
         let null_use = r#"{"type":"tool_use","id":"toolu_legacy","name":"lookup","input":{},"toolset_name":null}"#;

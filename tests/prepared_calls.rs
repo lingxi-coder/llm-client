@@ -100,6 +100,28 @@ fn append_test_root_fields(source: &JsonPayload, fields: &serde_json::Value) -> 
     JsonPayload::parse(&combined).unwrap()
 }
 
+fn replace_source_once(source: &JsonPayload, before: &str, after: &str) -> JsonPayload {
+    let original = source.as_json_source();
+    assert_eq!(
+        original.matches(before).count(),
+        1,
+        "source fragment must be unique"
+    );
+    JsonPayload::parse(&original.replacen(before, after, 1)).unwrap()
+}
+
+fn swap_two_source_array_items(source: &JsonPayload, pointer: &str) -> JsonPayload {
+    assert_eq!(
+        source.array_len(pointer),
+        Some(2),
+        "expected a two-item array"
+    );
+    let first = source.raw_source_at(&format!("{pointer}/0")).unwrap();
+    let second = source.raw_source_at(&format!("{pointer}/1")).unwrap();
+    let original = source.raw_source_at(pointer).unwrap();
+    replace_source_once(source, &original, &format!("[{second},{first}]"))
+}
+
 fn assert_exact_text_request(http: &ResponseTransport, expected_count: usize) {
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests.len(), expected_count);
@@ -1372,4 +1394,129 @@ async fn host_controls_and_native_tools_survive_borrowed_body_encoding() {
         .iter()
         .any(|(key, value)| key == "anthropic-beta" && value.contains("computer-use-2025-01-24")));
     assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn draft_body_reorder_retains_exact_arguments_by_call_identity() {
+    let transport = http(200, "{}", false);
+    let client = LlmClientBuilder::with_transport(transport, &profiles("anthropic_messages"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut input = request();
+    input.messages.push(ConversationMessage::assistant(
+        [
+            ("first", r#"{"x":"\ud800"}"#),
+            ("second", r#"{"x":"\ud801"}"#),
+        ]
+        .into_iter()
+        .map(|(id, raw)| ContentBlock::ToolUse {
+            id: id.into(),
+            name: "read".into(),
+            input: JsonPayload::parse(raw).unwrap(),
+            provider_id: None,
+            caller: None,
+            toolset_name: None,
+            thought_signature: None,
+        })
+        .collect(),
+    ));
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &input,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    let body = swap_two_source_array_items(
+        &draft.semantic_body_source().unwrap(),
+        "/messages/0/content",
+    );
+    draft.set_json_body(body, &Default::default()).unwrap();
+    let source = draft.semantic_body_source().unwrap();
+    assert_eq!(
+        source.string_at("/messages/0/content/0/id").as_deref(),
+        Some("second")
+    );
+    assert_eq!(
+        source
+            .raw_source_at("/messages/0/content/0/input")
+            .as_deref(),
+        Some(r#"{"x":"\ud801"}"#)
+    );
+    assert_eq!(
+        source
+            .raw_source_at("/messages/0/content/1/input")
+            .as_deref(),
+        Some(r#"{"x":"\ud800"}"#)
+    );
+    let first_item = source.raw_source_at("/messages/0/content/0").unwrap();
+    let renamed = first_item.replacen(r#""id":"second""#, r#""id":"first""#, 1);
+    let renamed_body = replace_source_once(&source, &first_item, &renamed);
+    draft
+        .set_json_body(renamed_body, &Default::default())
+        .unwrap();
+    let renamed = draft.semantic_body_source().unwrap();
+    assert_eq!(
+        renamed
+            .raw_source_at("/messages/0/content/0/input")
+            .as_deref(),
+        Some(r#"{"x":"\ud801"}"#),
+        "the single source value keeps arguments attached when a host edits an ID"
+    );
+}
+
+#[tokio::test]
+async fn draft_body_reorder_retains_exact_schemas_by_tool_name() {
+    let transport = http(200, "{}", false);
+    let client = LlmClientBuilder::with_transport(transport, &profiles("anthropic_messages"))
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut input = request();
+    for (name, raw) in [
+        (
+            "first",
+            r#"{"type":"object","properties":{"x":{"description":"\ud800"}}}"#,
+        ),
+        (
+            "second",
+            r#"{"type":"object","properties":{"x":{"description":"\ud801"}}}"#,
+        ),
+    ] {
+        let tool = lingxi_llm_client::protocol::ToolSpec {
+            name: name.into(),
+            description: JsonPayload::string("tool"),
+            input_schema: JsonPayload::parse(raw).unwrap(),
+            strict: false,
+            defer_loading: false,
+            native_options: Vec::new(),
+            tool_type: None,
+            extra: JsonPayload::default(),
+        };
+        input.tools.push(tool);
+    }
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &input,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    let body = swap_two_source_array_items(&draft.semantic_body_source().unwrap(), "/tools");
+    draft.set_json_body(body, &Default::default()).unwrap();
+    let source = draft.semantic_body_source().unwrap();
+    assert_eq!(source.string_at("/tools/0/name").as_deref(), Some("second"));
+    assert!(source
+        .raw_source_at("/tools/0/input_schema")
+        .unwrap()
+        .contains("\\ud801"));
+    assert!(source
+        .raw_source_at("/tools/1/input_schema")
+        .unwrap()
+        .contains("\\ud800"));
 }

@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 struct Step {
+    arguments_decoder: crate::response_json::ArgumentJsonDecoder,
     value: Value,
     source: JsonPayload,
     arguments: Vec<u16>,
@@ -205,6 +206,7 @@ impl EventDecoder for InteractionsDecoder {
                 self.steps.insert(
                     index,
                     Step {
+                        arguments_decoder: Default::default(),
                         value,
                         source,
                         arguments: Vec::new(),
@@ -225,18 +227,21 @@ impl EventDecoder for InteractionsDecoder {
                     .ok_or_else(|| Self::interrupted("Interactions delta has no source object"))?;
                 match delta["type"].as_str() {
                     Some("arguments_delta") if step.value["type"] == "function_call" => {
-                        let fragment =
+                        let units =
                             delta_source.string_units_at("/arguments").ok_or_else(|| {
                                 Self::interrupted("Interactions argument delta must be a string")
                             })?;
-                        step.arguments.extend(fragment);
-                        if let Some(fragment) = delta["arguments"].as_str() {
-                            step.value["arguments"] = json!(format!(
-                                "{}{}",
-                                step.value["arguments"].as_str().unwrap_or(""),
-                                fragment
-                            ));
-                        }
+                        let display = delta_source
+                            .string_at("/arguments")
+                            .unwrap_or_else(|| String::from_utf16_lossy(&units));
+                        let fragment =
+                            step.arguments_decoder
+                                .push(crate::response_json::DecodedText {
+                                    text: display,
+                                    utf16_code_units: Some(units),
+                                })?;
+                        step.arguments
+                            .extend(fragment.utf16_code_units().iter().copied());
                     }
                     Some("text") if step.value["type"] == "model_output" => {
                         let text_units =
@@ -335,6 +340,39 @@ impl EventDecoder for InteractionsDecoder {
                                 "Interactions step delta must be an object",
                             ));
                         }
+                        if step.value["type"] == "function_call" {
+                            for key in ["id", "name"] {
+                                let pointer = format!("/{key}");
+                                if step
+                                    .source
+                                    .string_units_at(&pointer)
+                                    .is_some_and(|units| !units.is_empty())
+                                {
+                                    if let Some(delta_value) = delta_source.payload_at(&pointer) {
+                                        let current = step
+                                            .source
+                                            .payload_at(&pointer)
+                                            .expect("present function identity has source");
+                                        if !current.semantically_eq(&delta_value)? {
+                                            return Err(Self::interrupted(
+                                                "Interactions delta changes function call identity",
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(arguments) = delta_source.payload_at("/arguments") {
+                                if arguments.is_root_string() {
+                                    return Err(Self::interrupted(
+                                        "Interactions argument snapshot must be a JSON value",
+                                    ));
+                                }
+                                // An argument snapshot supersedes any fragments received
+                                // before it. Later fragments start a fresh JSON value.
+                                step.arguments.clear();
+                                step.arguments_decoder = Default::default();
+                            }
+                        }
                         for (key, value) in delta.as_object().unwrap() {
                             if key != "type" {
                                 step.value[key] = value.clone();
@@ -392,25 +430,80 @@ impl EventDecoder for InteractionsDecoder {
                     .map(|step| step.source.clone())
                     .collect();
                 if let Some(terminal) = body.get("steps") {
-                    let terminal = terminal.as_array().ok_or_else(|| {
+                    terminal.as_array().ok_or_else(|| {
                         Self::interrupted("Interactions terminal steps must be an array")
                     })?;
-                    if body_source.array_len("/steps").is_none() {
-                        return Err(Self::interrupted(
-                            "Interactions terminal steps must be an array",
-                        ));
-                    }
-                    if terminal.len() != streamed_values.len()
-                        || terminal.iter().zip(&streamed_values).any(
-                            |(final_step, streamed_step)| {
-                                final_step["type"] != streamed_step["type"]
-                                    || (streamed_step["type"] == "function_call"
-                                        && final_step != streamed_step)
-                            },
-                        )
-                    {
+                    let terminal_len = body_source.array_len("/steps").ok_or_else(|| {
+                        Self::interrupted("Interactions terminal steps must be an array")
+                    })?;
+                    if terminal_len != streamed_values.len() {
                         return Err(Self::interrupted(
                             "Interactions terminal calls differ from completed streamed steps",
+                        ));
+                    }
+                    let mut confirmed_ids = std::collections::BTreeSet::new();
+                    for index in 0..terminal_len {
+                        let final_step =
+                            body_source.array_item_at("/steps", index).ok_or_else(|| {
+                                Self::interrupted("Interactions terminal step source is missing")
+                            })?;
+                        if !final_step.string_is("/type", "function_call") {
+                            if final_step.string_units_at("/type")
+                                != streamed_sources[index].string_units_at("/type")
+                            {
+                                return Err(Self::interrupted(
+                                    "Interactions terminal steps differ from completed streamed steps",
+                                ));
+                            }
+                            continue;
+                        }
+                        let id = final_step.string_units_at("/id").ok_or_else(|| {
+                            Self::interrupted("Interactions terminal call has no id")
+                        })?;
+                        if !confirmed_ids.insert(id.clone()) {
+                            return Err(Self::interrupted(
+                                "Interactions terminal repeated a function call id",
+                            ));
+                        }
+                        let mut candidates = self.steps.values().filter(|step| {
+                            step.source.string_is("/type", "function_call")
+                                && step.source.string_units_at("/id").as_ref() == Some(&id)
+                        });
+                        let streamed_step = candidates.next().ok_or_else(|| {
+                            Self::interrupted("Interactions terminal call has no streamed identity")
+                        })?;
+                        if candidates.next().is_some() {
+                            return Err(Self::interrupted(
+                                "Interactions stream repeated a function call id",
+                            ));
+                        }
+                        let final_identity = final_step.without_object_field("arguments")?;
+                        let streamed_identity =
+                            streamed_step.source.without_object_field("arguments")?;
+                        let null = JsonPayload::parse("null").expect("null is valid JSON");
+                        let final_arguments = final_step
+                            .payload_at("/arguments")
+                            .unwrap_or_else(|| null.clone());
+                        let streamed_arguments = streamed_step
+                            .source
+                            .payload_at("/arguments")
+                            .unwrap_or(null);
+                        if !final_identity.semantically_eq(&streamed_identity)?
+                            || !final_arguments.semantically_eq(&streamed_arguments)?
+                        {
+                            return Err(Self::interrupted(
+                                "Interactions terminal calls differ from completed streamed steps",
+                            ));
+                        }
+                    }
+                    if confirmed_ids.len()
+                        != streamed_sources
+                            .iter()
+                            .filter(|step| step.string_is("/type", "function_call"))
+                            .count()
+                    {
+                        return Err(Self::interrupted(
+                            "Interactions terminal omitted a streamed function call",
                         ));
                     }
                 } else {

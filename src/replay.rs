@@ -170,6 +170,7 @@ impl ReplayContext {
                                     ) =>
                             {
                                 Some(ContentBlock::ToolResult {
+                                    cache_reference: None,
                                     tool_use_id: id.into(),
                                     content,
                                     blocks: parsed_blocks,

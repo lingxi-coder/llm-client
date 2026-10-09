@@ -23,19 +23,22 @@ struct StreamedFunctionCall {
     index: usize,
     id: ToolUseId,
     name: String,
-    arguments: String,
+    arguments_decoder: crate::response_json::ArgumentJsonDecoder,
+    arguments: Vec<u16>,
 }
 
 fn finalize_function_arguments(
     call: &mut StreamedFunctionCall,
-    arguments: &str,
+    arguments: &[u16],
     out: &mut Vec<StreamEvent>,
 ) -> Result<(), LlmError> {
-    let finalized: Value =
-        serde_json::from_str(arguments).map_err(|_| LlmError::InvalidRequest {
+    let finalized_fragment = JsonPayloadFragment::from_utf16_code_units(arguments.to_vec());
+    let finalized = JsonPayload::parse_fragments([&finalized_fragment]).map_err(|_| {
+        LlmError::InvalidRequest {
             message: "finalized function call arguments are malformed".into(),
-        })?;
-    if let Some(remainder) = arguments.strip_prefix(call.arguments.as_str()) {
+        }
+    })?;
+    if let Some(remainder) = arguments.strip_prefix(call.arguments.as_slice()) {
         if !remainder.is_empty() {
             out.push(StreamEvent::ToolCallDelta {
                 block: call.index,
@@ -43,28 +46,47 @@ fn finalize_function_arguments(
                 caller: None,
                 toolset_name: None,
                 name: call.name.clone(),
-                arguments_fragment: JsonPayloadFragment::from_decoded_text(remainder, None)
-                    .map_err(|message| LlmError::InvalidRequest {
-                        message: message.into(),
-                    })?,
+                arguments_fragment: JsonPayloadFragment::from_utf16_code_units(remainder.to_vec()),
                 provider_id: None,
             });
         }
     } else {
-        let streamed: Value =
-            serde_json::from_str(&call.arguments).map_err(|_| LlmError::InvalidRequest {
+        let streamed_fragment = if call.arguments.is_empty() {
+            JsonPayloadFragment::from_text("{}")
+        } else {
+            JsonPayloadFragment::from_utf16_code_units(call.arguments.clone())
+        };
+        let streamed = JsonPayload::parse_fragments([&streamed_fragment]).map_err(|_| {
+            LlmError::InvalidRequest {
                 message: "streamed function call arguments are malformed".into(),
-            })?;
-        if streamed != finalized {
+            }
+        })?;
+        if !streamed.semantically_eq(&finalized)? {
             return Err(LlmError::InvalidRequest {
                 message: "finalized function call arguments conflict with streamed fragments"
                     .into(),
             });
         }
     }
-    call.arguments.clear();
-    call.arguments.push_str(arguments);
+    call.arguments = arguments.to_vec();
     Ok(())
+}
+
+fn parse_argument_string(
+    source: &JsonPayload,
+    pointer: &str,
+    missing_message: &str,
+    malformed_message: &str,
+) -> Result<JsonPayload, LlmError> {
+    let units = source
+        .string_units_at(pointer)
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: missing_message.into(),
+        })?;
+    let fragment = JsonPayloadFragment::from_utf16_code_units(units);
+    JsonPayload::parse_fragments([&fragment]).map_err(|_| LlmError::InvalidRequest {
+        message: malformed_message.into(),
+    })
 }
 
 #[derive(Debug, Default)]
@@ -322,12 +344,12 @@ impl EventDecoder for ResponsesStreamDecoder {
                         });
                     }
                     let arguments =
-                        item["arguments"]
-                            .as_str()
+                        root_payload
+                            .string_units_at("/item/arguments")
                             .ok_or_else(|| LlmError::InvalidRequest {
                                 message: "completed function call has no arguments string".into(),
                             })?;
-                    finalize_function_arguments(call, arguments, &mut out)?;
+                    finalize_function_arguments(call, &arguments, &mut out)?;
                 }
                 if let Some((id, call_id)) = self.added_computer_calls.get(&index(&root)) {
                     if item.get("type").and_then(Value::as_str) != Some("computer_call")
@@ -467,7 +489,8 @@ impl EventDecoder for ResponsesStreamDecoder {
                         index: index(&root),
                         id: id.clone(),
                         name: name.clone(),
-                        arguments: String::new(),
+                        arguments_decoder: Default::default(),
+                        arguments: Vec::new(),
                     });
                     out.push(StreamEvent::ToolCallDelta {
                         block: index(&root),
@@ -519,24 +542,17 @@ impl EventDecoder for ResponsesStreamDecoder {
             Some("response.function_call_arguments.delta") => {
                 let i = index(&root);
                 if let Some(call) = self.calls.iter_mut().find(|call| call.index == i) {
-                    let fragment = delta(&root);
-                    call.arguments.push_str(&fragment);
-                    let display = delta(&root);
-                    let decoded = response_json.take_text("/delta", &display)?;
-                    let arguments_fragment = JsonPayloadFragment::from_decoded_text(
-                        &decoded.text,
-                        decoded.utf16_code_units,
-                    )
-                    .map_err(|message| LlmError::InvalidRequest {
-                        message: message.into(),
-                    })?;
+                    let decoded = response_json.take_text("/delta", &delta(&root))?;
+                    let fragment = call.arguments_decoder.push(decoded)?;
+                    call.arguments
+                        .extend(fragment.utf16_code_units().iter().copied());
                     out.push(StreamEvent::ToolCallDelta {
                         block: i,
                         id: call.id.clone(),
                         caller: None,
                         toolset_name: None,
                         name: call.name.clone(),
-                        arguments_fragment,
+                        arguments_fragment: fragment,
                         provider_id: None,
                     });
                 } else {
@@ -547,12 +563,11 @@ impl EventDecoder for ResponsesStreamDecoder {
             }
             Some("response.function_call_arguments.done") => {
                 let i = index(&root);
-                let arguments = root
-                    .get("arguments")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| LlmError::InvalidRequest {
+                let arguments = root_payload.string_units_at("/arguments").ok_or_else(|| {
+                    LlmError::InvalidRequest {
                         message: "finalized function call has no arguments string".into(),
-                    })?;
+                    }
+                })?;
                 let call = self
                     .calls
                     .iter_mut()
@@ -560,7 +575,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                     .ok_or_else(|| LlmError::InvalidRequest {
                         message: "finalized function call has no preceding call identity".into(),
                     })?;
-                finalize_function_arguments(call, arguments, &mut out)?;
+                finalize_function_arguments(call, &arguments, &mut out)?;
             }
             Some("response.completed" | "response.incomplete") => {
                 let response = root.get("response").unwrap_or(&Value::Null);
@@ -608,13 +623,19 @@ impl EventDecoder for ResponsesStreamDecoder {
                                 && item["call_id"].as_str() == Some(call.id.as_str())
                                 && item["name"].as_str() == Some(call.name.as_str())
                         }) {
-                            let arguments = item["arguments"].as_str().ok_or_else(|| {
-                                LlmError::InvalidRequest {
+                            let arguments = response_payload
+                                .as_ref()
+                                .and_then(|payload| {
+                                    payload.string_units_at(&format!(
+                                        "/output/{}/arguments",
+                                        call.index
+                                    ))
+                                })
+                                .ok_or_else(|| LlmError::InvalidRequest {
                                     message: "terminal function call has no arguments string"
                                         .into(),
-                                }
-                            })?;
-                            finalize_function_arguments(call, arguments, &mut out)?;
+                                })?;
+                            finalize_function_arguments(call, &arguments, &mut out)?;
                         }
                     }
                     let terminal_status = response.get("status").and_then(Value::as_str);
@@ -650,8 +671,11 @@ impl EventDecoder for ResponsesStreamDecoder {
                     }
                     let completed_response =
                         completed_event && terminal_status == Some("completed");
-                    let computer_calls =
-                        self.decode_terminal_computer_calls(items, completed_response)?;
+                    let computer_calls = self.decode_terminal_computer_calls(
+                        items,
+                        completed_response,
+                        response_payload.as_ref(),
+                    )?;
                     for (output_index, item) in items.iter().enumerate() {
                         if let Some(value) = computer_calls.get(&output_index) {
                             self.saw_tool_call = true;
@@ -779,6 +803,7 @@ impl ResponsesStreamDecoder {
         &self,
         items: &[Value],
         completed_response: bool,
+        response_source: Option<&JsonPayload>,
     ) -> Result<BTreeMap<usize, NativeExtension>, LlmError> {
         let mut calls = BTreeMap::new();
         let mut call_ids = BTreeSet::new();
@@ -786,20 +811,23 @@ impl ResponsesStreamDecoder {
             match item.get("type").and_then(Value::as_str) {
                 Some("function_call") => {
                     if completed_response {
-                        for key in ["call_id", "name", "arguments"] {
+                        for key in ["call_id", "name"] {
                             if item.get(key).and_then(Value::as_str).is_none() {
                                 return Err(LlmError::InvalidRequest {
                                     message: format!("provider function call has no {key} string"),
                                 });
                             }
                         }
-                        if serde_json::from_str::<Value>(item["arguments"].as_str().unwrap())
-                            .is_err()
-                        {
-                            return Err(LlmError::InvalidRequest {
-                                message: "provider returned malformed tool arguments".into(),
-                            });
-                        }
+                        let response_source =
+                            response_source.ok_or_else(|| LlmError::InvalidRequest {
+                                message: "Responses terminal source was not retained".into(),
+                            })?;
+                        let _ = parse_argument_string(
+                            response_source,
+                            &format!("/output/{index}/arguments"),
+                            "provider function call has no arguments string",
+                            "provider returned malformed tool arguments",
+                        )?;
                     }
                     if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
                         if !call_ids.insert(call_id.to_owned()) {
@@ -865,12 +893,16 @@ impl ResponsesStreamDecoder {
             }
         }
         if completed_response && !calls.is_empty() {
-            self.validate_streamed_function_calls(items)?;
+            self.validate_streamed_function_calls(items, response_source)?;
         }
         Ok(calls)
     }
 
-    fn validate_streamed_function_calls(&self, items: &[Value]) -> Result<(), LlmError> {
+    fn validate_streamed_function_calls(
+        &self,
+        items: &[Value],
+        response_source: Option<&JsonPayload>,
+    ) -> Result<(), LlmError> {
         let mut observed_indices = BTreeSet::new();
         for call in &self.calls {
             if !observed_indices.insert(call.index) {
@@ -893,20 +925,27 @@ impl ResponsesStreamDecoder {
                         .into(),
                 });
             }
-            let streamed_arguments = if call.arguments.is_empty() {
-                Value::Object(Default::default())
+            let streamed_fragment = if call.arguments.is_empty() {
+                JsonPayloadFragment::from_text("{}")
             } else {
-                serde_json::from_str(&call.arguments).map_err(|_| LlmError::InvalidRequest {
-                    message: "Responses stream function call arguments are malformed".into(),
-                })?
+                JsonPayloadFragment::from_utf16_code_units(call.arguments.clone())
             };
-            let terminal_arguments: Value =
-                serde_json::from_str(item["arguments"].as_str().unwrap()).map_err(|_| {
+            let streamed_arguments =
+                JsonPayload::parse_fragments([&streamed_fragment]).map_err(|_| {
                     LlmError::InvalidRequest {
-                        message: "provider returned malformed tool arguments".into(),
+                        message: "Responses stream function call arguments are malformed".into(),
                     }
                 })?;
-            if streamed_arguments != terminal_arguments {
+            let response_source = response_source.ok_or_else(|| LlmError::InvalidRequest {
+                message: "Responses terminal source was not retained".into(),
+            })?;
+            let terminal_arguments = parse_argument_string(
+                response_source,
+                &format!("/output/{}/arguments", call.index),
+                "provider function call has no arguments string",
+                "provider returned malformed tool arguments",
+            )?;
+            if !streamed_arguments.semantically_eq(&terminal_arguments)? {
                 return Err(LlmError::InvalidRequest {
                     message: "Responses stream function call arguments changed before completion"
                         .into(),
@@ -1120,6 +1159,26 @@ mod function_argument_snapshot_tests {
             json!({"type":"response.completed","response":{"id":"response","status":"completed","output":[item]}}),
         ];
         assert_eq!(fragments(&frames).unwrap(), r#"{"path":"file"}"#);
+    }
+    #[test]
+    fn final_snapshot_compares_json_values_not_object_source_order() {
+        let frames = [
+            json!({"type":"response.output_item.added","output_index":0,"item":call("")}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":r#"{"a":1,"b":2}"#}),
+            json!({"type":"response.output_item.done","output_index":0,"item":call(r#"{"b":2,"a":1}"#)}),
+        ];
+        assert_eq!(fragments(&frames).unwrap(), r#"{"a":1,"b":2}"#);
+    }
+    #[test]
+    fn final_snapshot_does_not_round_large_integer_arguments() {
+        let frames = [
+            json!({"type":"response.output_item.added","output_index":0,"item":call("")}),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":r#"{"n":9007199254740993}"#}),
+            json!({"type":"response.output_item.done","output_index":0,"item":call(r#"{"n":9007199254740992}"#)}),
+        ];
+        assert!(
+            matches!(fragments(&frames), Err(LlmError::InvalidRequest { message }) if message.contains("conflict"))
+        );
     }
     #[test]
     fn final_snapshot_cannot_change_streamed_arguments() {

@@ -29,6 +29,65 @@ pub struct UpdatesAdmission {
     pub simulated_proxy: bool,
 }
 
+/// Main-request thinking display selection. The host supplies whether Native's
+/// normal text/JSON presentation omitted the default; the source projector
+/// still preserves the captured JSON and override precedence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThinkingDisplayPolicy {
+    pub explicit: Option<String>,
+    pub omit_default: bool,
+}
+
+impl ThinkingDisplayPolicy {
+    pub fn selected_display(&self) -> Option<&str> {
+        self.explicit
+            .as_deref()
+            .filter(|display| !display.is_empty())
+            .or(self.omit_default.then_some("omitted"))
+    }
+
+    pub fn is_explicit(&self) -> bool {
+        self.explicit
+            .as_ref()
+            .is_some_and(|display| !display.is_empty())
+    }
+}
+
+/// Apply the host's explicit/default display policy to the source-backed
+/// request before extra-body spread. Existing caller display wins over the
+/// default omission, while an explicit host display replaces it.
+pub fn apply_display_policy(
+    body: &mut JsonPayload,
+    string_overrides: &mut BTreeMap<String, Vec<u16>>,
+    policy: &ThinkingDisplayPolicy,
+) -> Result<bool, LlmError> {
+    let Some(display) = policy.selected_display() else {
+        return Ok(false);
+    };
+    let Some(thinking) = body.payload_at("/thinking") else {
+        return Ok(false);
+    };
+    if !matches!(
+        thinking.string_at("/type").as_deref(),
+        Some("enabled" | "adaptive")
+    ) || (!policy.is_explicit() && thinking.raw_source_at("/display").is_some())
+    {
+        return Ok(false);
+    }
+    let display = JsonPayload::string(display);
+    let thinking = super::beta_repair::update_source_object_fields(
+        &thinking,
+        &[("display", Some(display.as_json_source()))],
+    )?;
+    *body = super::beta_repair::update_source_object_fields(
+        body,
+        &[("thinking", Some(thinking.as_json_source()))],
+    )?;
+    string_overrides
+        .retain(|path, _| path != "/thinking/display" && !path.starts_with("/thinking/display/"));
+    Ok(true)
+}
+
 /// Native Cjt: explicit display intent and summary preference precede the flag.
 pub fn connector_mode(
     display: Option<&str>,
@@ -424,6 +483,59 @@ mod tests {
             r#"{"thinking":{"type":"adaptive","display":"updates"}}"#
         );
     }
+
+    #[test]
+    fn display_policy_preserves_source_and_respects_default_precedence() {
+        let mut body = JsonPayload::parse(
+            r#"{"prefix":"\ud800","thinking":{"type":"adaptive","extra":{"n":1e400}},"tail":true}"#,
+        )
+        .unwrap();
+        let mut overrides = BTreeMap::from([
+            ("/thinking/display".into(), vec![0xD800]),
+            ("/prefix".into(), vec![0xD801]),
+        ]);
+        assert!(apply_display_policy(
+            &mut body,
+            &mut overrides,
+            &ThinkingDisplayPolicy {
+                explicit: None,
+                omit_default: true,
+            },
+        )
+        .unwrap());
+        assert_eq!(
+            body.as_json_source(),
+            r#"{"prefix":"\ud800","thinking":{"type":"adaptive","extra":{"n":1e400},"display":"omitted"},"tail":true}"#
+        );
+        assert!(!overrides.contains_key("/thinking/display"));
+        assert_eq!(overrides.get("/prefix"), Some(&vec![0xD801]));
+
+        let mut explicit =
+            JsonPayload::parse(r#"{"thinking":{"type":"adaptive","display":"updates"}}"#).unwrap();
+        assert!(!apply_display_policy(
+            &mut explicit,
+            &mut overrides,
+            &ThinkingDisplayPolicy {
+                explicit: None,
+                omit_default: true,
+            },
+        )
+        .unwrap());
+        assert!(apply_display_policy(
+            &mut explicit,
+            &mut overrides,
+            &ThinkingDisplayPolicy {
+                explicit: Some("summarized".into()),
+                omit_default: true,
+            },
+        )
+        .unwrap());
+        assert_eq!(
+            explicit.string_at("/thinking/display").as_deref(),
+            Some("summarized")
+        );
+    }
+
     #[test]
     fn unclaimed_probe_matches_native_state_and_process_budget() {
         let fixture = fixture();

@@ -1042,6 +1042,7 @@ mod tests {
         request.messages.push(ConversationMessage {
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
                 tool_use_id: ToolUseId::new("toolu_utf16"),
                 content: JsonPayload::string_from_utf16_code_units(&[0xD800]),
                 is_error: Some(false),

@@ -189,6 +189,7 @@ fn a_tool_result_is_encoded_under_the_functions_name_not_the_call_id() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
                 tool_use_id: ToolUseId::new("call-1"),
                 content: lingxi_llm_client::protocol::JsonPayload::string("contents"),
                 is_error: Some(false),
@@ -221,6 +222,7 @@ fn a_tool_result_with_no_matching_call_says_so_instead_of_guessing() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("orphan"),
             content: lingxi_llm_client::protocol::JsonPayload::string("x"),
             is_error: Some(false),
@@ -634,6 +636,7 @@ fn parallel_same_name_calls_preserve_ids_and_signatures_on_replay() {
         content: calls
             .iter()
             .map(|id| ContentBlock::ToolResult {
+                cache_reference: None,
                 tool_use_id: id.clone(),
                 content: "ok".into(),
                 is_error: Some(false),

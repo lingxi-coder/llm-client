@@ -17,6 +17,7 @@ pub mod gemini;
 pub mod gemini_interactions;
 pub mod openai;
 pub(crate) mod stream;
+pub(crate) mod tool_result_media;
 pub(crate) mod usage;
 pub(crate) mod web_search;
 pub(crate) mod web_search_decode;

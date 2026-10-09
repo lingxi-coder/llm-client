@@ -802,6 +802,7 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("toolu_programmatic"),
             content: "42".into(),
             is_error: Some(false),
@@ -906,6 +907,7 @@ fn completed_programmatic_history_does_not_force_old_tools_or_container_on_later
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("toolu_programmatic"),
             content: "42".into(),
             is_error: Some(false),

@@ -14,11 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 const INLINE_TOOLS_BETA: &str = "inline-tools-2026-09-15";
 const TOOL_CHANGE_REFERENCES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
 const SYSTEM_CLEAR_AT_BETA: &str = "mid-conversation-system-clear-at-2026-08-21";
-const OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
+const OUTPUT_CONFIG_BETA: &str = "per-turn-control-2026-07-01";
 const INLINE_DEFINITION_BYTES_LIMIT: usize = 4 * 1024 * 1024;
 const INLINE_TOOL_COUNT_LIMIT: usize = 10_000;
 
 const SUPPORTED_MODELS: &[&str] = &[
+    "claude-sonnet-5-5",
     "claude-fable-5-1",
     "claude-mythos-5-1",
     "claude-fable-5",
@@ -54,12 +55,11 @@ fn unsupported(message: impl Into<String>) -> LlmError {
     }
 }
 
-fn is_official_profile(profile: &ProviderProfile) -> bool {
-    crate::providers::anthropic::code_execution::is_official_profile(profile)
-}
-
 fn is_first_party_profile(profile: &ProviderProfile) -> bool {
-    profile.protocol == ProtocolFamily::AnthropicMessages && is_official_profile(profile)
+    // Native identity remains Anthropic with a configured base URL. This is
+    // message control admission, independent of endpoint resource/auth trust.
+    profile.protocol == ProtocolFamily::AnthropicMessages
+        && profile.provider_id.as_str() == "anthropic"
 }
 
 /// Platforms that support Anthropic per-message controls and reference-based

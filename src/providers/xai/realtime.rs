@@ -725,7 +725,7 @@ impl RealtimeCodec for XaiRealtimeCodec {
                 })
             }
             RealtimeInput::ClearAudio => vec![json!({ "type": "input_audio_buffer.clear" })],
-            RealtimeInput::ToolResult { call_id, output } => {
+            RealtimeInput::ToolResult { call_id, output , .. } => {
                 vec![function_call_output(call_id, output)?]
             }
             RealtimeInput::ToolResults { results } => function_call_outputs(results)?,

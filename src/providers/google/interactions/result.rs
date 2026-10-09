@@ -96,6 +96,24 @@ pub(crate) fn encode_result_block(block: &JsonPayload) -> Result<JsonPayload, Ll
             }
             _ => Err(invalid()),
         },
+        // Function results carry text and images. Read returns PDFs as
+        // document blocks, and failing here would fail every later request
+        // that replays the result.
+        Some("document") => {
+            if block.string_is("/source/type", "text")
+                && block.kind_at("/source/data") == Some(FlatJsonKind::String)
+            {
+                let text = block.payload_at("/source/data").ok_or_else(invalid)?;
+                JsonPayload::parse(r#"{"type":"text","text":null}"#)
+                    .map_err(|_| invalid())?
+                    .with_object_field("text", &text)
+            } else {
+                JsonPayload::parse(
+                    r#"{"type":"text","text":"(document omitted: Interactions tool results carry only text and images)"}"#,
+                )
+                .map_err(|_| invalid())
+            }
+        }
         _ => Err(invalid()),
     }
 }

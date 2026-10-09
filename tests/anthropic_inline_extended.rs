@@ -218,6 +218,7 @@ fn user_tool_result() -> ConversationMessage {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("toolu_inline"),
             content: "found".into(),
             is_error: Some(false),

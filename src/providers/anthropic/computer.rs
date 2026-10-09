@@ -423,6 +423,7 @@ pub fn encode_receipt(
         Some(array_payload_from_sources(&blocks)?)
     };
     Ok(ContentBlock::ToolResult {
+        cache_reference: None,
         tool_use_id: id,
         content,
         is_error: Some(is_error),

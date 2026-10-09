@@ -223,6 +223,7 @@ impl<'a> Accumulator<'a> {
                 caller,
                 toolset_name,
                 thought_signature,
+                ..
             } => {
                 self.add_text(id.as_str())?;
                 self.add_text(name)?;
@@ -248,25 +249,51 @@ impl<'a> Accumulator<'a> {
                 toolset_name,
                 ..
             } => {
+                use crate::codecs::tool_result_media::Piece;
                 self.add_text(tool_use_id.as_str())?;
                 content
                     .validate_root_string("tool result content")
                     .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?;
-                self.add_text(
-                    &content
-                        .display_root_string_lossy()
-                        .expect("validated tool result string"),
-                )?;
-                if let Some(toolset_name) = toolset_name {
-                    self.add_text(toolset_name)?;
-                }
-                if blocks.is_some() {
+                if let Some(blocks) = blocks {
                     blocks
-                        .as_ref()
-                        .expect("checked above")
                         .validate_root_array("tool result blocks")
                         .map_err(|error| LocalTokenCountError::Serialization(error.to_string()))?;
-                    self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
+                }
+                // Media reaches every wire as media, never as the base64 that
+                // `content` may spell out.
+                match blocks
+                    .as_ref()
+                    .and_then(crate::codecs::tool_result_media::slot_pieces)
+                {
+                    Some(pieces) => {
+                        for piece in &pieces {
+                            match piece {
+                                Piece::Text(units) => {
+                                    self.add_text(&String::from_utf16_lossy(units))?
+                                }
+                                Piece::Json(value) => self.add_json(value)?,
+                                Piece::Image(_) => {
+                                    self.omit(LocalTokenEstimateOmission::ImageInput)
+                                }
+                                Piece::Document { .. } => {
+                                    self.omit(LocalTokenEstimateOmission::DocumentInput);
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        self.add_text(
+                            &content
+                                .display_root_string_lossy()
+                                .expect("tool result content was validated as a string"),
+                        )?;
+                        if blocks.is_some() {
+                            self.omit(LocalTokenEstimateOmission::ProviderOpaqueContent);
+                        }
+                    }
+                }
+                if let Some(toolset_name) = toolset_name {
+                    self.add_text(toolset_name)?;
                 }
             }
             ContentBlock::Thinking { text, signature } => {
@@ -459,6 +486,7 @@ mod tests {
                     role: MessageRole::User,
                     content: vec![
                         ContentBlock::ToolResult {
+                            cache_reference: None,
                             tool_use_id: "call-1".into(),
                             content: JsonPayload::string("found a result"),
                             is_error: Some(false),
@@ -506,6 +534,7 @@ mod tests {
                 },
             ],
             tools: vec![ToolSpec {
+                input_schema_json: None,
                 tool_type: None,
                 extra: crate::protocol::JsonPayload::default(),
                 name: "lookup".to_owned(),
@@ -614,5 +643,35 @@ mod tests {
             anthropic.estimate_local_tokens(&online_counter_only),
             Err(LocalTokenCountError::UnsupportedModel { .. })
         ));
+    }
+
+    #[test]
+    fn tool_result_media_is_omitted_rather_than_counted_as_base64() {
+        let encoder = Encoder {
+            name: "bytes",
+            count: Box::new(|text| Ok(text.len() as u64)),
+        };
+        let output = serde_json::json!([
+            {"type":"text","text":"frame"},
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"A".repeat(10_000)}},
+        ]);
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "t1".into(),
+            content: JsonPayload::string(&output.to_string()),
+            is_error: None,
+            blocks: Some(JsonPayload::parse(&output.to_string()).expect("valid media fixture")),
+            cache_reference: None,
+            toolset_name: None,
+        };
+        let mut accumulator = Accumulator::new(&encoder, ProtocolFamily::OpenAiChat);
+        accumulator.add_content(&block).unwrap();
+        assert_eq!(
+            accumulator.input_tokens,
+            ("t1".len() + "frame".len()) as u64
+        );
+        assert_eq!(
+            accumulator.uncounted_components,
+            vec![LocalTokenEstimateOmission::ImageInput]
+        );
     }
 }

@@ -88,11 +88,27 @@ impl<'a> WireValue<'a> {
             panic!("opaque JsonPayload cannot be materialized as serde_json::Value");
         }
         if self.payload.is_none() && self.fields.is_empty() {
-            &self.value
-        } else {
-            self.materialized
-                .get_or_init(|| serde_json::to_value(self).expect("wire values serialize as JSON"))
+            return &self.value;
         }
+        self.materialized.get_or_init(|| {
+            let mut value = match &self.payload {
+                Some(Payload::Text(text)) => Value::String((*text).to_owned()),
+                Some(Payload::Array(items)) => {
+                    Value::Array(items.iter().map(|item| item.as_value().clone()).collect())
+                }
+                Some(Payload::Data(bytes, prefix)) => {
+                    Value::String(Data(bytes, prefix).to_string())
+                }
+                Some(Payload::RawJson(_) | Payload::OwnedRawJson(_)) => {
+                    unreachable!("opaque source payload was checked before materialization")
+                }
+                None => self.value.as_ref().clone(),
+            };
+            for (key, child) in &self.fields {
+                value[*key] = child.as_value().clone();
+            }
+            value
+        })
     }
     fn materialize(&mut self) {
         if matches!(
@@ -102,9 +118,7 @@ impl<'a> WireValue<'a> {
             panic!("opaque JsonPayload cannot be materialized as serde_json::Value");
         }
         if self.payload.is_some() || !self.fields.is_empty() {
-            let value = self.materialized.take().unwrap_or_else(|| {
-                serde_json::to_value(&*self).expect("wire values serialize as JSON")
-            });
+            let value = self.as_value().clone();
             self.value = Cow::Owned(value);
             self.payload = None;
             self.fields.clear();

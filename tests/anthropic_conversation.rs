@@ -90,6 +90,7 @@ fn compact_native_presence_fixture_matches_exact_request_body_bytes() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
                 tool_use_id: ToolUseId::new("toolu_result"),
                 content: "accepted result".into(),
                 is_error: None,
@@ -146,6 +147,7 @@ fn nullable_presence_survives_raw_codec_body_with_paired_tool_result() {
                     )),
                 },
                 ContentBlock::ToolResult {
+                    cache_reference: None,
                     tool_use_id: ToolUseId::new("toolu_presence"),
                     content: "done".into(),
                     is_error: None,

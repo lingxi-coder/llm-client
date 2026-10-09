@@ -361,11 +361,11 @@ pub(crate) fn tool_result_output<'a>(
     message: usize,
     block: usize,
     content: &'a JsonPayload,
-    blocks: Option<&'a JsonPayload>,
+    parts: Option<Vec<WireValue<'a>>>,
 ) -> Result<WireValue<'a>, LlmError> {
     content.validate_root_string("tool result content")?;
     let should_mark = has_message_breakpoint(request, message, block);
-    let Some(blocks) = blocks else {
+    let Some(parts) = parts else {
         return Ok(if should_mark {
             WireValue::array(vec![mark_input_text(
                 WireValue::from(json!({"type":"input_text"}))
@@ -376,25 +376,20 @@ pub(crate) fn tool_result_output<'a>(
         });
     };
 
-    blocks.validate_root_array("tool result blocks")?;
-    let len = blocks
-        .array_len("")
-        .ok_or_else(|| invalid("tool result blocks must be an array"))?;
-    let last = len.checked_sub(1);
-    let parts = (0..len)
-        .map(|index| {
-            let part = blocks
-                .array_item(index)
-                .ok_or_else(|| invalid("tool result block source is missing"))?;
-            let part = WireValue::owned_raw_json(part);
-            Ok(if should_mark && Some(index) == last {
-                mark_input_text(part)
-            } else {
-                part
+    let last = parts.len().checked_sub(1);
+    Ok(WireValue::array(
+        parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| {
+                if should_mark && Some(index) == last {
+                    mark_input_text(part)
+                } else {
+                    part
+                }
             })
-        })
-        .collect::<Result<Vec<_>, LlmError>>()?;
-    Ok(WireValue::array(parts))
+            .collect(),
+    ))
 }
 
 pub(crate) fn mark_provider_message<'a>(value: &'a JsonPayload) -> Result<WireValue<'a>, LlmError> {

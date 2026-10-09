@@ -543,6 +543,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
             native_options: Vec::new(),
             role: MessageRole::User,
             content: vec![ContentBlock::ToolResult {
+                cache_reference: None,
                 tool_use_id: ToolUseId::new(id),
                 content: "Found one record.".into(),
                 is_error: Some(false),
@@ -591,6 +592,7 @@ fn openrouter_messages_replays_direct_and_unknown_native_tool_callers() {
         native_options: Vec::new(),
         role: MessageRole::User,
         content: vec![ContentBlock::ToolResult {
+            cache_reference: None,
             tool_use_id: ToolUseId::new("tool_foundry"),
             content: "Found one record.".into(),
             is_error: Some(false),

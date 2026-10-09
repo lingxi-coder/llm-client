@@ -10,8 +10,7 @@ use crate::codecs::usage;
 use crate::codecs::web_search_decode::{self, SearchStream};
 use crate::codecs::EventDecoder;
 use crate::protocol::{
-    JsonPayload, JsonPayloadFragment, LlmError, ProtocolFamily, ResponseId, StopReason,
-    StreamEvent, ToolUseId,
+    JsonPayload, LlmError, ProtocolFamily, ResponseId, StopReason, StreamEvent, ToolUseId,
 };
 use crate::response_json::ResponseJson;
 use crate::response_json::{text_delta, FlatJsonKind, ResponseJsonScanner};
@@ -55,6 +54,7 @@ pub struct OpenAiStreamDecoder {
 
 #[derive(Debug)]
 struct ToolStream {
+    arguments_decoder: crate::response_json::ArgumentJsonDecoder,
     wire_index: u64,
     block: usize,
     id: ToolUseId,
@@ -386,6 +386,7 @@ impl OpenAiStreamDecoder {
             let block = self.next_block;
             self.next_block += 1;
             self.tools.push(ToolStream {
+                arguments_decoder: Default::default(),
                 wire_index,
                 block,
                 id: ToolUseId::new(id.unwrap_or_default()),
@@ -414,11 +415,7 @@ impl OpenAiStreamDecoder {
             &format!("/choices/0/delta/tool_calls/{call_index}/function/arguments"),
             fragment,
         )?;
-        let arguments_fragment =
-            JsonPayloadFragment::from_decoded_text(&decoded.text, decoded.utf16_code_units)
-                .map_err(|message| LlmError::InvalidRequest {
-                    message: message.into(),
-                })?;
+        let arguments_fragment = slot.arguments_decoder.push(decoded)?;
         out.push(StreamEvent::ToolCallDelta {
             block: slot.block,
             id: slot.id.clone(),

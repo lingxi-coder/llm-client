@@ -18,6 +18,63 @@ pub(crate) struct DecodedText {
     pub(crate) utf16_code_units: Option<Vec<u16>>,
 }
 
+/// Validate string escapes across argument deltas without rewriting their source units.
+/// Complete JSON grammar is checked when the assembled payload is consumed.
+#[derive(Debug, Default)]
+pub(crate) struct ArgumentJsonDecoder {
+    in_string: bool,
+    escaped: bool,
+    unicode_remaining: u8,
+}
+
+impl ArgumentJsonDecoder {
+    pub(crate) fn push(
+        &mut self,
+        text: DecodedText,
+    ) -> Result<crate::protocol::JsonPayloadFragment, LlmError> {
+        let fragment = crate::protocol::JsonPayloadFragment::from_decoded_text(
+            &text.text,
+            text.utf16_code_units,
+        )
+        .map_err(|message| LlmError::InvalidRequest {
+            message: message.into(),
+        })?;
+        for decoded in char::decode_utf16(fragment.utf16_code_units().iter().copied()) {
+            let character = decoded.ok();
+            let malformed = || LlmError::InvalidRequest {
+                message: "tool argument JSON contains an invalid string escape".into(),
+            };
+            if self.unicode_remaining > 0 {
+                if !character.is_some_and(|ch| ch.is_ascii_hexdigit()) {
+                    return Err(malformed());
+                }
+                self.unicode_remaining -= 1;
+            } else if self.escaped {
+                match character {
+                    Some('u') => self.unicode_remaining = 4,
+                    Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't') => {}
+                    _ => return Err(malformed()),
+                }
+                self.escaped = false;
+            } else if self.in_string {
+                match character {
+                    Some('"') => self.in_string = false,
+                    Some('\\') => self.escaped = true,
+                    Some(ch) if ch < '\u{20}' => return Err(malformed()),
+                    _ => {}
+                }
+            } else {
+                match character {
+                    Some('"') => self.in_string = true,
+                    Some(_) => {}
+                    None => return Err(malformed()),
+                }
+            }
+        }
+        Ok(fragment)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ResponseJson {
     pub(crate) value: Value,
@@ -1356,6 +1413,45 @@ mod tests {
     use super::*;
 
     const INVALID: &str = "response frame is not valid JSON";
+
+    #[test]
+    fn argument_escape_state_preserves_source_across_fragments() {
+        let exact = |units: Vec<u16>| DecodedText {
+            text: String::from_utf16_lossy(&units),
+            utf16_code_units: Some(units),
+        };
+        let text = |value: &str| DecodedText {
+            text: value.into(),
+            utf16_code_units: None,
+        };
+        let mut decoder = ArgumentJsonDecoder::default();
+        decoder.push(text("{\"x\":\"\\")).unwrap();
+        assert!(decoder.push(exact(vec![0xd800])).is_err());
+
+        let mut decoder = ArgumentJsonDecoder::default();
+        decoder.push(text("\"\\uD8")).unwrap();
+        assert!(decoder.push(exact(vec![0xd800])).is_err());
+
+        let mut decoder = ArgumentJsonDecoder::default();
+        let prefix = decoder.push(text("{\"x\":\"")).unwrap();
+        let high = decoder.push(exact(vec![0xd83d])).unwrap();
+        let low = decoder.push(exact(vec![0xde00])).unwrap();
+        let lone = decoder.push(exact(vec![0xd800])).unwrap();
+        let suffix = decoder.push(text("\"}")).unwrap();
+        assert_eq!(high.utf16_code_units(), &[0xd83d]);
+        assert_eq!(lone.utf16_code_units(), &[0xd800]);
+        let payload = JsonPayload::parse_fragments([&prefix, &high, &low, &lone, &suffix]).unwrap();
+        assert_eq!(
+            payload.string_units_at("/x"),
+            Some(vec![0xd83d, 0xde00, 0xd800])
+        );
+
+        let mut decoder = ArgumentJsonDecoder::default();
+        decoder.push(text("\"\\")).unwrap();
+        assert!(decoder
+            .push(exact(vec![b'\\' as u16, 0xd800, b'"' as u16]))
+            .is_ok());
+    }
 
     #[test]
     fn cached_pointer_restores_parent_and_escapes_each_component_once() {
