@@ -553,42 +553,6 @@ fn request_client_id(headers: &[(String, String)]) -> Option<&str> {
         .map(|(_, value)| value.as_str())
 }
 
-#[cfg(test)]
-mod request_body_policy_tests {
-    use super::*;
-
-    #[test]
-    fn chatgpt_body_policy_is_generation_only() {
-        use crate::protocol::{AuthStrategy, ProtocolFamily};
-
-        assert!(chatgpt_body_policy_applies(
-            AuthStrategy::ChatGptOAuth,
-            ProtocolFamily::OpenAiResponses,
-            RequestMode::Complete
-        ));
-        assert!(chatgpt_body_policy_applies(
-            AuthStrategy::ChatGptOAuth,
-            ProtocolFamily::OpenAiResponses,
-            RequestMode::Stream
-        ));
-        assert!(!chatgpt_body_policy_applies(
-            AuthStrategy::ChatGptOAuth,
-            ProtocolFamily::OpenAiResponses,
-            RequestMode::CountTokens
-        ));
-        assert!(!chatgpt_body_policy_applies(
-            AuthStrategy::Bearer,
-            ProtocolFamily::OpenAiResponses,
-            RequestMode::Complete
-        ));
-        assert!(!chatgpt_body_policy_applies(
-            AuthStrategy::ChatGptOAuth,
-            ProtocolFamily::OpenAiChat,
-            RequestMode::Complete
-        ));
-    }
-}
-
 impl PreparedCall {
     pub(super) fn is_bound_to_session(&self, binding: &Arc<()>) -> bool {
         self.session_binding
@@ -1032,5 +996,41 @@ impl LlmClient {
         self.snapshot()
             .prepare_draft_on(profile, request, options, mode)
             .await
+    }
+}
+
+#[cfg(test)]
+mod request_body_policy_tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_body_policy_is_generation_only() {
+        use crate::protocol::{AuthStrategy, ProtocolFamily};
+
+        assert!(chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::Complete
+        ));
+        assert!(chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::Stream
+        ));
+        assert!(!chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::CountTokens
+        ));
+        assert!(!chatgpt_body_policy_applies(
+            AuthStrategy::Bearer,
+            ProtocolFamily::OpenAiResponses,
+            RequestMode::Complete
+        ));
+        assert!(!chatgpt_body_policy_applies(
+            AuthStrategy::ChatGptOAuth,
+            ProtocolFamily::OpenAiChat,
+            RequestMode::Complete
+        ));
     }
 }

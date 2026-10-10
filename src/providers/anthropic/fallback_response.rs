@@ -312,7 +312,7 @@ pub fn usage_iterations(usage: &JsonPayload) -> UsageIterations {
             result.served_fallback_model.clone_from(&model);
         }
         result.entries.push(UsageIteration {
-            r#type: kind.into(),
+            r#type: kind,
             model,
             input_tokens: counter(iteration.number_at("/input_tokens")),
             output_tokens: counter(iteration.number_at("/output_tokens")),

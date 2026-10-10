@@ -6,21 +6,26 @@ Anthropic Messages 支持 regex 和 BM25 两种托管工具目录搜索。将搜
 
 ```rust
 use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
-use lingxi_llm_client::protocol::{ToolSpec};
-# let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model":"claude-opus-5-5","messages":[]})).unwrap();
+use lingxi_llm_client::protocol::{JsonPayload, ToolSpec};
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+# let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model":"claude-opus-5-5","messages":[]}))?;
 request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
     AnthropicToolSearchConfig { strategy: AnthropicToolSearchStrategy::Bm25 },
 ).into());
 request.tools.push(ToolSpec {
     tool_type: None,
-    extra: serde_json::Value::Null,
+    extra: JsonPayload::default(),
     name: "find_calendar_events".into(),
     description: "Find calendar events by date, person, or topic".into(),
-    input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+    input_schema: JsonPayload::from_generated_value(&serde_json::json!({
+        "type":"object","properties":{"query":{"type":"string"}},"required":["query"]
+    }))?,
     strict: false,
     defer_loading: true,
     native_options: Vec::new(),
 });
+# Ok(())
+# }
 ```
 
 `Regex` 编码为 `tool_search_tool_regex_20251119`，使用 Python 风格正则匹配名称、说明及参数；`Bm25` 编码为 `tool_search_tool_bm25_20251119`，使用自然语言查询。启用搜索后，请求仍须携带所有函数工具的完整定义。`defer_loading` 只控制工具定义是否立即进入模型上下文，不会省略请求中的定义。托管搜索工具本身始终保持可见；不要把所有工具都延迟。

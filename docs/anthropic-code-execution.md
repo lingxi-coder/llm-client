@@ -194,7 +194,7 @@ while let Some(event) = stream.next().await {
     println!("{event:?}");
     if let Some(container) = stream.anthropic_container() {
         // 宿主可将该观测值与请求的实际 scope 一起保存。
-        println!("{}", container.envelope);
+        println!("{}", container.envelope.as_json_source());
     }
 }
 # Ok(())

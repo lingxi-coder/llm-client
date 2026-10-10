@@ -800,9 +800,10 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
         ContentBlock::ProviderContent { value, .. }
             if json_payload_fixture::source_matches(value, &programmatic_server_call())
     ));
+    let caller_source = caller.to_string();
     assert!(matches!(
         &response.message.content[1],
-        ContentBlock::ToolUse { caller: Some(actual), .. } if actual.as_json_source() == caller.to_string()
+        ContentBlock::ToolUse { caller: Some(actual), .. } if actual.as_json_source() == caller_source
     ));
 
     let mut replay_request = request();
@@ -849,9 +850,10 @@ fn programmatic_caller_metadata_replays_without_duplicate_client_tool_calls() {
     let malformed_response = AnthropicMessagesCodec
         .decode_response(&http(200, malformed_body), &context(&profile()))
         .unwrap();
+    let malformed_source = malformed.to_string();
     assert!(matches!(
         &malformed_response.message.content[1],
-        ContentBlock::ToolUse { caller: Some(actual), .. } if actual.as_json_source() == malformed.to_string()
+        ContentBlock::ToolUse { caller: Some(actual), .. } if actual.as_json_source() == malformed_source
     ));
     let mut malformed_replay = request();
     malformed_replay.tools.push(programmatic_tool());
@@ -1097,8 +1099,9 @@ fn streaming_programmatic_tool_call_exposes_caller_once_and_keeps_server_executi
         })
         .collect::<Vec<_>>();
     assert_eq!(tool_deltas.len(), 2);
+    let caller_source = caller.to_string();
     assert!(tool_deltas.iter().all(|(id, actual)| {
-        *id == "toolu_programmatic" && actual.as_json_source() == caller.to_string()
+        *id == "toolu_programmatic" && actual.as_json_source() == caller_source
     }));
     let unique_calls = tool_deltas
         .iter()

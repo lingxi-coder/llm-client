@@ -204,9 +204,7 @@ pub fn encode_receipt(
         .ok_or_else(|| {
             invalid("OpenAI computer receipt requires an image in the final model-visible result")
         })?;
-    let source = image
-        .payload_at("/source")
-        .unwrap_or_else(|| image.clone());
+    let source = image.payload_at("/source").unwrap_or_else(|| image.clone());
     let image_url = match source.string_at("/type").as_deref() {
         Some("base64") => format!(
             "data:{};base64,{}",

@@ -33,23 +33,23 @@ Use client execution when the inventory depends on application or tenant state. 
 
 ```rust,no_run
 use lingxi_llm_client::providers::openai::types::{OpenAiToolSearchConfig, OpenAiToolSearchExecution};
-use lingxi_llm_client::protocol::{ChatRequest, };
+use lingxi_llm_client::protocol::{ChatRequest, JsonPayload};
 use serde_json::json;
 
-fn configure(mut request: ChatRequest) -> ChatRequest {
+fn configure(mut request: ChatRequest) -> Result<ChatRequest, serde_json::Error> {
 request.hosted_tools.push(lingxi_llm_client::providers::openai::native::OpenAiHostedTool::ToolSearch(
     OpenAiToolSearchConfig {
         execution: OpenAiToolSearchExecution::Client,
         description: Some("Find the tools needed for this task".into()),
-        parameters: Some(json!({
+        parameters: Some(JsonPayload::from_generated_value(&json!({
             "type": "object",
             "properties": {"goal": {"type": "string"}},
             "required": ["goal"],
             "additionalProperties": false
-        })),
+        }))?),
     },
 ).into());
-request
+    Ok(request)
 }
 ```
 

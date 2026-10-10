@@ -1092,6 +1092,21 @@ const NATIVE_BRAND_SECTIONS: [&str; 3] = [
 ];
 const NATIVE_REPORTING_SECTION: &str = "# Reporting outcomes\n\nReport what actually happened, not what you intended. When you say something is done, sent, saved, fixed, or verified, that claim must rest on a result you observed in this session — tool output, the file as it now reads, the page as it now loads — not on what the step should have produced. If you did not check, say you did not check. If any step failed, was skipped, or came back different from what you expected, say so in the first sentence of your report, before anything else, even when the rest of the work succeeded. Never quietly work around a failure in a way that makes it look resolved; a problem the user can see is recoverable, one your summary hides is not. When you stop before the task is complete, your first line says so plainly and names what is left. Do not describe partial work as done, and do not let a summary read as more certain than the evidence behind it.";
 
+type NativePromptSection = Option<Vec<u16>>;
+type OrdinaryPromptSections = Vec<Vec<u16>>;
+type NativePromptSectionClassification = (
+    NativePromptSection,
+    NativePromptSection,
+    NativePromptSection,
+    OrdinaryPromptSections,
+);
+type NativePromptSectionBoundaryClassification = (
+    NativePromptSection,
+    NativePromptSection,
+    NativePromptSection,
+    (OrdinaryPromptSections, OrdinaryPromptSections),
+);
+
 fn is_native_brand_section(
     element: &PromptText,
     host_branding_identity: Option<&PromptText>,
@@ -1106,12 +1121,7 @@ fn is_native_brand_section(
 fn classify_native_sections(
     elements: &[PromptText],
     host_branding_identity: Option<&PromptText>,
-) -> (
-    Option<Vec<u16>>,
-    Option<Vec<u16>>,
-    Option<Vec<u16>>,
-    Vec<Vec<u16>>,
-) {
+) -> NativePromptSectionClassification {
     let mut billing_header = None;
     let mut native_brand = None;
     let mut reporting = None;
@@ -1137,12 +1147,7 @@ fn classify_native_sections_with_boundary(
     elements: &[PromptText],
     boundary: usize,
     host_branding_identity: Option<&PromptText>,
-) -> (
-    Option<Vec<u16>>,
-    Option<Vec<u16>>,
-    Option<Vec<u16>>,
-    (Vec<Vec<u16>>, Vec<Vec<u16>>),
-) {
+) -> NativePromptSectionBoundaryClassification {
     let mut billing_header = None;
     let mut native_brand = None;
     let mut reporting = None;

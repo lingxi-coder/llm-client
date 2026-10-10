@@ -9,8 +9,8 @@
 `OutputFormat::Text`、`JsonObject` 和 `JsonSchema` 区分普通文本、JSON 模式和 schema 约束。输出格式与函数工具的 `strict` 独立。OpenAI Chat、Responses、Messages、Gemini GenerateContent 及复用这些编码器的托管协议已实现 wire 映射；协议有编码能力不表示每个兼容服务、模型、区域或账户均支持该功能。
 
 ```rust
-use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, OutputFormat};
-use serde_json::{json, Value};
+use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, JsonPayload, OutputFormat};
+use serde_json::json;
 let mut request: ChatRequest = serde_json::from_value(json!({
     "model": "your-model", "messages": [{"role":"user", "content":[
         {"type":"text", "text":"Return an answer object."}
@@ -18,11 +18,11 @@ let mut request: ChatRequest = serde_json::from_value(json!({
 }))?;
 request.output_format = OutputFormat::JsonSchema {
     name: "answer".into(), strict: true,
-    schema: json!({"type":"object", "properties":{"answer":{"type":"string"}},
-        "required":["answer"], "additionalProperties":false}),
+    schema: JsonPayload::from_generated_value(&json!({"type":"object", "properties":{"answer":{"type":"string"}},
+        "required":["answer"], "additionalProperties":false}))?,
 };
 fn parse(response: &ChatResponse, request: &ChatRequest)
-    -> Result<Value, lingxi_llm_client::protocol::StructuredOutputError>
+    -> Result<JsonPayload, lingxi_llm_client::protocol::StructuredOutputError>
 {
     response.structured_json(&request.output_format)
 }
@@ -54,6 +54,7 @@ use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, Prom
 let policy = PromptCachePolicy {
     automatic: Some(CacheTtl::FiveMinutes),
     breakpoints: vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::OneHour,
     }],

@@ -164,7 +164,7 @@ impl EventDecoder for ResponsesStreamDecoder {
             // observation. Capture it before the error branch returns so the
             // Host can settle the attempt before surfacing the provider error.
             if let Some(source) = scanner.raw_source_at("/response/usage") {
-                if let Ok(usage) = serde_json::from_str::<Value>(&source) {
+                if let Ok(usage) = serde_json::from_str::<Value>(source) {
                     if !usage.is_null() {
                         self.usage_raw = Some(usage);
                     }
@@ -238,7 +238,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                 return Err(LlmError::ProviderResponse {
                     status: self.http_status.unwrap_or(200),
                     request_id: self.request_id.clone(),
-                    body,
+                    body: Box::new(body),
                     classification: classified.kind(),
                     retry_after,
                 });
@@ -587,7 +587,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                     return Err(LlmError::ProviderResponse {
                         status: self.http_status.unwrap_or(200),
                         request_id: self.request_id.clone(),
-                        body: response.clone(),
+                        body: Box::new(response.clone()),
                         classification: LlmErrorKind::StreamInterrupted,
                         retry_after: None,
                     });
@@ -601,7 +601,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                     return Err(LlmError::ProviderResponse {
                         status: self.http_status.unwrap_or(200),
                         request_id: self.request_id.clone(),
-                        body: response.clone(),
+                        body: Box::new(response.clone()),
                         classification: LlmErrorKind::ProviderInternal,
                         retry_after: None,
                     });
@@ -618,7 +618,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                     // Reconcile it once; never concatenate an added snapshot
                     // with the subsequent delta stream.
                     for call in &mut self.calls {
-                        if let Some(item) = items.get(call.index).filter(|item| {
+                        if items.get(call.index).is_some_and(|item| {
                             item["type"] == "function_call"
                                 && item["call_id"].as_str() == Some(call.id.as_str())
                                 && item["name"].as_str() == Some(call.name.as_str())
@@ -725,13 +725,13 @@ impl EventDecoder for ResponsesStreamDecoder {
                     }
                 }
                 if let Some(response_payload) = &response_payload {
-                    self.file_search.emit_payload(&response_payload, &mut out);
+                    self.file_search.emit_payload(response_payload, &mut out);
                     let usage_payload = response_payload
                         .raw_source_at("/usage")
                         .and_then(|source| JsonPayload::parse(&source).ok());
                     self.search.emit(
                         web_search_decode::with_usage_payload(
-                            web_search_decode::responses_payload(&response_payload),
+                            web_search_decode::responses_payload(response_payload),
                             usage_payload.as_ref(),
                         ),
                         &mut out,

@@ -378,7 +378,7 @@ pub(super) fn request(
     }
     let mut request = InteractionRequest::model(
         context.request_model(),
-        InteractionInput::steps(std::iter::repeat(Value::Null).take(steps.len())),
+        InteractionInput::steps(std::iter::repeat_n(Value::Null, steps.len())),
     );
     for tool in &req.tools {
         tool.description.validate_root_string("tool description")?;

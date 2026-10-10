@@ -49,7 +49,7 @@ fn openai_retains_actions_modifiers_geometry_safety_and_requires_explicit_observ
     let block = original.into_content_block().unwrap();
     let calls = decode_computer_calls(
         NativeComputerProvider::OpenAi,
-        &[block.clone()],
+        std::slice::from_ref(&block),
         Some(&continuation()),
         &frame(),
     )
@@ -231,7 +231,7 @@ fn claude_old_computer_member_history_encodes_after_switch_to_function_round() {
     let block = member("call1", "left_click", json!({"coordinate":[1,2]}));
     let call = decode_computer_calls(
         NativeComputerProvider::Anthropic,
-        &[block.clone()],
+        std::slice::from_ref(&block),
         None,
         &frame(),
     )

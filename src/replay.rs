@@ -416,9 +416,9 @@ pub fn native_cited_text(block: &ContentBlock) -> Option<String> {
     };
     if native_family(*protocol) != ProtocolFamily::AnthropicMessages
         || !value.string_is("/type", "text")
-        || !value
+        || value
             .array_len("/citations")
-            .is_some_and(|citations| citations > 0)
+            .is_none_or(|citations| citations == 0)
     {
         return None;
     }

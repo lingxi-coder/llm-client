@@ -7,6 +7,10 @@ use serde::{
 use serde_json::{Map, Value};
 use std::{collections::BTreeMap, io::Write};
 
+type SourceTextIdentity = (String, String);
+type SourceTextOccurrence = (usize, usize, Option<Vec<u16>>);
+type SourceTextOccurrences = BTreeMap<SourceTextIdentity, Vec<SourceTextOccurrence>>;
+
 /// Canonicalize a validated flat source node using the selected SDK wire's current number,
 /// object-key, and UTF-16 string semantics. The scanner owns the only parsed node graph; this
 /// writer uses an explicit stack so deeply nested provider input does not recurse.
@@ -509,8 +513,7 @@ pub fn map_message_text_overrides(
     // ProviderContent become text-shaped wire fields too. Count them in the
     // source order so an identical display value is mapped by its stable
     // occurrence, while only typed Text blocks can carry an override.
-    let mut source_texts: BTreeMap<(String, String), Vec<(usize, usize, Option<Vec<u16>>)>> =
-        BTreeMap::new();
+    let mut source_texts: SourceTextOccurrences = BTreeMap::new();
     for (message_index, message) in request.messages.iter().enumerate() {
         let role = input_text_role(message.role, family).to_owned();
         for (block_index, block) in message.content.iter().enumerate() {

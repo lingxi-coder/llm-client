@@ -1301,8 +1301,10 @@ mod stop_delta_tests {
     #[test]
     fn stream_error_text_keeps_native_statusless_units_and_timeout_role() {
         for kind in ["api_error", "timeout_error"] {
-            let mut decoder = AnthropicStreamDecoder::default();
-            decoder.native_anthropic_error_route = true;
+            let mut decoder = AnthropicStreamDecoder {
+                native_anthropic_error_route: true,
+                ..AnthropicStreamDecoder::default()
+            };
             let error = decoder
                 .decode_frame(
                     format!(

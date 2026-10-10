@@ -57,7 +57,7 @@ Mainland-only presets: `qwen`, `qwen-search`, `minimax`, `kimi`, `kimi-search`, 
 See the [README](../README.en.md#1-create-an-application-and-add-dependencies) for dependency setup. The example below uses `serde_json` to construct a configuration, so the calling project also needs to declare `serde_json = "1"` and a Tokio runtime dependency. There is no need to depend directly on `reqwest` or implement transport and a clock yourself.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, JsonPayload, ProviderProfile, Secret, ToolChoice};
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 
 async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
@@ -98,7 +98,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: serde_json::Value::Null,
+        metadata: JsonPayload::default(),
     };
     let options = RequestOptions {
         credential: Some(Secret::new(api_key)),
@@ -275,14 +275,14 @@ This executor example returns text only. Tools requiring structured results, suc
 This example uses full-history replay (`continuation: None`). Stateful continuation instead uses the returned `ContinuationRef`, the same `account_scope` and only new input, scoped to the same connection. The context-recovery helper below illustrates a host policy of one retry: the caller supplies `reduce`, which must preserve valid tool-call/result pairs and replay signatures. It is not an automatic client behavior.
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
+use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, ContentBlock, ConversationMessage, JsonPayload,
     LlmError, MessageRole};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 fn append_tool_results(
     request: &mut ChatRequest,
     assistant: ConversationMessage,
-    mut execute: impl FnMut(Option<&str>, &str, &serde_json::Value) -> Result<String, String>,
+    mut execute: impl FnMut(Option<&str>, &str, &JsonPayload) -> Result<String, String>,
 ) -> bool {
     let results: Vec<_> = assistant.tool_uses().map(|(id, toolset_name, name, input)| {
         let (content, is_error) = match execute(toolset_name, name, input) {
@@ -290,7 +290,8 @@ fn append_tool_results(
             Err(error) => (error, true),
         };
         ContentBlock::ToolResult {
-            tool_use_id: id.clone(), content, is_error, blocks: None,
+            tool_use_id: id.clone(), content: content.into(), is_error: Some(is_error), blocks: None,
+            cache_reference: None,
             toolset_name: toolset_name.map(str::to_owned),
         }
     }).collect();

@@ -663,7 +663,7 @@ fn exact_tool_schemas_are_encoded_by_name_without_private_wire_fields() {
             thought_signature: None,
             citations: None,
         }]);
-        let mut tool = ToolSpec {
+        let tool = ToolSpec {
             name: "read".into(),
             description: JsonPayload::string("read"),
             input_schema: JsonPayload::parse(raw).unwrap(),

@@ -392,7 +392,7 @@ impl AnthropicRequestPolicy {
         self.extra_body = sanitize_extra_body(self.extra_body)?;
         let explicit_extra = source_object_fields(&self.extra_body)?;
         let body_extra = beta_body(self.extra_body.clone(), &self.body_betas)?;
-        let has_body_extra = !source_object_fields(&body_extra)?.is_empty();
+        let _has_body_extra = !source_object_fields(&body_extra)?.is_empty();
         let context_beta = "context-management-2025-06-27";
         let context_admitted = headers
             .iter()
@@ -1287,7 +1287,7 @@ fn source_string_override(
     if node.kind() != FlatJsonKind::String
         || scanner
             .node_ref_at(pointer)
-            .map_or(true, |selected| selected.kind() != FlatJsonKind::String)
+            .is_none_or(|selected| selected.kind() != FlatJsonKind::String)
     {
         return Err(LlmError::InvalidRequest {
             message: format!("UTF-16 JSON override does not target a string leaf: {pointer}"),

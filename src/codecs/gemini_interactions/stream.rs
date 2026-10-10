@@ -420,13 +420,15 @@ impl EventDecoder for InteractionsDecoder {
                         ));
                     }
                     let mut confirmed_ids = std::collections::BTreeSet::new();
-                    for index in 0..terminal_len {
+                    for (index, streamed_source) in
+                        streamed_sources.iter().enumerate().take(terminal_len)
+                    {
                         let final_step = terminal_steps.array_item(index).ok_or_else(|| {
                             Self::interrupted("Interactions terminal step source is missing")
                         })?;
                         if !string_is(&final_step, "/type", "function_call") {
                             if final_step.string_units_at("/type")
-                                != streamed_sources[index].string_units_at("/type")
+                                != streamed_source.string_units_at("/type")
                             {
                                 return Err(Self::interrupted(
                                     "Interactions terminal steps differ from completed streamed steps",

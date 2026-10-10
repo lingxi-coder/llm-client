@@ -624,6 +624,18 @@ pub(crate) fn stream_usage(
     }
 }
 
+fn invalid(message: impl Into<String>) -> LlmError {
+    LlmError::InvalidRequest {
+        message: message.into(),
+    }
+}
+
+fn unsupported(message: impl Into<String>) -> LlmError {
+    LlmError::UnsupportedCapability {
+        message: message.into(),
+    }
+}
+
 #[cfg(test)]
 mod resumable_tests {
     use super::stream_resumable;
@@ -658,17 +670,5 @@ mod resumable_tests {
                 expected
             );
         }
-    }
-}
-
-fn invalid(message: impl Into<String>) -> LlmError {
-    LlmError::InvalidRequest {
-        message: message.into(),
-    }
-}
-
-fn unsupported(message: impl Into<String>) -> LlmError {
-    LlmError::UnsupportedCapability {
-        message: message.into(),
     }
 }

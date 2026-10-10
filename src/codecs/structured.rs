@@ -351,13 +351,6 @@ pub(crate) fn validate_schema_payload_references(
     Ok(())
 }
 
-pub(crate) fn validate_schema_references(
-    schema: &JsonPayload,
-    recursive_error: &str,
-) -> Result<(), LlmError> {
-    validate_schema_payload_references(schema, recursive_error)
-}
-
 /// JSON Schema references use URI fragments, while `Value::pointer` accepts a
 /// decoded JSON Pointer. Decode only the URI percent escapes before resolving.
 fn decode_reference_fragment(fragment: &str) -> Option<String> {
@@ -787,8 +780,8 @@ pub(crate) fn validate_subset(
 
         let is_object = type_has(&node, "object") || field(&node, "properties").is_some();
         if is_object && !gemini && !qwen_strict_output {
-            if !field(&node, "additionalProperties")
-                .is_some_and(|value| value.primitive_source() == Some("false"))
+            if field(&node, "additionalProperties")
+                .is_none_or(|value| value.primitive_source() != Some("false"))
             {
                 return Err(invalid(
                     "strict object schemas require additionalProperties: false",

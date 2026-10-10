@@ -38,6 +38,7 @@ The mcp-client-2026-09-15 beta adds pinned tool lists and inline operations for 
 
 ```rust
 use lingxi_llm_client::providers::anthropic::types::{AnthropicMcpConfig, AnthropicMcpTool};
+use lingxi_llm_client::protocol::JsonPayload;
 use serde_json::json;
 
 # fn pinned() -> Result<AnthropicMcpConfig, Box<dyn std::error::Error>> {
@@ -45,11 +46,11 @@ let connector = AnthropicMcpConfig::new("docs", "https://mcp.example.com/sse")?
     .with_tools([AnthropicMcpTool {
         name: "search".into(),
         description: Some("Search the documentation".into()),
-        input_schema: json!({
+        input_schema: JsonPayload::from_generated_value(&json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"]
-        }),
+        }))?,
     }])?;
 # Ok(connector)
 # }

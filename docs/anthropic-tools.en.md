@@ -6,21 +6,26 @@ Anthropic Messages offers hosted tool-catalog search with regex or BM25. Select 
 
 ```rust
 use lingxi_llm_client::providers::anthropic::types::{AnthropicToolSearchConfig, AnthropicToolSearchStrategy};
-use lingxi_llm_client::protocol::{ToolSpec};
-# let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model":"claude-opus-5-5","messages":[]})).unwrap();
+use lingxi_llm_client::protocol::{JsonPayload, ToolSpec};
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+# let mut request: lingxi_llm_client::protocol::ChatRequest = serde_json::from_value(serde_json::json!({"model":"claude-opus-5-5","messages":[]}))?;
 request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::ToolSearch(
     AnthropicToolSearchConfig { strategy: AnthropicToolSearchStrategy::Bm25 },
 ).into());
 request.tools.push(ToolSpec {
     tool_type: None,
-    extra: serde_json::Value::Null,
+    extra: JsonPayload::default(),
     name: "find_calendar_events".into(),
     description: "Find calendar events by date, person, or topic".into(),
-    input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+    input_schema: JsonPayload::from_generated_value(&serde_json::json!({
+        "type":"object","properties":{"query":{"type":"string"}},"required":["query"]
+    }))?,
     strict: false,
     defer_loading: true,
     native_options: Vec::new(),
 });
+# Ok(())
+# }
 ```
 
 `Regex` encodes as `tool_search_tool_regex_20251119` and searches names, descriptions, and argument fields with Python-style regular expressions. `Bm25` encodes as `tool_search_tool_bm25_20251119` and searches with natural-language queries. The request must still include every complete function-tool definition. `defer_loading` controls whether a definition is initially placed in model context; it does not omit that definition from the request. The hosted search tool itself always remains visible.

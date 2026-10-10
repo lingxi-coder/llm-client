@@ -16,6 +16,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct HttpTransport {
     pub(super) client: reqwest::Client,
+    #[cfg(feature = "responses-websocket")]
     pub(super) read_timeout: Option<Duration>,
 }
 
@@ -66,6 +67,7 @@ impl HttpTransport {
             })?;
         Ok(Self {
             client,
+            #[cfg(feature = "responses-websocket")]
             read_timeout,
         })
     }

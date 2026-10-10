@@ -502,7 +502,7 @@ pub(crate) fn native_resume_context_exhausted(
     };
     let buckets = selected.unwrap_or(top);
     let total = buckets[0] + buckets[2] + buckets[3] + buckets[1];
-    if !(total > 0.0) {
+    if total.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Some(false);
     }
     let context_window = context_window.filter(|window| window.is_finite() && *window > 0.0)?;
@@ -655,7 +655,7 @@ fn native_error_facts(
     let thinking_resumption_refused = (400..500).contains(&status)
         && !matches!(status, 401 | 408 | 409 | 429 | 451)
         && !matches!(
-            normalized_error_code.as_deref(),
+            normalized_error_code,
             Some("dlp_request_denied" | "claude_code_version_too_old")
         );
     crate::protocol::NativeAnthropicErrorFacts {
@@ -1255,10 +1255,11 @@ mod complete_response_validation_tests {
             "future_annotation":{"opaque":[1,2,3]}
             }),
         ] {
+            let raw_source = raw.to_string();
             let decoded = decode_block_fixture(raw.clone()).unwrap();
             assert!(matches!(
                 decoded,
-                ContentBlock::ProviderContent { value, .. } if value.as_json_source() == raw.to_string()
+                ContentBlock::ProviderContent { value, .. } if value.as_json_source() == raw_source
             ));
         }
     }

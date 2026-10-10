@@ -194,7 +194,7 @@ while let Some(event) = stream.next().await {
     println!("{event:?}");
     if let Some(container) = stream.anthropic_container() {
         // The host may retain this observation with the request's actual scope.
-        println!("{}", container.envelope);
+        println!("{}", container.envelope.as_json_source());
     }
 }
 # Ok(())

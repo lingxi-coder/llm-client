@@ -251,10 +251,9 @@ fn native_server_results_and_future_blocks_decode_and_replay_unchanged() {
     let mut expected = native
         .iter()
         .take(3)
-        .cloned()
         .map(|value| ContentBlock::ProviderContent {
             protocol: ProtocolFamily::AnthropicMessages,
-            value: json_payload_fixture::generated(&value),
+            value: json_payload_fixture::generated(value),
         })
         .collect::<Vec<_>>();
     expected.push(ContentBlock::Text {
@@ -320,10 +319,9 @@ fn mcp_tool_use_result_and_listing_decode_and_replay_as_native_blocks() {
         response.message.content,
         native
             .iter()
-            .cloned()
             .map(|value| ContentBlock::ProviderContent {
                 protocol: ProtocolFamily::AnthropicMessages,
-                value: json_payload_fixture::generated(&value),
+                value: json_payload_fixture::generated(value),
             })
             .collect::<Vec<_>>()
     );

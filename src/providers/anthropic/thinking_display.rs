@@ -4,7 +4,6 @@
 use super::beta_repair::{Beta, ConversationBetaState};
 use crate::protocol::{JsonPayload, LlmError};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -340,6 +339,8 @@ pub fn apply_omitted_display(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
     fn source(value: &Value) -> JsonPayload {
         JsonPayload::from_generated_value(value).unwrap()
     }

@@ -26,9 +26,10 @@ message.content.iter().filter_map(|block| {
     Some(ContentBlock::ToolResult {
         tool_use_id: id.clone(),
         toolset_name: toolset_name.clone(),
-        content: format!("Host execution unavailable for {toolset_name:?}/{name}"),
-        is_error: true,
+        content: format!("Host execution unavailable for {toolset_name:?}/{name}").into(),
+        is_error: Some(true),
         blocks: None,
+        cache_reference: None,
     })
 }).collect()
 # }

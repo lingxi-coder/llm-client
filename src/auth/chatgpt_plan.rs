@@ -99,7 +99,7 @@ pub(crate) fn validate_request(
         ));
     }
     let model = fields.get("model").and_then(Value::as_str);
-    if !model.is_some_and(|model| !model.trim().is_empty()) {
+    if model.is_none_or(|model| model.trim().is_empty()) {
         return Err(invalid("ChatGPT plan usage requires a model"));
     }
     if expected_model.is_some_and(|expected| model != Some(expected)) {

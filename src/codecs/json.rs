@@ -44,6 +44,7 @@ impl<'a> From<Value> for WireValue<'a> {
     }
 }
 impl<'a> WireValue<'a> {
+    #[cfg(test)]
     pub(crate) fn borrowed(value: &'a Value) -> Self {
         Self {
             value: Cow::Borrowed(value),
@@ -421,8 +422,7 @@ fn encode_wire_value(
             &mut serde_json::Serializer::with_formatter(&mut output, JavaScriptFormatter),
         )?,
     }
-    String::from_utf8(output)
-        .map_err(|error| <serde_json::Error as serde::ser::Error>::custom(error))
+    String::from_utf8(output).map_err(<serde_json::Error as serde::ser::Error>::custom)
 }
 pub(crate) struct WireRequest<'a> {
     pub(crate) http: HttpRequest,

@@ -216,8 +216,10 @@ async fn normal_complete_applies_chatgpt_body_policy_before_exact_utf16_serializ
     let transport = Arc::new(RecordingTransport::default());
     let client = client(transport.clone());
     let request = request_with_exact_text();
-    let mut options = RequestOptions::default();
-    options.finalizer = Some(Arc::new(ReintroduceChatGptControls));
+    let options = RequestOptions {
+        finalizer: Some(Arc::new(ReintroduceChatGptControls)),
+        ..RequestOptions::default()
+    };
     client
         .chat()
         .complete_in("chatgpt", &request, &options)

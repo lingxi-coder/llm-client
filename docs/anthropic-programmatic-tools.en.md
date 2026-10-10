@@ -10,30 +10,33 @@ Set `allowed_callers` on each function in `ChatRequest.tools` and add `Anthropic
 
 ```rust
 use lingxi_llm_client::providers::anthropic::types::{AnthropicCodeExecutionConfig, AnthropicToolCaller};
-use lingxi_llm_client::protocol::{ChatRequest, ToolSpec};
+use lingxi_llm_client::protocol::{ChatRequest, JsonPayload, ToolSpec};
 use serde_json::json;
 
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
 let mut request: ChatRequest = serde_json::from_value(json!({
     "model": "claude-opus-5-5",
     "messages": [{"role":"user","content":[{"type":"text","text":"Look up recent records."}]}]
-})).unwrap();
+}))?;
 request.hosted_tools.push(lingxi_llm_client::providers::anthropic::native::AnthropicHostedTool::CodeExecution(
     AnthropicCodeExecutionConfig::default(),
 ).into());
 request.tools.push(ToolSpec {
     tool_type: None,
-    extra: serde_json::Value::Null,
+    extra: JsonPayload::default(),
     name: "lookup".into(),
-    description: "Look up records".into(),
-    input_schema: json!({
+    description: JsonPayload::string("Look up records"),
+    input_schema: JsonPayload::from_generated_value(&json!({
         "type": "object",
         "properties": { "query": { "type": "string" } },
         "required": ["query"]
-    }),
+    }))?,
     strict: false,
     defer_loading: false,
     native_options: Vec::new(),
 }.with_anthropic_allowed_callers(vec![AnthropicToolCaller::CodeExecution20260120]));
+# Ok(())
+# }
 ```
 
 `allowed_callers` accepts `Direct`, `CodeExecution20260120`, and `CodeExecution20260521`. Anthropic treats the two Code Execution versions as interchangeable. An omitted or empty list keeps the usual direct caller behavior; including `Direct` with a Code Execution caller allows either path. This field is supported on the first-party Anthropic Messages route and on a typed Microsoft Foundry deployment hosted on Anthropic, when the selected underlying model supports Programmatic Tool Calling. Azure-hosted Foundry deployments are rejected. On Foundry, `model` remains the custom deployment name; the model allowlist uses `FoundryDeployment.model_id`.

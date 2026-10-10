@@ -13,6 +13,7 @@ request.messages.push(ConversationMessage {
     content: vec![ContentBlock::Text {
         text: "Use explicit units in subsequent answers.".into(),
         thought_signature: None,
+        citations: None,
     }],
 });
 # }
@@ -21,14 +22,13 @@ request.messages.push(ConversationMessage {
 Tool additions and removals use Anthropic `ProviderContent` blocks in a system message. The codec selects `inline-tools-2026-09-15`; plain text does not need a beta. Custom tool definitions and references retain their wire structure. An inline definition can update an existing tool of the same type. A removal takes a reference, not a definition.
 
 ```rust
-use lingxi_llm_client::protocol::{ContentBlock, ConversationMessage, MessageRole, ProtocolFamily};
-use serde_json::json;
+use lingxi_llm_client::protocol::{ContentBlock, ConversationMessage, JsonPayload, MessageRole, ProtocolFamily};
 let message = ConversationMessage {
     native_options: Vec::new(),
     role: MessageRole::System,
     content: vec![ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: json!({
+        value: JsonPayload::parse(r#"{
             "type": "tool_addition",
             "tool": {
                 "type": "tool_definition",
@@ -42,7 +42,7 @@ let message = ConversationMessage {
                     }
                 }
             }
-        }),
+        }"#).unwrap(),
     }],
 };
 ```

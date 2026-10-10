@@ -306,7 +306,7 @@ fn plan_provider_error(
             .header("x-request-id")
             .or_else(|| resp.header("openai-request-id"))
             .map(str::to_owned),
-        body,
+        body: Box::new(body),
         classification,
         retry_after,
     }
@@ -443,85 +443,6 @@ fn decode_item_with_json(
         });
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod utf16_response_tests {
-    use super::*;
-
-    #[test]
-    fn html_http_error_body_reaches_the_current_error_carrier() {
-        let body = b"<!DOCTYPE html><html><body>proxy</body></html>";
-        let error = response_with_approval_support(
-            &crate::transport::HttpResponse {
-                status: 400,
-                headers: Vec::new(),
-                body: body.as_slice().into(),
-            },
-            false,
-            false,
-            false,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error.classification_source(),
-            LlmError::InvalidRequest { .. }
-        ));
-        let text = error.provider_error_text().unwrap();
-        assert_eq!(
-            text.display(),
-            format!("400 {}", String::from_utf8_lossy(body))
-        );
-        assert_eq!(
-            text.utf16_code_units(),
-            text.display().encode_utf16().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn failed_response_status_keeps_exact_provider_units() {
-        let error = response_with_approval_support(
-            &crate::transport::HttpResponse {
-                status: 200,
-                headers: Vec::new(),
-                body: br#"{"status":"failed","error":{"message":"bad\ud800","code":"invalid_prompt"}}"#.as_slice().into(),
-            },
-            false,
-            false,
-            false,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error.classification_source(),
-            LlmError::InvalidRequest { .. }
-        ));
-        let text = error.provider_error_text().unwrap();
-        assert_eq!(text.display(), "500 bad�");
-        assert_eq!(
-            text.utf16_code_units(),
-            &[53, 48, 48, 32, 98, 97, 100, 0xd800]
-        );
-    }
-
-    #[test]
-    fn completed_response_text_retains_lone_units() {
-        let response = response_with_approval_support(
-            &crate::transport::HttpResponse {
-                status: 200,
-                headers: Vec::new(),
-                body: br#"{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"A\ud800B"}]}]}"#.as_slice().into(),
-            },
-            false,
-            false,
-            false,
-        )
-        .unwrap();
-        assert!(matches!(
-            response.message.content.as_slice(),
-            [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
-                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
-        ));
-    }
 }
 
 /// Refusal text remains excluded from answer content, but it still determines
@@ -664,4 +585,83 @@ fn retry_after(resp: &HttpResponse) -> Option<Duration> {
     resp.header("retry-after")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs)
+}
+
+#[cfg(test)]
+mod utf16_response_tests {
+    use super::*;
+
+    #[test]
+    fn html_http_error_body_reaches_the_current_error_carrier() {
+        let body = b"<!DOCTYPE html><html><body>proxy</body></html>";
+        let error = response_with_approval_support(
+            &crate::transport::HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: body.as_slice().into(),
+            },
+            false,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(
+            text.display(),
+            format!("400 {}", String::from_utf8_lossy(body))
+        );
+        assert_eq!(
+            text.utf16_code_units(),
+            text.display().encode_utf16().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn failed_response_status_keeps_exact_provider_units() {
+        let error = response_with_approval_support(
+            &crate::transport::HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"status":"failed","error":{"message":"bad\ud800","code":"invalid_prompt"}}"#.as_slice().into(),
+            },
+            false,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error.classification_source(),
+            LlmError::InvalidRequest { .. }
+        ));
+        let text = error.provider_error_text().unwrap();
+        assert_eq!(text.display(), "500 bad�");
+        assert_eq!(
+            text.utf16_code_units(),
+            &[53, 48, 48, 32, 98, 97, 100, 0xd800]
+        );
+    }
+
+    #[test]
+    fn completed_response_text_retains_lone_units() {
+        let response = response_with_approval_support(
+            &crate::transport::HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: br#"{"id":"resp_1","model":"gpt-test","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"A\ud800B"}]}]}"#.as_slice().into(),
+            },
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(matches!(
+            response.message.content.as_slice(),
+            [ContentBlock::TextJsUtf16 { text, utf16_code_units, .. }]
+                if text == "A�B" && utf16_code_units == &[0x41, 0xd800, 0x42]
+        ));
+    }
 }

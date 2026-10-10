@@ -105,6 +105,7 @@ pub(crate) struct JsonNodeRef<'a> {
 }
 
 pub(crate) struct JsonObjectEntryRef<'a> {
+    #[cfg(test)]
     pub(crate) key: &'a str,
     pub(crate) key_units: &'a [u16],
     pub(crate) value: JsonNodeRef<'a>,
@@ -186,8 +187,9 @@ impl<'a> JsonNodeRef<'a> {
         Some(
             fields
                 .iter()
-                .map(|(key, key_units, id)| JsonObjectEntryRef {
-                    key,
+                .map(|(_key, key_units, id)| JsonObjectEntryRef {
+                    #[cfg(test)]
+                    key: _key,
                     key_units,
                     value: JsonNodeRef {
                         document: self.document,
@@ -532,6 +534,7 @@ impl ResponseJsonScanner {
 }
 
 impl ResponseJson {
+    #[cfg(test)]
     pub(crate) fn parse(input: &[u8], invalid_message: &str) -> Result<Self, LlmError> {
         let source = std::str::from_utf8(input)
             .map_err(|_| LlmError::InvalidRequest {

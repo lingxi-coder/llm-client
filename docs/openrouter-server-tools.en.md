@@ -36,10 +36,9 @@ Anthropic-native search keep their existing Anthropic tool-choice behavior.
 
 ```rust,no_run
 use lingxi_llm_client::providers::openrouter::types::{OpenRouterToolSearchConfig};
-use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ToolChoice, ToolSpec};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, JsonPayload, ToolChoice, ToolSpec};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 use lingxi_llm_client::protocol::LlmError;
-use serde_json::{json, Value};
 
 pub async fn discover_a_client_tool(
     client: &LlmClient,
@@ -61,14 +60,14 @@ pub async fn discover_a_client_tool(
         messages: vec![ConversationMessage::user_text("Find the weather tool and check Tokyo.")],
         tools: vec![ToolSpec {
     tool_type: None,
-    extra: serde_json::Value::Null,
+    extra: JsonPayload::parse("null").unwrap(),
             name: "get_weather".into(),
             description: "Get the current weather for a city.".into(),
-            input_schema: json!({
+            input_schema: JsonPayload::parse(r#"{
                 "type":"object",
                 "properties":{"city":{"type":"string"}},
                 "required":["city"]
-            }),
+            }"#).unwrap(),
             strict: false,
             defer_loading: true,
             native_options: Vec::new(),
@@ -79,7 +78,7 @@ pub async fn discover_a_client_tool(
         thinking: None,
         service_tier: None,
         stop_sequences: vec![],
-        metadata: Value::Null,
+        metadata: JsonPayload::parse("null").unwrap(),
     };
     let _response = client
         .chat()

@@ -212,18 +212,28 @@ impl CodecContext {
         &self,
     ) -> Option<(crate::protocol::ProviderId, crate::protocol::ProtocolFamily)> {
         let profile = &self.profile;
-        let selected = match (profile.protocol, profile.provider_id.as_str()) {
-            (crate::protocol::ProtocolFamily::AnthropicMessages, "anthropic")
-            | (crate::protocol::ProtocolFamily::AnthropicMessages, "anthropicAws")
-            | (crate::protocol::ProtocolFamily::AnthropicMessages, "anthropicGoogleCloud")
-            | (crate::protocol::ProtocolFamily::AnthropicMessages, "foundry")
-            | (crate::protocol::ProtocolFamily::AnthropicMessages, "gateway")
-            | (crate::protocol::ProtocolFamily::AnthropicMessages, "mantle")
-            | (crate::protocol::ProtocolFamily::BedrockClaude, _)
-            | (crate::protocol::ProtocolFamily::VertexClaude, _)
-            | (crate::protocol::ProtocolFamily::FoundryClaude, _) => true,
-            _ => false,
-        };
+        let selected = matches!(
+            (profile.protocol, profile.provider_id.as_str()),
+            (
+                crate::protocol::ProtocolFamily::AnthropicMessages,
+                "anthropic"
+            ) | (
+                crate::protocol::ProtocolFamily::AnthropicMessages,
+                "anthropicAws"
+            ) | (
+                crate::protocol::ProtocolFamily::AnthropicMessages,
+                "anthropicGoogleCloud"
+            ) | (
+                crate::protocol::ProtocolFamily::AnthropicMessages,
+                "foundry"
+            ) | (
+                crate::protocol::ProtocolFamily::AnthropicMessages,
+                "gateway"
+            ) | (crate::protocol::ProtocolFamily::AnthropicMessages, "mantle")
+                | (crate::protocol::ProtocolFamily::BedrockClaude, _)
+                | (crate::protocol::ProtocolFamily::VertexClaude, _)
+                | (crate::protocol::ProtocolFamily::FoundryClaude, _)
+        );
         selected.then(|| (profile.provider_id.clone(), profile.protocol))
     }
 

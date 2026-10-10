@@ -63,10 +63,6 @@ pub(crate) fn slot_pieces(blocks: &JsonPayload) -> Option<Vec<Piece>> {
     })
 }
 
-pub(crate) fn has_media(blocks: &JsonPayload) -> bool {
-    pieces(blocks).is_some()
-}
-
 pub(crate) fn piece(block: &JsonPayload) -> Piece {
     let json = || Piece::Json(block.clone());
     if block.string_is("/type", "text") {

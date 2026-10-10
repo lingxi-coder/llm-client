@@ -13,6 +13,7 @@ request.messages.push(ConversationMessage {
     content: vec![ContentBlock::Text {
         text: "后续回答请明确注明单位。".into(),
         thought_signature: None,
+        citations: None,
     }],
 });
 # }
@@ -21,14 +22,13 @@ request.messages.push(ConversationMessage {
 工具增删采用 system 消息中的 Anthropic `ProviderContent` block。codec 自动选择 `inline-tools-2026-09-15`；纯文本不需要 beta。自定义工具定义及引用保持原始 wire 结构。同类型工具可以用新定义更新，删除只能通过引用表达。
 
 ```rust
-use lingxi_llm_client::protocol::{ContentBlock, ConversationMessage, MessageRole, ProtocolFamily};
-use serde_json::json;
+use lingxi_llm_client::protocol::{ContentBlock, ConversationMessage, JsonPayload, MessageRole, ProtocolFamily};
 let message = ConversationMessage {
     native_options: Vec::new(),
     role: MessageRole::System,
     content: vec![ContentBlock::ProviderContent {
         protocol: ProtocolFamily::AnthropicMessages,
-        value: json!({
+        value: JsonPayload::parse(r#"{
             "type": "tool_addition",
             "tool": {
                 "type": "tool_definition",
@@ -42,7 +42,7 @@ let message = ConversationMessage {
                     }
                 }
             }
-        }),
+        }"#).unwrap(),
     }],
 };
 ```

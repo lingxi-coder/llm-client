@@ -31,10 +31,6 @@ fn envelope(mut fields: Map<String, Value>) -> Option<Value> {
     Some(Value::Object(fields))
 }
 
-pub(super) fn from_message(message: &Value) -> Result<Option<Value>, LlmError> {
-    Ok(envelope(fields(message)?))
-}
-
 pub(super) fn display_text(message: &Value) -> String {
     if let Some(text) = ["reasoning_content", "reasoning"]
         .into_iter()

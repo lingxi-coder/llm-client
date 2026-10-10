@@ -329,30 +329,6 @@ const CATALOG: &[CatalogEntry] = &[
     },
 ];
 
-/// Native's `CATALOG_ID_TO_KEY` entries for the current static catalog.
-const CATALOG_ID_TO_KEY: &[(&str, &str)] = &[
-    ("claude-3-5-haiku", "haiku35"),
-    ("claude-haiku-4-5", "haiku45"),
-    ("claude-haiku-5-5", "haiku55"),
-    ("claude-3-5-sonnet", "sonnet35"),
-    ("claude-3-7-sonnet", "sonnet37"),
-    ("claude-sonnet-4-0", "sonnet40"),
-    ("claude-sonnet-4-5", "sonnet45"),
-    ("claude-sonnet-4-6", "sonnet46"),
-    ("claude-sonnet-5", "sonnet5"),
-    ("claude-sonnet-5-5", "sonnet55"),
-    ("claude-opus-4-0", "opus40"),
-    ("claude-opus-4-1", "opus41"),
-    ("claude-opus-4-5", "opus45"),
-    ("claude-opus-4-6", "opus46"),
-    ("claude-opus-4-7", "opus47"),
-    ("claude-opus-4-8", "opus48"),
-    ("claude-opus-5", "opus5"),
-    ("claude-opus-5-5", "opus55"),
-    ("claude-fable-5", "fable5"),
-    ("claude-fable-5-1", "fable51"),
-];
-
 /// Resolve one Native alias-table default to the catalog ID before selecting
 /// that model's provider-specific ID.
 pub(crate) fn family_default_catalog_id(
@@ -411,6 +387,13 @@ pub(crate) fn provider_model_id(
     provider: NativeModelProvider,
 ) -> Option<&'static str> {
     let entry = CATALOG.iter().find(|entry| entry.id == catalog_id)?;
+    provider_id_for_entry(entry, provider)
+}
+
+fn provider_id_for_entry(
+    entry: &CatalogEntry,
+    provider: NativeModelProvider,
+) -> Option<&'static str> {
     match provider {
         NativeModelProvider::FirstParty => Some(entry.first_party),
         NativeModelProvider::Bedrock => entry.bedrock,
@@ -428,9 +411,13 @@ pub(crate) fn static_family_model_id(
     provider: NativeModelProvider,
 ) -> Option<&'static str> {
     let catalog_id = family_default_catalog_id(family, provider);
-    provider_model_id(catalog_id, provider)
+    let entry = CATALOG
+        .iter()
+        .find(|entry| entry.id == catalog_id && entry.family == family)?;
+    provider_id_for_entry(entry, provider)
 }
 
+#[cfg(test)]
 pub(crate) fn static_family_key(family: NativeModelFamily) -> &'static str {
     match family {
         NativeModelFamily::Haiku => "haiku55",
@@ -442,9 +429,10 @@ pub(crate) fn static_family_key(family: NativeModelFamily) -> &'static str {
 }
 
 pub(crate) fn native_model_key(catalog_id: &str) -> Option<&'static str> {
-    CATALOG_ID_TO_KEY
+    CATALOG
         .iter()
-        .find_map(|(id, key)| (*id == catalog_id).then_some(*key))
+        .find(|entry| entry.id == catalog_id)
+        .and_then(|entry| entry.key)
 }
 
 pub(crate) fn canonical_model_id_for_provider_id(provider_id: &str) -> Option<&'static str> {

@@ -98,7 +98,7 @@ pub(crate) fn step_blocks(
                 input: source
                     .payload_at("/arguments")
                     .ok_or_else(|| invalid("interaction function arguments are missing"))?,
-                provider_id: Some(id.into()),
+                provider_id: Some(id),
                 caller: None,
                 toolset_name: None,
                 thought_signature: source.string_at("/signature"),

@@ -86,17 +86,13 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
         ]
         .iter()
         .any(|key| scanner.raw_source_at(&format!("{prefix}/{key}")).is_some())
-        {
-            opaque_paths.push(prefix);
-            native_parts.insert(index);
-        } else if [format!("{prefix}/thoughtSignature")]
-            .iter()
-            .any(|pointer| {
-                scanner.raw_source_at(pointer).is_some()
+            || {
+                let pointer = format!("{prefix}/thoughtSignature");
+                scanner.raw_source_at(&pointer).is_some()
                     && scanner
-                        .string_units_at(pointer)
+                        .string_units_at(&pointer)
                         .is_some_and(|units| String::from_utf16(&units).is_err())
-            })
+            }
         {
             opaque_paths.push(prefix);
             native_parts.insert(index);
@@ -186,11 +182,11 @@ pub fn response(resp: &HttpResponse, protocol: ProtocolFamily) -> Result<ChatRes
             continue;
         }
         if part.get("functionCall").is_none()
-            && !part.get("executableCode").is_some()
-            && !part.get("codeExecutionResult").is_some()
-            && !part.get("inlineData").is_some()
-            && !part.get("toolCall").is_some()
-            && !part.get("toolResponse").is_some()
+            && part.get("executableCode").is_none()
+            && part.get("codeExecutionResult").is_none()
+            && part.get("inlineData").is_none()
+            && part.get("toolCall").is_none()
+            && part.get("toolResponse").is_none()
             && part.get("thought").and_then(Value::as_bool) != Some(true)
         {
             if let Some(text) = part.get("text").and_then(Value::as_str) {

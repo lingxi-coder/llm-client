@@ -155,7 +155,7 @@ impl XaiTranscriptionUrl {
                 let redacted_source = self.redact_llm_error(*source);
                 match native_anthropic_facts {
                     Some(facts) => {
-                        redacted_source.with_native_anthropic_error(redacted_text, facts)
+                        redacted_source.with_native_anthropic_error(redacted_text, *facts)
                     }
                     None => redacted_source.with_provider_error_text(redacted_text),
                 }
@@ -206,7 +206,7 @@ impl XaiTranscriptionUrl {
             } => LlmError::ProviderResponse {
                 status,
                 request_id: request_id.map(|value| self.redact_text(&value)),
-                body: self.redact_value(body),
+                body: Box::new(self.redact_value(*body)),
                 classification,
                 retry_after,
             },

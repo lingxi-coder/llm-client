@@ -1,7 +1,7 @@
 //! Provider search result projection for clients rendering hosted search.
 use crate::protocol::JsonPayload;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum SearchResultEntry {
@@ -265,6 +265,7 @@ pub fn append_citations(results: &mut Vec<SearchResultEntry>, observations: Opti
 mod progress_tests {
     use super::*;
     use crate::protocol::JsonPayload;
+    use serde_json::Value;
 
     fn provider_block(value: Value) -> JsonPayload {
         JsonPayload::from_generated_value(&value).unwrap()

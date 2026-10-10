@@ -105,7 +105,7 @@ pub fn error_message(status: u16, body: &JsonPayload) -> String {
     }
     let message = body
         .payload_at("/message")
-        .filter(|value| truthy(value))
+        .filter(truthy)
         .map(|value| {
             value
                 .display_root_string_lossy()
@@ -352,12 +352,10 @@ pub(crate) fn update_source_object_fields(
         fields.push((entry.key_units.to_vec(), value.to_owned()));
     }
     for (key, replacement) in update_keys {
-        if replacement.is_some() && !last_indices.contains_key(&key) && written.insert(key.clone())
-        {
-            fields.push((
-                key,
-                replacement.expect("replacement was checked").to_owned(),
-            ));
+        if let Some(replacement) = replacement {
+            if !last_indices.contains_key(&key) && written.insert(key.clone()) {
+                fields.push((key, replacement.to_owned()));
+            }
         }
     }
     JsonPayload::object_from_fields(&fields).map_err(|error| LlmError::InvalidRequest {

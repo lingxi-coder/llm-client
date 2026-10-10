@@ -58,7 +58,7 @@ pub enum LlmError {
     ProviderResponse {
         status: u16,
         request_id: Option<String>,
-        body: Value,
+        body: Box<Value>,
         classification: LlmErrorKind,
         retry_after: Option<Duration>,
     },
@@ -105,7 +105,7 @@ pub enum LlmError {
         source: Box<LlmError>,
         text: ProviderErrorText,
         #[serde(skip)]
-        native_anthropic_facts: Option<NativeAnthropicErrorFacts>,
+        native_anthropic_facts: Option<Box<NativeAnthropicErrorFacts>>,
     },
 }
 
@@ -287,7 +287,7 @@ impl LlmError {
             Self::ProviderErrorText {
                 native_anthropic_facts,
                 ..
-            } => native_anthropic_facts.as_ref(),
+            } => native_anthropic_facts.as_deref(),
             _ => None,
         }
     }
@@ -321,7 +321,7 @@ impl LlmError {
         Self::ProviderErrorText {
             source: Box::new(source),
             text,
-            native_anthropic_facts: Some(facts),
+            native_anthropic_facts: Some(Box::new(facts)),
         }
     }
 
@@ -1093,6 +1093,7 @@ impl SystemBlock {
         &self.text
     }
 
+    #[cfg(test)]
     pub(crate) fn display_text_lossy(&self) -> String {
         self.text
             .display_root_string_lossy()
@@ -1620,6 +1621,35 @@ pub struct ModelListing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_response_body_box_keeps_tagged_wire_and_classification() {
+        let body = serde_json::json!({
+            "error": {
+                "code": "subscription_sharing_usage_limit_exceeded",
+                "param": "model"
+            }
+        });
+        let error = LlmError::ProviderResponse {
+            status: 429,
+            request_id: Some("req-plan-limit".into()),
+            body: Box::new(body.clone()),
+            classification: LlmErrorKind::QuotaExceeded,
+            retry_after: None,
+        };
+
+        let encoded = serde_json::to_value(&error).unwrap();
+        assert_eq!(encoded["kind"], "provider_response");
+        assert_eq!(encoded["status"], 429);
+        assert_eq!(encoded["request_id"], "req-plan-limit");
+        assert_eq!(encoded["body"], body);
+        assert_eq!(error.kind(), LlmErrorKind::QuotaExceeded);
+
+        let decoded: LlmError = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, error);
+        assert_eq!(decoded.kind(), LlmErrorKind::QuotaExceeded);
+        assert_eq!(decoded.to_string(), error.to_string());
+    }
 
     #[test]
     fn exact_provider_error_carrier_roundtrips_through_tagged_llm_error() {

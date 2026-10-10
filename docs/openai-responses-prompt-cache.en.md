@@ -18,6 +18,7 @@ request.prompt_cache.prompt_cache_options = Some(OpenAiPromptCacheOptions {
     ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
 });
 request.prompt_cache.breakpoints = vec![CacheBreakpoint {
+    scope: None,
     position: CachePosition::System { index: 0 },
     ttl: CacheTtl::ThirtyMinutes,
 }];
