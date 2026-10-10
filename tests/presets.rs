@@ -35,7 +35,10 @@ fn anthropic_haiku_55_catalog_preserves_native_limits_and_prompt_price_bands() {
         .iter()
         .find(|rule| {
             rule["submission"].as_str() == Some("interactive")
-                && rule["min_input_tokens"].as_integer() == Some(100_001)
+                && rule
+                    .get("min_input_tokens")
+                    .and_then(toml::Value::as_integer)
+                    == Some(100_001)
         })
         .unwrap();
     assert_eq!(
@@ -51,7 +54,10 @@ fn anthropic_haiku_55_catalog_preserves_native_limits_and_prompt_price_bands() {
         .iter()
         .find(|rule| {
             rule["submission"].as_str() == Some("batch")
-                && rule["min_input_tokens"].as_integer() == Some(100_001)
+                && rule
+                    .get("min_input_tokens")
+                    .and_then(toml::Value::as_integer)
+                    == Some(100_001)
         })
         .unwrap();
     assert_eq!(
@@ -787,9 +793,9 @@ fn a_batch_rate_is_carried_as_published_not_assumed_to_be_a_discount() {
         }
     }
     assert_eq!(
-        carried, 110,
-        "the catalog ships 110 batch rate sets; a refresh that changes this \
-         should change this number deliberately"
+        carried, 111,
+        "the catalog ships 111 batch rate sets, including Claude Haiku 5.5; \
+         a refresh that changes this should change this number deliberately"
     );
 }
 

@@ -377,6 +377,49 @@ fn claude_versioned_tools_and_embeddings_keep_explicit_limits() {
 }
 
 #[test]
+fn haiku_55_uses_its_explicit_tool_evidence_without_inheriting_other_capabilities() {
+    let m = matrix();
+    let row = model(&m, "anthropic", "claude-haiku-5-5");
+    assert_eq!(row.evidence_date, "2026-10-09");
+    assert_eq!(row.availability.state, "documented");
+    for operation in [
+        "messages.json_schema",
+        "messages.cache_automatic",
+        "messages.cache_breakpoints",
+        "messages.cache_ttl_1h",
+        "messages.code_execution",
+        "messages.programmatic_tools",
+        "messages.tool_search",
+        "batch.submit",
+    ] {
+        assert_eq!(
+            row.cells[operation].status,
+            Status::Supported,
+            "{operation}"
+        );
+    }
+    for operation in [
+        "messages.web_search",
+        "messages.web_fetch",
+        "messages.remote_mcp",
+        "messages.browser_toolset",
+        "messages.computer_toolset",
+        "messages.file_search",
+        "messages.background",
+        "audio.transcribe",
+        "audio.synthesize",
+        "realtime.connect",
+    ] {
+        assert_eq!(row.cells[operation].status, Status::Unknown, "{operation}");
+    }
+    assert_eq!(
+        row.cells["messages.json_schema_with_citations"].status,
+        Status::Unsupported
+    );
+    assert_eq!(row.cells["embeddings.create"].status, Status::Unsupported);
+}
+
+#[test]
 fn anthropic_stable_client_toolsets_have_exact_model_and_platform_boundaries() {
     let m = matrix();
     let profile = m

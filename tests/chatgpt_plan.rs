@@ -723,7 +723,18 @@ async fn api_key_failure_never_switches_to_chatgpt_plan_billing() {
         ..Default::default()
     };
     let result = client.chat().stream_in("api-key", &chat, &options).await;
-    assert!(matches!(result, Err(LlmError::QuotaExceeded { .. })));
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("the API-key route must surface its own quota failure"),
+    };
+    assert!(matches!(
+        error.classification_source(),
+        LlmError::QuotaExceeded { .. }
+    ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("429 app limit")
+    );
     assert_eq!(transport.requests.lock().unwrap().len(), 1);
 }
 

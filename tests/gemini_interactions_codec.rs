@@ -336,7 +336,7 @@ fn ordinary_screenshot_results_translate_base64_and_url_content() {
         )
         .unwrap();
     let body: Value = serde_json::from_slice(&wire.body).unwrap();
-    let result = &body["input"][2]["result"];
+    let result = &body["input"]["steps"][2]["result"];
     assert_eq!(
         result[1],
         json!({"type":"image","mime_type":"image/png","data":"aGVsbG8="})
@@ -627,9 +627,11 @@ fn native_receipt_then_function_declaration_uses_previous_interaction_and_old_bi
     let body: Value = serde_json::from_slice(&wire.body).unwrap();
     assert_eq!(body["previous_interaction_id"], "int_one");
     assert_eq!(body["tools"][0]["type"], "function");
-    assert_eq!(body["input"][0]["call_id"], "native_scroll");
-    assert_eq!(body["input"][0]["name"], "scroll");
-    assert!(body["input"][0].get("_sdk_continuation").is_none());
+    assert_eq!(body["input"]["steps"][0]["call_id"], "native_scroll");
+    assert_eq!(body["input"]["steps"][0]["name"], "scroll");
+    assert!(body["input"]["steps"][0]
+        .get("_sdk_continuation")
+        .is_none());
     follow.continuation.as_mut().unwrap().response_id = "different_interaction".into();
     assert!(
         GeminiInteractionsCodec

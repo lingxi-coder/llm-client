@@ -235,9 +235,11 @@ fn tool_cache_marker_keeps_lone_description_and_schema_source() {
     let encoded = encode(&AnthropicMessagesCodec, &req, Value::Null);
     let body = std::str::from_utf8(&encoded.body).expect("JSON body is UTF-8");
     assert!(body.contains(r#""description":"look\ud800""#), "{body}");
+    // Claude's JavaScript JSON encoding decodes printable escapes while
+    // preserving unpaired UTF-16 units as JSON escapes.
     assert!(
         body.contains(
-            r#""input_schema":{"type":"object","properties":{"value":"\ud800","escaped":"\u0061"}}"#
+            r#""input_schema":{"type":"object","properties":{"value":"\ud800","escaped":"a"}}"#
         ),
         "{body}"
     );

@@ -807,6 +807,23 @@ fn external_schema_references_are_never_retrieved_even_without_strict_mode() {
             StructuredOutputErrorKind::InvalidSchema(_)
         ));
     }
+
+    // `$ref` inside an example is data, not a schema reference to resolve.
+    let annotation = OutputFormat::JsonSchema {
+        name: "answer".into(),
+        strict: false,
+        schema: lingxi_llm_client::protocol::JsonPayload::parse(
+            r#"{"type":"object","examples":[{"$ref":"https://schema.invalid/data"}]}"#,
+        )
+        .unwrap(),
+    };
+    assert!(encode(
+        &OpenAiResponsesCodec,
+        &request(annotation),
+        &profile(ProtocolFamily::OpenAiResponses),
+        false
+    )
+    .is_ok());
 }
 
 #[derive(Default)]

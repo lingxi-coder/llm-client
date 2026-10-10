@@ -504,7 +504,9 @@ fn validate_extra_fields(
     // Detect conflicts before attachment uploads or credential acquisition.
     for (key, value) in fields {
         if let Some(extra) = profile.extra["body"].get(key) {
-            super::inference::merge_json(&mut value.clone(), extra, key)?;
+            let mut merged = value.clone();
+            preserve_matching_schema_placeholder(req, context, key, &mut merged, extra)?;
+            super::inference::merge_json(&mut merged, extra, key)?;
         }
     }
     Ok(())
@@ -720,7 +722,11 @@ pub(crate) fn validate_subset(
                 if all_of.kind() == FlatJsonKind::Array
                     && (0..all_of.array_len().unwrap_or(0))
                         .filter_map(|index| all_of.array_item(index))
-                        .any(|branch| field(&branch, "$ref").is_some())
+                        .any(|branch| {
+                            branch.object_entries().is_some_and(|entries| {
+                                entries.iter().any(|entry| key_is(entry.key_units, "$ref"))
+                            })
+                        })
                 {
                     return Err(unsupported(
                         "Messages does not support $ref directly inside allOf",

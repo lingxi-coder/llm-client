@@ -1,6 +1,6 @@
 use super::{json::WireValue, CodecContext};
 use crate::protocol::{
-    CachePosition, CacheTtl, ChatRequest, ContentBlock, LlmError, ProtocolFamily,
+    CachePosition, CacheTtl, ChatRequest, ContentBlock, JsonPayload, LlmError, ProtocolFamily,
 };
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -180,9 +180,8 @@ fn validate_anthropic_markers(req: &ChatRequest, context: &CodecContext) -> Resu
             let Some(raw) = marker else {
                 continue;
             };
-            let raw: Value =
-                serde_json::from_str(&raw).map_err(|error| invalid(&error.to_string()))?;
-            let ttl = parse_anthropic_cache_control(&raw)?;
+            let raw = JsonPayload::parse(&raw).map_err(|error| invalid(&error.to_string()))?;
+            let ttl = parse_anthropic_cache_control_source(&raw)?;
             insert_explicit_marker(
                 &mut explicit,
                 CachePosition::Message {
@@ -382,6 +381,21 @@ fn parse_anthropic_cache_control(value: &Value) -> Result<CacheTtl, LlmError> {
     }
 }
 
+fn parse_anthropic_cache_control_source(value: &JsonPayload) -> Result<CacheTtl, LlmError> {
+    if !value.string_is("/type", "ephemeral") {
+        return Err(invalid(
+            "Anthropic cache_control type must be ephemeral when combined with typed cache policy",
+        ));
+    }
+    if value.raw_source_at("/ttl").is_none() || value.string_is("/ttl", "5m") {
+        Ok(CacheTtl::FiveMinutes)
+    } else if value.string_is("/ttl", "1h") {
+        Ok(CacheTtl::OneHour)
+    } else {
+        Err(invalid("Anthropic cache_control ttl must be 5m or 1h"))
+    }
+}
+
 fn cache_order(position: CachePosition) -> (u8, usize, usize) {
     match position {
         CachePosition::Tool { index } => (0, index, 0),
@@ -446,21 +460,33 @@ pub(crate) fn apply(
                     .and_then(|m| m.array_field_mut("content"))
                     .and_then(|blocks| blocks.get_mut(block))
                     .ok_or_else(|| invalid("cache breakpoint changed during encoding"))?;
-                if let Some(existing) = block.get("cache_control") {
+                let marker = JsonPayload::from_generated_value(&value)
+                    .map_err(|error| invalid(&error.to_string()))?;
+                if let Some(existing) = block
+                    .field_payload("cache_control")
+                    .map_err(|error| invalid(&error.to_string()))?
+                {
                     if uses_anthropic_marker_rules(context)
-                        && parse_anthropic_cache_control(existing)? == breakpoint.ttl
+                        && parse_anthropic_cache_control_source(&existing)? == breakpoint.ttl
                         && (breakpoint.scope.is_none()
-                            || existing.get("scope") == value.get("scope"))
+                            || match (existing.payload_at("/scope"), marker.payload_at("/scope")) {
+                                (Some(existing), Some(marker)) => {
+                                    existing.semantically_eq(&marker)?
+                                }
+                                (None, None) => true,
+                                _ => false,
+                            })
                     {
                         // Preserve the provider-native block exactly when the
                         // typed breakpoint describes the same TTL.
                         continue;
                     }
-                    if existing != &value {
+                    if !existing.semantically_eq(&marker)? {
                         return Err(invalid("conflicting message cache control"));
                     }
                 }
-                block["cache_control"] = value;
+                *block = std::mem::replace(block, Value::Null.into())
+                    .with("cache_control", value.into());
             }
         }
     }

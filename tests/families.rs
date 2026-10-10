@@ -1157,7 +1157,7 @@ fn responses_failed_body_is_an_error_even_with_http_success() {
     ));
     assert_eq!(
         error.provider_error_text().map(|text| text.display()),
-        Some("quota exhausted")
+        Some("500 quota exhausted")
     );
 }
 
@@ -1491,16 +1491,26 @@ fn provider_timeouts_retain_their_type_and_distinguish_http_from_sse_status() {
     let error =
         wire_api::decode_frame(&mut *decoder, &serde_json::to_vec(&body).unwrap()).unwrap_err();
     assert!(matches!(
-        error,
+        error.classification_source(),
         LlmError::ProviderTimeout { status: None, .. }
     ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("500 upstream deadline")
+    );
     assert_eq!(error.kind(), LlmErrorKind::ProviderTimeout);
     let mut decoder = AnthropicMessagesCodec.stream_decoder(&wire_api::decode_context());
+    let error = wire_api::decode_frame(
+        &mut *decoder,
+        br#"{"type":"error","error":{"type":"api_error","message":"server failure"}}"#,
+    )
+    .unwrap_err();
     assert!(matches!(
-        wire_api::decode_frame(
-            &mut *decoder,
-            br#"{"type":"error","error":{"type":"api_error","message":"server failure"}}"#
-        ),
-        Err(LlmError::ProviderInternal { .. })
+        error.classification_source(),
+        LlmError::ProviderInternal { .. }
     ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("500 server failure")
+    );
 }

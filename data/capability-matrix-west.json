@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "documentation_evidence_matrix_not_runtime_configuration",
-  "evidence_date": "2026-09-27",
+  "evidence_date": "2026-10-09",
   "live_validation": "not_run",
   "scope": {
     "catalog_profiles": ["anthropic", "github-copilot", "grok-anthropic", "grok-responses", "grok", "openrouter"],
@@ -172,6 +172,13 @@
     "anthropic.skills_overview": {"url": "https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview", "evidence_date": "2026-09-27", "section": "Foundry Anthropic-hosted custom Skills upload and API behavior; Foundry excludes version content download."},
     "anthropic.files": {"url": "https://platform.claude.com/docs/en/build-with-claude/files", "evidence_date": "2026-09-27", "section": "File upload, metadata, paginated listing, ids[] batch lookup, generated-file download and deletion. Workspace scope and generated-files-only content access are independent of Messages model choice."},
     "anthropic.models": {"url": "https://platform.claude.com/docs/en/models/overview", "evidence_date": "2026-09-27", "section": "Model overview; does not establish unlisted audio or resource operations."},
+    "anthropic.haiku55.overview": {"url": "https://platform.claude.com/docs/en/models/haiku-5-5/overview", "evidence_date": "2026-10-09", "section": "Claude Haiku 5.5 overview: exact Claude API ID, active release date, modality, 1M context and 128K standard output limits, pricing bands, and prompt-cache rates."},
+    "anthropic.haiku55.schema": {"url": "https://platform.claude.com/docs/en/build-with-claude/structured-outputs", "evidence_date": "2026-10-09", "section": "Compatibility lists Haiku 4.5 and 5.5 for structured outputs; the page separately states that citations are incompatible with constrained JSON."},
+    "anthropic.haiku55.cache": {"url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching", "evidence_date": "2026-10-09", "section": "Current prompt-caching page names Haiku 5.5 in its pricing and model-specific cache behavior tables."},
+    "anthropic.haiku55.code": {"url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool", "evidence_date": "2026-10-09", "section": "Code execution compatibility table lists Haiku 5.5; support is documented separately from account availability."},
+    "anthropic.haiku55.programmatic": {"url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling", "evidence_date": "2026-10-09", "section": "Programmatic tool calling compatibility table lists Haiku 5.5."},
+    "anthropic.haiku55.tool_search": {"url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool", "evidence_date": "2026-10-09", "section": "Tool Search compatibility table lists Haiku 5.5 for the documented regex and BM25 tool versions."},
+    "anthropic.haiku55.batch": {"url": "https://platform.claude.com/docs/en/build-with-claude/batch-processing", "evidence_date": "2026-10-09", "section": "Message Batch documentation lists Haiku 5.5, its published batch prices, and eligibility for the output-300k beta."},
     "anthropic.lifecycle": {"url": "https://platform.claude.com/docs/en/about-claude/model-deprecations", "evidence_date": "2026-09-25", "section": "Model status table; all twelve catalog IDs are Active."},
     "anthropic.schema": {"url": "https://platform.claude.com/docs/en/build-with-claude/structured-outputs", "evidence_date": "2026-09-25", "section": "Model compatibility and incompatible citations/prefill features."},
     "anthropic.cache": {"url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching", "evidence_date": "2026-09-25", "section": "Active model support, automatic caching, explicit breakpoints and one-hour TTL."},
@@ -323,6 +330,35 @@
             "batch.submit": {"status": "supported", "source_ids": ["anthropic.batch", "anthropic.lifecycle"], "basis": "documented_family", "note": "Independent Messages Batch operation for active models."},
             "messages.browser_toolset": {"status": "unknown", "source_ids": ["anthropic.browser_toolset", "anthropic.models"], "basis": "not_established", "note": "The stable toolset compatibility list does not name this catalog model; no unsupported claim is inferred."},
             "messages.computer_toolset": {"status": "unknown", "source_ids": ["anthropic.computer_toolset", "anthropic.models"], "basis": "not_established", "note": "The stable toolset compatibility list does not name this catalog model; no unsupported claim is inferred."}
+          }
+        },
+        {
+          "model_id": "claude-haiku-5-5",
+          "evidence_date": "2026-10-09",
+          "live_validation": "not_run",
+          "account_region_validation": "unknown",
+          "availability": {"state": "documented", "source_ids": ["anthropic.haiku55.overview"], "note": "Released October 7, 2026 and listed Active; account access remains untested."},
+          "cells": {
+            "messages.json_schema": {"status": "supported", "source_ids": ["anthropic.haiku55.schema", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.json_schema_with_citations": {"status": "unsupported", "source_ids": ["anthropic.schema"], "basis": "explicit_limitation", "note": "Constrained JSON and citations are documented as incompatible."},
+            "messages.cache_automatic": {"status": "supported", "source_ids": ["anthropic.haiku55.cache", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.cache_breakpoints": {"status": "supported", "source_ids": ["anthropic.haiku55.cache", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.cache_ttl_1h": {"status": "supported", "source_ids": ["anthropic.haiku55.cache", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.web_search": {"status": "unknown", "source_ids": ["anthropic.web_search", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "messages.web_fetch": {"status": "unknown", "source_ids": ["anthropic.web_fetch", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "messages.code_execution": {"status": "supported", "source_ids": ["anthropic.haiku55.code", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.programmatic_tools": {"status": "supported", "source_ids": ["anthropic.haiku55.programmatic", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.tool_search": {"status": "supported", "source_ids": ["anthropic.haiku55.tool_search", "anthropic.haiku55.overview"], "basis": "documented_family"},
+            "messages.remote_mcp": {"status": "unknown", "source_ids": ["anthropic.mcp", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "messages.browser_toolset": {"status": "unknown", "source_ids": ["anthropic.browser_toolset", "anthropic.haiku55.overview"], "basis": "not_established", "note": "The reviewed stable compatibility list does not name this model; no unsupported claim is inferred."},
+            "messages.computer_toolset": {"status": "unknown", "source_ids": ["anthropic.computer_toolset", "anthropic.haiku55.overview"], "basis": "not_established", "note": "The reviewed stable compatibility list does not name this model; no unsupported claim is inferred."},
+            "messages.file_search": {"status": "unknown", "source_ids": ["anthropic.models", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "messages.background": {"status": "unknown", "source_ids": ["anthropic.models", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "embeddings.create": {"status": "unsupported", "source_ids": ["anthropic.embeddings"], "basis": "explicit_limitation", "note": "Anthropic offers no first-party embedding model."},
+            "audio.transcribe": {"status": "unknown", "source_ids": ["anthropic.models", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "audio.synthesize": {"status": "unknown", "source_ids": ["anthropic.models", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "realtime.connect": {"status": "unknown", "source_ids": ["anthropic.models", "anthropic.haiku55.overview"], "basis": "not_established"},
+            "batch.submit": {"status": "supported", "source_ids": ["anthropic.haiku55.batch", "anthropic.haiku55.overview"], "basis": "documented_family", "note": "The Message Batch documentation lists Haiku 5.5; account-level availability was not tested."}
           }
         },
         {

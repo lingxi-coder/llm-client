@@ -15,6 +15,7 @@ const INLINE_TOOLS_BETA: &str = "inline-tools-2026-09-15";
 const TOOL_CHANGE_REFERENCES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
 const SYSTEM_CLEAR_AT_BETA: &str = "mid-conversation-system-clear-at-2026-08-21";
 const OUTPUT_CONFIG_BETA: &str = "per-turn-control-2026-07-01";
+const VERTEX_OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
 const INLINE_DEFINITION_BYTES_LIMIT: usize = 4 * 1024 * 1024;
 const INLINE_TOOL_COUNT_LIMIT: usize = 10_000;
 
@@ -203,10 +204,15 @@ pub(crate) fn apply_beta_header(
     } else {
         TOOL_CHANGE_REFERENCES_BETA
     };
+    let output_config_beta = if profile.protocol == ProtocolFamily::VertexClaude {
+        VERTEX_OUTPUT_CONFIG_BETA
+    } else {
+        OUTPUT_CONFIG_BETA
+    };
     for (needed, beta) in [
         (has_tool_changes, tool_change_beta),
         (has_clear_at, SYSTEM_CLEAR_AT_BETA),
-        (has_output_config, OUTPUT_CONFIG_BETA),
+        (has_output_config, output_config_beta),
     ] {
         if needed && !deduplicated.iter().any(|value| value == beta) {
             deduplicated.push(beta.into());

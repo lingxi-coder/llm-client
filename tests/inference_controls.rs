@@ -290,7 +290,9 @@ fn beta_headers_accumulate_and_nested_extras_survive() {
     let mut p = preset("anthropic");
     p.extra["betas"] = json!(["another-beta", "fast-mode-2026-02-01"]);
     p.extra["headers"] = json!({"Anthropic-Beta":"header-beta,another-beta"});
-    let schema = json!({"type":"object","properties":{},"additionalProperties":false});
+    let schema_source =
+        r#"{ "type" : "object", "properties" : {}, "additionalProperties" : false }"#;
+    let schema: Value = serde_json::from_str(schema_source).unwrap();
     p.extra["body"] = json!({"output_config":{"format":{"type":"json_schema","schema":schema}}});
     let mut req = request(
         "claude-opus-5",
@@ -299,11 +301,15 @@ fn beta_headers_accumulate_and_nested_extras_survive() {
     );
     req.output_format = OutputFormat::JsonSchema {
         name: "answer".into(),
-        schema: lingxi_llm_client::protocol::JsonPayload::from_generated_value(&schema)
-            .expect("schema fixture is valid JSON"),
+        schema: lingxi_llm_client::protocol::JsonPayload::parse(schema_source)
+            .expect("schema source is valid JSON"),
         strict: true,
     };
     let http = encode(&p, &req).unwrap();
+    let wire = std::str::from_utf8(&http.body).unwrap();
+    assert!(
+        wire.contains(r#""schema":{"type":"object","properties":{},"additionalProperties":false}"#)
+    );
     let b: Value = serde_json::from_slice(&http.body).unwrap();
     assert_eq!(b["output_config"]["format"]["type"], "json_schema");
     assert_eq!(b["output_config"]["format"]["schema"], schema);

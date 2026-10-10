@@ -658,6 +658,23 @@ fn programmatic_callers_encode_and_preflight_documented_combinations() {
         Err(LlmError::UnsupportedCapability { .. })
     ));
 
+    let mut haiku_5_5 = request.clone();
+    haiku_5_5.model = "claude-haiku-5-5".into();
+    let haiku_5_5_context = CodecContext::new(&profile, "claude-haiku-5-5", RequestMode::Complete);
+    let wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&haiku_5_5), &haiku_5_5_context)
+        .unwrap();
+    let body: Value = serde_json::from_slice(&wire.body).unwrap();
+    assert_eq!(
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "lookup")
+            .unwrap()["allowed_callers"],
+        json!(["code_execution_20260120"])
+    );
+
     let mut strict = request.clone();
     strict.tools[0].strict = true;
     assert!(matches!(
@@ -1342,9 +1359,13 @@ async fn expired_container_errors_do_not_silently_create_replacement_containers(
         account_scope: Some(ACCOUNT.into()),
         ..Default::default()
     };
+    let error = match client.chat().complete(&request, &options).await {
+        Err(error) => error,
+        Ok(_) => panic!("an expired container must be rejected by the provider"),
+    };
     assert!(matches!(
-        client.chat().complete(&request, &options).await,
-        Err(LlmError::InvalidRequest { .. })
+        error.classification_source(),
+        LlmError::InvalidRequest { .. }
     ));
     let requests = transport.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);

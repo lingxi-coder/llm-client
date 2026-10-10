@@ -883,12 +883,20 @@ fn a_non_success_body_comes_back_as_an_error_not_as_a_response() {
             .into(),
     };
 
-    match OpenAiChatCodec.decode_response(&resp, &wire_api::decode_context()) {
-        Err(LlmError::RateLimited { retry_after, .. }) => {
-            assert_eq!(retry_after, Some(std::time::Duration::from_secs(30)));
-        }
-        other => panic!("expected a rate limit carrying its retry-after, got {other:?}"),
-    }
+    let error = OpenAiChatCodec
+        .decode_response(&resp, &wire_api::decode_context())
+        .expect_err("a non-success provider response must remain an error");
+    assert!(matches!(
+        error.classification_source(),
+        LlmError::RateLimited {
+            retry_after: Some(retry_after),
+            ..
+        } if *retry_after == std::time::Duration::from_secs(30)
+    ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("429 slow down")
+    );
 }
 
 // --- per-profile wire extras -----------------------------------------------

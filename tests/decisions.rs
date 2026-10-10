@@ -944,7 +944,14 @@ async fn responses_failed_200_keeps_provider_classification_and_eligible_failove
     let DecisionError::ProviderWithReport { error, report } = error else {
         panic!("{error:?}");
     };
-    assert!(matches!(*error, LlmError::QuotaExceeded { .. }));
+    assert!(matches!(
+        error.classification_source(),
+        LlmError::QuotaExceeded { .. }
+    ));
+    assert_eq!(
+        error.provider_error_text().map(|text| text.display()),
+        Some("500 quota exhausted")
+    );
     assert_eq!(report.usage.usage.unwrap().input_tokens, 3);
     assert_eq!(transport.bodies().len(), 1);
 

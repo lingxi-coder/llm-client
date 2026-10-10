@@ -306,3 +306,51 @@ fn anthropic_mcp_preflight_counts_merged_system_but_ignores_refused_raw_tools() 
     assert_eq!(body["system"][0]["text"], "profile system");
     assert_eq!(body["system"][0]["cache_control"]["ttl"], "5m");
 }
+
+#[test]
+fn message_cache_overlay_preserves_opaque_provider_text_and_existing_marker() {
+    for existing in [false, true] {
+        let mut request = req();
+        let marker = if existing {
+            r#","cache_control":{"type":"ephemeral","ttl":"5m","scope":"\u0067lobal","note":"\ud800"}"#
+        } else {
+            ""
+        };
+        let source = format!(r#"{{"type":"text","text":"A\ud800B"{marker}}}"#);
+        request.messages[0].content[0] = ContentBlock::ProviderContent {
+            protocol: ProtocolFamily::AnthropicMessages,
+            value: JsonPayload::parse(&source).unwrap(),
+        };
+        request.prompt_cache.breakpoints = vec![CacheBreakpoint {
+            scope: existing.then_some(CacheScope::Global),
+            position: CachePosition::Message { index: 0, block: 0 },
+            ttl: CacheTtl::FiveMinutes,
+        }];
+        let profile = first_party_profile(Value::Null);
+        let encoded = AnthropicMessagesCodec
+            .encode_request(
+                EncodeRequest::new(&request),
+                &CodecContext::new(&profile, "test", RequestMode::Complete),
+            )
+            .unwrap();
+        let body = std::str::from_utf8(&encoded.body).unwrap();
+        assert!(body.contains(r#""text":"A\ud800B""#), "{body}");
+        assert_eq!(body.matches(r#""cache_control":"#).count(), 1, "{body}");
+        if existing {
+            assert!(body.contains(r#""cache_control":{"type":"ephemeral","ttl":"5m","scope":"global","note":"\ud800"}"#), "{body}");
+            request.prompt_cache.breakpoints[0].ttl = CacheTtl::OneHour;
+            assert!(matches!(
+                AnthropicMessagesCodec.encode_request(
+                    EncodeRequest::new(&request),
+                    &CodecContext::new(&profile, "test", RequestMode::Complete),
+                ),
+                Err(LlmError::InvalidRequest { .. })
+            ));
+        } else {
+            assert!(
+                body.contains(r#""cache_control":{"type":"ephemeral"}"#),
+                "{body}"
+            );
+        }
+    }
+}

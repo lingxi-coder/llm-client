@@ -57,7 +57,7 @@
 依赖配置见 [README](../README.md#1-创建应用并添加依赖)。下面示例使用 `serde_json` 构造配置，调用项目还需要声明 `serde_json = "1"` 和 Tokio 运行时依赖。无需直接依赖 `reqwest`，也无需自行实现传输和时钟。
 
 ```rust,no_run
-use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, ProviderProfile, Secret, ToolChoice};
+use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, JsonPayload, ProviderProfile, Secret, ToolChoice};
 use lingxi_llm_client::{LlmClientBuilder, RequestOptions};
 
 async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
@@ -98,7 +98,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
-        metadata: serde_json::Value::Null,
+        metadata: JsonPayload::parse("null")?,
     };
     let options = RequestOptions {
         credential: Some(Secret::new(api_key)),
@@ -276,13 +276,13 @@ Base64 源携带 `media_type` 和 `data`；URL 源携带 `url`。库不执行工
 
 ```rust,no_run
 use lingxi_llm_client::protocol::{ChatRequest, ChatResponse, ContentBlock, ConversationMessage,
-    LlmError, MessageRole};
+    JsonPayload, LlmError, MessageRole};
 use lingxi_llm_client::{LlmClient, RequestOptions};
 
 fn append_tool_results(
     request: &mut ChatRequest,
     assistant: ConversationMessage,
-    mut execute: impl FnMut(Option<&str>, &str, &serde_json::Value) -> Result<String, String>,
+    mut execute: impl FnMut(Option<&str>, &str, &JsonPayload) -> Result<String, String>,
 ) -> bool {
     let results: Vec<_> = assistant.tool_uses().map(|(id, toolset_name, name, input)| {
         let (content, is_error) = match execute(toolset_name, name, input) {
@@ -290,7 +290,11 @@ fn append_tool_results(
             Err(error) => (error, true),
         };
         ContentBlock::ToolResult {
-            tool_use_id: id.clone(), content, is_error, blocks: None,
+            tool_use_id: id.clone(),
+            content: JsonPayload::string(&content),
+            is_error: Some(is_error),
+            blocks: None,
+            cache_reference: None,
             toolset_name: toolset_name.map(str::to_owned),
         }
     }).collect();

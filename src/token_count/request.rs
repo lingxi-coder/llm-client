@@ -534,7 +534,6 @@ mod tests {
                 },
             ],
             tools: vec![ToolSpec {
-                input_schema_json: None,
                 tool_type: None,
                 extra: crate::protocol::JsonPayload::default(),
                 name: "lookup".to_owned(),

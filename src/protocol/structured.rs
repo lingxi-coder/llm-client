@@ -187,20 +187,94 @@ fn compile_schema(schema: &JsonPayload) -> Result<Arc<jsonschema::Validator>, St
     schema_cache().compile(schema)
 }
 
-/// Validate an output schema before putting it on a provider request.
-///
-/// Local response validation can compile larger schemas because it never
-/// sends them over the wire. The provider request path has a separate 1 MiB
-/// source limit, checked before consulting the compiled-schema cache so a
-/// warm entry cannot bypass the limit when its exact source changes (for
-/// example, `0.0` to `-0.0`). Compilation also uses `NoExternalSchemas`, so
-/// this check never retrieves a remote or file-backed reference. Local
-/// recursive references remain supported by the JSON Schema compiler.
+/// Validate the source-level constraints for a schema before sending it to a
+/// provider. Provider encoding keeps the schema as `JsonPayload`; it must not
+/// materialize the source through the recursive local response validator.
+/// Strict provider vocabularies are checked by their codec-specific flat
+/// walkers. This check bounds the exact bytes, requires an object root, and
+/// rejects remote references without following local references.
 pub(crate) fn validate_request_schema(schema: &JsonPayload) -> Result<(), String> {
     if schema.as_json_source().len() > MAX_SCHEMA_BYTES {
         return Err("output schema exceeds 1 MiB".into());
     }
-    compile_schema(schema).map(|_| ())
+    use crate::response_json::FlatJsonKind;
+
+    const OBJECT_SCHEMA_MAPS: &[&str] = &[
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+    ];
+    const SINGLE_SCHEMAS: &[&str] = &[
+        "items",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "unevaluatedItems",
+        "propertyNames",
+        "contains",
+        "not",
+        "if",
+        "then",
+        "else",
+        "contentSchema",
+    ];
+    const SCHEMA_ARRAYS: &[&str] = &["anyOf", "oneOf", "allOf", "prefixItems"];
+    const REFERENCE_KEYS: &[&str] = &["$ref", "$dynamicRef", "$recursiveRef"];
+
+    let scanner = schema.scanner().map_err(|error| error.to_string())?;
+    let root = scanner.root_node();
+    if root.kind() != FlatJsonKind::Object {
+        return Err("JSON schema must be an object".into());
+    }
+
+    let key_is =
+        |units: &[u16], key: &str| units == key.encode_utf16().collect::<Vec<_>>().as_slice();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        let Some(entries) = node.object_entries() else {
+            continue;
+        };
+
+        for entry in &entries {
+            if REFERENCE_KEYS
+                .iter()
+                .any(|key| key_is(entry.key_units, key))
+            {
+                let units = entry
+                    .value
+                    .string_units()
+                    .ok_or_else(|| "schema references must be strings".to_owned())?;
+                let reference = String::from_utf16(&units)
+                    .map_err(|_| "schema references must use valid Unicode".to_owned())?;
+                if !reference.starts_with('#') {
+                    return Err("only local schema references are permitted".into());
+                }
+            }
+
+            if OBJECT_SCHEMA_MAPS
+                .iter()
+                .any(|key| key_is(entry.key_units, key))
+            {
+                if let Some(children) = entry.value.object_entries() {
+                    pending.extend(children.into_iter().map(|child| child.value));
+                }
+            } else if SINGLE_SCHEMAS
+                .iter()
+                .any(|key| key_is(entry.key_units, key))
+            {
+                if entry.value.kind() == FlatJsonKind::Object {
+                    pending.push(entry.value);
+                }
+            } else if SCHEMA_ARRAYS.iter().any(|key| key_is(entry.key_units, key)) {
+                if let Some(length) = entry.value.array_len() {
+                    pending.extend((0..length).filter_map(|index| entry.value.array_item(index)));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn materialize_jsonschema_value(payload: &JsonPayload) -> Result<Value, String> {

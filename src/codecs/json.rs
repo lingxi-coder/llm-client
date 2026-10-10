@@ -222,6 +222,28 @@ impl<'a> WireValue<'a> {
             .map(Self::as_value)
             .or_else(|| self.value.get(field))
     }
+    /// Read just one field without materializing an opaque provider block.
+    pub(crate) fn field_payload(
+        &self,
+        field: &str,
+    ) -> Result<Option<JsonPayload>, serde_json::Error> {
+        if let Some(value) = self.field(field) {
+            return JsonPayload::parse(&serde_json::to_string(value)?).map(Some);
+        }
+        let source = match &self.payload {
+            Some(Payload::RawJson(value)) => Some(*value),
+            Some(Payload::OwnedRawJson(value)) => Some(value),
+            _ => None,
+        };
+        if let Some(source) = source {
+            let pointer = format!("/{}", field.replace('~', "~0").replace('/', "~1"));
+            return Ok(source.payload_at(&pointer));
+        }
+        self.value
+            .get(field)
+            .map(JsonPayload::from_generated_value)
+            .transpose()
+    }
     pub(crate) fn get_str(&self, field: &str) -> Option<&str> {
         match self.field(field) {
             Some(Self {
