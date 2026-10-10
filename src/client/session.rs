@@ -129,6 +129,10 @@ impl ResponsesSession {
         transport: Option<Arc<dyn crate::Transport>>,
     ) -> Result<(), LlmError> {
         self.prepared_binding = None;
+        // Sealing must not rewrite the body once this draft is bound, and the
+        // continuation below is derived from it, so settle it before anything
+        // is snapshotted. This covers the HTTP fallback return as well.
+        draft.settle_body()?;
         let transport = transport.unwrap_or_else(|| draft.transport());
         // Authenticate the handshake once per preparation so custom
         // authenticators and rotated credentials participate in the binding.
@@ -200,11 +204,13 @@ impl ResponsesSession {
             set_responses_generate(&mut body, false)?;
         }
         record_responses_wire_request(&self.state, &self.logical_body, &body);
-        draft.request_mut().body = serde_json::to_vec(&body)
-            .map_err(|e| LlmError::InvalidRequest {
-                message: e.to_string(),
-            })?
-            .into();
+        draft.set_session_wire_body(
+            serde_json::to_vec(&body)
+                .map_err(|e| LlmError::InvalidRequest {
+                    message: e.to_string(),
+                })?
+                .into(),
+        );
         self.bind_draft(draft);
         Ok(())
     }
