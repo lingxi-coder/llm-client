@@ -207,6 +207,11 @@ pub trait Transport: Send + Sync + 'static {
 pub trait WebSocketConnection: Send {
     async fn send(&mut self, payload: Bytes) -> Result<StreamResponse, LlmError>;
     async fn close(&mut self) -> Result<(), LlmError>;
+    /// Whether the connection can no longer carry a generation, for example
+    /// because the peer closed it while idle. The owner reconnects instead.
+    fn is_closed(&self) -> bool {
+        false
+    }
 }
 
 /// Shared request execution independent of the concrete HTTP backend.

@@ -164,6 +164,16 @@ impl ResponsesSession {
             self.bind_draft(draft);
             return Ok(());
         }
+        // Codex's `needs_new`: a socket closed while idle is replaced, and
+        // the continuation it carried is gone with it.
+        if self
+            .connection
+            .as_ref()
+            .is_some_and(|connection| connection.is_closed())
+        {
+            self.connection = None;
+            clear_continuation(&self.state, false);
+        }
         if !self.state.lock().expect("session").connection_healthy {
             self.connection = None;
         }
