@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "documentation_evidence_matrix_not_runtime_configuration",
-  "evidence_date": "2026-09-27",
+  "evidence_date": "2026-10-09",
   "live_validation": "not_run",
   "scope": {
     "catalog_profiles": ["openai","gemini"],
@@ -838,6 +838,11 @@
       "url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
       "evidence_date": "2026-09-26",
       "section": "Current snapshot details and Supported tools"
+    },
+    "openai.model.gpt-6.1-sol": {
+      "url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "evidence_date": "2026-10-09",
+      "section": "Model details, Endpoints, Supported features and Supported tools"
     },
     "openai.model.gpt-image-1": {
       "url": "https://developers.openai.com/api/docs/models/gpt-image-1",
@@ -2150,6 +2155,40 @@
             "audio.transcriptions": {"status":"unknown","source_ids":["openai.model.gpt-6-sol"],"basis":"not_established"},
             "audio.speech": {"status":"unknown","source_ids":["openai.model.gpt-6-sol"],"basis":"not_established"},
             "realtime.connect": {"status":"unknown","source_ids":["openai.model.gpt-6-sol"],"basis":"not_established"}
+          }
+        },
+        {
+          "model_id": "gpt-6.1-sol",
+          "evidence_date": "2026-10-09",
+          "live_validation": "not_run",
+          "account_region_validation": "unknown",
+          "availability": {
+            "state": "documented",
+            "source_ids": ["openai.model.gpt-6.1-sol"],
+            "note": "Listed in official model documentation; account and regional entitlement remain unverified."
+          },
+          "cells": {
+            "responses.create": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.json_schema": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "prompt_cache.implicit": {"status":"supported","source_ids":["openai.guide.prompt-caching"],"basis":"documented_family","note":"The guide explicitly covers GPT-5.6 and later; 30m is minimum lifetime, not 24h retention."},
+            "responses.cache_breakpoints": {"status":"supported","source_ids":["openai.guide.prompt-caching"],"basis":"documented_family","note":"The guide explicitly covers GPT-5.6 and later; 30m is minimum lifetime, not 24h retention."},
+            "responses.cache_ttl_30m": {"status":"supported","source_ids":["openai.guide.prompt-caching"],"basis":"documented_family","note":"The guide explicitly covers GPT-5.6 and later; 30m is minimum lifetime, not 24h retention."},
+            "responses.cache_retention_24h": {"status":"unknown","source_ids":["openai.model.gpt-6.1-sol"],"basis":"not_established"},
+            "responses.web_search": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.code_interpreter": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.remote_mcp": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.tool_search": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.hosted_shell": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.computer_use": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.file_search": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "embeddings.create": {"status":"unsupported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_limitation"},
+            "batch.submit": {"status":"supported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_support"},
+            "responses.background": {"status":"unknown","source_ids":["openai.model.gpt-6.1-sol"],"basis":"not_established"},
+            "audio.input": {"status":"unsupported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_limitation"},
+            "audio.output": {"status":"unsupported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_limitation"},
+            "audio.transcriptions": {"status":"unsupported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_limitation"},
+            "audio.speech": {"status":"unsupported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_limitation"},
+            "realtime.connect": {"status":"unsupported","source_ids":["openai.model.gpt-6.1-sol"],"basis":"explicit_limitation"}
           }
         },
         {

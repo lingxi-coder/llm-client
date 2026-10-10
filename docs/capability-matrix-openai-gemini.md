@@ -2,7 +2,7 @@
 
 [English](capability-matrix-openai-gemini.en.md)
 
-[机器可读矩阵](../data/capability-matrix-openai-gemini.json)记录截至 **2026-09-27** 的第一方文档证据，覆盖 OpenAI 和 Gemini 原始内置目录的全部模型，包括被普通 completion preset 过滤掉的 embedding、Realtime、图像、音乐、视频与 agent 条目。较早的模型与来源记录保留其原始核验日期。这是 P0 文档审计，不会更改运行时路由，也不代表客户端实现或真实账号已通过验证。
+[机器可读矩阵](../data/capability-matrix-openai-gemini.json)记录截至 **2026-10-09** 的第一方文档证据，覆盖 OpenAI 和 Gemini 原始内置目录的全部模型，包括被普通 completion preset 过滤掉的 embedding、Realtime、图像、音乐、视频与 agent 条目。较早的模型与来源记录保留其原始核验日期。这是 P0 文档审计，不会更改运行时路由，也不代表客户端实现或真实账号已通过验证。
 
 ## 覆盖与含义
 

@@ -2,7 +2,7 @@
 
 [中文](capability-matrix-openai-gemini.md)
 
-The [machine-readable matrix](../data/capability-matrix-openai-gemini.json) records first-party documentation evidence reviewed on **2026-09-27**. It covers every model in the raw OpenAI and Gemini catalogs, including embedding, realtime, image, music, video and agent entries excluded from ordinary completion presets. Older model and source records retain their original review dates. This P0 documentation audit does not modify runtime routing or attest to client implementation or live account validation.
+The [machine-readable matrix](../data/capability-matrix-openai-gemini.json) records first-party documentation evidence reviewed on **2026-10-09**. It covers every model in the raw OpenAI and Gemini catalogs, including embedding, realtime, image, music, video and agent entries excluded from ordinary completion presets. Older model and source records retain their original review dates. This P0 documentation audit does not modify runtime routing or attest to client implementation or live account validation.
 
 ## Coverage and interpretation
 
