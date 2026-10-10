@@ -538,6 +538,14 @@ struct XaiSttTrackingSink {
 
 #[async_trait]
 impl RealtimeSink for XaiSttTrackingSink {
+    async fn ping(&mut self, payload: Bytes) -> Result<(), RealtimeError> {
+        self.inner.ping(payload).await
+    }
+
+    fn abort(&mut self) {
+        self.inner.abort();
+    }
+
     async fn send(&mut self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         let is_audio_done = match &frame {
             RealtimeFrame::Text(bytes) => {
@@ -710,6 +718,11 @@ struct XaiSttCodec {
 impl RealtimeCodec for XaiSttCodec {
     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         let frame = match input {
+            RealtimeInput::ImportHistory { .. } => {
+                return Err(RealtimeError::InvalidInput {
+                    message: "history import is unsupported by this adapter".into(),
+                })
+            }
             RealtimeInput::Audio { data, format } => {
                 if data.is_empty() {
                     return Err(invalid_input("audio frame must not be empty"));
@@ -1005,4 +1018,49 @@ fn connect_timeout_error() -> XaiSttError {
         message: "xAI STT connect or transcript.created timed out".into(),
     }
     .into()
+}
+
+#[cfg(test)]
+mod transport_contract_tests {
+    use super::*;
+    use std::sync::{atomic::AtomicBool, Mutex};
+
+    struct ControlSink {
+        ping: Arc<Mutex<Option<Bytes>>>,
+        aborted: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl RealtimeSink for ControlSink {
+        async fn send(&mut self, _: RealtimeFrame) -> Result<(), RealtimeError> {
+            panic!("control operations must not become data frames");
+        }
+        async fn ping(&mut self, payload: Bytes) -> Result<(), RealtimeError> {
+            *self.ping.lock().unwrap() = Some(payload);
+            Ok(())
+        }
+        fn abort(&mut self) {
+            self.aborted.store(true, Ordering::Release);
+        }
+        async fn close(&mut self, _: RealtimeClose) -> Result<(), RealtimeError> {
+            panic!("abort must not flush a graceful close");
+        }
+    }
+
+    #[test]
+    fn tracking_wrapper_preserves_transport_ping_and_immediate_abort() {
+        let ping = Arc::new(Mutex::new(None));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let mut sink = XaiSttTrackingSink {
+            inner: Box::new(ControlSink {
+                ping: ping.clone(),
+                aborted: aborted.clone(),
+            }),
+            audio_done_sent: Arc::new(AtomicBool::new(false)),
+        };
+        let payload = Bytes::from_static(b"transport-ping");
+        futures::executor::block_on(sink.ping(payload.clone())).unwrap();
+        assert_eq!(*ping.lock().unwrap(), Some(payload));
+        sink.abort();
+        assert!(aborted.load(Ordering::Acquire));
+    }
 }

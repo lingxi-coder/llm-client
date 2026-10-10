@@ -1,8 +1,9 @@
 //! OpenAI Realtime WebSocket JSON event codec.
 
 use crate::realtime::{
-    RealtimeAudioFormat, RealtimeCodec, RealtimeError, RealtimeEvent, RealtimeFrame, RealtimeInput,
-    RealtimeToolResult, MAX_REALTIME_TOOL_RESULTS,
+    RealtimeAudioFormat, RealtimeCapabilities, RealtimeCodec, RealtimeError, RealtimeEvent,
+    RealtimeFrame, RealtimeHistoryItem, RealtimeInput, RealtimeRole, RealtimeToolResult,
+    MAX_REALTIME_TOOL_RESULTS,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
@@ -136,6 +137,10 @@ impl OpenAiOutputMode {
 #[derive(Debug, Clone)]
 pub struct OpenAiRealtimeConfig {
     pub instructions: Option<String>,
+    /// Enable input transcripts separately from native audio understanding.
+    pub input_transcription_model: Option<String>,
+    /// Disable server VAD; the host commits input and explicitly continues.
+    pub manual_turns: bool,
     pub output_mode: OpenAiOutputMode,
     pub input_audio_format: OpenAiAudioFormat,
     pub output_audio_format: OpenAiAudioFormat,
@@ -149,6 +154,8 @@ impl Default for OpenAiRealtimeConfig {
     fn default() -> Self {
         Self {
             instructions: None,
+            input_transcription_model: Some("gpt-4o-mini-transcribe".into()),
+            manual_turns: false,
             output_mode: OpenAiOutputMode::Audio,
             input_audio_format: OpenAiAudioFormat::Pcm16,
             output_audio_format: OpenAiAudioFormat::Pcm16,
@@ -186,6 +193,18 @@ impl Default for OpenAiRealtimeCodec {
 }
 
 impl RealtimeCodec for OpenAiRealtimeCodec {
+    fn capabilities(&self) -> RealtimeCapabilities {
+        RealtimeCapabilities {
+            history_import: true,
+            tools: true,
+            input_transcription: self.config.input_transcription_model.is_some(),
+            output_transcription: true,
+            usage: true,
+            interruption: true,
+            audio_truncation: true,
+            session_resumption: false,
+        }
+    }
     fn initial_frames(&self) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         if let Some(voice) = &self.config.voice {
             voice.validate()?;
@@ -198,6 +217,18 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
                 "output": { "format": self.config.output_audio_format.wire_format() }
             }
         });
+        if let Some(model) = &self.config.input_transcription_model {
+            if model.trim().is_empty() || model.contains('\0') {
+                return Err(RealtimeError::InvalidConfig {
+                    message: "OpenAI input transcription model must be nonempty and NUL-free"
+                        .into(),
+                });
+            }
+            session["audio"]["input"]["transcription"] = json!({"model":model});
+        }
+        if self.config.manual_turns {
+            session["audio"]["input"]["turn_detection"] = Value::Null;
+        }
         if let Some(instructions) = &self.config.instructions {
             session["instructions"] = Value::String(instructions.clone());
         }
@@ -221,6 +252,7 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
 
     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         let values = match input {
+            RealtimeInput::ImportHistory { items } => encode_history(items)?,
             RealtimeInput::ClearAudio => vec![json!({
                 "type": "input_audio_buffer.clear"
             })],
@@ -303,11 +335,10 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
             RealtimeInput::CommitAudio => vec![json!({
                 "type": "input_audio_buffer.commit"
             })],
-            RealtimeInput::ToolResult { call_id, output , .. } => {
-                vec![
-                    encode_function_call_output(call_id, output)?,
-                    json!({ "type": "response.create" }),
-                ]
+            RealtimeInput::ToolResult {
+                call_id, output, ..
+            } => {
+                vec![encode_function_call_output(call_id, output)?]
             }
             RealtimeInput::ToolResults { results } => encode_function_call_outputs(results)?,
             RealtimeInput::ContinueResponse => vec![json!({ "type": "response.create" })],
@@ -320,145 +351,7 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
     }
 
     fn decode(&self, frame: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
-        let RealtimeFrame::Text(bytes) = frame else {
-            return Err(RealtimeError::Codec {
-                message: "OpenAI Realtime events must be JSON text frames".into(),
-            });
-        };
-        let native: Value =
-            serde_json::from_slice(&bytes).map_err(|error| RealtimeError::Codec {
-                message: format!("OpenAI Realtime frame is not valid JSON: {error}"),
-            })?;
-        let event_type =
-            native
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| RealtimeError::Codec {
-                    message: "OpenAI Realtime event is missing a string `type`".into(),
-                })?;
-        let text_field = |key: &str| native.get(key).and_then(Value::as_str).map(str::to_owned);
-        let item_id = || text_field("item_id");
-        let one = |event| Ok(vec![event]);
-        match event_type {
-            "session.created" | "session.updated" => one(RealtimeEvent::SessionReady),
-            "response.created" => one(RealtimeEvent::TurnStarted {
-                turn_id: native
-                    .get("response")
-                    .and_then(|response| response.get("id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            }),
-            "response.done" => {
-                let response = native.get("response");
-                let status = response
-                    .and_then(|response| response.get("status"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let mut events = vec![RealtimeEvent::TurnCompleted {
-                    turn_id: response
-                        .and_then(|response| response.get("id"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    status: status.clone(),
-                }];
-                if status.as_deref() == Some("cancelled") {
-                    events.push(RealtimeEvent::Interrupted);
-                }
-                Ok(events)
-            }
-            "response.output_audio.delta" => {
-                let encoded = text_field("delta").ok_or_else(|| RealtimeError::Codec {
-                    message: "audio delta is missing base64 `delta`".into(),
-                })?;
-                let data = STANDARD
-                    .decode(encoded)
-                    .map_err(|error| RealtimeError::Codec {
-                        message: format!("audio delta is not valid base64: {error}"),
-                    })?;
-                one(RealtimeEvent::AudioDelta {
-                    data: Bytes::from(data),
-                    format: self.config.output_audio_format.core_format(),
-                    item_id: item_id(),
-                })
-            }
-            "response.output_text.delta" | "response.output_audio_transcript.delta" => {
-                let text = text_field("delta").ok_or_else(|| RealtimeError::Codec {
-                    message: "text delta is missing string `delta`".into(),
-                })?;
-                one(RealtimeEvent::TextDelta {
-                    text,
-                    item_id: item_id(),
-                    final_chunk: false,
-                })
-            }
-            "response.output_text.done" | "response.output_audio_transcript.done" => {
-                let text = text_field("text")
-                    .or_else(|| text_field("transcript"))
-                    .ok_or_else(|| RealtimeError::Codec {
-                        message: "final text event is missing `text` or `transcript`".into(),
-                    })?;
-                one(RealtimeEvent::TextDelta {
-                    text,
-                    item_id: item_id(),
-                    final_chunk: true,
-                })
-            }
-            "response.output_item.done" => {
-                let item = native.get("item").unwrap_or(&Value::Null);
-                if item.get("type").and_then(Value::as_str) != Some("function_call") {
-                    return one(RealtimeEvent::ProviderEvent {
-                        name: event_type.into(),
-                        native,
-                    });
-                }
-                let call_id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| RealtimeError::Codec {
-                        message: "function call item is missing `call_id`".into(),
-                    })?
-                    .to_owned();
-                let name = item
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| RealtimeError::Codec {
-                        message: "function call item is missing `name`".into(),
-                    })?
-                    .to_owned();
-                let arguments = match item.get("arguments") {
-                    Some(Value::String(raw)) => {
-                        serde_json::from_str(raw).map_err(|error| RealtimeError::Codec {
-                            message: format!("function call arguments are invalid JSON: {error}"),
-                        })?
-                    }
-                    Some(value) => value.clone(),
-                    None => Value::Object(Default::default()),
-                };
-                one(RealtimeEvent::ToolCall {
-                    call_id,
-                    name,
-                    arguments,
-                })
-            }
-            "input_audio_buffer.speech_started" => one(RealtimeEvent::UserSpeechStarted),
-            "error" => one(RealtimeEvent::ProviderError {
-                code: native
-                    .get("error")
-                    .and_then(|error| error.get("code"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                message: native
-                    .get("error")
-                    .and_then(|error| error.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("OpenAI Realtime provider error")
-                    .to_owned(),
-            }),
-            _ => one(RealtimeEvent::ProviderEvent {
-                name: event_type.into(),
-                native,
-            }),
-        }
+        crate::realtime::decode_json_events(frame, self.config.output_audio_format.core_format())
     }
 }
 
@@ -608,4 +501,39 @@ fn validate_call_id(call_id: &str) -> Result<(), RealtimeError> {
         });
     }
     Ok(())
+}
+
+/// Encode host history without a response.create. Validate the entire batch
+/// before dispatch; no partial history is sent when a later item is invalid.
+pub(crate) fn encode_history(items: &[RealtimeHistoryItem]) -> Result<Vec<Value>, RealtimeError> {
+    if items.is_empty() {
+        return Err(RealtimeError::InvalidInput {
+            message: "history must contain at least one item".into(),
+        });
+    }
+    let mut ids = std::collections::HashSet::new();
+    items.iter().map(|entry| {
+        let (id, mut item) = match entry {
+            RealtimeHistoryItem::Message { item_id, role, text } => {
+                if text.contains('\0') { return Err(RealtimeError::InvalidInput { message: "history text must be NUL-free".into() }); }
+                let (role, kind) = match role { RealtimeRole::User => ("user", "input_text"), RealtimeRole::System => ("system", "input_text"), RealtimeRole::Assistant => ("assistant", "output_text") };
+                (item_id, json!({ "type":"message", "role":role, "content":[{"type":kind,"text":text}] }))
+            }
+            RealtimeHistoryItem::ToolCall { item_id, call_id, name, arguments } => {
+                validate_call_id(call_id)?;
+                if name.trim().is_empty() || name.contains('\0') || !arguments.is_object() { return Err(RealtimeError::InvalidInput { message: "history tool calls require a name and JSON object arguments".into() }); }
+                (item_id, json!({"type":"function_call","call_id":call_id,"name":name,"arguments":arguments.to_string()}))
+            }
+            RealtimeHistoryItem::ToolResult { item_id, call_id, output, .. } => {
+                validate_call_id(call_id)?;
+                (item_id, json!({"type":"function_call_output","call_id":call_id,"output":output.to_string()}))
+            }
+        };
+        if let Some(id) = id {
+            validate_item_id(id)?;
+            if !ids.insert(id) { return Err(RealtimeError::InvalidInput { message: "history item IDs must be unique".into() }); }
+            item["id"] = json!(id);
+        }
+        Ok(json!({"type":"conversation.item.create","item":item}))
+    }).collect()
 }

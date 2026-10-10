@@ -126,6 +126,10 @@ where
             .map_err(safe_websocket_error)
     }
 
+    fn abort(&mut self) {
+        // Dropping both split halves releases the socket; no flush is needed.
+    }
+
     async fn close(&mut self, close: RealtimeClose) -> Result<(), RealtimeError> {
         self.sink
             .send(outgoing_close(close))

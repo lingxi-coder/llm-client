@@ -57,10 +57,59 @@ drain accepted messages, send a normal close, and publish `Closed`. Dropping the
 driver itself aborts the connection by dropping the injected transport halves;
 Rust `Drop` cannot guarantee an asynchronous close handshake.
 
+`RealtimeControl::abort(close)` cancels pending sends and discards accepted
+outbound messages immediately. It preempts a blocked transport send or a full
+event queue and drops both connection halves without flushing a graceful
+WebSocket close. A `Closed` event is best effort when aborting; the event stream
+still terminates even when that event cannot fit. Injected sinks may implement
+the synchronous `RealtimeSink::abort` cleanup hook, which must never drain
+network writes.
+
 All initialization frames are generated and validated before connecting. An invalid configuration or oversized initialization frame prevents the transport handshake and any partial initialization writes.
 
 A remote-initiated close is reported as a connection interruption. `Closed`
 means that the local caller closed the session or dropped all control handles.
+
+## Native Agent conversation
+
+`connect_audio_conversation(snapshot, route, config, tools, history, credential,
+transport, limits)` builds endpoint, authentication and provider tool/config
+frames for the exact `AudioRoute`. `AudioRealtimeConfig` selects an independent
+audio model and optional voice/instructions. Catalog defaults do not use the
+chat model. The returned `ConnectedAudioConversation` carries bounded control,
+events, driver, resolved model and input/output formats. It currently admits
+OpenAI API Realtime and Gemini Developer Live; unsupported profiles, audio
+models, and hosted/deferred tools fail before connection.
+
+`ImportHistory` preserves message roles, function-call IDs and results without
+requesting a response. OpenAI imports conversation items. Gemini uses the
+[initial-history handshake](https://ai.google.dev/api/live#HistoryConfig):
+`historyConfig.initialHistoryInClientContent` prevents the final initial
+`clientContent.turnComplete` from generating a response. Import occurs once
+before live input. System history uses Gemini's dedicated system instruction.
+
+Both connectors use host-controlled input boundaries: send audio chunks,
+`CommitAudio`, then `ContinueResponse`. Gemini starts/ends manual activity in
+its adapter and resumes automatically after function results, so its explicit
+continuation is a local no-op. Generic JSON tool results that are not objects
+are wrapped as `{ "result": value }` for Gemini's object-only native response.
+The SDK never executes a function.
+
+`Transcript` distinguishes input/output and `Delta`/`Replace`, and final text
+is a complete item snapshot. Provider item/response IDs are retained; Gemini
+uses local stream item/turn IDs because its protocol supplies no such IDs.
+`ToolCancelled`, `Usage` and `SessionResumption` preserve their native envelopes
+alongside normalized events. Gemini usage has no response ID or guaranteed
+billable delta semantics, so its `Usage.turn_id` is `None`; callers must not
+infer cost by subtracting prompt-context counters. OpenAI usage is attributed
+to the provider response ID. Every recognized native event is also retained.
+
+`control.capabilities()` reports the actual configured contract. xAI and GLM
+provide normalized generic streams through `into_realtime_parts`, but do not
+advertise Agent conversation until history import is implemented. Truncation
+and resumption have separate flags: OpenAI truncates audio but does not return
+an exact surviving transcript prefix; Gemini interruption does not implement
+audio truncation. Scoped provider resume handles remain opt-in.
 
 ## OpenAI Realtime codec
 
@@ -91,10 +140,9 @@ response; the host can send `ContinueResponse` (`response.create`) when ready.
 optionally selects a named built-in voice (a string) or a project-available
 custom voice ID (`{ id }`). Voice names are not hardcoded, and OpenAI validates
 availability for the project. A single
-`ToolResult` keeps its convenience behavior: it inserts one function-call
-output item and immediately creates a response. For multiple calls from one
-response, the host can enqueue all outputs together with `ToolResults`; the
-client inserts each output item, then the host sends `ContinueResponse`
+`ToolResult` and `ToolResults` insert function-call output items without
+starting another response. The host submits every completed result before
+sending `ContinueResponse`
 (`response.create`) when it is ready for inference to resume. This places all
 tool outputs in the conversation before the next model response. The client
 does not execute tools or decide when to continue.

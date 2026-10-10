@@ -93,6 +93,16 @@ impl RealtimeTransport for FakeTransport {
 
 #[async_trait]
 impl RealtimeSink for FakeSink {
+    async fn ping(&mut self, _payload: bytes::Bytes) -> Result<(), RealtimeError> {
+        Err(RealtimeError::InvalidInput {
+            message: "test transport does not support explicit WebSocket Ping frames".into(),
+        })
+    }
+
+    fn abort(&mut self) {
+        // The test transport releases its local state when dropped.
+    }
+
     async fn send(&mut self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         self.sent.lock().unwrap().push(frame.clone());
         let _ = self.outbound.unbounded_send(frame);
@@ -294,7 +304,7 @@ fn server_content_normalizes_audio_text_interruption_and_completion() {
                 events.next().await,
                 Some(GeminiLiveEvent::Realtime(RealtimeEvent::TextDelta {
                     text: "hello".into(),
-                    item_id: None,
+                    item_id: Some("gemini-output-0".into()),
                     final_chunk: true,
                 }))
             );
@@ -305,7 +315,7 @@ fn server_content_normalizes_audio_text_interruption_and_completion() {
                     format: RealtimeAudioFormat::Pcm16 {
                         sample_rate_hz: 24_000,
                     },
-                    item_id: None,
+                    item_id: Some("gemini-output-0".into()),
                 }))
             );
             assert_eq!(
@@ -315,7 +325,7 @@ fn server_content_normalizes_audio_text_interruption_and_completion() {
             assert_eq!(
                 events.next().await,
                 Some(GeminiLiveEvent::Realtime(RealtimeEvent::TurnCompleted {
-                    turn_id: None,
+                    turn_id: Some("gemini-turn-0".into()),
                     status: Some("interrupted".into()),
                 }))
             );
@@ -537,7 +547,7 @@ fn invalid_batched_tool_output_is_atomic_and_successful_batch_cleans_all_names()
                             output: json!({ "ok": true }),
                         },
                         lingxi_llm_client::realtime::RealtimeToolResult {
-                            call_id: "call-2".into(),
+                            call_id: "unknown-call".into(),
                             output: Value::Null,
                         },
                     ],

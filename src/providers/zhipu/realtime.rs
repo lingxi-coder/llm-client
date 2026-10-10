@@ -381,6 +381,14 @@ impl GlmRealtimeSession {
         };
         let codec = Arc::new(GlmRealtimeCodec {
             turn_detection: config.turn_detection,
+            output_audio_format: match config.output_audio_format {
+                GlmRealtimeOutputAudioFormat::Pcm => RealtimeAudioFormat::Encoded {
+                    mime_type: "audio/pcm".into(),
+                },
+                GlmRealtimeOutputAudioFormat::Mp3 => RealtimeAudioFormat::Encoded {
+                    mime_type: "audio/mpeg".into(),
+                },
+            },
         });
         let (session, driver) =
             RealtimeSession::connect(&setup_transport, request, codec, limits).await?;
@@ -396,6 +404,10 @@ impl GlmRealtimeSession {
             },
             driver,
         ))
+    }
+
+    pub fn into_realtime_parts(self) -> (RealtimeControl, crate::realtime::RealtimeEvents) {
+        (self.control, self.events.inner)
     }
 
     pub fn into_parts(self) -> (RealtimeControl, GlmRealtimeEvents) {
@@ -415,11 +427,21 @@ pub struct GlmRealtimeEvents {
 
 impl GlmRealtimeEvents {
     pub async fn next(&mut self) -> Option<GlmRealtimeEvent> {
-        let event = self.inner.next().await?;
-        let RealtimeEvent::ProviderEvent { name, native } = &event else {
-            return Some(GlmRealtimeEvent::Realtime(event));
-        };
-        Some(parse_native_event(name, native, self.output_audio_format))
+        loop {
+            match self.inner.next().await? {
+                RealtimeEvent::ProviderEvent { name, native } => {
+                    return Some(parse_native_event(&name, &native, self.output_audio_format))
+                }
+                event @ (RealtimeEvent::Closed { .. }
+                | RealtimeEvent::ConnectionInterrupted { .. }) => {
+                    return Some(GlmRealtimeEvent::Realtime(event))
+                }
+                event @ RealtimeEvent::ProviderError { code: Some(_), .. } if matches!(&event, RealtimeEvent::ProviderError { code:Some(code),.. } if matches!(code.as_str(), "invalid_provider_frame" | "frame_too_large")) => {
+                    return Some(GlmRealtimeEvent::Realtime(event))
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -482,12 +504,28 @@ impl RealtimeTransport for GlmSetupTransport {
 }
 
 struct GlmRealtimeCodec {
+    output_audio_format: RealtimeAudioFormat,
     turn_detection: GlmRealtimeTurnDetection,
 }
 
 impl RealtimeCodec for GlmRealtimeCodec {
+    fn capabilities(&self) -> crate::realtime::RealtimeCapabilities {
+        crate::realtime::RealtimeCapabilities {
+            tools: true,
+            input_transcription: true,
+            output_transcription: true,
+            usage: true,
+            interruption: true,
+            ..Default::default()
+        }
+    }
     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         let messages = match input {
+            RealtimeInput::ImportHistory { .. } => {
+                return Err(RealtimeError::InvalidInput {
+                    message: "history import is not implemented by this adapter".into(),
+                })
+            }
             RealtimeInput::RetrieveItem { .. }
             | RealtimeInput::DeleteItem { .. }
             | RealtimeInput::TruncateAudio { .. } => {
@@ -546,7 +584,9 @@ impl RealtimeCodec for GlmRealtimeCodec {
             // Keep that continuation under caller control in either VAD mode.
             RealtimeInput::ContinueResponse => vec![json!({ "type": "response.create" })],
             RealtimeInput::Interrupt => vec![json!({ "type": "response.cancel" })],
-            RealtimeInput::ToolResult { call_id, output , .. } => {
+            RealtimeInput::ToolResult {
+                call_id, output, ..
+            } => {
                 vec![encode_function_call_output(call_id, output)?]
             }
             RealtimeInput::ToolResults { results } => encode_function_call_outputs(results)?,
@@ -576,10 +616,7 @@ impl RealtimeCodec for GlmRealtimeCodec {
                 message: "GLM Realtime audio delta is not valid base64".into(),
             })?;
         }
-        Ok(vec![RealtimeEvent::ProviderEvent {
-            name: name.to_owned(),
-            native,
-        }])
+        crate::realtime::normalize_json_events(native, self.output_audio_format.clone(), true)
     }
 }
 

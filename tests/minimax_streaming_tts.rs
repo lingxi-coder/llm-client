@@ -128,6 +128,16 @@ impl RealtimeTransport for FakeTransport {
 
 #[async_trait]
 impl RealtimeSink for FakeSink {
+    async fn ping(&mut self, _payload: bytes::Bytes) -> Result<(), RealtimeError> {
+        Err(RealtimeError::InvalidInput {
+            message: "test transport does not support explicit WebSocket Ping frames".into(),
+        })
+    }
+
+    fn abort(&mut self) {
+        // The test transport releases its local state when dropped.
+    }
+
     async fn send(&mut self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         let RealtimeFrame::Text(bytes) = &frame else {
             return Err(RealtimeError::Transport {

@@ -659,6 +659,14 @@ struct TrackedTtsSink {
 
 #[async_trait]
 impl RealtimeSink for TrackedTtsSink {
+    async fn ping(&mut self, payload: Bytes) -> Result<(), RealtimeError> {
+        self.inner.ping(payload).await
+    }
+
+    fn abort(&mut self) {
+        self.inner.abort();
+    }
+
     async fn send(&mut self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         let event_type = match &frame {
             RealtimeFrame::Text(bytes) => serde_json::from_slice::<Value>(bytes)
@@ -762,5 +770,51 @@ fn invalid_input(message: &str) -> RealtimeError {
 fn connect_timeout_error() -> RealtimeError {
     RealtimeError::Transport {
         message: "xAI streaming TTS WebSocket handshake timed out".into(),
+    }
+}
+
+#[cfg(test)]
+mod transport_contract_tests {
+    use super::*;
+    use std::sync::{atomic::AtomicBool, Mutex};
+
+    struct ControlSink {
+        ping: Arc<Mutex<Option<Bytes>>>,
+        aborted: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl RealtimeSink for ControlSink {
+        async fn send(&mut self, _: RealtimeFrame) -> Result<(), RealtimeError> {
+            panic!("control operations must not become data frames");
+        }
+        async fn ping(&mut self, payload: Bytes) -> Result<(), RealtimeError> {
+            *self.ping.lock().unwrap() = Some(payload);
+            Ok(())
+        }
+        fn abort(&mut self) {
+            self.aborted.store(true, Ordering::Release);
+        }
+        async fn close(&mut self, _: RealtimeClose) -> Result<(), RealtimeError> {
+            panic!("abort must not flush a graceful close");
+        }
+    }
+
+    #[test]
+    fn tracking_wrapper_preserves_transport_ping_and_immediate_abort() {
+        let ping = Arc::new(Mutex::new(None));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let mut sink = TrackedTtsSink {
+            inner: Box::new(ControlSink {
+                ping: ping.clone(),
+                aborted: aborted.clone(),
+            }),
+            sent_text_done: Arc::new(AtomicU64::new(0)),
+            sent_text_clear: Arc::new(AtomicU64::new(0)),
+        };
+        let payload = Bytes::from_static(b"transport-ping");
+        futures::executor::block_on(sink.ping(payload.clone())).unwrap();
+        assert_eq!(*ping.lock().unwrap(), Some(payload));
+        sink.abort();
+        assert!(aborted.load(Ordering::Acquire));
     }
 }

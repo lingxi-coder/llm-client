@@ -40,11 +40,23 @@ while let Some(event) = events.next().await {
 
 连接前会生成并校验全部初始化帧。初始化配置错误或任一帧超过大小上限时，不调用传输层建立连接，也不发送部分初始化配置。
 
+## 原生 Agent 对话
+
+`connect_audio_conversation(snapshot, route, config, tools, history, credential, transport, limits)` 为精确 `AudioRoute` 在 SDK 内构造端点、认证、工具与配置帧。`AudioRealtimeConfig` 独立选择音频模型及可选语音和指令，默认值来自音频目录。返回的 `ConnectedAudioConversation` 包含有界控制、事件、驱动、解析后的模型以及输入输出格式。目前支持 OpenAI API Realtime 与 Gemini Developer Live；不支持的配置、模型与托管或延迟工具在连接之前失败。
+
+`ImportHistory` 导入消息角色、工具调用 ID 和结果，不触发回答。OpenAI 创建 conversation item；Gemini 使用[初始历史模式](https://ai.google.dev/api/live#HistoryConfig)，`historyConfig.initialHistoryInClientContent` 使初始 `clientContent.turnComplete` 不触发生成。Gemini 只允许在实时输入前导入一次，system 历史归入其独立 system instruction。两个连接器都允许宿主发送音频、`CommitAudio`、`ContinueResponse`。Gemini 适配器负责手动 activity 边界，工具结果后自动继续，因此显式继续在本地完成；非对象工具输出封装成 `{ "result": value }`。
+
+`Transcript` 分离输入和输出，并区分 `Delta` 与 `Replace`。最终事件携带完整文本；供应商的 item/response ID 保留，Gemini 使用本地流 item/turn ID。工具取消、用量和会话恢复有独立规范化事件，已识别的原生消息仍完整保留。Gemini 用量没有 response ID 或有保证的计费差量语义，因此 `Usage.turn_id` 为 `None`，不得通过相减提示上下文计数推断费用；OpenAI 用量关联供应商 response ID。
+
+`control.capabilities()` 反映实际启用的契约。xAI 与 GLM 可通过 `into_realtime_parts` 获取规范化通用事件；历史导入尚未实现，因此它们不会开放 Agent 对话。中断、音频截断与恢复分别标记；OpenAI 截断不返回精确剩余文本前缀，Gemini 未实现音频截断。
+
+`abort(close)` 会立即取消阻塞的发送、丢弃已接受的出站队列并释放连接两端，不刷新优雅关闭的网络缓冲区。即使事件队列已满，中止也能完成；此时 `Closed` 事件尽力发送，事件流仍会终止。注入的 sink 可实现同步 `abort` 清理钩子，不能在钩子中排空网络写入。
+
 ## OpenAI Realtime 编码器
 
 `OpenAiRealtimeCodec` 在连接成功后先发送 `session.update`。模型和认证信息由宿主传入的 endpoint 与请求头决定。`OpenAiRealtimeConfig.tools` 可声明会话级函数工具，`tool_choice` 可选 `Auto`、`None`、`Required` 或指定已声明的 `Function(name)`。函数声明只暴露 Realtime 文档确认的 `type`、`name`、可选 `description` 和 JSON Schema `parameters`；名称重复、参数不是 JSON 对象或指定了未知函数时会在连接前拒绝。
 
-文本输入会编码成用户会话条目和 `response.create`；音频块使用 `input_audio_buffer.append`；手动结束音频输入使用 `input_audio_buffer.commit`；`ClearAudio` 会发送 `input_audio_buffer.clear` 清除尚未提交的输入音频，服务端以 `input_audio_buffer.cleared` 确认。提交空缓冲区会由服务端报错，`commit` 本身不会创建模型响应；中断会发送 `response.cancel`。OpenAI Realtime WebSocket 没有 `FinishSession` 客户端事件，结束会话由宿主关闭 transport。图像输入编码成带 Base64 data URL 的 `input_image` 内容项，只使用宿主交给客户端的字节；客户端不会调用单独的文件上传 API 或读取远程 URL。图像只写入对话，宿主可在适当时机发送 `ContinueResponse`（`response.create`）来触发推理。OpenAI 当前文档确认 `gpt-realtime-2` 和 `gpt-realtime` 支持该图像输入，其他模型的可用性由服务端决定。`OpenAiRealtimeConfig.voice` 编码到 `session.audio.output.voice`，可选地指定具名内置语音（字符串）或项目可用的自定义语音 ID（`{ id }`）；名称不在客户端硬编码，是否可用由 OpenAI 项目和服务端校验。单个 `ToolResult` 保留便捷行为：发送一个 function-call output 条目后立即创建响应。若模型一次发出多个函数调用，宿主可用一个 `ToolResults` 输入一次入队全部结果；客户端只发送结果条目，随后由宿主在准备好继续时发送 `ContinueResponse`（`response.create`）。这让所有结果先进入对话，再开始下一轮推理。客户端不执行函数，也不决定何时继续。
+文本输入会编码成用户会话条目和 `response.create`；音频块使用 `input_audio_buffer.append`；手动结束音频输入使用 `input_audio_buffer.commit`；`ClearAudio` 会发送 `input_audio_buffer.clear` 清除尚未提交的输入音频，服务端以 `input_audio_buffer.cleared` 确认。提交空缓冲区会由服务端报错，`commit` 本身不会创建模型响应；中断会发送 `response.cancel`。OpenAI Realtime WebSocket 没有 `FinishSession` 客户端事件，结束会话由宿主关闭 transport。图像输入编码成带 Base64 data URL 的 `input_image` 内容项，只使用宿主交给客户端的字节；客户端不会调用单独的文件上传 API 或读取远程 URL。图像只写入对话，宿主可在适当时机发送 `ContinueResponse`（`response.create`）来触发推理。OpenAI 当前文档确认 `gpt-realtime-2` 和 `gpt-realtime` 支持该图像输入，其他模型的可用性由服务端决定。`OpenAiRealtimeConfig.voice` 编码到 `session.audio.output.voice`，可选地指定具名内置语音（字符串）或项目可用的自定义语音 ID（`{ id }`）；名称不在客户端硬编码，是否可用由 OpenAI 项目和服务端校验。单个 `ToolResult` 和批量 `ToolResults` 都只发送 function-call output 条目。若模型一次发出多个函数调用，宿主可用一个 `ToolResults` 输入一次入队全部结果，随后在准备好继续时发送 `ContinueResponse`（`response.create`）。这让所有结果先进入对话，再开始下一轮推理。客户端不执行函数，也不决定何时继续。
 
 默认会话使用单声道、小端序 24 kHz PCM16 输入和音频输出。OpenAI Realtime 参考文档列出了该采样率；传入的 [`RealtimeAudioFormat`] 必须与编码器配置相符。也可以配置 G.711 μ-law 或 A-law，以及纯文本输出。编码器会标准化音频与文本增量、已完成响应、函数调用、provider 错误和语音开始事件。尚未映射的 provider 事件会保留原始 JSON。图像编码后的数据仍受 `max_frame_bytes` 限制。
 

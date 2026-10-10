@@ -8,6 +8,11 @@
 #[cfg(feature = "realtime-websocket")]
 mod websocket;
 
+mod audio;
+pub use audio::{connect_audio_conversation, AudioRealtimeConfig, ConnectedAudioConversation};
+mod normalize;
+pub(crate) use normalize::{decode_json_events, normalize_json_events};
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{
@@ -16,6 +21,7 @@ use futures::{
     stream::BoxStream,
     FutureExt, Sink, SinkExt, StreamExt,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fmt,
@@ -119,8 +125,77 @@ pub enum RealtimeAudioFormat {
 
 /// Events callers can enqueue. Audio should be split into small chunks by the
 /// host before enqueueing so the driver can keep latency and memory bounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealtimeRole {
+    System,
+    User,
+    Assistant,
+}
+
+/// Text and tool history owned by the host. Import never requests a response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RealtimeHistoryItem {
+    Message {
+        item_id: Option<String>,
+        role: RealtimeRole,
+        text: String,
+    },
+    ToolCall {
+        item_id: Option<String>,
+        call_id: String,
+        name: String,
+        arguments: Value,
+    },
+    ToolResult {
+        item_id: Option<String>,
+        call_id: String,
+        name: Option<String>,
+        output: Value,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeTranscriptDirection {
+    Input,
+    Output,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealtimeTranscriptUpdate {
+    Delta,
+    Replace,
+}
+
+/// Implemented adapter operations, independently of a model's availability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimeCapabilities {
+    pub history_import: bool,
+    pub tools: bool,
+    pub input_transcription: bool,
+    pub output_transcription: bool,
+    pub usage: bool,
+    pub interruption: bool,
+    pub audio_truncation: bool,
+    pub session_resumption: bool,
+}
+impl RealtimeCapabilities {
+    pub fn agent_conversation(self) -> bool {
+        self.history_import
+            && self.tools
+            && self.input_transcription
+            && self.output_transcription
+            && self.interruption
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RealtimeInput {
+    ImportHistory {
+        items: Vec<RealtimeHistoryItem>,
+    },
     Text(String),
     Audio {
         data: Bytes,
@@ -181,6 +256,30 @@ pub struct RealtimeToolResult {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RealtimeEvent {
     SessionReady,
+    /// `update` distinguishes deltas from interim snapshots. Final events
+    /// carry complete text for the corresponding item.
+    Transcript {
+        direction: RealtimeTranscriptDirection,
+        update: RealtimeTranscriptUpdate,
+        text: String,
+        item_id: Option<String>,
+        turn_id: Option<String>,
+        final_chunk: bool,
+    },
+    ToolCancelled {
+        call_ids: Vec<String>,
+    },
+    Usage {
+        turn_id: Option<String>,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        total_tokens: Option<u64>,
+        native: Value,
+    },
+    SessionResumption {
+        handle: Option<String>,
+        resumable: bool,
+    },
     TurnStarted {
         turn_id: Option<String>,
     },
@@ -300,14 +399,14 @@ pub trait RealtimeSink: Send + 'static {
 
     /// Send a WebSocket Ping control frame when this transport supports it.
     ///
-    /// The default keeps injected transports source-compatible and reports
-    /// unsupported capability explicitly. Transports remain responsible for
-    /// WebSocket Pong handling.
-    async fn ping(&mut self, _payload: Bytes) -> Result<(), RealtimeError> {
-        Err(RealtimeError::InvalidInput {
-            message: "realtime transport does not support explicit WebSocket Ping frames".into(),
-        })
-    }
+    /// Implementations without Ping support must return an explicit error.
+    /// Transports remain responsible for WebSocket Pong handling.
+    async fn ping(&mut self, payload: Bytes) -> Result<(), RealtimeError>;
+
+    /// Release local transport state without flushing pending network writes.
+    /// The driver drops both connection halves immediately after this hook.
+    /// Implementations must never perform a graceful close or drain here.
+    fn abort(&mut self);
 
     async fn close(&mut self, close: RealtimeClose) -> Result<(), RealtimeError>;
 }
@@ -324,6 +423,16 @@ pub struct RealtimeConnection {
 /// `initial_frames` are sent synchronously after connecting and before the
 /// session becomes visible to its caller.
 pub trait RealtimeCodec: Send + Sync + 'static {
+    /// Unclaimed optional features remain unavailable to generic consumers.
+    /// Provider-native operations may have their own narrower contracts.
+    fn capabilities(&self) -> RealtimeCapabilities {
+        RealtimeCapabilities::default()
+    }
+    /// Some protocols resume automatically after tool outputs. Their explicit
+    /// continuation is a local no-op so hosts use one result/continue flow.
+    fn continuation_is_automatic(&self) -> bool {
+        false
+    }
     fn initial_frames(&self) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         Ok(Vec::new())
     }
@@ -376,12 +485,15 @@ impl RealtimeSession {
         // channels, so subtract that slot to get the caller's exact limit.
         let (outbound_tx, outbound_rx) = mpsc::channel(limits.outbound_capacity - 1);
         let (event_tx, event_rx) = mpsc::channel(limits.event_capacity - 1);
+        let (abort_tx, abort_rx) = oneshot::channel();
         let control = RealtimeControl {
+            abort: Arc::new(Mutex::new(Some(abort_tx))),
             outbound: Arc::new(Mutex::new(outbound_tx)),
             codec: codec.clone(),
             limits,
         };
         let driver = RealtimeDriver {
+            abort: Some(abort_rx),
             outbound: outbound_rx,
             events: event_tx,
             codec,
@@ -405,12 +517,45 @@ impl RealtimeSession {
 /// Cloneable bounded sender for one realtime session.
 #[derive(Clone)]
 pub struct RealtimeControl {
+    abort: Arc<
+        Mutex<Option<oneshot::Sender<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>>,
+    >,
     outbound: Arc<Mutex<mpsc::Sender<Command>>>,
     codec: Arc<dyn RealtimeCodec>,
     limits: RealtimeLimits,
 }
 
 impl RealtimeControl {
+    pub fn capabilities(&self) -> RealtimeCapabilities {
+        self.codec.capabilities()
+    }
+    pub fn import_history(&self, items: Vec<RealtimeHistoryItem>) -> Result<(), RealtimeError> {
+        self.send(RealtimeInput::ImportHistory { items })
+    }
+    pub fn continue_response(&self) -> Result<(), RealtimeError> {
+        self.send(RealtimeInput::ContinueResponse)
+    }
+    /// Cancel pending sends, discard the outbound queue, and close immediately.
+    /// The driver polls this independently of provider/event backpressure.
+    pub async fn abort(&self, close: RealtimeClose) -> Result<(), RealtimeError> {
+        let close = RealtimeClose::new(close.code, close.reason)?;
+        let (ack_tx, ack_rx) = oneshot::channel();
+        {
+            let mut outbound = self.outbound.lock().unwrap();
+            let sender = self
+                .abort
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or(RealtimeError::Closed)?;
+            outbound.close_channel();
+            sender
+                .send((close, ack_tx))
+                .map_err(|_| RealtimeError::Closed)?;
+        }
+        ack_rx.await.map_err(|_| RealtimeError::Closed)?
+    }
+
     /// Queue one provider-native command with the same frame and queue bounds.
     pub(crate) fn send_provider_frame(&self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         validate_frame(&frame, self.limits.max_frame_bytes)?;
@@ -430,7 +575,16 @@ impl RealtimeControl {
     /// Encode and enqueue one logical input without waiting. Returns
     /// [`RealtimeError::QueueFull`] when the bounded queue cannot accept it.
     pub fn send(&self, input: RealtimeInput) -> Result<(), RealtimeError> {
+        let mut outbound = self.outbound.lock().unwrap();
+        if outbound.is_closed() {
+            return Err(RealtimeError::Closed);
+        }
         preflight_input(&input, self.limits.max_frame_bytes)?;
+        if matches!(input, RealtimeInput::ContinueResponse)
+            && self.codec.continuation_is_automatic()
+        {
+            return Ok(());
+        }
         let frames = self.codec.encode(&input)?;
         if frames.is_empty() {
             return Err(RealtimeError::InvalidInput {
@@ -448,9 +602,7 @@ impl RealtimeControl {
                 max: self.limits.max_frame_bytes,
             });
         }
-        self.outbound
-            .lock()
-            .unwrap()
+        outbound
             .try_send(Command::Frames(frames))
             .map_err(|error| {
                 if error.is_full() {
@@ -508,6 +660,7 @@ impl RealtimeEvents {
 /// Executor-neutral pump. Poll [`RealtimeDriver::run`] on the same executor
 /// that runs the host session; dropping it releases the connection immediately.
 pub struct RealtimeDriver {
+    abort: Option<oneshot::Receiver<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>,
     outbound: mpsc::Receiver<Command>,
     events: mpsc::Sender<RealtimeEvent>,
     codec: Arc<dyn RealtimeCodec>,
@@ -517,6 +670,33 @@ pub struct RealtimeDriver {
 
 impl RealtimeDriver {
     pub async fn run(mut self) -> Result<(), RealtimeError> {
+        let abort = self.abort.take().expect("driver runs once");
+        let request = {
+            let pump = self.run_loop().fuse();
+            // Dropping all controls should keep the normal graceful-close path.
+            let abort = async move {
+                match abort.await {
+                    Ok(request) => request,
+                    Err(_) => futures::future::pending().await,
+                }
+            }
+            .fuse();
+            futures::pin_mut!(pump, abort);
+            futures::select_biased! { request = abort => request, result = pump => return result }
+        };
+        let (close, ack) = request;
+        self.outbound.close();
+        while self.outbound.try_recv().is_ok() {}
+        self.connection.outbound.abort();
+        let _ = ack.send(Ok(()));
+        let _ = self.events.try_send(RealtimeEvent::Closed {
+            code: close.code,
+            reason: close.reason,
+        });
+        Ok(())
+    }
+
+    async fn run_loop(&mut self) -> Result<(), RealtimeError> {
         loop {
             let outbound = self.outbound.next().fuse();
             let inbound = self.connection.inbound.next().fuse();
@@ -653,8 +833,20 @@ pub(crate) fn validate_frame(frame: &RealtimeFrame, max: usize) -> Result<(), Re
     Ok(())
 }
 
-fn preflight_input(input: &RealtimeInput, max: usize) -> Result<(), RealtimeError> {
+pub(crate) fn preflight_input(input: &RealtimeInput, max: usize) -> Result<(), RealtimeError> {
     let raw_len = match input {
+        RealtimeInput::ImportHistory { items } => {
+            if items.len() > 1024 {
+                return Err(RealtimeError::InvalidInput {
+                    message: "history exceeds the local limit of 1024 items".into(),
+                });
+            }
+            serde_json::to_vec(items)
+                .map_err(|error| RealtimeError::Codec {
+                    message: error.to_string(),
+                })?
+                .len()
+        }
         RealtimeInput::Text(text) => text.len(),
         RealtimeInput::Audio { data, .. } => data.len(),
         RealtimeInput::Image { data, mime_type } => data.len().saturating_add(mime_type.len()),
@@ -662,7 +854,9 @@ fn preflight_input(input: &RealtimeInput, max: usize) -> Result<(), RealtimeErro
             item_id.len()
         }
         RealtimeInput::TruncateAudio { item_id, .. } => item_id.len(),
-        RealtimeInput::ToolResult { call_id, output , .. } => call_id.len() + output.to_string().len(),
+        RealtimeInput::ToolResult {
+            call_id, output, ..
+        } => call_id.len() + output.to_string().len(),
         RealtimeInput::ToolResults { results } => {
             if results.is_empty() {
                 return Err(RealtimeError::InvalidInput {
@@ -699,3 +893,92 @@ fn preflight_input(input: &RealtimeInput, max: usize) -> Result<(), RealtimeErro
 
 #[cfg(feature = "realtime-websocket")]
 pub use crate::HttpTransport;
+
+pub(crate) struct SeededCodec {
+    pub inner: Arc<dyn RealtimeCodec>,
+    pub history: Vec<RealtimeFrame>,
+}
+impl RealtimeCodec for SeededCodec {
+    fn capabilities(&self) -> RealtimeCapabilities {
+        self.inner.capabilities()
+    }
+    fn initial_frames(&self) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+        let mut frames = self.inner.initial_frames()?;
+        frames.extend(self.history.clone());
+        Ok(frames)
+    }
+    fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+        self.inner.encode(input)
+    }
+    fn input_queued(&self, input: &RealtimeInput) {
+        self.inner.input_queued(input)
+    }
+    fn decode(&self, frame: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
+        self.inner.decode(frame)
+    }
+}
+
+pub(crate) fn authenticated_request(
+    base_url: &str,
+    path: &str,
+    model: &str,
+    header: &str,
+    credential: crate::protocol::Secret<String>,
+    limits: RealtimeLimits,
+) -> Result<RealtimeConnectRequest, RealtimeError> {
+    let mut endpoint = url::Url::parse(base_url).map_err(|_| RealtimeError::InvalidConfig {
+        message: "invalid realtime base URL".into(),
+    })?;
+    if !matches!(endpoint.scheme(), "https" | "wss")
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(RealtimeError::InvalidConfig {
+            message: "realtime base URL requires HTTPS/WSS without credentials, query or fragment"
+                .into(),
+        });
+    }
+    endpoint
+        .set_scheme("wss")
+        .map_err(|_| RealtimeError::InvalidConfig {
+            message: "invalid realtime URL scheme".into(),
+        })?;
+    endpoint.set_path(&format!(
+        "{}/{}",
+        endpoint.path().trim_end_matches('/'),
+        path
+    ));
+    if header == "Authorization" {
+        if model.trim().is_empty() || model.contains('\0') {
+            return Err(RealtimeError::InvalidConfig {
+                message: "realtime model must be nonempty and NUL-free".into(),
+            });
+        }
+        endpoint.query_pairs_mut().append_pair("model", model);
+    }
+    let credential = credential.expose_secret();
+    if credential.is_empty()
+        || credential.len() > 16384
+        || credential
+            .bytes()
+            .any(|b| b.is_ascii_control() || b == b' ')
+    {
+        return Err(RealtimeError::InvalidConfig {
+            message: "invalid realtime credential".into(),
+        });
+    }
+    Ok(RealtimeConnectRequest {
+        endpoint: endpoint.to_string(),
+        headers: vec![(
+            header.into(),
+            if header == "Authorization" {
+                format!("Bearer {credential}")
+            } else {
+                credential.clone()
+            },
+        )],
+        max_frame_bytes: limits.max_frame_bytes,
+    })
+}

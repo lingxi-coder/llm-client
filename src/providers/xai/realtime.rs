@@ -478,10 +478,15 @@ impl XaiRealtimeSession {
                 events: XaiRealtimeEvents {
                     inner: events,
                     output_audio_format: config.output_audio_format,
+                    output_audio_transport: config.output_audio_transport,
                 },
             },
             driver,
         ))
+    }
+
+    pub fn into_realtime_parts(self) -> (RealtimeControl, crate::realtime::RealtimeEvents) {
+        (self.control.inner, self.events.inner)
     }
 
     pub fn into_parts(self) -> (XaiRealtimeControl, XaiRealtimeEvents) {
@@ -500,6 +505,13 @@ pub struct XaiRealtimeControl {
 impl XaiRealtimeControl {
     pub fn send(&self, input: RealtimeInput) -> Result<(), RealtimeError> {
         self.inner.send(input)
+    }
+
+    pub fn capabilities(&self) -> crate::realtime::RealtimeCapabilities {
+        self.inner.capabilities()
+    }
+    pub async fn abort(&self, close: crate::realtime::RealtimeClose) -> Result<(), RealtimeError> {
+        self.inner.abort(close).await
     }
 
     pub fn interrupt(&self) -> Result<(), RealtimeError> {
@@ -569,23 +581,36 @@ pub enum XaiRealtimeCommand {
 
 /// Receiver that converts the xAI JSON event union into typed provider events.
 pub struct XaiRealtimeEvents {
+    output_audio_transport: XaiRealtimeAudioTransport,
     inner: crate::realtime::RealtimeEvents,
     output_audio_format: RealtimeAudioFormat,
 }
 
 impl XaiRealtimeEvents {
     pub async fn next(&mut self) -> Option<XaiRealtimeEvent> {
-        let event = self.inner.next().await?;
-        match event {
-            RealtimeEvent::AudioDelta { data, format, .. } => {
-                Some(XaiRealtimeEvent::AudioBinaryDelta { data, format })
+        loop {
+            match self.inner.next().await? {
+                RealtimeEvent::ProviderEvent { name, native } => {
+                    return Some(parse_native_event(
+                        &name,
+                        &native,
+                        &self.output_audio_format,
+                    ))
+                }
+                RealtimeEvent::AudioDelta { data, format, .. }
+                    if self.output_audio_transport == XaiRealtimeAudioTransport::Binary =>
+                {
+                    return Some(XaiRealtimeEvent::AudioBinaryDelta { data, format })
+                }
+                event @ (RealtimeEvent::Closed { .. }
+                | RealtimeEvent::ConnectionInterrupted { .. }) => {
+                    return Some(XaiRealtimeEvent::Realtime(event))
+                }
+                event @ RealtimeEvent::ProviderError { code: Some(_), .. } if matches!(&event, RealtimeEvent::ProviderError { code:Some(code),.. } if matches!(code.as_str(), "invalid_provider_frame" | "frame_too_large")) => {
+                    return Some(XaiRealtimeEvent::Realtime(event))
+                }
+                _ => {}
             }
-            RealtimeEvent::ProviderEvent { name, native } => Some(parse_native_event(
-                &name,
-                &native,
-                &self.output_audio_format,
-            )),
-            event => Some(XaiRealtimeEvent::Realtime(event)),
         }
     }
 }
@@ -665,8 +690,20 @@ struct XaiRealtimeCodec {
 }
 
 impl RealtimeCodec for XaiRealtimeCodec {
+    fn capabilities(&self) -> crate::realtime::RealtimeCapabilities {
+        crate::realtime::RealtimeCapabilities {
+            tools: true,
+            input_transcription: true,
+            output_transcription: true,
+            usage: true,
+            interruption: self.turn_detection == XaiTurnDetection::Manual,
+            session_resumption: true,
+            ..Default::default()
+        }
+    }
     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         let messages = match input {
+            RealtimeInput::ImportHistory { .. } => return Err(RealtimeError::InvalidInput { message: "history import is not implemented by this adapter".into() }),
             RealtimeInput::FinishSession => {
                 return Err(RealtimeError::InvalidInput {
                     message: "explicit session finishing is not implemented by this adapter".into(),
@@ -801,10 +838,7 @@ impl RealtimeCodec for XaiRealtimeCodec {
                 message: "xAI Realtime audio delta is not valid base64".into(),
             })?;
         }
-        Ok(vec![RealtimeEvent::ProviderEvent {
-            name: name.to_owned(),
-            native,
-        }])
+        crate::realtime::normalize_json_events(native, self.output_audio_format.clone(), true)
     }
 }
 
