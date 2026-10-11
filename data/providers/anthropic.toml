@@ -409,7 +409,7 @@ fast = "supported"
 sources = ["https://platform.claude.com/docs/en/models/opus-5-5/overview"]
 modes = ["adaptive"]
 budget = { support = "unsupported", dynamic = "unsupported", hard_limit = false }
-effort = { support = "supported", levels = ["low", "medium", "high"], default = "medium" }
+effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "max"], default = "medium" }
 [[model]]
 id = "claude-sonnet-4-5-20250929"
 aliases = ["claude-sonnet-4.5", "claude-sonnet-4-5"]
