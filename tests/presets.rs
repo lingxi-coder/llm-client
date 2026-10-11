@@ -793,8 +793,8 @@ fn a_batch_rate_is_carried_as_published_not_assumed_to_be_a_discount() {
         }
     }
     assert_eq!(
-        carried, 111,
-        "the catalog ships 111 batch rate sets, including Claude Haiku 5.5; \
+        carried, 112,
+        "the catalog ships 112 batch rate sets, including Claude Haiku 5.5 and GPT-6.1 Sol; \
          a refresh that changes this should change this number deliberately"
     );
 }

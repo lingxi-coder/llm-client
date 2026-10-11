@@ -742,8 +742,22 @@ async fn chatgpt_oauth_generation_policy_is_applied_before_the_session_prepares(
     let client = chatgpt_client(http.clone());
     let options = options("account-a", "key-a");
     let mut session = ResponsesSession::new();
-    run(&client, "primary", &generation_request(), &options, &mut session).await;
-    run(&client, "primary", &generation_request(), &options, &mut session).await;
+    run(
+        &client,
+        "primary",
+        &generation_request(),
+        &options,
+        &mut session,
+    )
+    .await;
+    run(
+        &client,
+        "primary",
+        &generation_request(),
+        &options,
+        &mut session,
+    )
+    .await;
     assert_eq!(http.handshakes.lock().unwrap().len(), 1);
     let sent = http.sent.lock().unwrap();
     assert_eq!(sent.len(), 2);
@@ -772,7 +786,7 @@ async fn host_rewriting_the_body_before_preparation_keeps_the_session_binding() 
         draft
             .apply_request_body_auth_policy(AuthStrategy::ChatGptOAuth)
             .unwrap();
-        let body = draft.semantic_body_json().unwrap();
+        let body = draft.semantic_body_source().unwrap();
         draft.set_json_body(body, &Default::default()).unwrap();
         session.prepare(&mut draft, false, false).await.unwrap();
         dispatch_and_drain(&mut session, draft).await;
@@ -801,7 +815,14 @@ async fn chatgpt_oauth_prewarm_applies_the_policy_and_keeps_the_binding() {
         .unwrap();
     session.prepare(&mut warm, true, false).await.unwrap();
     dispatch_and_drain(&mut session, warm).await;
-    run(&client, "primary", &generation_request(), &options, &mut session).await;
+    run(
+        &client,
+        "primary",
+        &generation_request(),
+        &options,
+        &mut session,
+    )
+    .await;
     let sent = http.sent.lock().unwrap();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0]["generate"], false);

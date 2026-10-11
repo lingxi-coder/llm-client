@@ -347,7 +347,9 @@ pub(crate) async fn responses(
     let (socket, headers) = connect(transport, request, 16 * 1024 * 1024).await?;
     let pong_limit = transport.read_timeout.unwrap_or(Duration::from_secs(60));
     Ok(Box::new(ResponsesConnection {
-        socket: Arc::new(Mutex::new(Slot::Idle(IdleReader::spawn(socket, pong_limit)))),
+        socket: Arc::new(Mutex::new(Slot::Idle(IdleReader::spawn(
+            socket, pong_limit,
+        )))),
         headers,
         cancel: tokio::sync::watch::channel(false).0,
         idle_timeout: transport.read_timeout,

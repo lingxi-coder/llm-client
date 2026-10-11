@@ -514,12 +514,12 @@ impl RealtimeSession {
     }
 }
 
+type CloseRequest = (RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>);
+
 /// Cloneable bounded sender for one realtime session.
 #[derive(Clone)]
 pub struct RealtimeControl {
-    abort: Arc<
-        Mutex<Option<oneshot::Sender<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>>,
-    >,
+    abort: Arc<Mutex<Option<oneshot::Sender<CloseRequest>>>>,
     outbound: Arc<Mutex<mpsc::Sender<Command>>>,
     codec: Arc<dyn RealtimeCodec>,
     limits: RealtimeLimits,
@@ -660,7 +660,7 @@ impl RealtimeEvents {
 /// Executor-neutral pump. Poll [`RealtimeDriver::run`] on the same executor
 /// that runs the host session; dropping it releases the connection immediately.
 pub struct RealtimeDriver {
-    abort: Option<oneshot::Receiver<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>,
+    abort: Option<oneshot::Receiver<CloseRequest>>,
     outbound: mpsc::Receiver<Command>,
     events: mpsc::Sender<RealtimeEvent>,
     codec: Arc<dyn RealtimeCodec>,

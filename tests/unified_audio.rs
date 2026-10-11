@@ -279,11 +279,12 @@ async fn pcm_remains_binary_and_collection_is_bounded() {
     assert_eq!(output.metadata.format, AudioFormat::Pcm16Le);
     assert_eq!(output.metadata.sample_rate_hz, Some(24000));
     assert_eq!(output.metadata.channels, Some(1));
-    let sent = mock.sent.lock().unwrap();
-    let body: Value = serde_json::from_slice(&sent[0].1).unwrap();
-    assert_eq!(body["model"], "gpt-4o-mini-tts");
-    assert_eq!(body["response_format"], "pcm");
-    drop(sent);
+    {
+        let sent = mock.sent.lock().unwrap();
+        let body: Value = serde_json::from_slice(&sent[0].1).unwrap();
+        assert_eq!(body["model"], "gpt-4o-mini-tts");
+        assert_eq!(body["response_format"], "pcm");
+    }
     let AudioOutput::Stream(stream) = client
         .audio()
         .synthesize(&route, &SynthesisRequest::new("hello"), &options())

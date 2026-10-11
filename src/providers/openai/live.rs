@@ -684,13 +684,13 @@ struct OpenAiLiveState {
     transport_closed: bool,
 }
 
+type CloseRequest = (RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>);
+
 /// Bounded command handle. It never runs tools or starts delegated Responses
 /// work implicitly; callers must submit outputs and continue explicitly.
 #[derive(Clone)]
 pub struct OpenAiLiveControl {
-    abort: Arc<
-        Mutex<Option<oneshot::Sender<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>>,
-    >,
+    abort: Arc<Mutex<Option<oneshot::Sender<CloseRequest>>>>,
     commands: Arc<Mutex<mpsc::Sender<DriverCommand>>>,
     state: Arc<Mutex<OpenAiLiveState>>,
     max_frame_bytes: usize,
@@ -932,7 +932,7 @@ impl OpenAiLiveEvents {
 /// Primary GPT-Live event pump. Unlike generic realtime codecs, Live has a
 /// provider-specific handshake and terminal session lifecycle.
 pub struct OpenAiLiveDriver {
-    abort: Option<oneshot::Receiver<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>,
+    abort: Option<oneshot::Receiver<CloseRequest>>,
     commands: mpsc::Receiver<DriverCommand>,
     events: mpsc::Sender<OpenAiLiveEvent>,
     connection: RealtimeConnection,
