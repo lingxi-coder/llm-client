@@ -18,13 +18,17 @@ pub enum Beta {
     PromptCachingEvict,
     ThinkingDisplayUpdates,
     ThinkingTokenCount,
+    MidConversationToolChanges,
+    AfkMode,
 }
 impl Beta {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::CacheDiagnosis,
         Self::PromptCachingEvict,
         Self::ThinkingDisplayUpdates,
         Self::ThinkingTokenCount,
+        Self::MidConversationToolChanges,
+        Self::AfkMode,
     ];
     pub const fn header(self) -> &'static str {
         match self {
@@ -32,6 +36,8 @@ impl Beta {
             Self::PromptCachingEvict => "prompt-caching-evict-2026-05-12",
             Self::ThinkingDisplayUpdates => "thinking-display-updates-2026-08-18",
             Self::ThinkingTokenCount => "thinking-token-count-2026-05-13",
+            Self::MidConversationToolChanges => "mid-conversation-tool-changes-2026-07-01",
+            Self::AfkMode => "afk-mode-2026-01-31",
         }
     }
     const fn mask(self) -> u8 {
@@ -76,6 +82,45 @@ impl ModelBetaRejections {
             .unwrap_or_else(|e| e.into_inner())
             .entry(model.into())
             .or_default() |= beta.mask();
+    }
+}
+
+/// Native MCTC model-support latch. A `model_unsupported` response suppresses
+/// only that model; unlike a named beta-header refusal, it does not retire the
+/// beta for other models in the same conversation.
+#[derive(Debug, Clone, Default)]
+pub struct ModelUnsupportedBetaRejections(Arc<Mutex<BTreeMap<String, u8>>>);
+impl ModelUnsupportedBetaRejections {
+    pub fn for_process() -> Self {
+        static CACHE: OnceLock<ModelUnsupportedBetaRejections> = OnceLock::new();
+        CACHE.get_or_init(Self::default).clone()
+    }
+    pub fn rejected(&self, model: &str, beta: Beta) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(model)
+            .is_some_and(|mask| mask & beta.mask() != 0)
+    }
+    fn reject(&self, model: &str, beta: Beta) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(model.into())
+            .or_default() |= beta.mask();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelUnsupportedBeta {
+    MidConversationToolChanges,
+}
+impl ModelUnsupportedBeta {
+    const fn beta(self) -> Beta {
+        match self {
+            Self::MidConversationToolChanges => Beta::MidConversationToolChanges,
+        }
     }
 }
 
@@ -176,6 +221,19 @@ fn header_rejected(message: &str, beta: Beta) -> bool {
         && (message.contains("anthropic-beta") || message.contains("anthropic_beta")))
         || capability_rejected(message, &format!("beta_header:{}", beta.header()))
 }
+fn ascii_word_character(byte: Option<&u8>) -> bool {
+    byte.is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+fn contains_ascii_word(message: &str, word: &str) -> bool {
+    message.match_indices(word).any(|(start, matched)| {
+        let end = start + matched.len();
+        !ascii_word_character(
+            start
+                .checked_sub(1)
+                .and_then(|index| message.as_bytes().get(index)),
+        ) && !ascii_word_character(message.as_bytes().get(end))
+    })
+}
 fn unexpected_header(first_line: &str, header: &str) -> bool {
     let Some(mut rest) = first_line.strip_prefix("Unexpected value(s) ") else {
         return false;
@@ -212,9 +270,11 @@ pub struct Rejection {
 /// priority even when the same payload also mentions one of these betas.
 pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec<Rejection> {
     let message = error_message(status, body);
-    if status != 400 || prefix_rejected(status, &message) || signature_rejected(status, &message) {
+    if status != 400 {
         return Vec::new();
     }
+    let ordinary_beta_rejection =
+        !prefix_rejected(status, &message) && !signature_rejected(status, &message);
     let fallback = if message
         .as_bytes()
         .get(..4)
@@ -232,13 +292,28 @@ pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec
         .into_iter()
         .filter(|beta| {
             sent.iter().any(|h| h == beta.header())
-                && (header_rejected(&message, *beta) || alternate_rejection(*beta, &message))
+                && if *beta == Beta::AfkMode {
+                    // Native Kie is independent of the generic beta-header
+                    // classifier: any 400 containing the sent AFK token trips
+                    // its request/session circuit, even with other error text.
+                    message.contains(beta.header())
+                } else {
+                    ordinary_beta_rejection
+                        && (header_rejected(&message, *beta)
+                            || alternate_rejection(*beta, &message))
+                }
         })
-        .map(|beta| Rejection {
-            beta,
-            strong: unexpected_header(first_line, beta.header())
+        .map(|beta| {
+            let strong = unexpected_header(first_line, beta.header())
                 || capability_rejected(&message, &format!("beta_header:{}", beta.header()))
-                || alternate_rejection(beta, &message),
+                || alternate_rejection(beta, &message);
+            // Native 2.1.295 routes both refusals through session/conversation
+            // state. MCTC is retried after clear/compact, and AFK rejection
+            // trips the host Auto-mode circuit breaker. Neither is a model-wide
+            // capability refusal, even when the wire wording is strong.
+            let strong =
+                strong && !matches!(beta, Beta::MidConversationToolChanges | Beta::AfkMode);
+            Rejection { beta, strong }
         })
         .collect()
 }
@@ -246,6 +321,7 @@ pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec
 /// First-party E3e precedes T3e: an unnamed invalid-beta refusal retires
 /// token-count for this conversation, without promoting a model-wide refusal.
 pub fn request_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec<Rejection> {
+    let mut rejections = Vec::new();
     if status == 400
         && sent
             .iter()
@@ -254,12 +330,17 @@ pub fn request_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> V
             .to_lowercase()
             .contains("invalid beta flag")
     {
-        return vec![Rejection {
+        rejections.push(Rejection {
             beta: Beta::ThinkingTokenCount,
             strong: false,
-        }];
+        });
     }
-    named_rejections(status, body, sent)
+    for rejection in named_rejections(status, body, sent) {
+        if !rejections.iter().any(|existing| existing.beta == rejection.beta) {
+            rejections.push(rejection);
+        }
+    }
+    rejections
 }
 
 /// Gt commits conversation rejection immediately. Strong refusals additionally
@@ -276,6 +357,96 @@ pub fn reject_named(
             cache.reject(model, rejected.beta);
         }
     }
+}
+
+/// Native Zie model-unsupported branch, distinct from the conversation-local
+/// MCTC beta-header refusal. Preserve the model-only lifetime so another model
+/// may still advertise the beta in the same conversation.
+pub fn model_unsupported_rejection(
+    status: u16,
+    body: &JsonPayload,
+    sent: &[String],
+) -> Option<ModelUnsupportedBeta> {
+    if status != 400
+        || !sent
+            .iter()
+            .any(|header| header == Beta::MidConversationToolChanges.header())
+    {
+        return None;
+    }
+    let message = error_message(status, body);
+    (!native_cache_control_field_error(&message)
+        && contains_ascii_word(&message, "tool_addition")
+        && (message.contains("not supported on this model")
+            || message.contains("requires a model that supports")))
+    .then_some(ModelUnsupportedBeta::MidConversationToolChanges)
+}
+
+/// Native `Adr`: cache-control field errors are classified before MCTC's
+/// model-support branch, so they must not populate the model-only latch.
+fn native_cache_control_field_error(message: &str) -> bool {
+    if !message.contains("cache_control") {
+        return false;
+    }
+    let lower = message.to_ascii_lowercase();
+    let role_system = lower.match_indices("role ").any(|(start, _)| {
+        (0..=2).any(|gap| {
+            lower
+                .get(start + 5 + gap..)
+                .is_some_and(|tail| tail.starts_with("system"))
+        })
+    });
+    let system_index = lower.match_indices("system.").any(|(start, _)| {
+        let bytes = lower.as_bytes();
+        let before_is_word =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        if before_is_word {
+            return false;
+        }
+        let mut index = start + "system.".len();
+        let digits_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        index > digits_start && bytes.get(index) == Some(&b'.')
+    });
+    let system_message = lower
+        .match_indices("system message")
+        .any(|(start, matched)| {
+            let mut end = start + matched.len();
+            if lower[end..].starts_with('s') {
+                end += 1;
+            }
+            !lower
+                .as_bytes()
+                .get(end)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        });
+    let native_exclusion = system_message
+        || role_system
+        || message.contains("empty text block")
+        || system_index
+        || message.contains("tool_result")
+        || contains_ascii_word(&lower, "ttl");
+    !native_exclusion
+        && [
+            "not permitted",
+            "cannot be set",
+            "unknown name",
+            "unknown field",
+            "unrecognized",
+            "additional propert",
+        ]
+        .iter()
+        .any(|phrase| lower.contains(phrase))
+}
+
+pub fn reject_model_unsupported(
+    rejection: ModelUnsupportedBeta,
+    model: &str,
+    cache: &ModelUnsupportedBetaRejections,
+) {
+    cache.reject(model, rejection.beta());
 }
 
 pub fn request_betas(headers: &BTreeMap<String, String>) -> Vec<String> {
@@ -380,7 +551,11 @@ pub fn apply_rejections(
     let rejected: BTreeSet<_> = Beta::ALL
         .into_iter()
         .filter(|beta| {
-            conversation.rejected(*beta) || model.is_some_and(|model| cache.rejected(model, *beta))
+            conversation.rejected(*beta)
+                || model.is_some_and(|model| {
+                    cache.rejected(model, *beta)
+                        || ModelUnsupportedBetaRejections::for_process().rejected(model, *beta)
+                })
         })
         .map(Beta::header)
         .collect();
@@ -527,6 +702,203 @@ mod tests {
         assert_eq!(
             clean_headers["anthropic-beta"],
             Beta::ThinkingDisplayUpdates.header()
+        );
+    }
+
+    #[test]
+    fn native_295_afk_and_mid_conversation_tool_rejections_are_session_scoped() {
+        let body = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Unexpected value(s) `afk-mode-2026-01-31`, `mid-conversation-tool-changes-2026-07-01` for the `anthropic-beta` header."}}"#,
+        )
+        .unwrap();
+        let sent =
+            [Beta::AfkMode, Beta::MidConversationToolChanges].map(|beta| beta.header().to_owned());
+        let rejected = request_rejections(400, &body, &sent);
+        assert_eq!(
+            rejected,
+            [
+                Rejection {
+                    beta: Beta::MidConversationToolChanges,
+                    strong: false,
+                },
+                Rejection {
+                    beta: Beta::AfkMode,
+                    strong: false,
+                },
+            ]
+        );
+
+        let conversation = ConversationBetaState::default();
+        let model_rejections = ModelBetaRejections::default();
+        reject_named(
+            &rejected,
+            &conversation,
+            Some("claude-opus-4-8"),
+            &model_rejections,
+        );
+        let mut retry_headers = BTreeMap::from([("anthropic-beta".into(), sent.join(","))]);
+        apply_rejections(
+            &mut retry_headers,
+            &mut JsonPayload::default(),
+            &conversation,
+            Some("claude-opus-4-8"),
+            &model_rejections,
+        )
+        .unwrap();
+        assert_eq!(retry_headers["anthropic-beta"], "");
+
+        let fresh_conversation = ConversationBetaState::default();
+        let mut same_model_headers = BTreeMap::from([("anthropic-beta".into(), sent.join(","))]);
+        apply_rejections(
+            &mut same_model_headers,
+            &mut JsonPayload::default(),
+            &fresh_conversation,
+            Some("claude-opus-4-8"),
+            &model_rejections,
+        )
+        .unwrap();
+        assert_eq!(same_model_headers["anthropic-beta"], sent.join(","));
+        assert!(!fresh_conversation.rejected(Beta::AfkMode));
+        assert!(!fresh_conversation.rejected(Beta::MidConversationToolChanges));
+        assert!(!model_rejections.rejected("claude-opus-4-8", Beta::AfkMode));
+        assert!(!model_rejections.rejected("claude-opus-4-8", Beta::MidConversationToolChanges));
+
+        let mut switched_model_headers =
+            BTreeMap::from([("anthropic-beta".into(), sent.join(","))]);
+        apply_rejections(
+            &mut switched_model_headers,
+            &mut JsonPayload::default(),
+            &conversation,
+            Some("claude-sonnet-5-5"),
+            &model_rejections,
+        )
+        .unwrap();
+        assert_eq!(switched_model_headers["anthropic-beta"], "");
+        assert!(conversation.rejected(Beta::AfkMode));
+        assert!(conversation.rejected(Beta::MidConversationToolChanges));
+    }
+
+    #[test]
+    fn native_295_afk_classifier_needs_only_status_400_and_the_sent_token() {
+        let body = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Unsupported option afk-mode-2026-01-31 for this endpoint."}}"#,
+        )
+        .unwrap();
+        let sent = vec![Beta::AfkMode.header().to_owned()];
+        assert_eq!(
+            named_rejections(400, &body, &sent),
+            [Rejection {
+                beta: Beta::AfkMode,
+                strong: false,
+            }],
+            "Native Kie matches the token even when the error omits the beta header name"
+        );
+        assert!(named_rejections(422, &body, &sent).is_empty());
+        assert!(named_rejections(400, &body, &[]).is_empty());
+    }
+
+    #[test]
+    fn native_295_afk_classifier_precedes_unrelated_rejection_guards() {
+        let body = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"The thinking signature is invalid; afk-mode-2026-01-31 is unavailable."}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            named_rejections(400, &body, &[Beta::AfkMode.header().to_owned()]),
+            [Rejection {
+                beta: Beta::AfkMode,
+                strong: false,
+            }],
+            "Native Kie does not share generic signature/prefix exclusions"
+        );
+    }
+
+    #[test]
+    fn native_295_mctc_model_unsupported_is_a_separate_model_latch() {
+        let body = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_addition is not supported on this model"}}"#,
+        )
+        .unwrap();
+        let sent = vec![Beta::MidConversationToolChanges.header().to_owned()];
+        assert!(named_rejections(400, &body, &sent).is_empty());
+        let rejection = model_unsupported_rejection(400, &body, &sent)
+            .expect("Native Zie classifies model support separately from beta refusal");
+
+        let model = "claude-opus-4-8-mctc-model-unsupported-regression";
+        let cache = ModelUnsupportedBetaRejections::for_process();
+        reject_model_unsupported(rejection, model, &cache);
+        let process_cache = ModelBetaRejections::default();
+        let conversation = ConversationBetaState::default();
+
+        let mut same_model = BTreeMap::from([(
+            "anthropic-beta".into(),
+            Beta::MidConversationToolChanges.header().into(),
+        )]);
+        apply_rejections(
+            &mut same_model,
+            &mut JsonPayload::default(),
+            &conversation,
+            Some(model),
+            &process_cache,
+        )
+        .unwrap();
+        assert_eq!(same_model["anthropic-beta"], "");
+        assert!(
+            !conversation.rejected(Beta::MidConversationToolChanges),
+            "the model-only latch must not poison another model in this conversation"
+        );
+
+        let mut other_model = BTreeMap::from([(
+            "anthropic-beta".into(),
+            Beta::MidConversationToolChanges.header().into(),
+        )]);
+        apply_rejections(
+            &mut other_model,
+            &mut JsonPayload::default(),
+            &conversation,
+            Some("claude-sonnet-5-5-mctc-other-model"),
+            &process_cache,
+        )
+        .unwrap();
+        assert_eq!(
+            other_model["anthropic-beta"],
+            Beta::MidConversationToolChanges.header(),
+            "a different model can still advertise MCTC in the same conversation"
+        );
+
+        let fresh_conversation = ConversationBetaState::default();
+        let mut same_model_fresh_conversation = BTreeMap::from([(
+            "anthropic-beta".into(),
+            Beta::MidConversationToolChanges.header().into(),
+        )]);
+        apply_rejections(
+            &mut same_model_fresh_conversation,
+            &mut JsonPayload::default(),
+            &fresh_conversation,
+            Some(model),
+            &process_cache,
+        )
+        .unwrap();
+        assert_eq!(same_model_fresh_conversation["anthropic-beta"], "");
+    }
+
+    #[test]
+    fn native_295_model_unsupported_obeys_adr_precedence() {
+        let sent = vec![Beta::MidConversationToolChanges.header().to_owned()];
+        let cache_error = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_addition is not supported on this model; cache_control unknown field"}}"#,
+        )
+        .unwrap();
+        assert!(model_unsupported_rejection(400, &cache_error, &sent).is_none());
+
+        let system_cache_error = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_addition is not supported on this model; cache_control field is not permitted for role system"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            model_unsupported_rejection(400, &system_cache_error, &sent),
+            Some(ModelUnsupportedBeta::MidConversationToolChanges),
+            "Native Adr returns false for system-role cache_control errors, so Zie continues"
         );
     }
 }
