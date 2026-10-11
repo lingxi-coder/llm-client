@@ -62,6 +62,96 @@ fn has_beta(headers: &[(String, String)], beta: &str) -> bool {
         .any(|(n, v)| n.eq_ignore_ascii_case("anthropic-beta") && v.split(',').any(|t| t == beta))
 }
 #[test]
+fn native_server_classifier_context_is_source_preserving_and_main_route_scoped() {
+    let selected_profile = profile();
+    let admission = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+        &selected_profile.profile_name,
+        &selected_profile.base_url,
+    );
+    let classifier_source = JsonPayload::parse(
+        r#"{"permission_mode":"auto","home_dir":"/private/native-home","rules":[{"rule":"\ud800"}]}"#,
+    )
+    .unwrap();
+    let native_context = NativeAnthropicRequestContext {
+        server_classifier: Some(
+            NativeAnthropicServerClassifierContext::new(classifier_source.clone()).unwrap(),
+        ),
+        ..Default::default()
+    };
+    assert!(!format!("{native_context:?}").contains("/private/native-home"));
+    let request = req();
+    let native = CodecContext::new(&selected_profile, MODEL, RequestMode::Complete)
+        .with_native_anthropic_endpoint_admission(Some(&admission))
+        .with_native_anthropic_request_context(Some(native_context.clone()));
+    let wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &native)
+        .unwrap();
+    let body = JsonPayload::parse(std::str::from_utf8(&wire.body).unwrap()).unwrap();
+    assert_eq!(
+        body.raw_source_at("/safeguards/0/classifier_context")
+            .as_deref(),
+        Some(classifier_source.as_json_source()),
+    );
+
+    let compatible = CodecContext::new(&selected_profile, MODEL, RequestMode::Complete)
+        .with_native_anthropic_request_context(Some(native_context.clone()));
+    let compatible_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &compatible)
+        .unwrap();
+    let compatible_body =
+        JsonPayload::parse(std::str::from_utf8(&compatible_wire.body).unwrap()).unwrap();
+    assert!(compatible_body.raw_source_at("/safeguards").is_none());
+
+    let side_query = CodecContext::new(&selected_profile, MODEL, RequestMode::Complete)
+        .with_native_anthropic_endpoint_admission(Some(&admission))
+        .with_native_anthropic_request_context(Some(native_context.clone()))
+        .with_anthropic_request_kind(AnthropicRequestKind::SideQuery);
+    let side_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &side_query)
+        .unwrap();
+    let side_body = JsonPayload::parse(std::str::from_utf8(&side_wire.body).unwrap()).unwrap();
+    assert!(side_body.raw_source_at("/safeguards").is_none());
+
+    let count_tokens = CodecContext::new(&selected_profile, MODEL, RequestMode::CountTokens)
+        .with_native_anthropic_endpoint_admission(Some(&admission))
+        .with_native_anthropic_request_context(Some(native_context.clone()));
+    let count_wire = AnthropicMessagesCodec
+        .encode_request(EncodeRequest::new(&request), &count_tokens)
+        .unwrap();
+    let count_body = JsonPayload::parse(std::str::from_utf8(&count_wire.body).unwrap()).unwrap();
+    assert!(count_body.raw_source_at("/safeguards").is_none());
+
+    let foundry_profile: ProviderProfile = serde_json::from_value(json!({
+        "provider_id":"foundry-project",
+        "profile_name":"foundry-route",
+        "base_url":"https://resource.services.ai.azure.com/anthropic",
+        "protocol":"foundry_claude",
+        "auth":"none",
+        "models":[{"display_model":MODEL,"request_model":MODEL,"billing_model":MODEL}],
+        "extra":{}
+    }))
+    .unwrap();
+    let foundry_context = CodecContext::new(&foundry_profile, MODEL, RequestMode::Complete)
+        .with_native_anthropic_request_context(Some(native_context));
+    let foundry_wire = FoundryClaudeCodec
+        .encode_request(EncodeRequest::new(&request), &foundry_context)
+        .unwrap();
+    let foundry_body =
+        JsonPayload::parse(std::str::from_utf8(&foundry_wire.body).unwrap()).unwrap();
+    assert_eq!(
+        foundry_body
+            .raw_source_at("/safeguards/0/classifier_context")
+            .as_deref(),
+        Some(classifier_source.as_json_source()),
+    );
+
+    for non_object in ["[]", "null", r#""text""#] {
+        let payload = JsonPayload::parse(non_object).unwrap();
+        assert!(NativeAnthropicServerClassifierContext::new(payload).is_err());
+    }
+}
+
+#[test]
 fn scoped_reminder_stays_verbatim_after_later_user_turn() {
     let mut r = req();
     r.messages.push(scoped());

@@ -49,7 +49,10 @@ pub use account::{
     AccountUsageSource, SubscriptionStatus,
 };
 pub use chat::ChatService;
-pub use options::{NativeAnthropicContextInput, NativeAnthropicEndpointAdmission, RequestOptions};
+pub use options::{
+    NativeAnthropicContextInput, NativeAnthropicEndpointAdmission, NativeAnthropicRequestContext,
+    NativeAnthropicServerClassifierContext, RequestOptions,
+};
 pub use resolve::{ResolveError, RoutingCatalog};
 pub use store::{
     ClientConfigManager, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,

@@ -20,6 +20,9 @@ pub struct RequestOptions {
     pub native_anthropic_endpoint_admission: Option<NativeAnthropicEndpointAdmission>,
     /// Trusted Native Anthropic context observations for this request.
     pub native_anthropic_context: NativeAnthropicContextInput,
+    /// Trusted current-request Native Anthropic safeguard and beta facts.
+    /// This execution context is not model input or request metadata.
+    pub native_anthropic_request_context: Option<NativeAnthropicRequestContext>,
     /// Typed, request-local Native model.complete gate. This is execution
     /// context and is never serialized into the provider request.
     pub model_complete_cache_gate: Option<crate::protocol::NativeModelCacheGate>,
@@ -123,6 +126,55 @@ pub struct NativeAnthropicContextInput {
     pub thinking_resumption_beta_requested: Option<bool>,
     /// Whether Native planned the 1M context beta for this request.
     pub context_1m_beta_requested: Option<bool>,
+}
+
+/// Trusted request facts for Native Anthropic safeguards and current beta features.
+/// Hosts populate this only after the corresponding Native gates admit the current
+/// request; the SDK still limits use to an eligible main-generation route. It is
+/// never read from or serialized as `ChatRequest` metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeAnthropicRequestContext {
+    /// Source-backed Native server-classifier context, when it was produced for
+    /// this request after host admission. `None` means no context was produced.
+    pub server_classifier: Option<NativeAnthropicServerClassifierContext>,
+    /// Whether Native admitted AFK mode for this request.
+    pub afk_mode: bool,
+    /// Whether Native admitted mid-conversation tool changes for this request.
+    pub mid_conversation_tool_changes: bool,
+}
+
+/// Source-backed context attached to a Native `dangerous_tool_use` safeguard.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeAnthropicServerClassifierContext {
+    classifier_context: crate::protocol::JsonPayload,
+}
+
+impl std::fmt::Debug for NativeAnthropicServerClassifierContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeAnthropicServerClassifierContext")
+            .field("classifier_context", &"<redacted>")
+            .finish()
+    }
+}
+
+impl NativeAnthropicServerClassifierContext {
+    /// Validate and retain the exact source JSON object supplied by the host.
+    pub fn new(
+        classifier_context: crate::protocol::JsonPayload,
+    ) -> Result<Self, crate::protocol::LlmError> {
+        if !classifier_context.is_root_object() {
+            return Err(crate::protocol::LlmError::InvalidRequest {
+                message: "Native server classifier context must be a JSON object".into(),
+            });
+        }
+        Ok(Self { classifier_context })
+    }
+
+    /// The exact source-backed context object forwarded into the safeguard.
+    pub fn classifier_context(&self) -> &crate::protocol::JsonPayload {
+        &self.classifier_context
+    }
 }
 
 /// Per-request transformation of the encoded request, before authentication.

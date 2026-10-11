@@ -610,6 +610,7 @@ impl<'client> RequestExecutor<'client> {
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
             .with_native_anthropic_context(opts.native_anthropic_context)
+            .with_native_anthropic_request_context(opts.native_anthropic_request_context.clone())
             .with_native_anthropic_endpoint_admission(
                 opts.native_anthropic_endpoint_admission.as_ref(),
             )
@@ -706,6 +707,7 @@ impl<'client> RequestExecutor<'client> {
         );
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
             .with_native_anthropic_context(opts.native_anthropic_context)
+            .with_native_anthropic_request_context(opts.native_anthropic_request_context.clone())
             .with_native_anthropic_endpoint_admission(
                 opts.native_anthropic_endpoint_admission.as_ref(),
             )
@@ -1018,6 +1020,9 @@ impl<'client> RequestExecutor<'client> {
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
                 .with_native_anthropic_context(opts.native_anthropic_context)
+                .with_native_anthropic_request_context(
+                    opts.native_anthropic_request_context.clone(),
+                )
                 .with_native_anthropic_endpoint_admission(
                     opts.native_anthropic_endpoint_admission.as_ref(),
                 )

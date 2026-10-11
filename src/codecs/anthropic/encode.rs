@@ -296,6 +296,16 @@ pub fn request<'a>(
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?
         .with("messages", WireValue::array(messages));
+    if let Some(classifier) = opts
+        .native_anthropic_request_context()
+        .and_then(|context| context.server_classifier.as_ref())
+    {
+        let safeguard = WireValue::from(json!({"type": "dangerous_tool_use"})).with(
+            "classifier_context",
+            WireValue::owned_raw_json(classifier.classifier_context().clone()),
+        );
+        body = body.with("safeguards", WireValue::array(vec![safeguard]));
+    }
     if !req.tools.is_empty() || !mcp_toolsets.is_empty() {
         body = body.map_array_field("tools", |index, tool| {
             let cache_control = tool.get("cache_control").cloned();
@@ -556,19 +566,33 @@ fn encode_block<'a>(
                 },
                 None => WireValue::raw_json(content),
             };
-            let mut v = if opts.native_anthropic_main_request() {
+            let native_main_request =
+                opts.native_anthropic_main_request() || opts.native_foundry_main_request();
+            let native_error_order = native_main_request && *is_error == Some(true);
+            let mut v = if native_error_order {
+                // Native's thrown-tool error frame orders its main-request
+                // members as type, content, is_error, tool_use_id. Successful
+                // result order remains unchanged.
+                WireValue::from(json!({"type": "tool_result"})).with("content", content)
+            } else if opts.native_anthropic_main_request() {
                 WireValue::from(json!({
                     "tool_use_id": tool_use_id,
                     "type": "tool_result",
                 }))
+                .with("content", content)
             } else {
                 WireValue::from(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                 }))
+                .with("content", content)
+            };
+            if native_error_order {
+                v = v.with("is_error", WireValue::from(Value::Bool(true)));
+                v = v.with("tool_use_id", WireValue::from(json!(tool_use_id)));
+            } else {
+                encode_optional_bool(&mut v, "is_error", *is_error);
             }
-            .with("content", content);
-            encode_optional_bool(&mut v, "is_error", *is_error);
             if let Some(cache_reference) = cache_reference {
                 v["cache_reference"] = json!(cache_reference);
             }
@@ -865,5 +889,97 @@ mod tool_result_media_tests {
         let encoded = serde_json::to_value(encoded).unwrap();
         assert_eq!(encoded["cache_reference"], "cache_ref_123");
         assert_eq!(encoded["is_error"], false);
+    }
+}
+
+#[cfg(test)]
+mod native_tool_result_order_tests {
+    use super::*;
+    use crate::client::NativeAnthropicEndpointAdmission;
+    use crate::codecs::{CodecContext, RequestMode};
+    use crate::protocol::{ProtocolFamily, ToolUseId};
+
+    fn profile() -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": "anthropic",
+            "profile_name": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "model",
+                "request_model": "wire-model",
+                "billing_model": "wire-model"
+            }]
+        }))
+        .expect("fixture provider profile")
+    }
+
+    fn tool_result(is_error: Option<bool>) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: ToolUseId::new("toolu_native_iserror_true_295"),
+            content: JsonPayload::string("MCP_RESULT_ISERROR_TRUE"),
+            is_error,
+            blocks: None,
+            toolset_name: None,
+            cache_reference: None,
+        }
+    }
+
+    fn encode(profile: &ProviderProfile, opts: &CodecContext, is_error: Option<bool>) -> Vec<u8> {
+        let block = tool_result(is_error);
+        let encoded =
+            encode_block(&block, false, "wire-model", profile, opts).expect("encode tool result");
+        serde_json::to_vec(&encoded).expect("serialize encoded tool result")
+    }
+
+    #[test]
+    fn only_native_main_errors_use_native_error_member_order() {
+        let expected_native_error = br#"{"type":"tool_result","content":"MCP_RESULT_ISERROR_TRUE","is_error":true,"tool_use_id":"toolu_native_iserror_true_295"}"#;
+        let expected_native_omitted = br#"{"tool_use_id":"toolu_native_iserror_true_295","type":"tool_result","content":"MCP_RESULT_ISERROR_TRUE"}"#;
+        let expected_native_false = br#"{"tool_use_id":"toolu_native_iserror_true_295","type":"tool_result","content":"MCP_RESULT_ISERROR_TRUE","is_error":false}"#;
+
+        let first_party = profile();
+        let admission = NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+            "anthropic",
+            "https://api.anthropic.com",
+        );
+        let first_party_opts = CodecContext::new(&first_party, "wire-model", RequestMode::Complete)
+            .with_native_anthropic_endpoint_admission(Some(&admission));
+        assert_eq!(
+            encode(&first_party, &first_party_opts, Some(true)).as_slice(),
+            expected_native_error
+        );
+        assert_eq!(
+            encode(&first_party, &first_party_opts, None).as_slice(),
+            expected_native_omitted
+        );
+        assert_eq!(
+            encode(&first_party, &first_party_opts, Some(false)).as_slice(),
+            expected_native_false
+        );
+
+        let mut foundry = profile();
+        foundry.protocol = ProtocolFamily::FoundryClaude;
+        let foundry_opts = CodecContext::new(&foundry, "wire-model", RequestMode::Complete);
+        assert_eq!(
+            encode(&foundry, &foundry_opts, Some(true)).as_slice(),
+            expected_native_error
+        );
+        assert_eq!(
+            encode(&foundry, &foundry_opts, None).as_slice(),
+            br#"{"type":"tool_result","tool_use_id":"toolu_native_iserror_true_295","content":"MCP_RESULT_ISERROR_TRUE"}"#
+        );
+        assert_eq!(
+            encode(&foundry, &foundry_opts, Some(false)).as_slice(),
+            br#"{"type":"tool_result","tool_use_id":"toolu_native_iserror_true_295","content":"MCP_RESULT_ISERROR_TRUE","is_error":false}"#
+        );
+
+        let compatible = profile();
+        let compatible_opts = CodecContext::new(&compatible, "wire-model", RequestMode::Complete);
+        assert_eq!(
+            encode(&compatible, &compatible_opts, Some(true)).as_slice(),
+            br#"{"type":"tool_result","tool_use_id":"toolu_native_iserror_true_295","content":"MCP_RESULT_ISERROR_TRUE","is_error":true}"#
+        );
     }
 }

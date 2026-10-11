@@ -23,6 +23,7 @@ pub struct CodecContext {
     anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,
     file_validation_time: Option<std::time::SystemTime>,
     native_anthropic_context: crate::client::NativeAnthropicContextInput,
+    native_anthropic_request_context: Option<crate::client::NativeAnthropicRequestContext>,
     native_anthropic_endpoint_admitted: bool,
     native_anthropic_thinking_resumption_beta_requested: Option<bool>,
     model_complete_empty_cache_blocks: bool,
@@ -111,6 +112,7 @@ impl CodecContext {
             anthropic_request_kind: Default::default(),
             file_validation_time: None,
             native_anthropic_context: crate::client::NativeAnthropicContextInput::default(),
+            native_anthropic_request_context: None,
             native_anthropic_endpoint_admitted: false,
             native_anthropic_thinking_resumption_beta_requested: None,
             model_complete_empty_cache_blocks: false,
@@ -174,6 +176,24 @@ impl CodecContext {
             .and(context.thinking_resumption_beta_requested);
         self.native_anthropic_context = context;
         self
+    }
+
+    /// Carry trusted current-request Native facts to the selected codec.
+    /// The codec exposes them only for an admitted Native main-generation route.
+    pub fn with_native_anthropic_request_context(
+        mut self,
+        context: Option<crate::client::NativeAnthropicRequestContext>,
+    ) -> Self {
+        self.native_anthropic_request_context = context;
+        self
+    }
+
+    pub(crate) fn native_anthropic_request_context(
+        &self,
+    ) -> Option<&crate::client::NativeAnthropicRequestContext> {
+        (self.native_anthropic_main_request() || self.native_foundry_main_request())
+            .then_some(self.native_anthropic_request_context.as_ref())
+            .flatten()
     }
 
     /// Bind request-local Native Messages behavior to the exact profile
