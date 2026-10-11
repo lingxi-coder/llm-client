@@ -82,8 +82,11 @@ pub async fn connect_audio_conversation(
         if tool.name.trim().is_empty()
             || tool.name.contains('\0')
             || !names.insert(&tool.name)
-            || !tool.input_schema.is_object()
-            || tool.description.contains('\0')
+            || !tool.input_schema.is_root_object()
+            || tool
+                .description
+                .root_string_code_units()
+                .is_none_or(|units| units.contains(&0))
         {
             return Err(invalid(
                 "native realtime tools require unique names, NUL-free text and object schemas"
@@ -95,7 +98,7 @@ pub async fn connect_audio_conversation(
             .as_deref()
             .is_some_and(|kind| kind != "function")
             || !tool.native_options.is_empty()
-            || !tool.extra.is_null()
+            || !tool.extra.is_root_null()
             || tool.defer_loading
         {
             return Err(invalid(
@@ -127,12 +130,25 @@ pub async fn connect_audio_conversation(
                 voice: config.voice.map(OpenAiRealtimeVoice::BuiltIn),
                 tools: tools
                     .into_iter()
-                    .map(|tool| OpenAiRealtimeFunctionTool {
-                        name: tool.name,
-                        description: Some(tool.description),
-                        parameters: tool.input_schema,
+                    .map(|tool| {
+                        Ok(OpenAiRealtimeFunctionTool {
+                            name: tool.name,
+                            description: Some(
+                                serde_json::from_str(tool.description.as_json_source()).map_err(
+                                    |error| {
+                                        invalid(format!(
+                                            "invalid realtime tool description: {error}"
+                                        ))
+                                    },
+                                )?,
+                            ),
+                            parameters: serde_json::from_str(tool.input_schema.as_json_source())
+                                .map_err(|error| {
+                                    invalid(format!("invalid realtime tool schema: {error}"))
+                                })?,
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, RealtimeError>>()?,
                 ..Default::default()
             };
             let (session, driver) = client
