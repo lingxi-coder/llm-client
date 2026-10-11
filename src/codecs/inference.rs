@@ -232,6 +232,8 @@ pub(crate) fn validate(
     let model = context.request_model();
     let native_endpoint_admitted = context.native_anthropic_endpoint_admitted();
     let native_main_request = context.native_anthropic_main_request();
+    let foundry_per_turn_effort =
+        crate::providers::anthropic::conversation::is_foundry_per_turn_effort_request(req, context);
     if (!req.anthropic_client_toolsets().is_empty()
         || crate::providers::anthropic::client_toolset_history::has_metadata(req))
         && !crate::providers::anthropic::client_toolsets::supports_profile(profile)
@@ -246,9 +248,10 @@ pub(crate) fn validate(
         .any(|message| message.anthropic_options().is_some())
         && !crate::providers::anthropic::conversation::supports_profile(profile)
         && !native_endpoint_admitted
+        && !foundry_per_turn_effort
     {
         return Err(unsupported(
-            "Anthropic per-message controls require the first-party Messages or Vertex Claude protocol",
+            "Anthropic per-message controls require the first-party Messages or Vertex Claude protocol, or Foundry main-request per-turn effort rows",
         ));
     }
     if req.hosted_anthropic_web_fetch().is_some()
@@ -269,9 +272,12 @@ pub(crate) fn validate(
     };
     let rw = profile.reasoning_wire();
     let thinking = effective_thinking(thinking, rw);
-    if let Some(effort) =
-        current_message_effort(req, profile, native_endpoint_admitted, native_main_request)
-    {
+    if let Some(effort) = current_message_effort(
+        req,
+        profile,
+        native_endpoint_admitted,
+        native_main_request || foundry_per_turn_effort,
+    ) {
         if let Some(message) = f.effort_mode_error(thinking.mode, effort) {
             return Err(invalid(message));
         }
@@ -612,6 +618,7 @@ fn current_message_effort(
 ) -> Option<ReasoningEffort> {
     if !crate::providers::anthropic::conversation::supports_profile(profile)
         && !native_endpoint_admitted
+        && !native_main_request
     {
         return None;
     }
@@ -664,7 +671,10 @@ pub(crate) fn requested(
             req,
             context.profile(),
             context.native_anthropic_endpoint_admitted(),
-            context.native_anthropic_main_request(),
+            context.native_anthropic_main_request()
+                || crate::providers::anthropic::conversation::is_foundry_per_turn_effort_request(
+                    req, context,
+                ),
         )
         .or(t.effort),
         requested_service_tier: tier,

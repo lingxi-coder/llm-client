@@ -199,6 +199,13 @@ impl CodecContext {
             && self.anthropic_main_generation_request()
     }
 
+    /// A main Foundry request can carry the host's narrowly-scoped Native
+    /// per-turn effort marker. This does not admit other Native-only options.
+    pub(crate) fn native_foundry_main_request(&self) -> bool {
+        self.profile.protocol == crate::protocol::ProtocolFamily::FoundryClaude
+            && self.anthropic_main_generation_request()
+    }
+
     pub(crate) fn anthropic_main_generation_request(&self) -> bool {
         matches!(self.mode, RequestMode::Complete | RequestMode::Stream)
             && self.anthropic_request_kind

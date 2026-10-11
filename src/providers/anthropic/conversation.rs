@@ -89,6 +89,32 @@ fn contains_only_per_message_effort_system_rows(request: &ChatRequest) -> bool {
         && !has_tool_changes(request)
 }
 
+/// True only for a nonempty sequence of empty-system per-turn effort rows on a
+/// Foundry main request. Other Foundry message options stay unsupported.
+pub(crate) fn is_foundry_per_turn_effort_request(
+    request: &ChatRequest,
+    context: &CodecContext,
+) -> bool {
+    if !context.native_foundry_main_request() || has_tool_changes(request) {
+        return false;
+    }
+    request
+        .messages
+        .iter()
+        .any(|message| message.role == MessageRole::System)
+        && request.messages.iter().all(|message| {
+            if message.role == MessageRole::System {
+                message.content.is_empty()
+                    && message.native_options.len() == 1
+                    && message.anthropic_options().is_some_and(|options| {
+                        options.effort.is_some() && options.clear_at.is_none()
+                    })
+            } else {
+                message.anthropic_options().is_none()
+            }
+        })
+}
+
 fn contains_inline_tool_definition(request: &ChatRequest) -> bool {
     request.messages.iter().any(|message| {
         message.content.iter().any(|block| {
@@ -164,7 +190,8 @@ pub(crate) fn apply_beta_header(
     headers: &mut Vec<(String, String)>,
 ) {
     let profile = context.profile();
-    let message_options_admitted = supports_message_options(context);
+    let foundry_per_turn_effort = is_foundry_per_turn_effort_request(request, context);
+    let message_options_admitted = supports_message_options(context) || foundry_per_turn_effort;
     let has_clear_at = message_options_admitted
         && request.messages.iter().any(|message| {
             message
@@ -177,8 +204,9 @@ pub(crate) fn apply_beta_header(
                 .anthropic_options()
                 .is_some_and(|options| options.effort.is_some())
         });
-    let native_per_turn_effort = context.native_anthropic_main_request()
-        && contains_only_per_message_effort_system_rows(request);
+    let native_per_turn_effort = (context.native_anthropic_main_request()
+        && contains_only_per_message_effort_system_rows(request))
+        || foundry_per_turn_effort;
     let has_output_config = has_effort && !native_per_turn_effort;
     let has_tool_changes = supports_profile(profile) && has_tool_changes(request);
     if !(has_tool_changes || has_clear_at || has_effort) {
@@ -349,9 +377,10 @@ fn validate_message_options(request: &ChatRequest, context: &CodecContext) -> Re
         return Ok(());
     }
 
-    if !supports_message_options(context) {
+    let foundry_per_turn_effort = is_foundry_per_turn_effort_request(request, context);
+    if !supports_message_options(context) && !foundry_per_turn_effort {
         return Err(unsupported(
-            "Anthropic per-message system options require the first-party Messages API or Vertex Claude",
+            "Anthropic per-message system options require the first-party Messages API, Vertex Claude, or Foundry main-request per-turn effort rows",
         ));
     }
 
@@ -1190,8 +1219,9 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
         || request
             .hosted_anthropic_web_fetch()
             .is_some_and(|config| config.inline_definition);
-    let only_per_message_effort = supports_message_options(context)
+    let only_per_message_effort = (supports_message_options(context)
         && contains_only_per_message_effort_system_rows(request)
+        || is_foundry_per_turn_effort_request(request, context))
         && !contains_mcp
         && !contains_deferred_fetch
         && !contains_typed_inline;

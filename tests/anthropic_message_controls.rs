@@ -1,4 +1,5 @@
 use lingxi_llm_client::protocol::*;
+use lingxi_llm_client::providers::anthropic::request_policy::AnthropicRequestKind;
 use lingxi_llm_client::providers::anthropic::types::*;
 use lingxi_llm_client::*;
 use serde_json::{json, Value};
@@ -582,4 +583,125 @@ fn active_effort_obeys_thinking_constraints_without_applying_future_changes_earl
     r.messages
         .push(ConversationMessage::user_text("Now use the new effort"));
     assert!(encode(&r, &profile(), "claude-opus-5").is_err());
+}
+
+fn foundry_profile() -> ProviderProfile {
+    let mut profile = profile();
+    profile.provider_id = ProviderId::new("foundry");
+    profile.profile_name = "foundry".into();
+    profile.base_url = "https://foundry.example.test/resource".into();
+    profile.protocol = ProtocolFamily::FoundryClaude;
+    profile.extra["betas"] = json!(["fixture-existing-beta"]);
+    let model = profile.models.first_mut().expect("test profile model");
+    model.info.features.effort.support = CapabilitySupport::Supported;
+    model.info.features.effort.levels = Some(vec![ReasoningEffort::High, ReasoningEffort::Medium]);
+    profile
+}
+
+fn encode_foundry(
+    request: &ChatRequest,
+    profile: &ProviderProfile,
+    kind: AnthropicRequestKind,
+) -> Result<(Value, Vec<(String, String)>), LlmError> {
+    let context =
+        CodecContext::new(profile, MODEL, RequestMode::Complete).with_anthropic_request_kind(kind);
+    let wire = FoundryClaudeCodec.encode_request(EncodeRequest::new(request), &context)?;
+    Ok((serde_json::from_slice(&wire.body).unwrap(), wire.headers))
+}
+
+#[test]
+fn foundry_main_effort_only_marker_is_encoded_and_reported_without_extra_sdk_beta() {
+    let profile = foundry_profile();
+    let mut request = req();
+    request.messages.push(effort(AnthropicMessageEffort::High));
+    let context = CodecContext::new(&profile, MODEL, RequestMode::Complete)
+        .with_anthropic_request_kind(AnthropicRequestKind::Main);
+
+    let inference = FoundryClaudeCodec
+        .request_inference(&request, &context)
+        .expect("Foundry main marker inference");
+    assert_eq!(inference.requested_effort, Some(ReasoningEffort::High));
+
+    let (body, headers) = encode_foundry(&request, &profile, AnthropicRequestKind::Main).unwrap();
+    assert_eq!(body["messages"][1]["content"], serde_json::json!([]));
+    assert_eq!(body["messages"][1]["output_config"]["effort"], "high");
+    assert_eq!(
+        headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fixture-existing-beta"],
+        "per-turn effort preserves the existing beta header without adding SDK tokens"
+    );
+}
+
+#[test]
+fn foundry_per_message_controls_remain_restricted_to_main_effort_marker() {
+    let profile = foundry_profile();
+    let mut request = req();
+    request.messages.push(effort(AnthropicMessageEffort::High));
+    assert!(matches!(
+        encode_foundry(&request, &profile, AnthropicRequestKind::SideQuery),
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
+
+    let mut request = req();
+    request.messages.push(scoped());
+    assert!(matches!(
+        encode_foundry(&request, &profile, AnthropicRequestKind::Main),
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
+
+    let mut request = req();
+    request.messages.push(
+        ConversationMessage::system_text("text").with_anthropic_options(AnthropicMessageOptions {
+            clear_at: None,
+            effort: Some(AnthropicMessageEffort::High),
+        }),
+    );
+    assert!(matches!(
+        encode_foundry(&request, &profile, AnthropicRequestKind::Main),
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
+}
+
+#[test]
+fn foundry_effort_history_keeps_multiple_rows_and_reports_the_latest_level() {
+    let profile = foundry_profile();
+    let mut request = req();
+    request.messages.push(effort(AnthropicMessageEffort::High));
+    request
+        .messages
+        .push(ConversationMessage::assistant(vec![ContentBlock::Text {
+            text: "First answer".into(),
+            thought_signature: None,
+            citations: None,
+        }]));
+    request
+        .messages
+        .push(ConversationMessage::user_text("Follow up"));
+    request
+        .messages
+        .push(effort(AnthropicMessageEffort::Medium));
+    let context = CodecContext::new(&profile, MODEL, RequestMode::Complete)
+        .with_anthropic_request_kind(AnthropicRequestKind::Main);
+
+    let inference = FoundryClaudeCodec
+        .request_inference(&request, &context)
+        .expect("Foundry effort history inference");
+    assert_eq!(inference.requested_effort, Some(ReasoningEffort::Medium));
+
+    let (body, headers) = encode_foundry(&request, &profile, AnthropicRequestKind::Main).unwrap();
+    assert_eq!(body["messages"][1]["output_config"]["effort"], "high");
+    assert_eq!(body["messages"][4]["output_config"]["effort"], "medium");
+    assert_eq!(
+        headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fixture-existing-beta"],
+        "per-turn effort preserves the existing beta header without adding SDK tokens"
+    );
 }
