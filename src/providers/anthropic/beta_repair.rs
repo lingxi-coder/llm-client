@@ -85,29 +85,47 @@ impl ModelBetaRejections {
     }
 }
 
+/// Host-qualified model identity for Native's MCTC model-support latch.
+/// Provider route and canonical model are both required so multi-provider
+/// runtimes do not share one provider's capability refusal with another.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ModelUnsupportedIdentity {
+    pub provider_route: String,
+    pub model: String,
+}
+impl ModelUnsupportedIdentity {
+    #[must_use]
+    pub fn new(provider_route: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider_route: provider_route.into(),
+            model: model.into(),
+        }
+    }
+}
+
 /// Native MCTC model-support latch. A `model_unsupported` response suppresses
-/// only that model; unlike a named beta-header refusal, it does not retire the
-/// beta for other models in the same conversation.
+/// only that provider route and canonical model; unlike a named beta-header
+/// refusal, it does not retire the beta for other models in the conversation.
 #[derive(Debug, Clone, Default)]
-pub struct ModelUnsupportedBetaRejections(Arc<Mutex<BTreeMap<String, u8>>>);
+pub struct ModelUnsupportedBetaRejections(Arc<Mutex<BTreeMap<ModelUnsupportedIdentity, u8>>>);
 impl ModelUnsupportedBetaRejections {
     pub fn for_process() -> Self {
         static CACHE: OnceLock<ModelUnsupportedBetaRejections> = OnceLock::new();
         CACHE.get_or_init(Self::default).clone()
     }
-    pub fn rejected(&self, model: &str, beta: Beta) -> bool {
+    pub fn rejected(&self, identity: &ModelUnsupportedIdentity, beta: Beta) -> bool {
         self.0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .get(model)
+            .get(identity)
             .is_some_and(|mask| mask & beta.mask() != 0)
     }
-    fn reject(&self, model: &str, beta: Beta) {
+    fn reject(&self, identity: &ModelUnsupportedIdentity, beta: Beta) {
         *self
             .0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .entry(model.into())
+            .entry(identity.clone())
             .or_default() |= beta.mask();
     }
 }
@@ -336,7 +354,10 @@ pub fn request_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> V
         });
     }
     for rejection in named_rejections(status, body, sent) {
-        if !rejections.iter().any(|existing| existing.beta == rejection.beta) {
+        if !rejections
+            .iter()
+            .any(|existing| existing.beta == rejection.beta)
+        {
             rejections.push(rejection);
         }
     }
@@ -375,7 +396,10 @@ pub fn model_unsupported_rejection(
         return None;
     }
     let message = error_message(status, body);
-    (!native_cache_control_field_error(&message)
+    (!prefix_rejected(status, &message)
+        && !signature_rejected(status, &message)
+        && !header_rejected(&message, Beta::MidConversationToolChanges)
+        && !native_cache_control_field_error(&message)
         && contains_ascii_word(&message, "tool_addition")
         && (message.contains("not supported on this model")
             || message.contains("requires a model that supports")))
@@ -443,10 +467,10 @@ fn native_cache_control_field_error(message: &str) -> bool {
 
 pub fn reject_model_unsupported(
     rejection: ModelUnsupportedBeta,
-    model: &str,
+    identity: &ModelUnsupportedIdentity,
     cache: &ModelUnsupportedBetaRejections,
 ) {
-    cache.reject(model, rejection.beta());
+    cache.reject(identity, rejection.beta());
 }
 
 pub fn request_betas(headers: &BTreeMap<String, String>) -> Vec<String> {
@@ -541,6 +565,7 @@ pub fn apply_rejections(
     body: &mut JsonPayload,
     conversation: &ConversationBetaState,
     model: Option<&str>,
+    model_unsupported_identity: Option<&ModelUnsupportedIdentity>,
     cache: &ModelBetaRejections,
 ) -> Result<(), LlmError> {
     for beta in Beta::ALL {
@@ -552,9 +577,9 @@ pub fn apply_rejections(
         .into_iter()
         .filter(|beta| {
             conversation.rejected(*beta)
-                || model.is_some_and(|model| {
-                    cache.rejected(model, *beta)
-                        || ModelUnsupportedBetaRejections::for_process().rejected(model, *beta)
+                || model.is_some_and(|model| cache.rejected(model, *beta))
+                || model_unsupported_identity.is_some_and(|identity| {
+                    ModelUnsupportedBetaRejections::for_process().rejected(identity, *beta)
                 })
         })
         .map(Beta::header)
@@ -678,7 +703,15 @@ mod tests {
             r#"{"diagnostics":{"previous_message_id":"msg"},"cache_control":{"type":"ephemeral","evict_on_complete":true},"opaque":{"z":"\ud800","a":[1,2]}}"#,
         )
         .unwrap();
-        apply_rejections(&mut headers, &mut body, &fresh, Some("model-a"), &cache).unwrap();
+        apply_rejections(
+            &mut headers,
+            &mut body,
+            &fresh,
+            Some("model-a"),
+            None,
+            &cache,
+        )
+        .unwrap();
         assert_eq!(headers["anthropic-beta"], "");
         assert!(body.kind_at("/diagnostics").is_none());
         assert!(body.kind_at("/cache_control").is_none());
@@ -696,6 +729,7 @@ mod tests {
             &mut JsonPayload::default(),
             &unaffected,
             Some("model-b"),
+            None,
             &cache,
         )
         .unwrap();
@@ -742,6 +776,7 @@ mod tests {
             &mut JsonPayload::default(),
             &conversation,
             Some("claude-opus-4-8"),
+            None,
             &model_rejections,
         )
         .unwrap();
@@ -754,6 +789,7 @@ mod tests {
             &mut JsonPayload::default(),
             &fresh_conversation,
             Some("claude-opus-4-8"),
+            None,
             &model_rejections,
         )
         .unwrap();
@@ -770,6 +806,7 @@ mod tests {
             &mut JsonPayload::default(),
             &conversation,
             Some("claude-sonnet-5-5"),
+            None,
             &model_rejections,
         )
         .unwrap();
@@ -825,8 +862,9 @@ mod tests {
             .expect("Native Zie classifies model support separately from beta refusal");
 
         let model = "claude-opus-4-8-mctc-model-unsupported-regression";
+        let identity = ModelUnsupportedIdentity::new("anthropic:firstparty:native", model);
         let cache = ModelUnsupportedBetaRejections::for_process();
-        reject_model_unsupported(rejection, model, &cache);
+        reject_model_unsupported(rejection, &identity, &cache);
         let process_cache = ModelBetaRejections::default();
         let conversation = ConversationBetaState::default();
 
@@ -839,6 +877,7 @@ mod tests {
             &mut JsonPayload::default(),
             &conversation,
             Some(model),
+            Some(&identity),
             &process_cache,
         )
         .unwrap();
@@ -857,6 +896,10 @@ mod tests {
             &mut JsonPayload::default(),
             &conversation,
             Some("claude-sonnet-5-5-mctc-other-model"),
+            Some(&ModelUnsupportedIdentity::new(
+                "anthropic:firstparty:native",
+                "claude-sonnet-5-5-mctc-other-model",
+            )),
             &process_cache,
         )
         .unwrap();
@@ -864,6 +907,26 @@ mod tests {
             other_model["anthropic-beta"],
             Beta::MidConversationToolChanges.header(),
             "a different model can still advertise MCTC in the same conversation"
+        );
+
+        let foundry_identity = ModelUnsupportedIdentity::new("foundry:profile-a", model);
+        let mut same_model_other_provider = BTreeMap::from([(
+            "anthropic-beta".into(),
+            Beta::MidConversationToolChanges.header().into(),
+        )]);
+        apply_rejections(
+            &mut same_model_other_provider,
+            &mut JsonPayload::default(),
+            &conversation,
+            Some(model),
+            Some(&foundry_identity),
+            &process_cache,
+        )
+        .unwrap();
+        assert_eq!(
+            same_model_other_provider["anthropic-beta"],
+            Beta::MidConversationToolChanges.header(),
+            "a provider-specific model refusal must not poison another route"
         );
 
         let fresh_conversation = ConversationBetaState::default();
@@ -876,6 +939,7 @@ mod tests {
             &mut JsonPayload::default(),
             &fresh_conversation,
             Some(model),
+            Some(&identity),
             &process_cache,
         )
         .unwrap();
@@ -900,5 +964,35 @@ mod tests {
             Some(ModelUnsupportedBeta::MidConversationToolChanges),
             "Native Adr returns false for system-role cache_control errors, so Zie continues"
         );
+    }
+
+    #[test]
+    fn native_295_model_unsupported_yields_to_header_and_signature_repairs() {
+        let sent = vec![Beta::MidConversationToolChanges.header().to_owned()];
+        let header_rejection = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-beta mid-conversation-tool-changes-2026-07-01 is not supported on this model; tool_addition is not supported on this model"}}"#,
+        )
+        .unwrap();
+        assert!(model_unsupported_rejection(400, &header_rejection, &sent).is_none());
+        assert_eq!(
+            named_rejections(400, &header_rejection, &sent),
+            [Rejection {
+                beta: Beta::MidConversationToolChanges,
+                strong: false,
+            }],
+            "Zie classifies the exact beta-header refusal before model support"
+        );
+
+        let signature_rejection = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"tool_addition is not supported on this model; thinking.signature field required"}}"#,
+        )
+        .unwrap();
+        assert!(model_unsupported_rejection(400, &signature_rejection, &sent).is_none());
+
+        let prefix_rejection = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"thinking block is not created in this conversation; tool_addition is not supported on this model"}}"#,
+        )
+        .unwrap();
+        assert!(model_unsupported_rejection(400, &prefix_rejection, &sent).is_none());
     }
 }
