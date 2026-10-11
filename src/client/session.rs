@@ -100,6 +100,14 @@ impl ResponsesSession {
         }
         Ok(())
     }
+    /// Forget the cached connection without closing it. A generation still
+    /// streaming there finishes on its own socket, but its observer keeps the
+    /// old state, so that response cannot seed a continuation on a new socket.
+    fn detach_connection(&mut self) {
+        self.connection = None;
+        let fallback = self.fallback_to_http();
+        self.reset_state(fallback);
+    }
     fn fail_to_http(&mut self) {
         self.connection = None;
         clear_continuation(&self.state, true);
@@ -129,6 +137,16 @@ impl ResponsesSession {
         transport: Option<Arc<dyn crate::Transport>>,
     ) -> Result<(), LlmError> {
         self.prepared_binding = None;
+        // As in Codex, each in-flight generation owns its socket. Leave a busy
+        // one to its response rather than failing this request or closing,
+        // and so interrupting, the other below.
+        if self
+            .connection
+            .as_ref()
+            .is_some_and(|connection| connection.is_busy())
+        {
+            self.detach_connection();
+        }
         // Sealing must not rewrite the body once this draft is bound, and the
         // continuation below is derived from it, so settle it before anything
         // is snapshotted. This covers the HTTP fallback return as well.
@@ -171,8 +189,7 @@ impl ResponsesSession {
             .as_ref()
             .is_some_and(|connection| connection.is_closed())
         {
-            self.connection = None;
-            clear_continuation(&self.state, false);
+            self.detach_connection();
         }
         if !self.state.lock().expect("session").connection_healthy {
             self.connection = None;

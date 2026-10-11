@@ -424,6 +424,9 @@ impl WebSocketConnection for ResponsesConnection {
             Slot::Closed => true,
         }
     }
+    fn is_busy(&self) -> bool {
+        matches!(&*self.socket.lock().expect("socket"), Slot::Busy)
+    }
 }
 
 impl Drop for ResponsesConnection {

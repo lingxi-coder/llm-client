@@ -212,6 +212,11 @@ pub trait WebSocketConnection: Send {
     fn is_closed(&self) -> bool {
         false
     }
+    /// Whether a generation still streams on the connection. The owner
+    /// opens another connection for a new generation and lets it finish.
+    fn is_busy(&self) -> bool {
+        false
+    }
 }
 
 /// Shared request execution independent of the concrete HTTP backend.
