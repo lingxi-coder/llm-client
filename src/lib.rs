@@ -30,6 +30,8 @@ pub mod image_generation {}
 pub mod web_search {}
 
 pub mod account;
+#[doc = include_str!("../docs/unified-audio.md")]
+pub mod audio;
 pub mod auth;
 pub mod client;
 pub mod codecs;

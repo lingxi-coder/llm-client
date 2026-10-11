@@ -588,6 +588,7 @@ struct QwenRealtimeCodec {
 impl RealtimeCodec for QwenRealtimeCodec {
     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         let messages = match input {
+            RealtimeInput::ImportHistory { .. } => return Err(RealtimeError::InvalidInput { message: "history import is unsupported by this adapter".into() }),
             RealtimeInput::RetrieveItem { .. }
             | RealtimeInput::DeleteItem { .. }
             | RealtimeInput::TruncateAudio { .. } => {

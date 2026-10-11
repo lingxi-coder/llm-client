@@ -56,6 +56,16 @@ struct FakeSink {
 
 #[async_trait]
 impl RealtimeSink for FakeSink {
+    async fn ping(&mut self, _payload: bytes::Bytes) -> Result<(), RealtimeError> {
+        Err(RealtimeError::InvalidInput {
+            message: "test transport does not support explicit WebSocket Ping frames".into(),
+        })
+    }
+
+    fn abort(&mut self) {
+        // The test transport releases its local state when dropped.
+    }
+
     async fn send(&mut self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         self.sent.lock().unwrap().push(frame);
         Ok(())
@@ -76,7 +86,7 @@ fn injected_sinks_without_ping_support_return_an_explicit_non_sending_error() {
     };
 
     let error = block_on(sink.ping(Bytes::from_static(b"host-ping")))
-        .expect_err("the default sink method must report unsupported Ping capability");
+        .expect_err("the test sink must report unsupported Ping capability");
 
     assert!(matches!(error, RealtimeError::InvalidInput { .. }));
     assert!(error
@@ -270,6 +280,10 @@ fn audio_delta_is_normalized_and_explicit_close_is_acknowledged() {
         let session_task = async {
             let audio_event = events.next().await;
             let close_result = control.close(RealtimeClose::normal("done")).await;
+            assert!(matches!(
+                events.next().await,
+                Some(RealtimeEvent::ProviderEvent { .. })
+            ));
             let closed_event = events.next().await;
             (audio_event, close_result, closed_event)
         };
@@ -311,6 +325,7 @@ fn openai_codec_sets_the_session_and_decodes_tool_calls() {
         voice: None,
         tools: vec![],
         tool_choice: Default::default(),
+        ..Default::default()
     });
     let initial = codec.initial_frames().unwrap();
     assert_eq!(initial.len(), 1);
@@ -332,7 +347,7 @@ fn openai_codec_sets_the_session_and_decodes_tool_calls() {
         ))
         .unwrap();
     assert_eq!(
-        events,
+        events[..1],
         vec![RealtimeEvent::ToolCall {
             call_id: "call-7".into(),
             name: "lookup".into(),
@@ -408,12 +423,15 @@ fn openai_codec_maps_manual_audio_commit_and_tool_output() {
             output: serde_json::json!({"ok":true}),
         })
         .unwrap();
-    assert_eq!(tool_result.len(), 2);
+    assert_eq!(tool_result.len(), 1);
     assert!(
         matches!(&tool_result[0], RealtimeFrame::Text(frame) if serde_json::from_slice::<serde_json::Value>(frame).unwrap()["item"]["type"] == "function_call_output")
     );
+    let continuation = codec
+        .encode(&realtime::RealtimeInput::ContinueResponse)
+        .unwrap();
     assert!(
-        matches!(&tool_result[1], RealtimeFrame::Text(frame) if serde_json::from_slice::<serde_json::Value>(frame).unwrap()["type"] == "response.create")
+        matches!(&continuation[0], RealtimeFrame::Text(frame) if serde_json::from_slice::<serde_json::Value>(frame).unwrap()["type"] == "response.create")
     );
     assert!(!tool_result[0].is_empty());
 }
@@ -467,4 +485,157 @@ fn connect_request_debug_redacts_endpoint_and_header_values() {
     let debug = format!("{:?}", request());
     assert!(!debug.contains("secret"));
     assert!(debug.contains("Authorization"));
+}
+
+#[test]
+fn abort_discards_queued_audio_before_driver_runs() {
+    block_on(async {
+        let (control, mut events, driver, peer) = connected(limits(2, 4096)).await;
+        for _ in 0..2 {
+            control
+                .send(realtime::RealtimeInput::Audio {
+                    data: Bytes::from_static(&[0, 0]),
+                    format: realtime::RealtimeAudioFormat::Pcm16 {
+                        sample_rate_hz: 24000,
+                    },
+                })
+                .unwrap();
+        }
+        let abort = control.abort(RealtimeClose::normal("cancel"));
+        let (aborted, driven) = futures::join!(abort, driver.run());
+        aborted.unwrap();
+        driven.unwrap();
+        assert_eq!(
+            peer.sent.lock().unwrap().len(),
+            1,
+            "only setup sent; queued audio discarded"
+        );
+        assert!(matches!(
+            control.send(realtime::RealtimeInput::Text("late".into())),
+            Err(RealtimeError::Closed)
+        ));
+        assert!(matches!(
+            events.next().await,
+            Some(RealtimeEvent::Closed { .. })
+        ));
+    });
+}
+
+#[tokio::test]
+async fn abort_preempts_pending_transport_send_and_full_event_queue() {
+    struct StallTransport {
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    struct StallSink {
+        first: bool,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    #[async_trait]
+    impl RealtimeSink for StallSink {
+        async fn ping(&mut self, _payload: bytes::Bytes) -> Result<(), RealtimeError> {
+            Err(RealtimeError::InvalidInput {
+                message: "test transport does not support explicit WebSocket Ping frames".into(),
+            })
+        }
+
+        async fn send(&mut self, _: RealtimeFrame) -> Result<(), RealtimeError> {
+            if self.first {
+                self.first = false;
+                return Ok(());
+            }
+            futures::future::pending().await
+        }
+        fn abort(&mut self) {
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        async fn close(&mut self, _: RealtimeClose) -> Result<(), RealtimeError> {
+            panic!("abort must not flush graceful close");
+        }
+    }
+    #[async_trait]
+    impl RealtimeTransport for StallTransport {
+        async fn connect(
+            &self,
+            _: RealtimeConnectRequest,
+        ) -> Result<RealtimeConnection, RealtimeError> {
+            Ok(RealtimeConnection {
+                outbound: Box::new(StallSink {
+                    first: true,
+                    closed: self.closed.clone(),
+                }),
+                inbound: futures::stream::pending().boxed(),
+            })
+        }
+    }
+    let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (session, driver) = RealtimeSession::connect(
+        &StallTransport {
+            closed: closed.clone(),
+        },
+        request(),
+        Arc::new(OpenAiRealtimeCodec::default()),
+        limits(2, 4096),
+    )
+    .await
+    .unwrap();
+    let (control, _events) = session.into_parts();
+    control
+        .send(realtime::RealtimeInput::Audio {
+            data: Bytes::from_static(&[0, 0]),
+            format: realtime::RealtimeAudioFormat::Pcm16 {
+                sample_rate_hz: 24000,
+            },
+        })
+        .unwrap();
+    let pump = tokio::spawn(driver.run());
+    tokio::task::yield_now().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        control.abort(RealtimeClose::normal("cancel")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    pump.await.unwrap().unwrap();
+    assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn abort_preempts_full_event_queue_without_waiting_for_receiver() {
+    let (transport, peer) = FakeTransport::new();
+    let mut bounds = limits(2, 4096);
+    bounds.event_capacity = 1;
+    let (session, driver) = RealtimeSession::connect(
+        &transport,
+        request(),
+        Arc::new(OpenAiRealtimeCodec::default()),
+        bounds,
+    )
+    .await
+    .unwrap();
+    let (control, mut events) = session.into_parts();
+    peer.incoming
+        .unbounded_send(Ok(RealtimeFrame::text(
+            r#"{"type":"response.output_audio.delta","item_id":"a1","delta":"AAA="}"#,
+        )))
+        .unwrap();
+    let pump = tokio::spawn(driver.run());
+    tokio::task::yield_now().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        control.abort(RealtimeClose::normal("cancel")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    pump.await.unwrap().unwrap();
+    assert!(matches!(
+        events.next().await,
+        Some(RealtimeEvent::AudioDelta { .. })
+    ));
+    assert_eq!(
+        events.next().await,
+        None,
+        "termination must not await room for a Closed event"
+    );
 }

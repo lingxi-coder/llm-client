@@ -39,6 +39,16 @@ struct RecordingSink(Arc<std::sync::Mutex<Vec<RealtimeFrame>>>);
 
 #[async_trait]
 impl RealtimeSink for RecordingSink {
+    async fn ping(&mut self, _payload: bytes::Bytes) -> Result<(), RealtimeError> {
+        Err(RealtimeError::InvalidInput {
+            message: "test transport does not support explicit WebSocket Ping frames".into(),
+        })
+    }
+
+    fn abort(&mut self) {
+        // The test transport releases its local state when dropped.
+    }
+
     async fn send(&mut self, frame: RealtimeFrame) -> Result<(), RealtimeError> {
         self.0.lock().unwrap().push(frame);
         Ok(())
@@ -373,4 +383,92 @@ fn oversized_encoded_image_is_rejected_without_sending_a_frame() {
     let sent = sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(frame_json(&sent[0])["type"], "session.update");
+}
+
+#[test]
+fn agent_history_preserves_roles_tools_and_never_creates_a_response() {
+    use lingxi_llm_client::realtime::{RealtimeHistoryItem as H, RealtimeRole};
+    let codec = OpenAiRealtimeCodec::default();
+    let frames = codec
+        .encode(&RealtimeInput::ImportHistory {
+            items: vec![
+                H::Message {
+                    item_id: Some("u1".into()),
+                    role: RealtimeRole::User,
+                    text: "question".into(),
+                },
+                H::Message {
+                    item_id: Some("a1".into()),
+                    role: RealtimeRole::Assistant,
+                    text: "heard answer".into(),
+                },
+                H::ToolCall {
+                    item_id: None,
+                    call_id: "c1".into(),
+                    name: "lookup".into(),
+                    arguments: json!({"q":"x"}),
+                },
+                H::ToolResult {
+                    item_id: None,
+                    call_id: "c1".into(),
+                    name: None,
+                    output: json!({"ok":true}),
+                },
+            ],
+        })
+        .unwrap();
+    let values: Vec<Value> = frames
+        .iter()
+        .map(|frame| {
+            let RealtimeFrame::Text(data) = frame else {
+                panic!()
+            };
+            serde_json::from_slice(data).unwrap()
+        })
+        .collect();
+    assert_eq!(values.len(), 4);
+    assert!(values
+        .iter()
+        .all(|v| v["type"] == "conversation.item.create"));
+    assert_eq!(values[0]["item"]["role"], "user");
+    assert_eq!(values[1]["item"]["content"][0]["type"], "output_text");
+    assert_eq!(values[2]["item"]["arguments"], r#"{"q":"x"}"#);
+    assert_eq!(values[3]["item"]["call_id"], "c1");
+    assert!(codec.capabilities().agent_conversation());
+}
+
+#[test]
+fn transcript_direction_usage_ids_and_native_fields_are_retained() {
+    use lingxi_llm_client::realtime::{RealtimeEvent as E, RealtimeTranscriptDirection as D};
+    let codec = OpenAiRealtimeCodec::default();
+    for (native, direction, final_chunk, text) in [
+        (
+            json!({"type":"conversation.item.input_audio_transcription.delta","item_id":"u1","delta":"he","content_index":0}),
+            D::Input,
+            false,
+            "he",
+        ),
+        (
+            json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"u1","transcript":"hello"}),
+            D::Input,
+            true,
+            "hello",
+        ),
+        (
+            json!({"type":"response.output_audio_transcript.done","response_id":"r1","item_id":"a1","transcript":"hi","timing":{"ms":4}}),
+            D::Output,
+            true,
+            "hi",
+        ),
+    ] {
+        let events = codec
+            .decode(RealtimeFrame::text(native.to_string()))
+            .unwrap();
+        assert!(
+            matches!(&events[0],E::Transcript{direction:d,text:t,final_chunk:f,..} if *d==direction&&t==text&&*f==final_chunk)
+        );
+        assert!(matches!(&events[1],E::ProviderEvent{native:value,..} if value==&native));
+    }
+    let events=codec.decode(RealtimeFrame::text(json!({"type":"response.done","response":{"id":"r1","status":"completed","usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7,"output_token_details":{"audio_tokens":3}}}}).to_string())).unwrap();
+    assert!(events.iter().any(|e|matches!(e,E::Usage{turn_id:Some(id),input_tokens:Some(4),output_tokens:Some(3),total_tokens:Some(7),native} if id=="r1"&&native["output_token_details"]["audio_tokens"]==3)));
 }

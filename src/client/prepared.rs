@@ -428,7 +428,13 @@ impl RequestDraft {
         self.native_traceparent = (!traceparent.is_empty()).then_some(traceparent);
         Ok(())
     }
-    pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
+    /// Settle the request body: reconcile a raw `request_mut` edit, re-encode
+    /// retained exact string mappings, then apply the selected auth strategy's
+    /// generation-body policy. Idempotent, and sealing runs it again. A session
+    /// preparation runs it first: the session derives its continuation from this
+    /// body and binds the draft to it, so a rewrite after that point would
+    /// unbind the call.
+    pub(super) fn settle_body(&mut self) -> Result<(), LlmError> {
         if self
             .mutable_body_baseline
             .as_ref()
@@ -457,7 +463,16 @@ impl RequestDraft {
             let overrides = self.request_json_string_overrides.clone();
             self.set_json_body(body, &overrides)?;
         }
-        self.apply_current_request_body_auth_policy()?;
+        self.apply_current_request_body_auth_policy()
+    }
+    /// Install a session's wire form of the already settled request, such as
+    /// its incremental continuation. Unlike `request_mut` this is not a caller
+    /// edit: it leaves the settled state alone and the session binds afterwards.
+    pub(super) fn set_session_wire_body(&mut self, body: bytes::Bytes) {
+        self.call.prepared.http.body = body;
+    }
+    pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
+        self.settle_body()?;
         if matches!(self.call.mode, RequestMode::Complete | RequestMode::Stream) {
             if let Some(body) = crate::exact_json::normalize_native_generation_json_body(
                 &self.call.prepared.http.body,

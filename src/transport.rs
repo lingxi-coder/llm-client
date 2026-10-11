@@ -201,12 +201,27 @@ pub trait Transport: Send + Sync + 'static {
     }
 }
 
+/// Message prefix of the transport error for a Responses WebSocket that the
+/// peer or network closed under a generation. The server does this now and
+/// then, so the caller retries the request on a new connection, as Codex does.
+pub const WEBSOCKET_CONNECTION_LOST: &str = "WebSocket connection lost";
+
 /// One reusable connection. Each body item is one complete JSON text message.
 /// Implementations must not reconnect or resend a generation automatically.
 #[async_trait]
 pub trait WebSocketConnection: Send {
     async fn send(&mut self, payload: Bytes) -> Result<StreamResponse, LlmError>;
     async fn close(&mut self) -> Result<(), LlmError>;
+    /// Whether the connection can no longer carry a generation, for example
+    /// because the peer closed it while idle. The owner reconnects instead.
+    fn is_closed(&self) -> bool {
+        false
+    }
+    /// Whether a generation still streams on the connection. The owner
+    /// opens another connection for a new generation and lets it finish.
+    fn is_busy(&self) -> bool {
+        false
+    }
 }
 
 /// Shared request execution independent of the concrete HTTP backend.

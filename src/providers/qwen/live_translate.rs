@@ -906,6 +906,7 @@ struct QwenLiveTranslateCodec {
 impl RealtimeCodec for QwenLiveTranslateCodec {
     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
         let message = match input {
+            RealtimeInput::ImportHistory { .. } => return Err(RealtimeError::InvalidInput { message: "history import is unsupported by this adapter".into() }),
             RealtimeInput::Audio { data, format } => {
                 validate_input_audio(data, format, &self.config.input_audio_format())?;
                 json!({ "type": "input_audio_buffer.append", "audio": STANDARD.encode(data) })

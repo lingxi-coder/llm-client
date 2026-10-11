@@ -35,7 +35,8 @@ pub fn chatgpt(
 }
 pub fn chatgpt_body(body: &mut serde_json::Value) {
     if let Some(body) = body.as_object_mut() {
-        for key in ["max_output_tokens", "temperature", "top_p"] {
+        // The Codex backend rejects these with 400 "Unsupported parameter".
+        for key in ["max_output_tokens", "metadata", "temperature", "top_p"] {
             body.remove(key);
         }
         body.insert("store".into(), false.into());

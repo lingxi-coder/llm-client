@@ -637,7 +637,9 @@ impl OpenAiLiveSession {
         let (command_sender, command_receiver) = mpsc::channel(limits.outbound_capacity - 1);
         let (event_sender, event_receiver) = mpsc::channel(limits.event_capacity - 1);
         let state = Arc::new(Mutex::new(OpenAiLiveState::default()));
+        let (abort_tx, abort_rx) = oneshot::channel();
         let driver = OpenAiLiveDriver {
+            abort: Some(abort_rx),
             commands: command_receiver,
             events: event_sender,
             connection,
@@ -646,6 +648,7 @@ impl OpenAiLiveSession {
             state: state.clone(),
         };
         let control = OpenAiLiveControl {
+            abort: Arc::new(Mutex::new(Some(abort_tx))),
             commands: Arc::new(Mutex::new(command_sender)),
             state: state.clone(),
             max_frame_bytes: limits.max_frame_bytes,
@@ -685,6 +688,9 @@ struct OpenAiLiveState {
 /// work implicitly; callers must submit outputs and continue explicitly.
 #[derive(Clone)]
 pub struct OpenAiLiveControl {
+    abort: Arc<
+        Mutex<Option<oneshot::Sender<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>>,
+    >,
     commands: Arc<Mutex<mpsc::Sender<DriverCommand>>>,
     state: Arc<Mutex<OpenAiLiveState>>,
     max_frame_bytes: usize,
@@ -849,7 +855,27 @@ impl OpenAiLiveControl {
     /// Explicitly abort the WebSocket when startup, finalization, or transport
     /// handling fails. An abort does not confirm final usage.
     pub async fn abort(&self, close: RealtimeClose) -> Result<(), RealtimeError> {
-        self.close_transport(close).await
+        let close = RealtimeClose::new(close.code, close.reason)?;
+        let (ack_tx, ack_rx) = oneshot::channel();
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.transport_closed {
+                return Ok(());
+            }
+            state.close_requested = true;
+            let mut commands = self.commands.lock().unwrap();
+            let abort = self
+                .abort
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or(RealtimeError::Closed)?;
+            commands.close_channel();
+            abort
+                .send((close, ack_tx))
+                .map_err(|_| RealtimeError::Closed)?;
+        }
+        ack_rx.await.map_err(|_| RealtimeError::Closed)?
     }
 
     async fn close_transport(&self, close: RealtimeClose) -> Result<(), RealtimeError> {
@@ -906,6 +932,7 @@ impl OpenAiLiveEvents {
 /// Primary GPT-Live event pump. Unlike generic realtime codecs, Live has a
 /// provider-specific handshake and terminal session lifecycle.
 pub struct OpenAiLiveDriver {
+    abort: Option<oneshot::Receiver<(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>)>>,
     commands: mpsc::Receiver<DriverCommand>,
     events: mpsc::Sender<OpenAiLiveEvent>,
     connection: RealtimeConnection,
@@ -916,6 +943,30 @@ pub struct OpenAiLiveDriver {
 
 impl OpenAiLiveDriver {
     pub async fn run(mut self) -> Result<(), RealtimeError> {
+        let abort = self.abort.take().expect("Live driver runs once");
+        let (close, ack) = {
+            let pump = self.run_loop().fuse();
+            let abort = async move {
+                match abort.await {
+                    Ok(request) => request,
+                    Err(_) => futures::future::pending().await,
+                }
+            }
+            .fuse();
+            futures::pin_mut!(pump, abort);
+            futures::select_biased! { request = abort => request, result = pump => return result }
+        };
+        self.commands.close();
+        while self.commands.try_recv().is_ok() {}
+        self.connection.outbound.abort();
+        let _ = ack.send(Ok(()));
+        let _ = self.events.try_send(OpenAiLiveEvent::TransportClosed {
+            code: close.code,
+            reason: close.reason,
+        });
+        Ok(())
+    }
+    async fn run_loop(&mut self) -> Result<(), RealtimeError> {
         loop {
             let command = self.commands.next().fuse();
             let incoming = self.connection.inbound.next().fuse();

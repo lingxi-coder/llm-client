@@ -248,6 +248,19 @@ fn known_unsupported_controls_fail_instead_of_being_dropped() {
 }
 
 #[test]
+fn opus_5_5_encodes_every_effort_level() {
+    let p = preset("anthropic");
+    for effort in ["low", "medium", "high", "xhigh", "max"] {
+        let req = request("claude-opus-5-5", json!({ "effort": effort }), Value::Null);
+        assert_eq!(
+            body(&p, &req)["output_config"]["effort"],
+            json!(effort),
+            "{effort}"
+        );
+    }
+}
+
+#[test]
 fn budgets_and_control_combinations_are_validated() {
     for n in [0, 1, 1023, 8192] {
         assert!(matches!(

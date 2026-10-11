@@ -1,5 +1,7 @@
 //! Shared HTTP upgrade path: HTTP, Responses and realtime use the same TLS/proxy policy.
-use super::{HttpRequest, HttpTransport, StreamResponse, WebSocketConnection};
+use super::{
+    HttpRequest, HttpTransport, StreamResponse, WebSocketConnection, WEBSOCKET_CONNECTION_LOST,
+};
 use crate::protocol::LlmError;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -12,7 +14,7 @@ use tokio_tungstenite::{
     tungstenite::{
         client::IntoClientRequest,
         handshake::derive_accept_key,
-        protocol::{Role, WebSocketConfig},
+        protocol::{frame::coding::CloseCode, CloseFrame, Role, WebSocketConfig},
         Message,
     },
     WebSocketStream,
@@ -24,10 +26,51 @@ fn invalid() -> LlmError {
         message: "invalid WebSocket handshake".into(),
     }
 }
+/// The session closed the connection under a generation on purpose, or the
+/// peer sent a frame no Responses stream carries. A retry cannot help.
 fn interrupted() -> LlmError {
     LlmError::StreamInterrupted {
         message: "WebSocket stream interrupted".into(),
     }
+}
+/// The peer or network dropped the connection. Like a cut HTTP body this is
+/// a transport failure the caller may retry, and Codex retries it too. The
+/// cause stays in the message so a drop can be told apart in the logs.
+fn lost(cause: impl std::fmt::Display) -> LlmError {
+    LlmError::Transport {
+        message: format!("{WEBSOCKET_CONNECTION_LOST}: {cause}"),
+    }
+}
+/// A message over the frame limit is not a dropped connection: the same
+/// response overflows again, so retrying would only pay for it twice.
+fn read_failed(error: tokio_tungstenite::tungstenite::Error) -> LlmError {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Capacity(_) => LlmError::StreamInterrupted {
+            message: "WebSocket message exceeds the frame limit".into(),
+        },
+        error => lost(error),
+    }
+}
+/// A server close ends the connection the way a drop does, except 1009: the
+/// request itself was too big (RFC 6455), and sending it again cannot help.
+fn closed(frame: Option<CloseFrame<'_>>) -> LlmError {
+    let Some(frame) = frame else {
+        return lost("closed by server");
+    };
+    let reason = if frame.reason.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", frame.reason)
+    };
+    if frame.code == CloseCode::Size {
+        return LlmError::RequestTooLarge {
+            message: format!("WebSocket closed by server with code 1009{reason}"),
+        };
+    }
+    lost(format_args!(
+        "closed by server with code {}{reason}",
+        frame.code
+    ))
 }
 fn timeout() -> LlmError {
     LlmError::TransportTimeout {
@@ -171,13 +214,108 @@ pub(crate) async fn connect(
     .map_err(|_| timeout())?
 }
 
+/// The server ends a connection after 60 minutes. Like Codex's pooled
+/// sockets, an idle connection is retired at 55 so no send meets the limit.
+const MAX_CONNECTION_AGE: Duration = Duration::from_secs(55 * 60);
+
 struct ResponsesConnection {
     // Taking the socket exclusively prevents overlapping generations. Early drop
     // discards it; only a terminal provider event makes it reusable.
-    socket: Arc<Mutex<Option<Socket>>>,
+    socket: Arc<Mutex<Slot>>,
     headers: Vec<(String, String)>,
     cancel: tokio::sync::watch::Sender<bool>,
     idle_timeout: Option<Duration>,
+    opened: tokio::time::Instant,
+}
+
+enum Slot {
+    /// Between generations a reader owns the socket so Pings are answered
+    /// and a peer close is noticed before the next send, as in Codex.
+    Idle(IdleReader),
+    /// A generation's response stream owns the socket.
+    Busy,
+    Closed,
+}
+
+struct IdleReader {
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<Option<Socket>>,
+}
+
+impl IdleReader {
+    fn spawn(mut socket: Socket, pong_limit: Duration) -> Self {
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut stopped => return Some(socket),
+                    frame = socket.next() => match frame {
+                        // Reading a Ping queues its Pong; flushing sends it.
+                        Some(Ok(Message::Ping(_))) => {
+                            if !matches!(
+                                tokio::time::timeout(pong_limit, socket.flush()).await,
+                                Ok(Ok(()))
+                            ) {
+                                return None;
+                            }
+                        }
+                        // Nothing is in flight, so only a connection error matters.
+                        Some(Ok(Message::Text(text)))
+                            if event_type(&text).as_deref() != Some("error") => {}
+                        Some(Ok(Message::Pong(_) | Message::Binary(_) | Message::Frame(_))) => {}
+                        _ => return None,
+                    },
+                }
+            }
+        });
+        Self { stop, task }
+    }
+
+    /// Stop reading and take the socket back unless the peer closed it.
+    async fn resume(self) -> Option<Socket> {
+        let _ = self.stop.send(());
+        self.task.await.ok().flatten()
+    }
+}
+
+/// One generation's hold on the socket. A terminal event hands the socket
+/// back to an idle reader; any other end leaves the connection closed.
+struct Generation {
+    socket: Option<Socket>,
+    slot: std::sync::Weak<Mutex<Slot>>,
+    pong_limit: Duration,
+    returned: bool,
+}
+
+impl Generation {
+    fn finish(mut self) {
+        self.returned = true;
+        if let (Some(socket), Some(slot)) = (self.socket.take(), self.slot.upgrade()) {
+            *slot.lock().expect("socket") = Slot::Idle(IdleReader::spawn(socket, self.pong_limit));
+        }
+    }
+}
+
+impl Drop for Generation {
+    fn drop(&mut self) {
+        if self.returned {
+            return;
+        }
+        if let Some(slot) = self.slot.upgrade() {
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Slot::Closed;
+            }
+        }
+    }
+}
+
+fn event_type(text: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()?
+        .get("type")?
+        .as_str()
+        .map(str::to_owned)
 }
 pub(crate) async fn responses(
     transport: &HttpTransport,
@@ -207,46 +345,63 @@ pub(crate) async fn responses(
         request.headers.push(("OpenAI-Beta".into(), beta.into()));
     }
     let (socket, headers) = connect(transport, request, 16 * 1024 * 1024).await?;
+    let pong_limit = transport.read_timeout.unwrap_or(Duration::from_secs(60));
     Ok(Box::new(ResponsesConnection {
-        socket: Arc::new(Mutex::new(Some(socket))),
+        socket: Arc::new(Mutex::new(Slot::Idle(IdleReader::spawn(socket, pong_limit)))),
         headers,
         cancel: tokio::sync::watch::channel(false).0,
         idle_timeout: transport.read_timeout,
+        opened: tokio::time::Instant::now(),
     }))
 }
 #[async_trait]
 impl WebSocketConnection for ResponsesConnection {
     async fn send(&mut self, payload: Bytes) -> Result<StreamResponse, LlmError> {
-        let mut socket =
-            self.socket
-                .lock()
-                .expect("socket")
-                .take()
-                .ok_or_else(|| LlmError::InvalidRequest {
-                    message: "WebSocket connection is busy or no longer usable".into(),
-                })?;
         let text = String::from_utf8(payload.to_vec()).map_err(|_| invalid())?;
-        tokio::time::timeout(
-            self.idle_timeout.unwrap_or(Duration::from_secs(60)),
-            socket.send(Message::Text(text)),
-        )
-        .await
-        .map_err(|_| timeout())?
-        .map_err(|_| interrupted())?;
-        let slot = Arc::downgrade(&self.socket);
+        let reader = {
+            let mut slot = self.socket.lock().expect("socket");
+            match std::mem::replace(&mut *slot, Slot::Busy) {
+                Slot::Idle(reader) => reader,
+                other => {
+                    *slot = other;
+                    return Err(LlmError::InvalidRequest {
+                        message: "WebSocket connection is busy or no longer usable".into(),
+                    });
+                }
+            }
+        };
+        let pong_limit = self.idle_timeout.unwrap_or(Duration::from_secs(60));
+        // From here every early return, including a dropped future, closes the slot.
+        let mut generation = Generation {
+            socket: None,
+            slot: Arc::downgrade(&self.socket),
+            pong_limit,
+            returned: false,
+        };
+        let socket = generation.socket.insert(
+            reader
+                .resume()
+                .await
+                .ok_or_else(|| lost("closed while idle"))?,
+        );
+        tokio::time::timeout(pong_limit, socket.send(Message::Text(text)))
+            .await
+            .map_err(|_| timeout())?
+            .map_err(lost)?;
         let cancel = self.cancel.subscribe();
         let idle_timeout = self.idle_timeout;
-        let body = futures::stream::unfold((Some(socket), cancel), move |(state, mut cancel)| {
-            let slot = slot.clone();
-            async move {
-                let mut socket = state?;
+        let body = futures::stream::unfold(
+            (Some(generation), cancel),
+            move |(generation, mut cancel)| async move {
+                let mut generation = generation?;
                 loop {
+                    let socket = generation.socket.as_mut()?;
                     let frame = match guarded_io(idle_timeout, &mut cancel, async {
                         socket
                             .next()
                             .await
-                            .ok_or_else(interrupted)?
-                            .map_err(|_| interrupted())
+                            .ok_or_else(|| lost("stream ended"))?
+                            .map_err(read_failed)
                     })
                     .await
                     {
@@ -255,47 +410,39 @@ impl WebSocketConnection for ResponsesConnection {
                     };
                     match frame {
                         Message::Text(text) => {
-                            let terminal = serde_json::from_str::<serde_json::Value>(&text)
-                                .ok()
-                                .and_then(|v| {
-                                    v.get("type").and_then(|v| v.as_str()).map(str::to_owned)
-                                })
-                                .is_some_and(|kind| {
-                                    matches!(
-                                        kind.as_str(),
-                                        "response.completed"
-                                            | "response.incomplete"
-                                            | "response.failed"
-                                            | "error"
-                                    )
-                                });
+                            let terminal = matches!(
+                                event_type(&text).as_deref(),
+                                Some(
+                                    "response.completed"
+                                        | "response.incomplete"
+                                        | "response.failed"
+                                        | "error"
+                                )
+                            );
                             let next = if terminal {
-                                if let Some(slot) = slot.upgrade() {
-                                    *slot.lock().expect("socket") = Some(socket);
-                                }
+                                generation.finish();
                                 None
                             } else {
-                                Some(socket)
+                                Some(generation)
                             };
                             return Some((Ok(Bytes::from(text)), (next, cancel)));
                         }
                         Message::Ping(_) => {
-                            if let Err(error) = guarded_io(
-                                Some(idle_timeout.unwrap_or(Duration::from_secs(60))),
-                                &mut cancel,
-                                async { socket.flush().await.map_err(|_| interrupted()) },
-                            )
+                            if let Err(error) = guarded_io(Some(pong_limit), &mut cancel, async {
+                                socket.flush().await.map_err(lost)
+                            })
                             .await
                             {
                                 return Some((Err(error), (None, cancel)));
                             }
                         }
                         Message::Pong(_) => {}
+                        Message::Close(frame) => return Some((Err(closed(frame)), (None, cancel))),
                         _ => return Some((Err(interrupted()), (None, cancel))),
                     }
                 }
-            }
-        })
+            },
+        )
         .boxed();
         Ok(StreamResponse {
             status: 200,
@@ -305,16 +452,40 @@ impl WebSocketConnection for ResponsesConnection {
     }
     async fn close(&mut self) -> Result<(), LlmError> {
         let _ = self.cancel.send(true);
-        let socket = self.socket.lock().expect("socket").take();
+        let slot = std::mem::replace(&mut *self.socket.lock().expect("socket"), Slot::Closed);
         // Detach in-flight readers so they cannot return their socket to a closed session.
-        self.socket = Arc::new(Mutex::new(None));
-        if let Some(mut socket) = socket {
-            tokio::time::timeout(Duration::from_secs(5), socket.close(None))
-                .await
-                .map_err(|_| timeout())?
-                .map_err(|_| interrupted())?;
+        self.socket = Arc::new(Mutex::new(Slot::Closed));
+        if let Slot::Idle(reader) = slot {
+            if let Some(mut socket) = reader.resume().await {
+                tokio::time::timeout(Duration::from_secs(5), socket.close(None))
+                    .await
+                    .map_err(|_| timeout())?
+                    .map_err(|_| interrupted())?;
+            }
         }
         Ok(())
+    }
+    fn is_closed(&self) -> bool {
+        match &*self.socket.lock().expect("socket") {
+            Slot::Idle(reader) => {
+                reader.task.is_finished() || self.opened.elapsed() >= MAX_CONNECTION_AGE
+            }
+            Slot::Busy => false,
+            Slot::Closed => true,
+        }
+    }
+    fn is_busy(&self) -> bool {
+        matches!(&*self.socket.lock().expect("socket"), Slot::Busy)
+    }
+}
+
+impl Drop for ResponsesConnection {
+    fn drop(&mut self) {
+        if let Ok(slot) = self.socket.lock() {
+            if let Slot::Idle(reader) = &*slot {
+                reader.task.abort();
+            }
+        }
     }
 }
 
@@ -333,9 +504,16 @@ async fn guarded_io<T>(
             None => std::future::pending().await,
         }
     };
+    // Only close() cancels. Dropping the connection lets an in-flight
+    // generation finish on the socket it already owns.
+    let closed = async {
+        if cancel.wait_for(|closed| *closed).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
     tokio::select! {
         biased;
-        _ = cancel.changed() => Err(interrupted()),
+        () = closed => Err(interrupted()),
         _ = deadline => Err(timeout()),
         result = operation => result,
     }

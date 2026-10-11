@@ -7,8 +7,8 @@ use lingxi_llm_client::{
         Secret,
     },
     transport::WebSocketConnection,
-    Authenticator, HttpRequest, LlmClient, LlmClientBuilder, RequestMode, RequestOptions,
-    ResponsesSession, StreamResponse, Transport,
+    Authenticator, HttpRequest, LlmClient, LlmClientBuilder, RequestDraft, RequestMode,
+    RequestOptions, ResponsesSession, StreamResponse, Transport,
 };
 use serde_json::{json, Value};
 use std::sync::{
@@ -684,4 +684,177 @@ async fn http_fallback_uses_the_transport_selected_during_preparation() {
     received.collect().await.unwrap().finish().await;
     assert_eq!(selected.0.load(Ordering::SeqCst), 1);
     assert_eq!(default_transport.0.load(Ordering::SeqCst), 0);
+}
+
+struct AcceptAnyCredential;
+#[async_trait]
+impl Authenticator for AcceptAnyCredential {
+    async fn apply(
+        &self,
+        _: &mut HttpRequest,
+        _: &ProviderProfile,
+        _: Option<&Secret<String>>,
+    ) -> Result<(), LlmError> {
+        Ok(())
+    }
+}
+fn chatgpt_client(transport: Arc<dyn Transport>) -> LlmClient {
+    let mut profile = profile();
+    profile.auth = AuthStrategy::ChatGptOAuth;
+    let mut builder =
+        LlmClientBuilder::with_transport(transport, &[profile]).with_region(Region::International);
+    builder.register_authenticator(AuthStrategy::ChatGptOAuth, Arc::new(AcceptAnyCredential));
+    builder.build().unwrap()
+}
+fn generation_request() -> ChatRequest {
+    serde_json::from_value(json!({
+        "model":"test",
+        "messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],
+        "max_tokens":128,
+        "temperature":0.2
+    }))
+    .unwrap()
+}
+fn assert_chatgpt_generation_wire(frame: &Value) {
+    assert_eq!(frame["store"], false);
+    assert!(frame.get("temperature").is_none());
+    assert!(frame.get("max_output_tokens").is_none());
+    assert!(frame.get("instructions").is_some());
+}
+async fn dispatch_and_drain(session: &mut ResponsesSession, draft: RequestDraft) {
+    let mut stream = session
+        .dispatch(draft.seal().await.unwrap(), || Ok(()))
+        .await
+        .unwrap()
+        .into_stream()
+        .ok()
+        .unwrap();
+    while let Some(batch) = stream.next_batch().await {
+        for event in batch.events {
+            event.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_oauth_generation_policy_is_applied_before_the_session_prepares() {
+    let http = Arc::new(RecordingTransport::default());
+    let client = chatgpt_client(http.clone());
+    let options = options("account-a", "key-a");
+    let mut session = ResponsesSession::new();
+    run(&client, "primary", &generation_request(), &options, &mut session).await;
+    run(&client, "primary", &generation_request(), &options, &mut session).await;
+    assert_eq!(http.handshakes.lock().unwrap().len(), 1);
+    let sent = http.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    sent.iter().for_each(assert_chatgpt_generation_wire);
+    assert_eq!(sent[1]["previous_response_id"], "resp_1");
+}
+
+#[tokio::test]
+async fn host_rewriting_the_body_before_preparation_keeps_the_session_binding() {
+    let http = Arc::new(RecordingTransport::default());
+    let client = chatgpt_client(http.clone());
+    let options = options("account-a", "key-a");
+    let mut session = ResponsesSession::new();
+    for _ in 0..2 {
+        let mut draft = client
+            .prepare_draft_on(
+                "primary",
+                &generation_request(),
+                &options,
+                RequestMode::Stream,
+            )
+            .await
+            .unwrap();
+        // The host applies the route's body policy, reads the JSON, then writes
+        // it back before the session prepares the draft.
+        draft
+            .apply_request_body_auth_policy(AuthStrategy::ChatGptOAuth)
+            .unwrap();
+        let body = draft.semantic_body_json().unwrap();
+        draft.set_json_body(body, &Default::default()).unwrap();
+        session.prepare(&mut draft, false, false).await.unwrap();
+        dispatch_and_drain(&mut session, draft).await;
+    }
+    assert_eq!(http.handshakes.lock().unwrap().len(), 1);
+    let sent = http.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    sent.iter().for_each(assert_chatgpt_generation_wire);
+    assert_eq!(sent[1]["previous_response_id"], "resp_1");
+}
+
+#[tokio::test]
+async fn chatgpt_oauth_prewarm_applies_the_policy_and_keeps_the_binding() {
+    let http = Arc::new(RecordingTransport::default());
+    let client = chatgpt_client(http.clone());
+    let options = options("account-a", "key-a");
+    let mut session = ResponsesSession::new();
+    let mut warm = client
+        .prepare_draft_on(
+            "primary",
+            &generation_request(),
+            &options,
+            RequestMode::Stream,
+        )
+        .await
+        .unwrap();
+    session.prepare(&mut warm, true, false).await.unwrap();
+    dispatch_and_drain(&mut session, warm).await;
+    run(&client, "primary", &generation_request(), &options, &mut session).await;
+    let sent = http.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0]["generate"], false);
+    sent.iter().for_each(assert_chatgpt_generation_wire);
+}
+
+#[tokio::test]
+async fn chatgpt_oauth_http_fallback_keeps_the_session_binding() {
+    #[derive(Default)]
+    struct HttpFallback(Mutex<Vec<Value>>);
+    #[async_trait]
+    impl Transport for HttpFallback {
+        async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(&request.body).unwrap());
+            Ok(lingxi_llm_client::HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: br#"{"id":"r","output":[]}"#.as_slice().into(),
+            }
+            .into())
+        }
+        async fn connect_websocket(
+            &self,
+            _: HttpRequest,
+        ) -> Result<Box<dyn WebSocketConnection>, LlmError> {
+            Err(LlmError::Transport {
+                message: "426 Upgrade Required".into(),
+            })
+        }
+    }
+    let transport = Arc::new(HttpFallback::default());
+    let client = chatgpt_client(transport.clone());
+    let mut session = ResponsesSession::new();
+    let mut draft = client
+        .prepare_draft_on(
+            "primary",
+            &generation_request(),
+            &options("account", "key"),
+            RequestMode::Stream,
+        )
+        .await
+        .unwrap();
+    session.prepare(&mut draft, false, true).await.unwrap();
+    assert!(session.fallback_to_http());
+    let received = session
+        .dispatch(draft.seal().await.unwrap(), || Ok(()))
+        .await
+        .unwrap();
+    received.collect().await.unwrap().finish().await;
+    let sent = transport.0.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_chatgpt_generation_wire(&sent[0]);
 }
