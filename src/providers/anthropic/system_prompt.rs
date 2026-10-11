@@ -915,6 +915,25 @@ pub fn project_system_prompt(
     )
 }
 
+/// Native background classifier utility systems are already discrete blocks.
+/// Apply its cK/EF/cue cache policy without joining, prefixing, or classifying
+/// their text as a main conversation source vector.
+pub fn project_classifier_system_blocks(
+    blocks: &[SystemBlock],
+    profile: Option<&ProviderProfile>,
+    protocol: ProtocolFamily,
+    policy: CachePolicy,
+) -> Vec<EncodedSystemBlock> {
+    let native = matches!(protocol, ProtocolFamily::AnthropicMessages
+        | ProtocolFamily::VertexClaude | ProtocolFamily::BedrockClaude
+        | ProtocolFamily::FoundryClaude);
+    let ttl = resolve_prompt_cache_ttl(protocol, &policy, PromptCacheTtlEnvironment::from_process());
+    let scope = global_scope_enabled(profile, policy.gate()).then_some(CacheScope::Global);
+    blocks.iter().enumerate().map(|(index, block)| {
+        encoded_block(block.text.clone(), native.then_some(ttl), scope, index)
+    }).collect()
+}
+
 /// Default prompt-cache setting, using the same model-family environment gates
 /// as the host had before this provider conversion moved into the SDK.
 pub fn prompt_caching_enabled(model: &str, protocol: ProtocolFamily) -> bool {
@@ -1009,6 +1028,76 @@ pub fn apply_last_message_breakpoint(request: &mut ChatRequest, enabled: bool) {
         *existing = breakpoint;
     } else {
         request.prompt_cache.breakpoints.push(breakpoint);
+    }
+}
+
+/// Native optional fork-cache pin facts, resolved for the selected provider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ForkMessageCachePolicy {
+    /// Parent boundary after message normalization.
+    pub fork_point: Option<usize>,
+    /// `tengu_basalt_spur`, gated by Native `Th()`.
+    pub pin_parent: bool,
+    /// `tengu_basalt_scarp`, gated by Native `Th()`.
+    pub step_back: bool,
+}
+
+impl ForkMessageCachePolicy {
+    /// Native `Th()`: first-party, Anthropic AWS/Google, or Foundry, with
+    /// experimental betas enabled and no HIPAA taint. Endpoint global-scope
+    /// restrictions do not participate in this separate provider gate.
+    pub fn for_profile(
+        profile: &ProviderProfile,
+        gate: GatePolicy,
+        fork_point: Option<usize>,
+        basalt_spur: bool,
+        basalt_scarp: bool,
+    ) -> Self {
+        let eligible = !gate.experimental_betas_disabled && !gate.hipaa_tainted
+            && (matches!(profile.provider_id.as_str(), "anthropic" | "anthropicAws" | "anthropicGoogleCloud" | "foundry")
+                || profile.protocol == ProtocolFamily::FoundryClaude);
+        Self { fork_point, pin_parent: eligible && basalt_spur, step_back: eligible && basalt_scarp }
+    }
+}
+
+/// Native auxiliary-fork `skipCacheWrite` default marker selection.
+pub fn apply_skip_cache_write_breakpoint(request: &mut ChatRequest, enabled: bool) {
+    apply_fork_message_breakpoints(request, enabled, ForkMessageCachePolicy::default());
+}
+
+/// Native `vsn` skip-write branch, including its optional parent pin and
+/// step-back switch. The suggestion/denial tail is never newly cached. System
+/// and tool-array breakpoints are preserved.
+pub fn apply_fork_message_breakpoints(request: &mut ChatRequest, enabled: bool, policy: ForkMessageCachePolicy) {
+    request.prompt_cache.breakpoints.retain(|point| !matches!(point.position, CachePosition::Message { .. }));
+    if !enabled { return; }
+    let stampable = |message: &crate::protocol::ConversationMessage| {
+        if message.role == crate::protocol::MessageRole::System { return false; }
+        if message.role != crate::protocol::MessageRole::Assistant { return true; }
+        match message.content.last() {
+            Some(ContentBlock::Text { text, .. } | ContentBlock::TextJsUtf16 { text, .. }) => !text.is_empty(),
+            Some(ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }) | None => false,
+            _ => true,
+        }
+    };
+    let previous = |before: usize| request.messages.iter().enumerate().take(before).rev()
+        .find(|(_, message)| stampable(message)).map(|(index, _)| index);
+    let Some(last) = previous(request.messages.len()) else { return; };
+    let Some(tail) = previous(last) else { return; };
+    let mut indices = vec![tail];
+    if policy.pin_parent && request.prompt_cache.automatic.is_none() {
+        if let Some(parent) = policy.fork_point.filter(|parent| *parent <= tail) {
+            let pin = if parent == tail && policy.step_back { previous(parent) }
+                else if request.messages.get(parent).is_some_and(stampable) { Some(parent) }
+                else { previous(parent) };
+            if let Some(pin) = pin.filter(|pin| *pin != tail) { indices.push(pin); }
+        }
+    }
+    for index in indices {
+        let Some(block) = request.messages[index].content.len().checked_sub(1) else { continue; };
+        request.prompt_cache.breakpoints.push(CacheBreakpoint {
+            position: CachePosition::Message { index, block }, scope: None, ttl: CacheTtl::FiveMinutes,
+        });
     }
 }
 
@@ -1221,6 +1310,21 @@ fn encoded_block(
         block: SystemBlock { text },
         cache_breakpoint,
     }
+}
+
+/// Native classifier model selection uses URL.host, including non-default
+/// ports, unless the explicit first-party endpoint override is enabled.
+pub fn classifier_native_base_url(value: &str) -> bool {
+    official_anthropic_base_url_with_override(
+        value, env_truthy("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"),
+    )
+}
+
+/// Native wks key shape, applied only to a captured API-key credential. The
+/// caller owns source selection and excludes managed-login credentials.
+pub fn classifier_native_api_key(value: &str) -> bool {
+    !std::env::var("ANTHROPIC_AUTH_TOKEN").ok().is_some_and(|token| !token.is_empty())
+        && value.starts_with("sk-ant-api")
 }
 
 fn official_anthropic_base_url_with_override(value: &str, assume_first_party: bool) -> bool {

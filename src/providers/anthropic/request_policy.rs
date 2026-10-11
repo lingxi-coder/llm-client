@@ -190,6 +190,10 @@ impl AnthropicContextManagement {
 #[derive(Debug, Clone, Default)]
 pub struct AnthropicRequestPolicy {
     pub request_kind: AnthropicRequestKind,
+    /// Preserve an explicitly empty parent tool prefix for cache-safe forks.
+    pub explicit_empty_tools: bool,
+    /// Preserve utility callers that supplied plain string message content.
+    pub plain_text_message_content: bool,
     pub extra_body: Map<String, Value>,
     pub body_betas: Vec<String>,
     pub effort: Option<AnthropicEffortPolicy>,
@@ -310,6 +314,28 @@ impl AnthropicRequestPolicy {
         url: &mut String,
     ) -> Result<(), LlmError> {
         self.extra_body = sanitize_extra_body(self.extra_body)?;
+        if self.explicit_empty_tools {
+            if let Some(object) = body.as_object_mut() {
+                object.entry("tools").or_insert_with(|| Value::Array(Vec::new()));
+            }
+        }
+        if self.plain_text_message_content {
+            if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+                for (index, message) in messages.iter_mut().enumerate() {
+                    let text = message.get("content").and_then(Value::as_array)
+                        .filter(|blocks| blocks.len() == 1)
+                        .and_then(|blocks| blocks[0].as_object())
+                        .filter(|block| block.len() == 2 && block.get("type").and_then(Value::as_str) == Some("text"))
+                        .and_then(|block| block.get("text")).and_then(Value::as_str).map(str::to_owned);
+                    if let Some(text) = text {
+                        message["content"] = Value::String(text);
+                        if let Some(units) = string_overrides.remove(&format!("/messages/{index}/content/0/text")) {
+                            string_overrides.insert(format!("/messages/{index}/content"), units);
+                        }
+                    }
+                }
+            }
+        }
         let context_beta = "context-management-2025-06-27";
         let context_admitted = headers
             .iter()
