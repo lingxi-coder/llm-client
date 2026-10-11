@@ -959,10 +959,19 @@ pub fn apply_last_message_breakpoint(request: &mut ChatRequest, enabled: bool) {
     if !enabled {
         return;
     }
-    let Some(message_index) = request.messages.len().checked_sub(1) else {
+    // Native's per-turn effort projection can append an API System row after
+    // the user input. That row carries request configuration, not a cacheable
+    // conversation block, so select the last non-System message.
+    let Some((message_index, message)) = request
+        .messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, message)| message.role != crate::protocol::MessageRole::System)
+    else {
         return;
     };
-    let Some(block_index) = request.messages[message_index]
+    let Some(block_index) = message
         .content
         .iter()
         .enumerate()
@@ -978,7 +987,7 @@ pub fn apply_last_message_breakpoint(request: &mut ChatRequest, enabled: bool) {
         return;
     };
     if !matches!(
-        &request.messages[message_index].content[block_index],
+        &message.content[block_index],
         ContentBlock::Text { .. }
             | ContentBlock::TextJsUtf16 { .. }
             | ContentBlock::ToolResult { .. }
@@ -1262,6 +1271,33 @@ mod tests {
     use std::sync::Mutex;
 
     static GATE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn last_content_breakpoint_skips_a_trailing_api_system_row() {
+        use crate::protocol::{CachePosition, ChatRequest, ConversationMessage};
+
+        let mut request = ChatRequest::new("claude-sonnet-5-5");
+        request
+            .messages
+            .push(ConversationMessage::user_text("current user input"));
+        request.messages.push(ConversationMessage {
+            role: crate::protocol::MessageRole::System,
+            content: Vec::new(),
+            native_options: Vec::new(),
+        });
+
+        apply_last_message_breakpoint(&mut request, true);
+
+        assert_eq!(request.prompt_cache.breakpoints.len(), 1);
+        assert_eq!(
+            request.prompt_cache.breakpoints[0].position,
+            CachePosition::Message { index: 0, block: 0 }
+        );
+        assert_eq!(
+            request.prompt_cache.breakpoints[0].ttl,
+            CacheTtl::FiveMinutes
+        );
+    }
 
     struct GateEnvRestore {
         anthropic_base_url: Option<String>,
