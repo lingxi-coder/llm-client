@@ -1,0 +1,242 @@
+{
+  "version": "2.1.287",
+  "native_sha256": "6eab8333fe2121553100d8f40bfada384a3e989b94f947e18ba6677a6fcb41ea",
+  "sourceByteRanges": [
+    {
+      "label": "actual status GET",
+      "start": 180881810,
+      "end": 180882080,
+      "sha256": "3c6b93b88396bc989ab192e0668df672403b66ef32a08362b399efc24aeae2db"
+    },
+    {
+      "label": "actual disabled-reason normalization",
+      "start": 180881161,
+      "end": 180881322,
+      "sha256": "629b86133fba09374607ddaccfa4e112a5712382216d590e84c4215c546a2845"
+    }
+  ],
+  "scope": "Actual ox GET options and nx reason normalization. Supplied OAuth beta constant and UA, intercepted Axios get; Axios implicit headers, auth eligibility, refresh, startup and live transport excluded.",
+  "cases": [
+    {
+      "input": {
+        "oauth": false,
+        "enabled": true
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "x-api-key": "test-key"
+        },
+        "timeout": 10000,
+        "enabled": true,
+        "disabled_reason": null
+      }
+    },
+    {
+      "input": {
+        "oauth": false,
+        "enabled": false
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "x-api-key": "test-key"
+        },
+        "timeout": 10000,
+        "enabled": false,
+        "disabled_reason": "unknown"
+      }
+    },
+    {
+      "input": {
+        "oauth": false,
+        "enabled": "false"
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "x-api-key": "test-key"
+        },
+        "timeout": 10000,
+        "enabled": true,
+        "disabled_reason": null
+      }
+    },
+    {
+      "input": {
+        "oauth": false,
+        "enabled": 0
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "x-api-key": "test-key"
+        },
+        "timeout": 10000,
+        "enabled": false,
+        "disabled_reason": "unknown"
+      }
+    },
+    {
+      "input": {
+        "oauth": false,
+        "enabled": []
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "x-api-key": "test-key"
+        },
+        "timeout": 10000,
+        "enabled": true,
+        "disabled_reason": null
+      }
+    },
+    {
+      "input": {
+        "oauth": true,
+        "enabled": true
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "Authorization": "Bearer test-oauth",
+          "anthropic-beta": "oauth-2025-04-20"
+        },
+        "timeout": 10000,
+        "enabled": true,
+        "disabled_reason": null
+      }
+    },
+    {
+      "input": {
+        "oauth": true,
+        "enabled": false
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "Authorization": "Bearer test-oauth",
+          "anthropic-beta": "oauth-2025-04-20"
+        },
+        "timeout": 10000,
+        "enabled": false,
+        "disabled_reason": "unknown"
+      }
+    },
+    {
+      "input": {
+        "oauth": true,
+        "enabled": "false"
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "Authorization": "Bearer test-oauth",
+          "anthropic-beta": "oauth-2025-04-20"
+        },
+        "timeout": 10000,
+        "enabled": true,
+        "disabled_reason": null
+      }
+    },
+    {
+      "input": {
+        "oauth": true,
+        "enabled": 0
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "Authorization": "Bearer test-oauth",
+          "anthropic-beta": "oauth-2025-04-20"
+        },
+        "timeout": 10000,
+        "enabled": false,
+        "disabled_reason": "unknown"
+      }
+    },
+    {
+      "input": {
+        "oauth": true,
+        "enabled": []
+      },
+      "expected": {
+        "method": "GET",
+        "url": "https://api.anthropic.com/api/claude_code_penguin_mode",
+        "headers": {
+          "User-Agent": "test-agent",
+          "Authorization": "Bearer test-oauth",
+          "anthropic-beta": "oauth-2025-04-20"
+        },
+        "timeout": 10000,
+        "enabled": true,
+        "disabled_reason": null
+      }
+    }
+  ],
+  "reasons": [
+    {
+      "input": null,
+      "expected": "preference"
+    },
+    {
+      "input": "free",
+      "expected": "free"
+    },
+    {
+      "input": "preference",
+      "expected": "preference"
+    },
+    {
+      "input": "extra_usage_disabled",
+      "expected": "extra_usage_disabled"
+    },
+    {
+      "input": "network_error",
+      "expected": "network_error"
+    },
+    {
+      "input": "unknown",
+      "expected": "unknown"
+    },
+    {
+      "input": "",
+      "expected": "unknown"
+    },
+    {
+      "input": false,
+      "expected": "unknown"
+    },
+    {
+      "input": 7,
+      "expected": "unknown"
+    },
+    {
+      "input": {},
+      "expected": "unknown"
+    },
+    {
+      "input": [],
+      "expected": "unknown"
+    }
+  ]
+}

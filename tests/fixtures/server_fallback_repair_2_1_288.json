@@ -1,0 +1,1693 @@
+{
+  "version": "2.1.288",
+  "native_sha256": "bbe93063f7a0879a1021b2891e5c9354e5b3b98433e32efe6750f7710afed750",
+  "sourceByteRanges": [
+    {
+      "label": "native APIError construction, status factory, and error message",
+      "start": 178900549,
+      "end": 178901435,
+      "sha256": "531a21ec593b29b07fe7760c39e800c88559611aedebef98436456455c4bd0f7"
+    },
+    {
+      "label": "native BadRequestError subclass of APIError",
+      "start": 178901857,
+      "end": 178901879,
+      "sha256": "b974d129fc8999d4f4da5ff1c945690bedba8cac1fbc5836e4297599b835423d"
+    },
+    {
+      "label": "native June and July server fallback beta identities",
+      "start": 180412293,
+      "end": 180412427,
+      "sha256": "7a05e163addfd3cd4cfa4e5131c8f0810c816943ff6c62b5751a54c16134f4b3"
+    },
+    {
+      "label": "native bMe error classifier",
+      "start": 187970437,
+      "end": 187971636,
+      "sha256": "4652cfb0f86838c85d09e2ee2ebb003df5f804cd4591b4881f4ddcafcb9e71d7"
+    },
+    {
+      "label": "native fallback parameter gate and a1 assignment",
+      "start": 189013001,
+      "end": 189013212,
+      "sha256": "2cd0ccdcf42b7e5a526995793d844f8e9e5deed98a418fefb94ff30a4757116a"
+    },
+    {
+      "label": "native query-local fallback parameter and one-shot initialization",
+      "start": 189006496,
+      "end": 189006525,
+      "sha256": "a1d4618f4029f9eb0409c236efdc3f0a5a90018379a7364604d6be62b958e718"
+    },
+    {
+      "label": "native shared server fallback HTTP repair handler",
+      "start": 189017970,
+      "end": 189020042,
+      "sha256": "5e019db0e2ced717f5c9cc88376fe2c29812722d9a9a20f9692dcde714e15dbc"
+    },
+    {
+      "label": "native final request body spread order",
+      "start": 189014549,
+      "end": 189015218,
+      "sha256": "24c56def312bd2ca24e9c2a8d300dcb5e82955461b3835f612144e0db36480c2"
+    }
+  ],
+  "scope": "Actual extracted APIError/BadRequestError, bMe, a1 transport gate, and shared r3e executed in a VM. This covers classifier and retry guard semantics; provider wrapper transport was separately checked with localhost mocks. No live provider or signed cloud request.",
+  "cases": [
+    {
+      "status": 400,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "category_beta_header",
+        "retry": "retry:server-fallback-category-strip",
+        "retired": [
+          "server-side-fallback-2026-07-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "category_beta_header",
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 400,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "category_beta_header",
+        "retry": "retry:server-fallback-category-strip",
+        "retired": [
+          "server-side-fallback-2026-07-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "category_beta_header",
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "default_unconfigured",
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 400,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "default_unconfigured",
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 400,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "default_unconfigured",
+        "retry": "retry:server-fallback-category-strip",
+        "retired": [
+          "server-side-fallback-2026-07-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "default_unconfigured",
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "beta_header",
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "beta_header",
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "beta_header",
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": "beta_header",
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 400,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 400,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": null,
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01",
+          "server-side-fallback-2026-07-01"
+        ]
+      }
+    },
+    {
+      "status": 400,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "Xvt",
+        "isApiError": true,
+        "cause": null,
+        "retry": "retry:server-fallback-strip",
+        "retired": [
+          "server-side-fallback-2026-06-01",
+          "server-side-fallback-2026-07-01"
+        ]
+      }
+    },
+    {
+      "status": 401,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 401,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 403,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "category_beta_header",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "Invalid beta header `server-side-fallback-2026-07-01` for anthropic-beta"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "generic_beta_header_precedes_default_unconfigured",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "`server-side-fallback-2026-06-01` anthropic-beta has no default fallback configuration"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": false,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": false,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    },
+    {
+      "status": 500,
+      "name": "ordinary_400",
+      "error_body": {
+        "type": "error",
+        "error": {
+          "type": "invalid_request_error",
+          "message": "fixture rejection"
+        }
+      },
+      "fallback_parameter_added": true,
+      "repair_already_attempted": true,
+      "actual": {
+        "className": "xt",
+        "isApiError": true,
+        "cause": null,
+        "retry": null,
+        "retired": []
+      }
+    }
+  ],
+  "a1Cases": [
+    {
+      "Tu": false,
+      "sent": [],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-06-01"
+      ],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-06-01",
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [],
+      "fallback": "default",
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-06-01"
+      ],
+      "fallback": "default",
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": "default",
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-06-01",
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": "default",
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-06-01"
+      ],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": false,
+      "sent": [
+        "server-side-fallback-2026-06-01",
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-06-01"
+      ],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-06-01",
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": null,
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [],
+      "fallback": "default",
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-06-01"
+      ],
+      "fallback": "default",
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": "default",
+      "actual": {
+        "present": true,
+        "mode": "default",
+        "parameter": {
+          "fallbacks": "default"
+        }
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-06-01",
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": "default",
+      "actual": {
+        "present": true,
+        "mode": "default",
+        "parameter": {
+          "fallbacks": "default"
+        }
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-06-01"
+      ],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": true,
+        "mode": "explicit",
+        "parameter": {
+          "fallbacks": [
+            {
+              "model": "fallback-model"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": false,
+        "mode": "none",
+        "parameter": {}
+      }
+    },
+    {
+      "Tu": true,
+      "sent": [
+        "server-side-fallback-2026-06-01",
+        "server-side-fallback-2026-07-01"
+      ],
+      "fallback": [
+        {
+          "model": "fallback-model"
+        }
+      ],
+      "actual": {
+        "present": true,
+        "mode": "explicit",
+        "parameter": {
+          "fallbacks": [
+            {
+              "model": "fallback-model"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
