@@ -1,5 +1,7 @@
 //! Shared HTTP upgrade path: HTTP, Responses and realtime use the same TLS/proxy policy.
-use super::{HttpRequest, HttpTransport, StreamResponse, WebSocketConnection};
+use super::{
+    HttpRequest, HttpTransport, StreamResponse, WebSocketConnection, WEBSOCKET_CONNECTION_LOST,
+};
 use crate::protocol::LlmError;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -12,7 +14,7 @@ use tokio_tungstenite::{
     tungstenite::{
         client::IntoClientRequest,
         handshake::derive_accept_key,
-        protocol::{Role, WebSocketConfig},
+        protocol::{frame::coding::CloseCode, CloseFrame, Role, WebSocketConfig},
         Message,
     },
     WebSocketStream,
@@ -24,10 +26,51 @@ fn invalid() -> LlmError {
         message: "invalid WebSocket handshake".into(),
     }
 }
+/// The session closed the connection under a generation on purpose, or the
+/// peer sent a frame no Responses stream carries. A retry cannot help.
 fn interrupted() -> LlmError {
     LlmError::StreamInterrupted {
         message: "WebSocket stream interrupted".into(),
     }
+}
+/// The peer or network dropped the connection. Like a cut HTTP body this is
+/// a transport failure the caller may retry, and Codex retries it too. The
+/// cause stays in the message so a drop can be told apart in the logs.
+fn lost(cause: impl std::fmt::Display) -> LlmError {
+    LlmError::Transport {
+        message: format!("{WEBSOCKET_CONNECTION_LOST}: {cause}"),
+    }
+}
+/// A message over the frame limit is not a dropped connection: the same
+/// response overflows again, so retrying would only pay for it twice.
+fn read_failed(error: tokio_tungstenite::tungstenite::Error) -> LlmError {
+    match error {
+        tokio_tungstenite::tungstenite::Error::Capacity(_) => LlmError::StreamInterrupted {
+            message: "WebSocket message exceeds the frame limit".into(),
+        },
+        error => lost(error),
+    }
+}
+/// A server close ends the connection the way a drop does, except 1009: the
+/// request itself was too big (RFC 6455), and sending it again cannot help.
+fn closed(frame: Option<CloseFrame<'_>>) -> LlmError {
+    let Some(frame) = frame else {
+        return lost("closed by server");
+    };
+    let reason = if frame.reason.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", frame.reason)
+    };
+    if frame.code == CloseCode::Size {
+        return LlmError::RequestTooLarge {
+            message: format!("WebSocket closed by server with code 1009{reason}"),
+        };
+    }
+    lost(format_args!(
+        "closed by server with code {}{reason}",
+        frame.code
+    ))
 }
 fn timeout() -> LlmError {
     LlmError::TransportTimeout {
@@ -332,13 +375,16 @@ impl WebSocketConnection for ResponsesConnection {
             pong_limit,
             returned: false,
         };
-        let socket = generation
-            .socket
-            .insert(reader.resume().await.ok_or_else(interrupted)?);
+        let socket = generation.socket.insert(
+            reader
+                .resume()
+                .await
+                .ok_or_else(|| lost("closed while idle"))?,
+        );
         tokio::time::timeout(pong_limit, socket.send(Message::Text(text)))
             .await
             .map_err(|_| timeout())?
-            .map_err(|_| interrupted())?;
+            .map_err(lost)?;
         let cancel = self.cancel.subscribe();
         let idle_timeout = self.idle_timeout;
         let body = futures::stream::unfold(
@@ -351,8 +397,8 @@ impl WebSocketConnection for ResponsesConnection {
                         socket
                             .next()
                             .await
-                            .ok_or_else(interrupted)?
-                            .map_err(|_| interrupted())
+                            .ok_or_else(|| lost("stream ended"))?
+                            .map_err(read_failed)
                     })
                     .await
                     {
@@ -380,7 +426,7 @@ impl WebSocketConnection for ResponsesConnection {
                         }
                         Message::Ping(_) => {
                             if let Err(error) = guarded_io(Some(pong_limit), &mut cancel, async {
-                                socket.flush().await.map_err(|_| interrupted())
+                                socket.flush().await.map_err(lost)
                             })
                             .await
                             {
@@ -388,6 +434,7 @@ impl WebSocketConnection for ResponsesConnection {
                             }
                         }
                         Message::Pong(_) => {}
+                        Message::Close(frame) => return Some((Err(closed(frame)), (None, cancel))),
                         _ => return Some((Err(interrupted()), (None, cancel))),
                     }
                 }

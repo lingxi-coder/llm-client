@@ -201,6 +201,11 @@ pub trait Transport: Send + Sync + 'static {
     }
 }
 
+/// Message prefix of the transport error for a Responses WebSocket that the
+/// peer or network closed under a generation. The server does this now and
+/// then, so the caller retries the request on a new connection, as Codex does.
+pub const WEBSOCKET_CONNECTION_LOST: &str = "WebSocket connection lost";
+
 /// One reusable connection. Each body item is one complete JSON text message.
 /// Implementations must not reconnect or resend a generation automatically.
 #[async_trait]
