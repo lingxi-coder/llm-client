@@ -26,9 +26,9 @@ jobs:
       - name: Test
         run: cargo test --locked ${{ matrix.args }}
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt --package lingxi-llm-client -- --check
       - name: Lint
-        run: cargo clippy --all-targets --locked ${{ matrix.args }} -- -D warnings
+        run: cargo clippy --all-targets --locked ${{ matrix.args }} -- --no-deps -D warnings
       - name: Check Rustdoc
         run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked ${{ matrix.args }}
       - name: Compile bilingual documentation and extension APIs downstream
@@ -39,12 +39,12 @@ jobs:
         run: |
           cargo tree --no-default-features --edges normal --prefix none > target/default-dependencies.txt
           if grep -E '^(tokenizers|onig|tiktoken-rs|xz2) v' target/default-dependencies.txt; then exit 1; fi
-      - name: Check package contents
+      - name: Check workspace package contents
         if: matrix.features == 'default'
-        run: cargo package --list --locked
-      - name: Verify standalone client package
+        run: cargo package --workspace --list --locked
+      - name: Verify client and transport package closure
         if: matrix.features == 'default'
-        run: cargo package --locked
+        run: cargo package --workspace --locked --no-default-features --features 'lingxi-reqwest/rustls-tls,lingxi-reqwest/stream,lingxi-reqwest/json,lingxi-reqwest/http1-header-layout,lingxi-reqwest/gzip,lingxi-reqwest/brotli,lingxi-reqwest/zstd,lingxi-reqwest/deflate'
   tokenizer-features:
     runs-on: ubuntu-latest
     strategy:

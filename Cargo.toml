@@ -9,6 +9,16 @@ repository = "https://github.com/lingxi-coder/llm-client"
 readme = "README.md"
 exclude = [".omx/**"]
 
+[workspace]
+members = [
+    "vendor/lingxi-hyper",
+    "vendor/lingxi-hyper-util",
+    "vendor/lingxi-hyper-rustls",
+    "vendor/lingxi-reqwest",
+]
+default-members = ["."]
+resolver = "2"
+
 [features]
 default = []
 responses-websocket = ["dep:tokio-tungstenite", "tokio/sync", "tokio/macros"]

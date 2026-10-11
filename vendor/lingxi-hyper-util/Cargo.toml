@@ -25,6 +25,7 @@ description = "hyper utilities"
 homepage = "https://hyper.rs"
 documentation = "https://docs.rs/hyper-util"
 readme = "README.md"
+exclude = ["Cargo.toml.orig"]
 keywords = [
     "http",
     "hyper",

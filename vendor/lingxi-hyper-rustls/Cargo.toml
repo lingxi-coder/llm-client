@@ -24,6 +24,7 @@ description = "Rustls+hyper integration for pure rust HTTPS"
 homepage = "https://github.com/rustls/hyper-rustls"
 documentation = "https://docs.rs/hyper-rustls/"
 readme = "README.md"
+exclude = ["Cargo.toml.orig"]
 license = "Apache-2.0 OR ISC OR MIT"
 repository = "https://github.com/rustls/hyper-rustls"
 
