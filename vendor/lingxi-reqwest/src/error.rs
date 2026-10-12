@@ -137,6 +137,28 @@ impl Error {
         false
     }
 
+    /// Return a CONNECT response only when the proxy tunnel parser retained
+    /// its typed status line. This never infers an HTTP status from text.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn proxy_tunnel_response(&self) -> Option<(u16, Option<Vec<u8>>)> {
+        let mut source = self.source();
+        while let Some(error) = source {
+            if let Some(tunnel) =
+                error.downcast_ref::<hyper_util::client::legacy::connect::proxy::TunnelError>()
+            {
+                if let hyper_util::client::legacy::connect::proxy::TunnelError::ProxyAuthRequired {
+                    status,
+                    proxy_authenticate,
+                } = tunnel
+                {
+                    return Some((*status, proxy_authenticate.clone()));
+                }
+            }
+            source = error.source();
+        }
+        None
+    }
+
     /// Returns true if the error is related to the request
     pub fn is_request(&self) -> bool {
         matches!(self.inner.kind, Kind::Request)

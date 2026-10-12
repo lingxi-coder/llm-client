@@ -910,13 +910,26 @@ impl<'client> RequestExecutor<'client> {
             )
             .map_err(|error| AttemptFailure::new(error, None, files.clone()))?;
         }
-        let response = HttpExecutor::new(self.http.as_ref())
-            .with_deadline(crate::runtime::Deadline::at(deadline))
-            .send_with_dispatch_report(http)
-            .await
-            .map_err(|(error, attempted)| {
-                AttemptFailure::transport(error, files.clone(), attempted)
-            })?;
+        let http_executor = HttpExecutor::new(self.http.as_ref())
+            .with_deadline(crate::runtime::Deadline::at(deadline));
+        let (response, proxy_auth_helper_challenge) =
+            if super::options::uses_native_proxy_route(attempt.profile) {
+                let response = http_executor
+                    .send_native_proxy_with_dispatch_report(http)
+                    .await
+                    .map_err(|(error, attempted)| {
+                        AttemptFailure::transport(error, files.clone(), attempted)
+                    })?;
+                (response.response, response.proxy_auth_helper_challenge)
+            } else {
+                let response = http_executor
+                    .send_with_dispatch_report(http)
+                    .await
+                    .map_err(|(error, attempted)| {
+                        AttemptFailure::transport(error, files.clone(), attempted)
+                    })?;
+                (response, None)
+            };
         if !(200..300).contains(&response.status) {
             let response = HttpResponse {
                 status: response.status,
@@ -930,6 +943,10 @@ impl<'client> RequestExecutor<'client> {
                     message: format!("request failed with HTTP {}", response.status),
                 })
                 .with_native_anthropic_request_authority(request_authority.clone());
+            let error = match proxy_auth_helper_challenge {
+                Some(challenge) => error.with_proxy_auth_helper_challenge(challenge),
+                None => error,
+            };
             return Err(AttemptFailure::new(error, Some(response), files));
         }
         if mode == RequestMode::Stream {

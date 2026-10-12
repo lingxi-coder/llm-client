@@ -28,14 +28,27 @@ enum Headers {
     Extra(HeaderMap),
 }
 
+/// Failure while opening an HTTP CONNECT proxy tunnel.
 #[derive(Debug)]
 pub enum TunnelError {
+    /// The underlying connector failed before or while establishing the proxy connection.
     ConnectFailed(Box<dyn StdError + Send + Sync>),
+    /// I/O failed while writing the CONNECT request or reading its response.
     Io(std::io::Error),
+    /// The destination URI did not contain a host.
     MissingHost,
-    ProxyAuthRequired,
+    /// The proxy returned HTTP 407 and its typed challenge fields.
+    ProxyAuthRequired {
+        /// Status code parsed from the proxy's CONNECT response.
+        status: u16,
+        /// Raw `Proxy-Authenticate` header bytes, when present.
+        proxy_authenticate: Option<Vec<u8>>,
+    },
+    /// The proxy response headers exceeded the parser's fixed buffer.
     ProxyHeadersTooLong,
+    /// The proxy closed the connection before completing its response headers.
     TunnelUnexpectedEof,
+    /// The proxy returned a response other than HTTP 200 or HTTP 407.
     TunnelUnsuccessful,
 }
 
@@ -214,20 +227,79 @@ where
         pos += n;
 
         let recvd = &buf[..pos];
-        if recvd.starts_with(b"HTTP/1.1 200") || recvd.starts_with(b"HTTP/1.0 200") {
-            if recvd.ends_with(b"\r\n\r\n") {
-                return Ok(conn);
-            }
+        let Some(header_end) = recvd.windows(4).position(|window| window == b"\r\n\r\n") else {
             if pos == buf.len() {
                 return Err(TunnelError::ProxyHeadersTooLong);
             }
-        // else read more
-        } else if recvd.starts_with(b"HTTP/1.1 407") {
-            return Err(TunnelError::ProxyAuthRequired);
-        } else {
+            continue;
+        };
+        let header_block = &recvd[..header_end + 2];
+        let Some(status) = parse_status_code(header_block) else {
             return Err(TunnelError::TunnelUnsuccessful);
+        };
+        if status == 200 {
+            return Ok(conn);
+        }
+        if status == 407 {
+            return Err(TunnelError::ProxyAuthRequired {
+                status,
+                proxy_authenticate: proxy_authenticate(header_block),
+            });
+        }
+        return Err(TunnelError::TunnelUnsuccessful);
+    }
+}
+
+fn parse_status_code(header_block: &[u8]) -> Option<u16> {
+    let line_end = header_block
+        .windows(2)
+        .position(|window| window == b"\r\n")?;
+    let status_line = std::str::from_utf8(&header_block[..line_end]).ok()?;
+    let mut fields = status_line.split_ascii_whitespace();
+    let version = fields.next()?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
+        return None;
+    }
+    fields.next()?.parse().ok()
+}
+
+fn proxy_authenticate(header_block: &[u8]) -> Option<Vec<u8>> {
+    let line_end = header_block
+        .windows(2)
+        .position(|window| window == b"\r\n")?;
+    let mut combined: Option<Vec<u8>> = None;
+    for line in header_block[line_end + 2..].split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+            continue;
+        };
+        if !std::str::from_utf8(&line[..colon])
+            .ok()?
+            .eq_ignore_ascii_case("proxy-authenticate")
+        {
+            continue;
+        }
+        let mut value = &line[colon + 1..];
+        while value
+            .first()
+            .is_some_and(|byte| *byte == b' ' || *byte == b'\t')
+        {
+            value = &value[1..];
+        }
+        while value
+            .last()
+            .is_some_and(|byte| *byte == b' ' || *byte == b'\t')
+        {
+            value = &value[..value.len() - 1];
+        }
+        if let Some(combined) = &mut combined {
+            combined.extend_from_slice(b", ");
+            combined.extend_from_slice(value);
+        } else {
+            combined = Some(value.to_vec());
         }
     }
+    combined
 }
 
 impl std::fmt::Display for TunnelError {
@@ -236,7 +308,7 @@ impl std::fmt::Display for TunnelError {
 
         f.write_str(match self {
             TunnelError::MissingHost => "missing destination host",
-            TunnelError::ProxyAuthRequired => "proxy authorization required",
+            TunnelError::ProxyAuthRequired { .. } => "proxy authorization required",
             TunnelError::ProxyHeadersTooLong => "proxy response headers too long",
             TunnelError::TunnelUnexpectedEof => "unexpected end of file",
             TunnelError::TunnelUnsuccessful => "unsuccessful",
@@ -253,5 +325,36 @@ impl std::error::Error for TunnelError {
             TunnelError::ConnectFailed(ref e) => Some(&**e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_status_code, proxy_authenticate};
+
+    #[test]
+    fn typed_407_keeps_the_proxy_challenge_header_bytes() {
+        let response = b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"edge\"\x80\r\nProxy-Authenticate: Bearer\r\nContent-Length: 0\r\n\r\n";
+        let block_end = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap();
+        let block = &response[..block_end + 2];
+        assert_eq!(parse_status_code(block), Some(407));
+        assert_eq!(
+            proxy_authenticate(block),
+            Some(b"Basic realm=\"edge\"\x80, Bearer".to_vec())
+        );
+    }
+
+    #[test]
+    fn tunnel_parser_retains_the_actual_status_code() {
+        let response = b"HTTP/1.1 403 Forbidden\r\nProxy-Authenticate: Basic\r\n\r\n";
+        let block_end = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap();
+        let block = &response[..block_end + 2];
+        assert_eq!(parse_status_code(block), Some(403));
     }
 }

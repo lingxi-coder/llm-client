@@ -793,7 +793,7 @@ impl ConnectorService {
 
         let proxy_dst = proxy.uri().clone();
         #[cfg(feature = "__tls")]
-        let auth = proxy.basic_auth().cloned();
+        let auth = proxy.basic_auth();
 
         #[cfg(feature = "__tls")]
         let misc = proxy.custom_headers().clone();

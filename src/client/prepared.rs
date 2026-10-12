@@ -680,6 +680,7 @@ impl PreparedCall {
         Ok(ReceivedCall {
             call: self,
             response,
+            proxy_auth_helper_challenge: None,
         })
     }
     /// Capture prices before dispatch for cancellation-safe host accounting.
@@ -747,13 +748,21 @@ impl PreparedCall {
                 crate::providers::response_headers::NativeRequestIdStage::FetchFallback,
             )?;
         }
-        let response = HttpExecutor::new(transport)
-            .with_deadline(crate::runtime::Deadline::at(self.deadline))
-            .send(self.prepared.http.clone())
-            .await?;
+        let http_executor =
+            HttpExecutor::new(transport).with_deadline(crate::runtime::Deadline::at(self.deadline));
+        let (response, proxy_auth_helper_challenge) =
+            if super::options::uses_native_proxy_route(&self.profile) {
+                let response = http_executor
+                    .send_native_proxy_request(self.prepared.http.clone())
+                    .await?;
+                (response.response, response.proxy_auth_helper_challenge)
+            } else {
+                (http_executor.send(self.prepared.http.clone()).await?, None)
+            };
         Ok(ReceivedCall {
             call: self,
             response,
+            proxy_auth_helper_challenge,
         })
     }
 }
@@ -763,8 +772,18 @@ impl PreparedCall {
 pub struct ReceivedCall {
     call: PreparedCall,
     response: StreamResponse,
+    proxy_auth_helper_challenge: Option<crate::protocol::ProxyAuthHelperChallenge>,
 }
 impl ReceivedCall {
+    /// A configured Native proxy-auth helper handled a real HTTP 407 before
+    /// this response arrived. The payload itself remains unmodified.
+    #[must_use]
+    pub fn proxy_auth_helper_challenge(
+        &self,
+    ) -> Option<&crate::protocol::ProxyAuthHelperChallenge> {
+        self.proxy_auth_helper_challenge.as_ref()
+    }
+
     /// Client ID associated with the outgoing request after both SDK stages.
     pub fn client_request_id(&self) -> Option<&str> {
         self.call.client_request_id()
@@ -812,6 +831,7 @@ impl ReceivedCall {
             response,
             usage,
             inference,
+            proxy_auth_helper_challenge: self.proxy_auth_helper_challenge,
         })
     }
 
@@ -859,8 +879,17 @@ pub struct CollectedResponse {
     response: HttpResponse,
     usage: UsageReport,
     inference: InferenceReport,
+    proxy_auth_helper_challenge: Option<crate::protocol::ProxyAuthHelperChallenge>,
 }
 impl CollectedResponse {
+    /// Real HTTP 407 challenge for which the enabled Native helper gate ran.
+    #[must_use]
+    pub fn proxy_auth_helper_challenge(
+        &self,
+    ) -> Option<&crate::protocol::ProxyAuthHelperChallenge> {
+        self.proxy_auth_helper_challenge.as_ref()
+    }
+
     /// Client ID associated with the outgoing request after both SDK stages.
     pub fn client_request_id(&self) -> Option<&str> {
         self.call.client_request_id()
@@ -925,12 +954,21 @@ impl CollectedResponse {
     /// synchronous; malformed tool JSON cannot erase the retained observation.
     pub fn decode(&self) -> Result<ChatResponse, LlmError> {
         let request_authority = super::executor::request_authority(&self.call.prepared.http.url);
-        let mut response = self
+        let decoded = self
             .call
             .prepared
             .codec
             .decode_response(&self.response, &self.call.prepared.context)
-            .map_err(|error| error.with_native_anthropic_request_authority(request_authority))?;
+            .map_err(|error| error.with_native_anthropic_request_authority(request_authority));
+        let mut response = match decoded {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(match self.proxy_auth_helper_challenge.clone() {
+                    Some(challenge) => error.with_proxy_auth_helper_challenge(challenge),
+                    None => error,
+                });
+            }
+        };
         response.executed_profile = Some(self.call.profile.profile_name.clone());
         response.response_cache = self.call.prepared.backend.response_cache(
             &self.call.profile,

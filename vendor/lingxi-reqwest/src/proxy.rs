@@ -68,6 +68,7 @@ pub struct NoProxy {
 #[derive(Clone)]
 struct Extra {
     auth: Option<HeaderValue>,
+    auth_provider: Option<Arc<dyn Fn() -> Option<HeaderValue> + Send + Sync>>,
     misc: Option<HeaderMap>,
 }
 
@@ -266,6 +267,7 @@ impl Proxy {
         Proxy {
             extra: Extra {
                 auth: None,
+                auth_provider: None,
                 misc: None,
             },
             intercept,
@@ -316,6 +318,19 @@ impl Proxy {
     /// ```
     pub fn custom_http_auth(mut self, header_value: HeaderValue) -> Proxy {
         self.extra.auth = Some(header_value);
+        self
+    }
+
+    /// Set a dynamic `Proxy-Authorization` value provider.
+    ///
+    /// The callback is consulted for each request sent through this proxy,
+    /// including CONNECT requests. The value is only attached to proxy wire
+    /// requests; it is never copied to the origin request headers.
+    pub fn custom_http_auth_provider<F>(mut self, provider: F) -> Proxy
+    where
+        F: Fn() -> Option<HeaderValue> + Send + Sync + 'static,
+    {
+        self.extra.auth_provider = Some(Arc::new(provider));
         self
     }
 
@@ -375,7 +390,7 @@ impl Proxy {
 
         let inner = match intercept {
             Intercept::All(url) => {
-                maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra.auth);
+                maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra);
                 maybe_has_http_custom_headers =
                     cache_maybe_has_http_custom_headers(&url, &extra.misc);
                 Matcher_::Util(
@@ -386,7 +401,7 @@ impl Proxy {
                 )
             }
             Intercept::Http(url) => {
-                maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra.auth);
+                maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra);
                 maybe_has_http_custom_headers =
                     cache_maybe_has_http_custom_headers(&url, &extra.misc);
                 Matcher_::Util(
@@ -397,7 +412,7 @@ impl Proxy {
                 )
             }
             Intercept::Https(url) => {
-                maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra.auth);
+                maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra);
                 maybe_has_http_custom_headers =
                     cache_maybe_has_http_custom_headers(&url, &extra.misc);
                 Matcher_::Util(
@@ -452,9 +467,12 @@ impl Proxy {
     */
 }
 
-fn cache_maybe_has_http_auth(url: &Url, extra: &Option<HeaderValue>) -> bool {
+fn cache_maybe_has_http_auth(url: &Url, extra: &Extra) -> bool {
     (url.scheme() == "http" || url.scheme() == "https")
-        && (url.username().len() > 0 || url.password().is_some() || extra.is_some())
+        && (url.username().len() > 0
+            || url.password().is_some()
+            || extra.auth.is_some()
+            || extra.auth_provider.is_some())
 }
 
 fn cache_maybe_has_http_custom_headers(url: &Url, extra: &Option<HeaderMap>) -> bool {
@@ -517,6 +535,7 @@ impl Matcher {
             inner: Matcher_::Util(matcher::Matcher::from_system()),
             extra: Extra {
                 auth: None,
+                auth_provider: None,
                 misc: None,
             },
             // maybe env vars have auth!
@@ -554,7 +573,7 @@ impl Matcher {
         if let Some(proxy) = self.intercept(dst) {
             let scheme = proxy.uri().scheme();
             if scheme == Some(&Scheme::HTTP) || scheme == Some(&Scheme::HTTPS) {
-                return proxy.basic_auth().cloned();
+                return proxy.basic_auth();
             }
         }
 
@@ -591,11 +610,17 @@ impl Intercepted {
         self.inner.uri()
     }
 
-    pub(crate) fn basic_auth(&self) -> Option<&HeaderValue> {
-        if let Some(ref val) = self.extra.auth {
-            return Some(val);
+    pub(crate) fn basic_auth(&self) -> Option<HeaderValue> {
+        if let Some(provider) = &self.extra.auth_provider {
+            if let Some(mut value) = provider() {
+                value.set_sensitive(true);
+                return Some(value);
+            }
         }
-        self.inner.basic_auth()
+        if let Some(ref val) = self.extra.auth {
+            return Some(val.clone());
+        }
+        self.inner.basic_auth().cloned()
     }
 
     pub(crate) fn custom_headers(&self) -> Option<&HeaderMap> {
@@ -908,6 +933,32 @@ mod tests {
         let got = p.intercept(&url("http://anywhere.local")).unwrap();
         let auth = got.basic_auth().unwrap();
         assert_eq!(auth, "testme");
+    }
+
+    #[test]
+    fn test_custom_proxy_auth_provider_is_read_for_each_request() {
+        use std::sync::{Arc, Mutex};
+
+        let value = Arc::new(Mutex::new(Some(http::HeaderValue::from_static("first"))));
+        let shared = value.clone();
+        let target = "http://proxy.example:3128/";
+        let matcher = Proxy::custom(move |_| target.parse::<Url>().ok())
+            .custom_http_auth_provider(move || shared.lock().unwrap().clone())
+            .into_matcher();
+
+        let first = matcher
+            .intercept(&url("http://origin.example"))
+            .unwrap()
+            .basic_auth()
+            .unwrap();
+        assert_eq!(first, "first");
+        *value.lock().unwrap() = Some(http::HeaderValue::from_static("second"));
+        let second = matcher
+            .intercept(&url("http://origin.example"))
+            .unwrap()
+            .basic_auth()
+            .unwrap();
+        assert_eq!(second, "second");
     }
 
     #[test]

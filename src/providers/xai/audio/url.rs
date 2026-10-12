@@ -141,6 +141,19 @@ impl XaiTranscriptionUrl {
 
     fn redact_llm_error(&self, error: LlmError) -> LlmError {
         match error {
+            LlmError::ProxyAuthHelperRetry { source, challenge } => {
+                LlmError::ProxyAuthHelperRetry {
+                    source: Box::new(self.redact_llm_error(*source)),
+                    challenge,
+                }
+            }
+            LlmError::ProxyTunnelResponse {
+                status,
+                proxy_authenticate,
+            } => LlmError::ProxyTunnelResponse {
+                status,
+                proxy_authenticate,
+            },
             LlmError::ProviderErrorText {
                 source,
                 text,

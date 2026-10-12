@@ -18,15 +18,17 @@ pub enum Beta {
     PromptCachingEvict,
     ThinkingDisplayUpdates,
     ThinkingTokenCount,
+    MidConversationSystem,
     MidConversationToolChanges,
     AfkMode,
 }
 impl Beta {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::CacheDiagnosis,
         Self::PromptCachingEvict,
         Self::ThinkingDisplayUpdates,
         Self::ThinkingTokenCount,
+        Self::MidConversationSystem,
         Self::MidConversationToolChanges,
         Self::AfkMode,
     ];
@@ -36,6 +38,7 @@ impl Beta {
             Self::PromptCachingEvict => "prompt-caching-evict-2026-05-12",
             Self::ThinkingDisplayUpdates => "thinking-display-updates-2026-08-18",
             Self::ThinkingTokenCount => "thinking-token-count-2026-05-13",
+            Self::MidConversationSystem => "mid-conversation-system-2026-04-07",
             Self::MidConversationToolChanges => "mid-conversation-tool-changes-2026-07-01",
             Self::AfkMode => "afk-mode-2026-01-31",
         }
@@ -329,8 +332,11 @@ pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec
             // state. MCTC is retried after clear/compact, and AFK rejection
             // trips the host Auto-mode circuit breaker. Neither is a model-wide
             // capability refusal, even when the wire wording is strong.
-            let strong =
-                strong && !matches!(beta, Beta::MidConversationToolChanges | Beta::AfkMode);
+            let strong = strong
+                && !matches!(
+                    beta,
+                    Beta::MidConversationSystem | Beta::MidConversationToolChanges | Beta::AfkMode
+                );
             Rejection { beta, strong }
         })
         .collect()
@@ -832,6 +838,37 @@ mod tests {
         );
         assert!(named_rejections(422, &body, &sent).is_empty());
         assert!(named_rejections(400, &body, &[]).is_empty());
+    }
+
+    #[test]
+    fn native_295_mid_conversation_system_refusal_is_conversation_scoped() {
+        let body = JsonPayload::parse(
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Unexpected value(s) `mid-conversation-system-2026-04-07` for the `anthropic-beta` header."}}"#,
+        )
+        .unwrap();
+        let header = Beta::MidConversationSystem.header().to_owned();
+        let rejected = request_rejections(400, &body, std::slice::from_ref(&header));
+        assert_eq!(
+            rejected,
+            [Rejection {
+                beta: Beta::MidConversationSystem,
+                strong: false,
+            }]
+        );
+
+        let conversation = ConversationBetaState::default();
+        let model_rejections = ModelBetaRejections::default();
+        reject_named(
+            &rejected,
+            &conversation,
+            Some("claude-opus-4-8"),
+            &model_rejections,
+        );
+        assert!(conversation.rejected(Beta::MidConversationSystem));
+        assert!(
+            !model_rejections.rejected("claude-opus-4-8", Beta::MidConversationSystem),
+            "Native pfr reads the per-conversation mid-conversation-system refusal"
+        );
     }
 
     #[test]

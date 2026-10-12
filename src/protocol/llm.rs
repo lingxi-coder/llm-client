@@ -62,6 +62,24 @@ pub enum LlmError {
         classification: LlmErrorKind,
         retry_after: Option<Duration>,
     },
+    /// A typed HTTP CONNECT response from a proxy. This remains terminal by
+    /// default; only a configured helper callback can wrap it in
+    /// [`Self::ProxyAuthHelperRetry`].
+    #[error("HTTP proxy tunnel rejected the connection with status {status}")]
+    ProxyTunnelResponse {
+        status: u16,
+        #[serde(skip)]
+        proxy_authenticate: Option<ProxyAuthHeader>,
+    },
+    /// A real HTTP 407 challenge was passed to the configured Native helper.
+    /// The original provider/transport error remains the classification source
+    /// and the normal request retry budget remains in force.
+    #[error("{source}")]
+    ProxyAuthHelperRetry {
+        source: Box<LlmError>,
+        #[serde(skip)]
+        challenge: Option<ProxyAuthHelperChallenge>,
+    },
     /// A provider's typed `timeout_error`, distinct from a local transport timer.
     #[error("provider timeout: {message}")]
     ProviderTimeout {
@@ -107,6 +125,49 @@ pub enum LlmError {
         #[serde(skip)]
         native_anthropic_facts: Option<Box<NativeAnthropicErrorFacts>>,
     },
+}
+
+/// Process-local evidence that the configured proxy-auth helper was given a
+/// real HTTP 407 challenge. The challenge value is never serialized or printed.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyAuthHelperChallenge {
+    pub status: u16,
+    #[serde(skip)]
+    pub proxy_authenticate: Option<Vec<u8>>,
+}
+
+/// Raw `Proxy-Authenticate` bytes from a typed CONNECT response.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyAuthHeader(Vec<u8>);
+
+impl ProxyAuthHeader {
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ProxyAuthHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+impl std::fmt::Debug for ProxyAuthHelperChallenge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyAuthHelperChallenge")
+            .field("status", &self.status)
+            .field(
+                "proxy_authenticate",
+                &self.proxy_authenticate.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Source-backed Native Anthropic error facts attached to the selected route.
@@ -252,14 +313,18 @@ impl LlmError {
     #[must_use]
     pub fn classification_source(&self) -> &Self {
         match self {
-            Self::ProviderErrorText { source, .. } => source.classification_source(),
+            Self::ProviderErrorText { source, .. } | Self::ProxyAuthHelperRetry { source, .. } => {
+                source.classification_source()
+            }
             other => other,
         }
     }
 
     pub(crate) fn classification_source_mut(&mut self) -> &mut Self {
         match self {
-            Self::ProviderErrorText { source, .. } => source.classification_source_mut(),
+            Self::ProviderErrorText { source, .. } | Self::ProxyAuthHelperRetry { source, .. } => {
+                source.classification_source_mut()
+            }
             other => other,
         }
     }
@@ -267,7 +332,32 @@ impl LlmError {
     pub(crate) fn into_classification_source(self) -> Self {
         match self {
             Self::ProviderErrorText { source, .. } => source.into_classification_source(),
+            Self::ProxyAuthHelperRetry { source, challenge } => Self::ProxyAuthHelperRetry {
+                source: Box::new(source.into_classification_source()),
+                challenge,
+            },
             other => other,
+        }
+    }
+
+    /// Whether the Native proxy-auth helper callback was invoked for this
+    /// failure. Hosts check this before generic retry and connection failover.
+    #[must_use]
+    pub fn proxy_auth_helper_challenge(&self) -> Option<&ProxyAuthHelperChallenge> {
+        match self {
+            Self::ProxyAuthHelperRetry { challenge, .. } => challenge.as_ref(),
+            Self::ProviderErrorText { source, .. } => source.proxy_auth_helper_challenge(),
+            _ => None,
+        }
+    }
+
+    /// Wrap the original decoded failure after a production transport observes
+    /// a real HTTP 407 and invokes the configured helper callback.
+    #[must_use]
+    pub fn with_proxy_auth_helper_challenge(self, challenge: ProxyAuthHelperChallenge) -> Self {
+        Self::ProxyAuthHelperRetry {
+            source: Box::new(self),
+            challenge: Some(challenge),
         }
     }
 
@@ -276,6 +366,7 @@ impl LlmError {
     pub fn provider_error_text(&self) -> Option<&ProviderErrorText> {
         match self {
             Self::ProviderErrorText { text, .. } => Some(text),
+            Self::ProxyAuthHelperRetry { source, .. } => source.provider_error_text(),
             _ => None,
         }
     }
@@ -288,6 +379,7 @@ impl LlmError {
                 native_anthropic_facts,
                 ..
             } => native_anthropic_facts.as_deref(),
+            Self::ProxyAuthHelperRetry { source, .. } => source.native_anthropic_error_facts(),
             _ => None,
         }
     }
@@ -301,6 +393,12 @@ impl LlmError {
                 native_anthropic_facts,
                 ..
             } => (*source, native_anthropic_facts),
+            Self::ProxyAuthHelperRetry { source, challenge } => {
+                return Self::ProxyAuthHelperRetry {
+                    source: Box::new((*source).with_provider_error_text(text)),
+                    challenge,
+                };
+            }
             other => (other, None),
         };
         Self::ProviderErrorText {
@@ -327,15 +425,35 @@ impl LlmError {
 
     /// Attach the selected HTTP request authority to process-local Native
     /// Anthropic error facts, without replacing the provider text or taxonomy.
-    pub fn with_native_anthropic_request_authority(mut self, authority: Option<String>) -> Self {
-        if let Self::ProviderErrorText {
-            native_anthropic_facts: Some(facts),
-            ..
-        } = &mut self
-        {
-            facts.request_authority = authority;
+    pub fn with_native_anthropic_request_authority(self, authority: Option<String>) -> Self {
+        match self {
+            Self::ProviderErrorText {
+                source,
+                text,
+                native_anthropic_facts: Some(mut facts),
+            } => {
+                facts.request_authority = authority;
+                Self::ProviderErrorText {
+                    source,
+                    text,
+                    native_anthropic_facts: Some(facts),
+                }
+            }
+            Self::ProviderErrorText {
+                source,
+                text,
+                native_anthropic_facts: None,
+            } => Self::ProviderErrorText {
+                source: Box::new((*source).with_native_anthropic_request_authority(authority)),
+                text,
+                native_anthropic_facts: None,
+            },
+            Self::ProxyAuthHelperRetry { source, challenge } => Self::ProxyAuthHelperRetry {
+                source: Box::new((*source).with_native_anthropic_request_authority(authority)),
+                challenge,
+            },
+            other => other,
         }
-        self
     }
 
     pub fn with_optional_provider_error_text(self, text: Option<ProviderErrorText>) -> Self {
@@ -357,6 +475,7 @@ impl LlmError {
             LlmError::ModelUnavailable { .. } => LlmErrorKind::ModelUnavailable,
             LlmError::ProviderInternal { .. } => LlmErrorKind::ProviderInternal,
             LlmError::ProviderResponse { classification, .. } => *classification,
+            LlmError::ProxyTunnelResponse { .. } => LlmErrorKind::Transport,
             LlmError::ProviderTimeout { .. } => LlmErrorKind::ProviderTimeout,
             LlmError::Overloaded { .. } => LlmErrorKind::Overloaded,
             LlmError::Transport { .. } => LlmErrorKind::Transport,
@@ -367,7 +486,7 @@ impl LlmError {
             LlmError::StreamInterrupted { .. } => LlmErrorKind::StreamInterrupted,
             LlmError::CostUnavailable { .. } => LlmErrorKind::CostUnavailable,
             LlmError::UnsupportedCapability { .. } => LlmErrorKind::UnsupportedCapability,
-            LlmError::ProviderErrorText { .. } => {
+            LlmError::ProviderErrorText { .. } | LlmError::ProxyAuthHelperRetry { .. } => {
                 unreachable!("classification_source removes carriers")
             }
         }
@@ -1731,6 +1850,62 @@ mod tests {
             error.provider_error_text().map(ProviderErrorText::display),
             Some("500 provider error")
         );
+    }
+
+    #[test]
+    fn proxy_helper_retry_retains_typed_source_and_redacts_challenge() {
+        let challenge = ProxyAuthHelperChallenge {
+            status: 407,
+            proxy_authenticate: Some(vec![b'B', b'a', b's', b'i', b'c', b' ', 0x80]),
+        };
+        let source = LlmError::ProviderResponse {
+            status: 407,
+            request_id: Some("req-407".into()),
+            body: Box::new(serde_json::json!({ "error": "proxy denied" })),
+            classification: LlmErrorKind::Authentication,
+            retry_after: None,
+        }
+        .with_provider_error_text(ProviderErrorText::from("proxy denied"));
+        let error = source
+            .clone()
+            .with_proxy_auth_helper_challenge(challenge.clone());
+
+        assert_eq!(error.kind(), LlmErrorKind::Authentication);
+        assert_eq!(
+            error.classification_source(),
+            source.classification_source()
+        );
+        assert_eq!(error.provider_error_text(), source.provider_error_text());
+        assert_eq!(error.proxy_auth_helper_challenge(), Some(&challenge));
+        let debug = format!("{error:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Basic"));
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert!(!encoded.contains("proxy_authenticate"));
+        let decoded: LlmError = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.kind(), error.kind());
+        assert!(decoded.proxy_auth_helper_challenge().is_none());
+    }
+
+    #[test]
+    fn typed_proxy_tunnel_error_retains_status_and_redacts_header_bytes() {
+        let header = ProxyAuthHeader::new(b"Basic realm=\"edge\"\x80".to_vec());
+        let error = LlmError::ProxyTunnelResponse {
+            status: 407,
+            proxy_authenticate: Some(header.clone()),
+        };
+        assert_eq!(error.kind(), LlmErrorKind::Transport);
+        assert_eq!(header.as_bytes(), b"Basic realm=\"edge\"\x80");
+        let debug = format!("{error:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Basic"));
+        let encoded = serde_json::to_string(&error).unwrap();
+        assert!(!encoded.contains("proxy_authenticate"));
+        let decoded: LlmError = serde_json::from_str(&encoded).unwrap();
+        assert!(matches!(
+            decoded,
+            LlmError::ProxyTunnelResponse { status: 407, .. }
+        ));
     }
 
     #[test]

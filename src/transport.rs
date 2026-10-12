@@ -21,7 +21,7 @@ pub enum Http1HeaderLayout {
     NativeFetch,
 }
 
-use crate::protocol::LlmError;
+use crate::protocol::{LlmError, ProxyAuthHelperChallenge};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{stream::BoxStream, Stream, StreamExt};
@@ -159,6 +159,28 @@ pub struct StreamResponse {
     pub body: BoxStream<'static, Result<Bytes, LlmError>>,
 }
 
+/// A Native Claude response plus process-local evidence that a real 407
+/// challenge invoked the configured helper. The original response stays intact.
+pub struct NativeProxyResponse {
+    pub response: StreamResponse,
+    pub proxy_auth_helper_challenge: Option<ProxyAuthHelperChallenge>,
+}
+
+/// Host shell callback consumed by the built-in HTTP and MCP proxy transports.
+/// Calls are synchronous so they can invalidate the cache before the caller
+/// returns to its normal request-retry loop; implementations should schedule
+/// helper process execution in the background.
+pub trait ProxyAuthHelper: Send + Sync + 'static {
+    /// Return the currently cached Proxy-Authorization value, if any.
+    fn cached_proxy_authorization(&self) -> Option<String>;
+
+    /// Clear/rebuild the cached value after a real HTTP 407 challenge.
+    /// Returns whether Native's enabled-and-configured gate allows its normal
+    /// retry path; process success and trust-based execution suppression do not
+    /// affect this decision.
+    fn on_proxy_auth_challenge(&self, challenge: Option<&[u8]>) -> bool;
+}
+
 impl StreamResponse {
     pub fn header(&self, name: &str) -> Option<&str> {
         header(&self.headers, name)
@@ -180,6 +202,19 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
     async fn send(&self, req: HttpRequest) -> Result<StreamResponse, LlmError>;
+
+    /// Send a first-party Claude/Foundry request through the host's Native
+    /// proxy route, when the transport has one. Existing custom transports
+    /// preserve their ordinary behavior through this default implementation.
+    async fn send_native_proxy_request(
+        &self,
+        req: HttpRequest,
+    ) -> Result<NativeProxyResponse, LlmError> {
+        Ok(NativeProxyResponse {
+            response: self.send(req).await?,
+            proxy_auth_helper_challenge: None,
+        })
+    }
 
     /// Override to support large streaming uploads. The default fails before
     /// consuming input, so custom transports never silently buffer it.
@@ -251,6 +286,15 @@ impl<'a> HttpExecutor<'a> {
             .map_err(|(error, _)| error)
     }
 
+    pub(crate) async fn send_native_proxy_request(
+        &self,
+        request: HttpRequest,
+    ) -> Result<NativeProxyResponse, LlmError> {
+        self.send_native_proxy_with_dispatch_report(request)
+            .await
+            .map_err(|(error, _)| error)
+    }
+
     /// The flag is false when the deadline expired before the transport
     /// future was polled, so callers can distinguish an unsent attempt.
     pub(crate) async fn send_with_dispatch_report(
@@ -268,6 +312,30 @@ impl<'a> HttpExecutor<'a> {
             .await;
         match outcome {
             Ok(Ok(response)) => Ok(Self::bound_response(response, deadline)),
+            Ok(Err(error)) | Err(error) => Err((error, transport_attempted)),
+        }
+    }
+
+    /// Dispatch through the Native first-party proxy route while preserving
+    /// the same deadline and dispatch accounting as ordinary sends.
+    pub(crate) async fn send_native_proxy_with_dispatch_report(
+        &self,
+        mut request: HttpRequest,
+    ) -> Result<NativeProxyResponse, (LlmError, bool)> {
+        let deadline = self.deadline.cap(request.timeout);
+        request.timeout = deadline.remaining().map_err(|error| (error, false))?;
+        let mut transport_attempted = false;
+        let outcome = deadline
+            .run(async {
+                transport_attempted = true;
+                self.transport.send_native_proxy_request(request).await
+            })
+            .await;
+        match outcome {
+            Ok(Ok(mut response)) => {
+                response.response = Self::bound_response(response.response, deadline);
+                Ok(response)
+            }
             Ok(Err(error)) | Err(error) => Err((error, transport_attempted)),
         }
     }

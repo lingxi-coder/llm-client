@@ -5,6 +5,46 @@ use crate::providers::openrouter::response_cache::OpenRouterResponseCache;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+/// First-party Claude request families that use Native's primary process
+/// proxy route. Other providers continue through the shared default pool.
+pub(crate) fn uses_native_proxy_route(profile: &crate::protocol::ProviderProfile) -> bool {
+    (profile.protocol == crate::protocol::ProtocolFamily::AnthropicMessages
+        && profile.provider_id.as_str() == "anthropic")
+        || profile.protocol == crate::protocol::ProtocolFamily::FoundryClaude
+}
+
+#[cfg(test)]
+mod native_proxy_route_tests {
+    use super::uses_native_proxy_route;
+    use crate::protocol::ProviderProfile;
+
+    fn profile(provider_id: &str, protocol: &str) -> ProviderProfile {
+        serde_json::from_value(serde_json::json!({
+            "provider_id": provider_id,
+            "profile_name": "route-test",
+            "base_url": "https://example.test",
+            "protocol": protocol,
+            "auth": "none",
+            "models": [{"display_model":"m","request_model":"m","billing_model":"m"}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn only_first_party_anthropic_messages_and_foundry_use_native_proxy_pool() {
+        assert!(uses_native_proxy_route(&profile(
+            "anthropic",
+            "anthropic_messages"
+        )));
+        assert!(!uses_native_proxy_route(&profile(
+            "gateway",
+            "anthropic_messages"
+        )));
+        assert!(uses_native_proxy_route(&profile("azure", "foundry_claude")));
+        assert!(!uses_native_proxy_route(&profile("openai", "open_ai_chat")));
+    }
+}
+
 /// Default wall-clock deadline for a completion request.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 

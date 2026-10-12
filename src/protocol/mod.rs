@@ -44,9 +44,10 @@ pub use image::*;
 pub use llm::{
     CapabilitySupport, ChatRequest, ChatResponse, FileSearchHit, FileSearchResult, HostedTool,
     LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing,
-    NativeAnthropicErrorFacts, ProviderErrorText, ProviderListing, ReportedCost,
-    ResponseCacheObservation, ResponseCacheStatus, ServerToolUsage, StopReason, StreamEvent,
-    SystemBlock, ToolChoice, ToolSpec, Usage, WebCitation, WebSearchConfig, WebSearchResult,
+    NativeAnthropicErrorFacts, ProviderErrorText, ProviderListing, ProxyAuthHeader,
+    ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation, ResponseCacheStatus,
+    ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice, ToolSpec, Usage,
+    WebCitation, WebSearchConfig, WebSearchResult,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,
