@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.64.0"
 name = "lingxi-reqwest"
-version = "0.12.28"
+version = "0.12.29"
 authors = ["Sean McArthur <sean@seanmonstar.com>"]
 build = false
 include = [
@@ -304,7 +304,7 @@ optional = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.hyper-util]
 package = "lingxi-hyper-util"
 path = "../lingxi-hyper-util"
-version = "0.1.12"
+version = "0.1.21"
 features = [
     "http1",
     "client",
@@ -443,7 +443,7 @@ default-features = false
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies.hyper-util]
 package = "lingxi-hyper-util"
 path = "../lingxi-hyper-util"
-version = "0.1.12"
+version = "0.1.21"
 features = [
     "http1",
     "http2",
