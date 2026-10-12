@@ -98,6 +98,8 @@ fn codex_search_uses_responses_lite_developer_tools() {
     p.base_url = "https://chatgpt.com/backend-api/codex".into();
     // Harness defers auth while encoding, retaining the endpoint.
     let mut req = request();
+    p.extra["body"] = json!({"reasoning":{"effort":"low","summary":"auto","context":"current_turn"}});
+    req.controls.responses.include = vec!["web_search_call.action.sources".into()];
     req.system.push(lingxi_llm_client::protocol::SystemBlock {
         text: "Search current sources".into(),
     });
@@ -134,6 +136,11 @@ fn codex_search_uses_responses_lite_developer_tools() {
     );
     assert_eq!(body["input"][2]["role"], "user");
     assert_eq!(body["parallel_tool_calls"], false);
+    assert_eq!(body["reasoning"]["context"], "all_turns");
+    assert_eq!(body["reasoning"]["effort"], "low");
+    assert_eq!(body["reasoning"]["summary"], "auto");
+    assert!(body["include"].as_array().unwrap().contains(&json!("reasoning.encrypted_content")));
+    assert!(body["include"].as_array().unwrap().contains(&json!("web_search_call.action.sources")));
     assert_eq!(
         body["client_metadata"]["ws_request_header_x_openai_internal_codex_responses_lite"],
         "true"
@@ -144,6 +151,7 @@ fn codex_search_uses_responses_lite_developer_tools() {
     assert_eq!(websocket["type"], "response.create");
     assert_eq!(websocket["input"], body["input"]);
     assert_eq!(websocket["client_metadata"], body["client_metadata"]);
+    assert_eq!(websocket["reasoning"]["context"], "all_turns");
     assert!(http
         .headers
         .iter()

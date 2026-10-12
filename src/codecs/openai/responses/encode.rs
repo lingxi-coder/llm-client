@@ -332,6 +332,23 @@ pub fn request<'a>(
         input.splice(0..0, prefix);
         body.insert("instructions".into(), json!(""));
         body.insert("parallel_tool_calls".into(), json!(false));
+        body.entry("tool_choice").or_insert_with(|| json!("auto"));
+        body.entry("reasoning")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Codex reasoning must be an object".into(),
+            })?
+            .insert("context".into(), json!("all_turns"));
+        let include = body.entry("include")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Codex include must be an array".into(),
+            })?;
+        if !include.iter().any(|value| value == "reasoning.encrypted_content") {
+            include.push(json!("reasoning.encrypted_content"));
+        }
         // Reused WebSocket connections cannot change their handshake headers.
         // Codex carries the same routing flag on every response.create body.
         body.entry("client_metadata")

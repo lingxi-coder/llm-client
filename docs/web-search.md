@@ -42,7 +42,7 @@ let search = WebSearchConfig {
 | `deepseek` | `anthropic_messages` | 基础 Anthropic 搜索兼容格式 | 无；未确认的过滤及次数控制均拒绝 |
 | `xai` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains` 或 `blocked_domains`，最多 5 个 |
 
-Codex OAuth 的 `https://chatgpt.com/backend-api/codex` 路由使用 Responses Lite 搜索声明：工具放在 developer `additional_tools` 输入项中，实时搜索设置 `external_web_access: true`，并携带 HTTP 请求头及 WebSocket `client_metadata` 路由标记。该格式依据 [Codex 0.161.0 请求构造](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/client.rs)；不能把公共 API 的顶层 hosted `tools` 直接用于该搜索路径。此分支只影响 Codex 路由的搜索请求；真实账户的搜索权限仍由服务端决定。
+Codex OAuth 的 `https://chatgpt.com/backend-api/codex` 路由使用 Responses Lite 搜索声明：工具放在 developer `additional_tools` 输入项中，实时搜索设置 `external_web_access: true` 和 `reasoning.context: all_turns`，并携带 HTTP 请求头及 WebSocket `client_metadata` 路由标记。该格式依据 [Codex 0.161.0 请求构造](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/client.rs)；不能把公共 API 的顶层 hosted `tools` 直接用于该搜索路径。此分支只影响 Codex 路由的搜索请求；真实账户的搜索权限仍由服务端决定。
 
 Codex 生成请求始终发送 `stream: true`。`complete()`、`web_search()` 和 host 的完成响应收集接口会在内部读取 SSE，再从终止事件还原普通 `ChatResponse`，保留原生输出、来源和 usage；没有终止响应的流返回中断错误。
 
