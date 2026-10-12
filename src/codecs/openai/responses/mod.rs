@@ -93,6 +93,17 @@ impl WireCodec for OpenAiResponsesCodec {
         resp: &HttpResponse,
         context: &CodecContext,
     ) -> Result<ChatResponse, LlmError> {
+        if (200..300).contains(&resp.status)
+            && crate::providers::openai::codex_search::supports(context.profile())
+            && serde_json::from_slice::<serde_json::Value>(&resp.body)
+                .is_ok_and(|body| body["output"].is_string())
+        {
+            return crate::providers::openai::codex_search::decode(resp).map(|mut response| {
+                response.model = context.request_model.clone();
+                response.inference = crate::codecs::inference::response(resp, context.profile());
+                response
+            });
+        }
         decode::response_with_approval_support(
             resp,
             crate::providers::xai::responses_policy::uses_openai_approval_semantics(

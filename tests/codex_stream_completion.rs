@@ -111,8 +111,8 @@ async fn complete_and_host_collected_calls_decode_codex_sse_with_usage_and_sourc
 }
 
 #[tokio::test]
-async fn collected_web_search_uses_sse_and_returns_search_sources() {
-    let response = client(&terminal())
+async fn codex_search_requires_the_standalone_endpoint() {
+    let error = client(&terminal())
         .chat()
         .web_search_in(
             "codex",
@@ -121,9 +121,10 @@ async fn collected_web_search_uses_sse_and_returns_search_sources() {
             &RequestOptions::default(),
         )
         .await
-        .unwrap();
-    assert_eq!(response.message.text(), "Weather report");
-    assert!(response.web_search.is_some());
+        .unwrap_err();
+    assert!(
+        matches!(error, LlmError::UnsupportedCapability { message } if message.contains("standalone"))
+    );
 }
 
 #[tokio::test]

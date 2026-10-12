@@ -7,6 +7,11 @@ pub(crate) fn responses(
     profile: &ProviderProfile,
     body: &mut Map<String, Value>,
 ) -> Result<(), LlmError> {
+    if req.hosted_web_search().is_some() && codex_responses(profile) {
+        return Err(LlmError::UnsupportedCapability {
+            message: "Codex WebSearch requires a standalone CodexSearchRequest; Responses Lite cannot execute hosted search tools".into(),
+        });
+    }
     web_search::apply_policy(
         req,
         profile,
@@ -21,11 +26,7 @@ pub(crate) fn responses(
         },
         |search, body| {
             let _ = body;
-            let mut tool = web_search::responses_tool(search);
-            if codex_responses(profile) {
-                tool["external_web_access"] = Value::Bool(true);
-            }
-            Ok(Some(tool))
+            Ok(Some(web_search::responses_tool(search)))
         },
     )
 }
