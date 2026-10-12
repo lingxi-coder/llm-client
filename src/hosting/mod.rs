@@ -401,7 +401,9 @@ fn bedrock_model_url(base_url: &str, model_id: &str, action: &str) -> Result<Str
             .push(model_id)
             .push(action);
     }
-    Ok(url.into())
+    let mut url: String = url.into();
+    crate::providers::anthropic::request_policy::remove_beta_query(&mut url)?;
+    Ok(url)
 }
 
 /// Unwraps AWS event-stream frames and feeds what is inside to the Anthropic

@@ -724,6 +724,41 @@ fn bedrock_uses_one_path_segment_for_model_ids_and_omits_the_stream_body_field()
 }
 
 #[test]
+fn bedrock_strips_beta_parameters_after_rewriting_the_model_endpoint() {
+    let p = profile(
+        "bedrock_claude",
+        "https://bedrock-runtime.us-east-1.amazonaws.com?route=one&beta=true&route=two&beta=false&label=a%20b",
+    );
+
+    for stream in [false, true] {
+        let http = BedrockClaudeCodec
+            .encode_request(
+                lingxi_llm_client::EncodeRequest::new(&request(vec![user("hi")])),
+                &wire_api::context(
+                    &p,
+                    &route().request_model,
+                    &wire_api::EncodingOptions {
+                        stream,
+                        ..wire_api::EncodingOptions::default()
+                    },
+                ),
+            )
+            .unwrap();
+        let action = if stream {
+            "invoke-with-response-stream"
+        } else {
+            "invoke"
+        };
+        assert_eq!(
+            http.url,
+            format!(
+                "https://bedrock-runtime.us-east-1.amazonaws.com/model/wire-m/{action}?route=one&route=two&label=a+b"
+            )
+        );
+    }
+}
+
+#[test]
 fn vertex_claude_uses_its_platform_version_in_both_request_modes() {
     let p = profile(
         "vertex_claude",

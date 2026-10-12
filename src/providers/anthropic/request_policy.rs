@@ -1,5 +1,5 @@
 //! Wire merging for explicit host policy overrides. Environment and feature decisions remain in the host.
-use crate::protocol::{JsonPayload, LlmError, ToolChoice};
+use crate::protocol::{JsonPayload, LlmError, ProtocolFamily, ToolChoice};
 use crate::response_json::{FlatJsonKind, JsonNodeRef, ResponseJsonScanner};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -234,6 +234,9 @@ impl AnthropicContextManagement {
 
 #[derive(Debug, Clone)]
 pub struct AnthropicRequestPolicy {
+    /// The selected wire route. Hosted routes do not necessarily share the
+    /// first-party Messages endpoint's query policy.
+    pub protocol: ProtocolFamily,
     pub request_kind: AnthropicRequestKind,
     /// Preserve an explicitly empty parent tool prefix for cache-safe forks.
     pub explicit_empty_tools: bool,
@@ -254,6 +257,7 @@ pub struct AnthropicRequestPolicy {
 impl Default for AnthropicRequestPolicy {
     fn default() -> Self {
         Self {
+            protocol: ProtocolFamily::AnthropicMessages,
             request_kind: AnthropicRequestKind::Main,
             explicit_empty_tools: false,
             plain_text_message_content: false,
@@ -504,6 +508,7 @@ impl AnthropicRequestPolicy {
                 url,
                 crate::RequestMode::Complete,
                 None,
+                self.protocol,
             )?;
         } else if format_alias_requested {
             let source = crate::exact_json::serialize_json_payload_with_overrides(
@@ -537,7 +542,15 @@ pub fn normalize_message_parameters(
     url: &mut String,
     mode: crate::RequestMode,
 ) -> Result<(), LlmError> {
-    normalize_source_message_parameters(body, headers, string_overrides, url, mode, None)
+    normalize_source_message_parameters(
+        body,
+        headers,
+        string_overrides,
+        url,
+        mode,
+        None,
+        ProtocolFamily::AnthropicMessages,
+    )
 }
 
 /// CountTokens variant used when the host assembles the endpoint beta list outside the body.
@@ -559,6 +572,7 @@ pub fn normalize_count_tokens_message_parameters(
         url,
         crate::RequestMode::CountTokens,
         Some(betas),
+        ProtocolFamily::AnthropicMessages,
     )?;
     *string_overrides = overrides;
     Ok(())
@@ -571,6 +585,7 @@ fn normalize_source_message_parameters(
     url: &mut String,
     mode: crate::RequestMode,
     count_token_betas: Option<&[String]>,
+    protocol: ProtocolFamily,
 ) -> Result<(), LlmError> {
     let mut normalized_headers = headers.clone();
     let mut normalized_url = url.clone();
@@ -604,7 +619,11 @@ fn normalize_source_message_parameters(
         string_overrides.clear();
     }
     apply_message_header_parameters(&mut normalized_headers, message_parameters);
-    append_beta_query(&mut normalized_url)?;
+    if protocol == ProtocolFamily::BedrockClaude {
+        remove_beta_query(&mut normalized_url)?;
+    } else {
+        append_beta_query(&mut normalized_url)?;
+    }
 
     *headers = normalized_headers;
     *url = normalized_url;
@@ -700,6 +719,27 @@ fn append_beta_query(url: &mut String) -> Result<(), LlmError> {
             .append_pair("beta", "true");
         *url = parsed.into();
     }
+    Ok(())
+}
+
+/// Native's Bedrock middleware deletes every `beta` search parameter after it
+/// rewrites the request URL. Mutating URLSearchParams also serializes the
+/// remaining pairs, preserving their order and duplicates while applying the
+/// URL form-encoding rules used by the JavaScript implementation.
+pub(crate) fn remove_beta_query(url: &mut String) -> Result<(), LlmError> {
+    let mut parsed = url::Url::parse(url).map_err(|error| LlmError::InvalidRequest {
+        message: format!("Invalid Bedrock URL: {error}"),
+    })?;
+    let pairs = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != "beta")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    parsed.set_query(None);
+    if !pairs.is_empty() {
+        parsed.query_pairs_mut().extend_pairs(pairs);
+    }
+    *url = parsed.into();
     Ok(())
 }
 
@@ -2515,6 +2555,82 @@ mod tests {
             )
             .unwrap();
         assert_eq!(url, "https://cloud/v1/messages?custom=true");
+    }
+
+    #[test]
+    fn bedrock_route_deletes_all_beta_query_values_and_keeps_other_pairs_ordered() {
+        let mut url = "https://bedrock.example/model?route=one&beta=true&route=two&beta=false&label=a%20b&empty".to_owned();
+        let mut body = JsonPayload::parse(r#"{"messages":[]}"#).unwrap();
+        AnthropicRequestPolicy {
+            protocol: ProtocolFamily::BedrockClaude,
+            message_header_parameters: true,
+            ..Default::default()
+        }
+        .apply(
+            &mut body,
+            &mut BTreeMap::new(),
+            &mut BTreeMap::new(),
+            &mut url,
+        )
+        .unwrap();
+
+        assert_eq!(
+            url,
+            "https://bedrock.example/model?route=one&route=two&label=a+b&empty="
+        );
+    }
+
+    #[test]
+    fn plain_text_message_source_moves_utf16_override_without_flattening_cached_blocks() {
+        let mut body = JsonPayload::parse(
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"placeholder"}]}]}"#,
+        )
+        .unwrap();
+        let exact_text = "Native insight".encode_utf16().chain([0xd800]).collect();
+        let mut overrides = BTreeMap::from([("/messages/0/content/0/text".to_owned(), exact_text)]);
+        AnthropicRequestPolicy {
+            plain_text_message_content: true,
+            ..Default::default()
+        }
+        .apply(
+            &mut body,
+            &mut BTreeMap::new(),
+            &mut overrides,
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            wire(&body, &overrides),
+            r#"{"messages":[{"role":"user","content":"Native insight\ud800"}]}"#
+        );
+        assert!(overrides.contains_key("/messages/0/content"));
+        assert!(!overrides.contains_key("/messages/0/content/0/text"));
+
+        let mut cached = JsonPayload::parse(
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"cached","cache_control":{"type":"ephemeral"}}]}]}"#,
+        )
+        .unwrap();
+        let cached_text = "cached".encode_utf16().chain([0xd800]).collect();
+        let mut cached_overrides =
+            BTreeMap::from([("/messages/0/content/0/text".to_owned(), cached_text)]);
+        AnthropicRequestPolicy {
+            plain_text_message_content: true,
+            ..Default::default()
+        }
+        .apply(
+            &mut cached,
+            &mut BTreeMap::new(),
+            &mut cached_overrides,
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+        )
+        .unwrap();
+
+        assert!(cached
+            .payload_at("/messages/0/content")
+            .unwrap()
+            .is_root_array());
+        assert!(cached_overrides.contains_key("/messages/0/content/0/text"));
     }
 
     #[test]
