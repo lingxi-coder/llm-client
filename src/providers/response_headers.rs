@@ -265,14 +265,8 @@ impl NativeAnthropicRequestHeaderFacts {
         provider: NativeAnthropicProvider,
         selected_url: &str,
     ) -> Self {
-        let assume_first_party = std::env::var("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL")
-            .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            });
+        let assume_first_party =
+            crate::providers::anthropic::system_prompt::native_first_party_base_url_assumed();
         let first_party_base_url = if assume_first_party {
             FirstPartyBaseUrlFact::ExplicitlyAssumed
         } else {

@@ -465,7 +465,7 @@ impl GatePolicy {
     /// Sample Native's process beta and endpoint gates in the SDK and combine
     /// them with the host's Native-equivalent compliance taint state.
     pub fn from_process(hipaa_tainted: bool) -> Self {
-        let assume_first_party_base_url = env_truthy("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL");
+        let assume_first_party_base_url = native_first_party_base_url_assumed();
         let process_base_url_allowed = native_base_url_gate(
             std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
             assume_first_party_base_url,
@@ -641,7 +641,7 @@ impl CachePolicy {
         prompt_cache_ttl_settings: PromptCacheTtlSettings,
         prompt_cache_ttl_inputs: PromptCacheTtlInputs,
     ) -> Self {
-        let assume_first_party_base_url = env_truthy("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL");
+        let assume_first_party_base_url = native_first_party_base_url_assumed();
         let process_base_url_allowed = native_base_url_gate(
             std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
             assume_first_party_base_url,
@@ -1383,13 +1383,17 @@ fn encoded_block(
     }
 }
 
+/// Native `abe()` returns the environment string, consumed by JS truthiness.
+pub(crate) fn native_first_party_base_url_assumed() -> bool {
+    std::env::var("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL")
+        .ok()
+        .is_some_and(|value| !value.is_empty())
+}
+
 /// Native classifier model selection uses URL.host, including non-default
 /// ports, unless the explicit first-party endpoint override is enabled.
 pub fn classifier_native_base_url(value: &str) -> bool {
-    official_anthropic_base_url_with_override(
-        value,
-        env_truthy("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL"),
-    )
+    official_anthropic_base_url_with_override(value, native_first_party_base_url_assumed())
 }
 
 /// Native wks key shape, applied only to a captured API-key credential. The
@@ -1673,6 +1677,48 @@ mod tests {
                 PromptText::from_string("session section")
             ]
         );
+    }
+
+    #[test]
+    fn classifier_base_url_override_uses_javascript_string_truthiness() {
+        let _lock = GATE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _env = GateEnvRestore::clear();
+        let custom = "https://proxy.example.test";
+
+        assert!(!classifier_native_base_url(custom));
+        std::env::set_var("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", "");
+        assert!(!classifier_native_base_url(custom));
+        for value in ["false", "0", " "] {
+            std::env::set_var("_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL", value);
+            assert!(classifier_native_base_url(custom), "{value:?} is JS-truthy");
+            assert!(GatePolicy::from_process(false).assume_first_party_base_url);
+            assert!(
+                CachePolicy::from_process(
+                    false,
+                    None,
+                    false,
+                    PromptCacheQuerySource::Named("insights"),
+                    PromptCacheTtlSettings::default(),
+                    PromptCacheTtlInputs::default(),
+                )
+                .assume_first_party_base_url
+            );
+            assert!(
+                crate::protocol::NativeModelEnvironmentSnapshot::capture_process()
+                    .assume_first_party_base_url
+            );
+            let headers = crate::providers::response_headers::NativeAnthropicRequestHeaderFacts::from_process_environment(
+                crate::protocol::ProtocolFamily::AnthropicMessages,
+                crate::providers::response_headers::NativeAnthropicProvider::FirstParty,
+                custom,
+            );
+            assert_eq!(
+                headers.first_party_base_url,
+                crate::providers::response_headers::FirstPartyBaseUrlFact::ExplicitlyAssumed
+            );
+        }
     }
 
     #[test]

@@ -313,9 +313,8 @@ impl NativeModelEnvironmentSnapshot {
             default_opus_model: string_env("ANTHROPIC_DEFAULT_OPUS_MODEL"),
             default_fable_model: string_env("ANTHROPIC_DEFAULT_FABLE_MODEL"),
             small_fast_model: string_env("ANTHROPIC_SMALL_FAST_MODEL"),
-            assume_first_party_base_url: native_bool_env(
-                "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
-            ),
+            assume_first_party_base_url:
+                crate::providers::anthropic::system_prompt::native_first_party_base_url_assumed(),
             anthropic_base_url: string_env("ANTHROPIC_BASE_URL"),
         }
     }
