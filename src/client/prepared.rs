@@ -724,9 +724,17 @@ impl PreparedCall {
             .map(|frame| {
                 frame.map(|bytes| {
                     let mut sse = Vec::with_capacity(bytes.len() + 8);
-                    sse.extend_from_slice(b"data: ");
-                    sse.extend_from_slice(&bytes);
-                    sse.extend_from_slice(b"\n\n");
+                    // A WebSocket message is one JSON event, even when its
+                    // representation spans lines. Prefix every line so the
+                    // SSE splitter retains the entire event rather than only
+                    // the opening line. CRLF and blank lines are valid JSON
+                    // whitespace and must not terminate the synthetic event.
+                    for line in bytes.split(|byte| *byte == b'\n') {
+                        sse.extend_from_slice(b"data: ");
+                        sse.extend_from_slice(line.strip_suffix(b"\r").unwrap_or(line));
+                        sse.push(b'\n');
+                    }
+                    sse.push(b'\n');
                     sse.into()
                 })
             })
