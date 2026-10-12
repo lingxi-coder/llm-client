@@ -283,6 +283,76 @@ pub fn request<'a>(
     crate::wire_options::merge_body(profile, &mut body);
     crate::wire_options::merge_headers(profile, &mut headers);
 
+    // Codex accepts generation only over SSE, including callers collecting
+    // a complete response. Hosts may have deferred OAuth during encoding.
+    if crate::providers::openai::search::codex_responses(profile) {
+        body.insert("stream".into(), json!(true));
+    }
+
+    // Codex Responses Lite receives tool declarations as developer input.
+    // Sending hosted search in top-level tools asks rustponsesapi to execute
+    // and meter a public API hosted tool, which that route rejects with 400.
+    // Match Codex 0.161.0's build_responses_request for search requests.
+    if req.hosted_web_search().is_some()
+        && crate::providers::openai::search::codex_responses(profile)
+    {
+        let tools = body.remove("tools").unwrap_or_else(|| json!([]));
+        let mut functions = Vec::new();
+        let mut declarations = Vec::new();
+        let mut functions_index = None;
+        for tool in tools.as_array().into_iter().flatten() {
+            if matches!(tool["type"].as_str(), Some("function" | "custom")) {
+                functions_index.get_or_insert(declarations.len());
+                functions.push(tool.clone());
+            } else {
+                declarations.push(tool.clone());
+            }
+        }
+        if let Some(index) = functions_index {
+            declarations.insert(
+                index,
+                json!({
+                    "type":"namespace", "name":"functions",
+                    "description":"All functions available for this request.",
+                    "tools":functions
+                }),
+            );
+        }
+        let mut prefix = vec![WireValue::from(json!({
+            "type":"additional_tools", "role":"developer", "tools":declarations
+        }))];
+        if let Some(instructions) = body.get("instructions").and_then(Value::as_str) {
+            if !instructions.is_empty() {
+                prefix.push(WireValue::from(json!({
+                    "type":"message", "role":"developer",
+                    "content":[{"type":"input_text", "text":instructions}]
+                })));
+            }
+        }
+        input.splice(0..0, prefix);
+        body.insert("instructions".into(), json!(""));
+        body.insert("parallel_tool_calls".into(), json!(false));
+        // Reused WebSocket connections cannot change their handshake headers.
+        // Codex carries the same routing flag on every response.create body.
+        body.entry("client_metadata")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "Codex client_metadata must be an object".into(),
+            })?
+            .insert(
+                "ws_request_header_x_openai_internal_codex_responses_lite".into(),
+                json!("true"),
+            );
+        headers.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("x-openai-internal-codex-responses-lite")
+        });
+        headers.push((
+            "x-openai-internal-codex-responses-lite".into(),
+            "true".into(),
+        ));
+    }
+
     let url = if let Some(search) = req.hosted_file_search() {
         crate::providers::qwen::responses_policy::file_search_url(profile, &search.workspace_id)?
     } else {

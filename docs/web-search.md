@@ -42,6 +42,10 @@ let search = WebSearchConfig {
 | `deepseek` | `anthropic_messages` | 基础 Anthropic 搜索兼容格式 | 无；未确认的过滤及次数控制均拒绝 |
 | `xai` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains` 或 `blocked_domains`，最多 5 个 |
 
+Codex OAuth 的 `https://chatgpt.com/backend-api/codex` 路由使用 Responses Lite 搜索声明：工具放在 developer `additional_tools` 输入项中，实时搜索设置 `external_web_access: true`，并携带 HTTP 请求头及 WebSocket `client_metadata` 路由标记。该格式依据 [Codex 0.161.0 请求构造](https://github.com/openai/codex/blob/rust-v0.161.0/codex-rs/core/src/client.rs)；不能把公共 API 的顶层 hosted `tools` 直接用于该搜索路径。此分支只影响 Codex 路由的搜索请求；真实账户的搜索权限仍由服务端决定。
+
+Codex 生成请求始终发送 `stream: true`。`complete()`、`web_search()` 和 host 的完成响应收集接口会在内部读取 SSE，再从终止事件还原普通 `ChatResponse`，保留原生输出、来源和 usage；没有终止响应的流返回中断错误。
+
 内置 profile 的示例模型、连接地址和凭证来源见下文。对自定义 profile，`extra.web_search` 必须与其协议匹配。`WebSearchConfig` 序列化后也是 JSON 接口的一部分，例如 `{"model":"glm/glm-4.7","messages":[...],"hosted_tools":[{"type":"web_search","config":{"allowed_domains":["example.com"]}}]}`。域名参数只能写域名，不含 scheme、路径或空格。空配置 `{}` 等价于 `WebSearchConfig::default()`。
 
 统一选项仅接受不含协议前缀和路径的域名；允许列表和禁止列表不能同时设置。不支持的选项返回 `UnsupportedCapability`，格式错误返回 `InvalidRequest`。普通工具与搜索工具会合并，已有工具不会被覆盖。Gemini、Chat 搜索、GLM、Kimi、Qwen 和 DeepSeek 搜索适配器要求 `ToolChoice::Auto`；MiniMax 只接受 `Auto` / `None`。其他接口会保留 `None`、`Any` 等选择。`None` 表示禁止本次工具执行。

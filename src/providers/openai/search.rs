@@ -21,9 +21,28 @@ pub(crate) fn responses(
         },
         |search, body| {
             let _ = body;
-            Ok(Some(web_search::responses_tool(search)))
+            let mut tool = web_search::responses_tool(search);
+            if codex_responses(profile) {
+                tool["external_web_access"] = Value::Bool(true);
+            }
+            Ok(Some(tool))
         },
     )
+}
+
+// Hosts may defer authentication while preparing the request, so recognize
+// the Codex endpoint rather than relying on the temporary auth strategy.
+pub(crate) fn codex_responses(profile: &ProviderProfile) -> bool {
+    profile.protocol == ProtocolFamily::OpenAiResponses
+        && url::Url::parse(&profile.base_url).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some("chatgpt.com")
+                && url.path().trim_end_matches('/') == "/backend-api/codex"
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none()
+        })
 }
 pub(crate) fn chat(
     req: &ChatRequest,

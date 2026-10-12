@@ -43,6 +43,7 @@ impl lingxi_llm_client::client::options::RequestFinalizer for ReintroduceChatGpt
         body["max_output_tokens"] = json!(512);
         body["temperature"] = json!(0.8);
         body["top_p"] = json!(0.9);
+        body["stream"] = json!(false);
         body["store"] = json!(true);
         body.as_object_mut().unwrap().remove("instructions");
         request.body = serde_json::to_vec(&body).unwrap().into();
@@ -122,6 +123,49 @@ fn client(transport: Arc<RecordingTransport>) -> LlmClient {
     builder.build().unwrap()
 }
 
+#[tokio::test]
+async fn codex_search_retains_lite_tools_through_generation_auth_and_dispatch() {
+    let transport = Arc::new(RecordingTransport::default());
+    let mut configured = profile();
+    configured.base_url = "https://chatgpt.com/backend-api/codex".into();
+    configured.extra["web_search"] = json!("openai_responses");
+    let mut builder = LlmClientBuilder::with_transport(transport.clone(), &[configured])
+        .with_region(Region::International);
+    builder.register_authenticator(AuthStrategy::ChatGptOAuth, Arc::new(NoopChatGptAuth));
+    let client = builder.build().unwrap();
+    let mut search = request_with_exact_text();
+    search.set_hosted_web_search(Some(Default::default()));
+    let mut stream = client
+        .chat()
+        .stream(&search, &RequestOptions::default())
+        .await
+        .unwrap();
+    while let Some(event) = stream.next().await {
+        event.unwrap();
+    }
+    let requests = transport.requests.lock().unwrap();
+    let sent = &requests[0];
+    assert_eq!(sent.url, "https://chatgpt.com/backend-api/codex/responses");
+    let raw = String::from_utf8_lossy(&sent.body);
+    assert!(raw.contains(EXACT_WIRE));
+    // serde_json cannot decode lone surrogate values; inspect the SDK's
+    // semantic projection by using a display-only request for structure.
+    let readable = raw.replace(EXACT_WIRE, DISPLAY);
+    let body: Value = serde_json::from_str(&readable).unwrap();
+    assert!(body.get("tools").is_none());
+    assert_eq!(
+        body["input"][0]["tools"][0],
+        json!({"type":"web_search","external_web_access":true})
+    );
+    assert_eq!(body["input"][1]["content"][0]["text"], DISPLAY);
+    assert_eq!(body["store"], false);
+    assert!(body.get("max_output_tokens").is_none());
+    assert!(sent
+        .headers
+        .iter()
+        .any(|(name, value)| name == "x-openai-internal-codex-responses-lite" && value == "true"));
+}
+
 fn request() -> ChatRequest {
     serde_json::from_value(json!({
         "model":"gpt-test",
@@ -171,6 +215,7 @@ fn assert_generation_wire(body: &[u8], exact_text: bool) {
     assert!(value.get("temperature").is_none());
     assert!(value.get("top_p").is_none());
     assert_eq!(value["store"], false);
+    assert_eq!(value["stream"], true);
     assert_eq!(value["instructions"], "");
     assert_eq!(value["prompt_cache_key"], "retain-me");
     assert!(!raw.contains("utf16_code_units"));

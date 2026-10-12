@@ -833,7 +833,7 @@ impl ReceivedCall {
     /// Collect an ordinary response without decoding its semantic content.
     /// Resource cleanup is retained until after the observation is delivered.
     pub async fn collect(self) -> Result<CollectedResponse, LlmError> {
-        let response = if (200..300).contains(&self.response.status) {
+        let mut response = if (200..300).contains(&self.response.status) {
             HttpExecutor::collect_response(self.response, None).await?
         } else {
             HttpResponse {
@@ -842,6 +842,13 @@ impl ReceivedCall {
                 body: crate::transport::collect_error_body(self.response.body).await,
             }
         };
+        if self.call.mode == RequestMode::Complete {
+            super::executor::normalize_codex_completion(
+                &mut response,
+                self.call.prepared.codec.as_ref(),
+                &self.call.prepared.context,
+            )?;
+        }
         let usage = self
             .call
             .prepared

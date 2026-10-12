@@ -93,6 +93,70 @@ fn each_adapter_emits_its_documented_hosted_search_shape() {
 }
 
 #[test]
+fn codex_search_uses_responses_lite_developer_tools() {
+    let mut p = profile("openai_responses", "open_ai_responses");
+    p.base_url = "https://chatgpt.com/backend-api/codex".into();
+    // Harness defers auth while encoding, retaining the endpoint.
+    let mut req = request();
+    req.system.push(lingxi_llm_client::protocol::SystemBlock {
+        text: "Search current sources".into(),
+    });
+    req.tools.push(client_tool());
+    req.set_hosted_web_search(Some(WebSearchConfig {
+        allowed_domains: vec!["openai.com".into()],
+        ..Default::default()
+    }));
+    let context = wire_api::context(&p, "m", &RequestOptions::default());
+    let http = OpenAiResponsesCodec
+        .encode_request(lingxi_llm_client::EncodeRequest::new(&req), &context)
+        .unwrap();
+    let body: Value = serde_json::from_slice(&http.body).unwrap();
+    assert!(body.get("tools").is_none());
+    assert_eq!(body["input"][0]["type"], "additional_tools");
+    assert_eq!(body["input"][0]["role"], "developer");
+    assert_eq!(body["input"][0]["tools"][0]["type"], "namespace");
+    assert_eq!(
+        body["input"][0]["tools"][0]["tools"][0]["name"],
+        "lookup_local"
+    );
+    assert_eq!(
+        body["input"][0]["tools"][1],
+        json!({
+            "type":"web_search", "external_web_access":true,
+            "filters":{"allowed_domains":["openai.com"]}
+        })
+    );
+    assert_eq!(body["instructions"], "");
+    assert_eq!(body["input"][1]["role"], "developer");
+    assert_eq!(
+        body["input"][1]["content"][0]["text"],
+        "Search current sources"
+    );
+    assert_eq!(body["input"][2]["role"], "user");
+    assert_eq!(body["parallel_tool_calls"], false);
+    assert_eq!(
+        body["client_metadata"]["ws_request_header_x_openai_internal_codex_responses_lite"],
+        "true"
+    );
+    let websocket: Value =
+        serde_json::from_slice(&lingxi_llm_client::websocket::request_payload(&http.body).unwrap())
+            .unwrap();
+    assert_eq!(websocket["type"], "response.create");
+    assert_eq!(websocket["input"], body["input"]);
+    assert_eq!(websocket["client_metadata"], body["client_metadata"]);
+    assert!(http
+        .headers
+        .iter()
+        .any(|(name, value)| name == "x-openai-internal-codex-responses-lite" && value == "true"));
+
+    req.set_hosted_web_search(None);
+    let plain = encode(&req, &p).unwrap();
+    assert_eq!(plain["tools"][0]["type"], "function");
+    assert_eq!(plain["input"][0]["role"], "user");
+    assert_eq!(plain["instructions"], "Search current sources");
+}
+
+#[test]
 fn explicit_search_adapter_is_preserved_for_known_provider_identities() {
     for &(adapter, protocol) in ADAPTERS {
         let configured = profile(adapter, protocol);
