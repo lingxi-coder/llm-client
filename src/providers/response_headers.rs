@@ -764,6 +764,25 @@ pub fn stream_metadata(headers: &[(String, String)]) -> Value {
     }
 }
 
+/// Response-local stream metadata, including the provider's HTTP request id.
+/// Keeping this beside the stream prevents concurrent auxiliary calls from
+/// borrowing a different call's last-request-id value from their host.
+#[must_use]
+pub fn stream_metadata_for_route(
+    protocol: ProtocolFamily,
+    provider_id: &str,
+    headers: &[(String, String)],
+) -> Value {
+    let mut metadata = stream_metadata(headers);
+    if let Some(request_id) = response_request_id(protocol, provider_id, headers) {
+        if !metadata.is_object() {
+            metadata = Value::Object(Map::new());
+        }
+        metadata["llm_client"] = serde_json::json!({"http_request_id": request_id});
+    }
+    metadata
+}
+
 fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()

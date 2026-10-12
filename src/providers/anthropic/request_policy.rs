@@ -235,6 +235,10 @@ impl AnthropicContextManagement {
 #[derive(Debug, Clone)]
 pub struct AnthropicRequestPolicy {
     pub request_kind: AnthropicRequestKind,
+    /// Preserve an explicitly empty parent tool prefix for cache-safe forks.
+    pub explicit_empty_tools: bool,
+    /// Preserve utility callers that supplied plain string message content.
+    pub plain_text_message_content: bool,
     /// Source-backed object spread supplied by the host. Unknown provider
     /// values stay in their original JSON representation until serialization.
     pub extra_body: JsonPayload,
@@ -251,6 +255,8 @@ impl Default for AnthropicRequestPolicy {
     fn default() -> Self {
         Self {
             request_kind: AnthropicRequestKind::Main,
+            explicit_empty_tools: false,
+            plain_text_message_content: false,
             extra_body: JsonPayload::parse("{}").expect("empty object is valid JSON"),
             body_betas: Vec::new(),
             effort: None,
@@ -393,6 +399,48 @@ impl AnthropicRequestPolicy {
         let explicit_extra = source_object_fields(&self.extra_body)?;
         let body_extra = beta_body(self.extra_body.clone(), &self.body_betas)?;
         let _has_body_extra = !source_object_fields(&body_extra)?.is_empty();
+        if self.explicit_empty_tools {
+            if body.raw_source_at("/tools").is_none() {
+                set_object_field_source(
+                    body,
+                    "tools",
+                    &JsonPayload::parse("[]").expect("empty array"),
+                )?;
+            }
+        }
+        if self.plain_text_message_content {
+            if let Some(mut messages) = body
+                .payload_at("/messages")
+                .and_then(|value| value.array_items())
+            {
+                for (index, message) in messages.iter_mut().enumerate() {
+                    let text = message
+                        .payload_at("/content")
+                        .and_then(|value| value.array_items())
+                        .filter(|blocks| blocks.len() == 1)
+                        .and_then(|blocks| blocks.into_iter().next())
+                        .filter(|block| {
+                            source_object_fields(block).is_ok_and(|fields| fields.len() == 2)
+                                && block.string_at("/type").as_deref() == Some("text")
+                        })
+                        .and_then(|block| block.payload_at("/text"))
+                        .filter(|text| text.kind_at("") == Some(FlatJsonKind::String));
+                    if let Some(text) = text {
+                        set_object_field_source(message, "content", &text)?;
+                        if let Some(units) =
+                            string_overrides.remove(&format!("/messages/{index}/content/0/text"))
+                        {
+                            string_overrides.insert(format!("/messages/{index}/content"), units);
+                        }
+                    }
+                }
+                let messages = JsonPayload::array_from_items(
+                    &messages,
+                    crate::exact_json::JsonEncoding::JavaScript,
+                )?;
+                set_object_field_source(body, "messages", &messages)?;
+            }
+        }
         let context_beta = "context-management-2025-06-27";
         let context_admitted = headers
             .iter()
