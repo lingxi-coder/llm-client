@@ -1395,9 +1395,9 @@ pub fn classifier_native_base_url(value: &str) -> bool {
 /// Native wks key shape, applied only to a captured API-key credential. The
 /// caller owns source selection and excludes managed-login credentials.
 pub fn classifier_native_api_key(value: &str) -> bool {
-    !std::env::var("ANTHROPIC_AUTH_TOKEN")
+    std::env::var("ANTHROPIC_AUTH_TOKEN")
         .ok()
-        .is_some_and(|token| !token.is_empty())
+        .is_none_or(|token| token.is_empty())
         && value.starts_with("sk-ant-api")
 }
 

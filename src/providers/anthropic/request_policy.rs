@@ -399,14 +399,12 @@ impl AnthropicRequestPolicy {
         let explicit_extra = source_object_fields(&self.extra_body)?;
         let body_extra = beta_body(self.extra_body.clone(), &self.body_betas)?;
         let _has_body_extra = !source_object_fields(&body_extra)?.is_empty();
-        if self.explicit_empty_tools {
-            if body.raw_source_at("/tools").is_none() {
-                set_object_field_source(
-                    body,
-                    "tools",
-                    &JsonPayload::parse("[]").expect("empty array"),
-                )?;
-            }
+        if self.explicit_empty_tools && body.raw_source_at("/tools").is_none() {
+            set_object_field_source(
+                body,
+                "tools",
+                &JsonPayload::parse("[]").expect("empty array"),
+            )?;
         }
         if self.plain_text_message_content {
             if let Some(mut messages) = body
