@@ -3,8 +3,8 @@ use bytes::Bytes;
 use futures::{stream, StreamExt};
 use lingxi_llm_client::{
     protocol::{
-        AuthStrategy, ChatRequest, LlmError, NativeExtension, ProviderProfile, Region, Secret,
-        UsageState, WebSearchConfig,
+        AuthStrategy, ChatRequest, JsonPayload, LlmError, NativeExtension, ProviderProfile, Region,
+        Secret, UsageState, WebSearchConfig,
     },
     providers::openai::codex_search::CodexSearchRequest,
     HttpRequest, LlmClient, LlmClientBuilder, RequestMode, RequestOptions, StreamResponse,
@@ -61,7 +61,7 @@ fn request() -> ChatRequest {
     request.native_options.push(
         NativeExtension::from_typed(CodexSearchRequest {
             id: "search-session".into(),
-            query: "武汉 今日天气".into(),
+            query: JsonPayload::string("武汉 今日天气"),
         })
         .unwrap(),
     );
@@ -154,6 +154,12 @@ async fn standalone_search_keeps_native_wire_shape_auth_and_real_sources() {
             wire.url,
             "https://chatgpt.com/backend-api/codex/alpha/search"
         );
+        let expected_body = if deferred {
+            r#"{"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},"settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":{"blocked_domains":["blocked.example"]}},"max_output_tokens":4096}"#
+        } else {
+            r#"{"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},"settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":{"allowed_domains":["example.com"]}},"max_output_tokens":4096}"#
+        };
+        assert_eq!(std::str::from_utf8(&wire.body).unwrap(), expected_body);
         let body: Value = serde_json::from_slice(&wire.body).unwrap();
         assert_eq!(
             body,
@@ -172,7 +178,7 @@ async fn standalone_search_keeps_native_wire_shape_auth_and_real_sources() {
 
 #[tokio::test]
 async fn standalone_rejects_streams_other_endpoints_and_invalid_queries_before_dispatch() {
-    for case in 0..5 {
+    for case in 0..6 {
         let http = transport(200, json!({"output":"unused"}));
         let mut p = profile();
         let mut r = request();
@@ -182,7 +188,7 @@ async fn standalone_rejects_streams_other_endpoints_and_invalid_queries_before_d
         if case == 1 {
             r.native_options = vec![NativeExtension::from_typed(CodexSearchRequest {
                 id: "id".into(),
-                query: " ".into(),
+                query: JsonPayload::string(" "),
             })
             .unwrap()];
         }
@@ -195,6 +201,13 @@ async fn standalone_rejects_streams_other_endpoints_and_invalid_queries_before_d
         }
         if case == 4 {
             r.tool_choice = lingxi_llm_client::protocol::ToolChoice::None;
+        }
+        if case == 5 {
+            r.native_options = vec![NativeExtension::new(
+                "openai.codex_search.v1",
+                JsonPayload::parse(r#"{"id":"id","query":1}"#).unwrap(),
+            )
+            .unwrap()];
         }
         let mode = if case == 2 {
             RequestMode::Stream
@@ -245,4 +258,26 @@ async fn standalone_metadata_and_text_keep_exact_source_without_recursive_projec
     let metadata = response.web_search.unwrap().metadata;
     assert!(metadata.as_json_source().contains(&future));
     assert!(metadata.as_json_source().contains(r#"\ud801"#));
+}
+
+#[tokio::test]
+async fn standalone_query_keeps_unpaired_utf16_units_on_the_wire() {
+    let http = transport(200, json!({"output":"source","results":[]}));
+    let mut request = request();
+    request.native_options = vec![NativeExtension::from_typed(CodexSearchRequest {
+        id: "source-query".into(),
+        query: JsonPayload::string_from_utf16_code_units(&[b'A' as u16, 0xD800, b'B' as u16]),
+    })
+    .unwrap()];
+
+    client(http.clone(), profile())
+        .chat()
+        .complete_in("codex", &request, &options())
+        .await
+        .unwrap();
+
+    let requests = http.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    let wire = std::str::from_utf8(&requests[0].body).unwrap();
+    assert!(wire.contains(r#""q":"A\ud800B""#), "{wire}");
 }

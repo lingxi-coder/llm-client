@@ -4,26 +4,48 @@ use crate::codecs::{
     CodecContext,
 };
 use crate::protocol::{
-    ChatRequest, ChatResponse, ConversationMessage, LlmError, MessageRole, NativeType,
+    ChatRequest, ChatResponse, ConversationMessage, JsonPayload, LlmError, MessageRole, NativeType,
     ProviderProfile, StopReason, WebCitation, WebSearchConfig, WebSearchResult,
 };
 use crate::response_json::{content_block, DecodedText, FlatJsonKind, ResponseJsonScanner};
 use crate::transport::HttpResponse;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodexSearchRequest {
     pub id: String,
-    pub query: String,
+    /// The exact JSON string sent to the search endpoint. A JSON source
+    /// carrier is required because JavaScript queries may contain lone UTF-16
+    /// units that Rust `String` cannot represent.
+    pub query: JsonPayload,
 }
 impl NativeType for CodexSearchRequest {
     const FORMAT: &'static str = "openai.codex_search.v1";
 }
 impl CodexSearchRequest {
     pub fn validate(&self) -> Result<(), LlmError> {
-        if self.id.trim().is_empty() || self.query.trim().chars().count() < 2 {
+        let Some(query_units) = self.query.root_string_code_units() else {
+            return Err(LlmError::InvalidRequest {
+                message: "Codex search requires an id and a query of at least two characters"
+                    .into(),
+            });
+        };
+        // For well-formed text this retains the prior `trim().chars().count()`
+        // rule. An unpaired unit counts as one validation character only; the
+        // request body below still uses the untouched source payload.
+        let query_chars = std::char::decode_utf16(query_units)
+            .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect::<Vec<_>>();
+        let first = query_chars
+            .iter()
+            .position(|character| !character.is_whitespace())
+            .unwrap_or(query_chars.len());
+        let last = query_chars
+            .iter()
+            .rposition(|character| !character.is_whitespace())
+            .map_or(first, |index| index + 1);
+        if self.id.trim().is_empty() || last.saturating_sub(first) < 2 {
             return Err(LlmError::InvalidRequest {
                 message: "Codex search requires an id and a query of at least two characters"
                     .into(),
@@ -83,30 +105,70 @@ pub(crate) fn encode<'a>(
             message: "Codex standalone search cannot combine generation tools".into(),
         });
     }
-    let mut body = json!({
-        "id": search.id, "model":context.request_model,
-        "commands":{"search_query":[{"q":search.query}]},
-        "settings":{"external_web_access":true,"allowed_callers":["direct"]}
-    });
+    fn object(fields: &[(&str, JsonPayload)]) -> Result<JsonPayload, LlmError> {
+        let mut object = JsonPayload::parse("{}").expect("empty object is valid JSON");
+        for (name, value) in fields {
+            object = object.with_object_field(name, value)?;
+        }
+        Ok(object)
+    }
+    let query_row = object(&[("q", search.query.clone())])?;
+    let search_query =
+        JsonPayload::array_from_items(&[query_row], crate::exact_json::JsonEncoding::JavaScript)?;
+    let commands = object(&[("search_query", search_query)])?;
+    let callers = JsonPayload::array_from_items(
+        &[JsonPayload::string("direct")],
+        crate::exact_json::JsonEncoding::JavaScript,
+    )?;
+    let mut settings = object(&[
+        (
+            "external_web_access",
+            JsonPayload::parse("true").expect("true is valid JSON"),
+        ),
+        ("allowed_callers", callers),
+    ])?;
     if !config.allowed_domains.is_empty() || !config.blocked_domains.is_empty() {
-        let mut filters = json!({});
+        let mut filter_fields = Vec::new();
         if !config.allowed_domains.is_empty() {
-            filters["allowed_domains"] = json!(config.allowed_domains);
+            filter_fields.push((
+                "allowed_domains",
+                JsonPayload::array_from_items(
+                    &config.allowed_domains,
+                    crate::exact_json::JsonEncoding::JavaScript,
+                )?,
+            ));
         }
         if !config.blocked_domains.is_empty() {
-            filters["blocked_domains"] = json!(config.blocked_domains);
+            filter_fields.push((
+                "blocked_domains",
+                JsonPayload::array_from_items(
+                    &config.blocked_domains,
+                    crate::exact_json::JsonEncoding::JavaScript,
+                )?,
+            ));
         }
-        body["settings"]["filters"] = filters;
+        let filters = object(&filter_fields)?;
+        settings = settings.with_object_field("filters", &filters)?;
     }
+    let mut body_fields = vec![
+        ("id", JsonPayload::string(&search.id)),
+        ("model", JsonPayload::string(&context.request_model)),
+        ("commands", commands),
+        ("settings", settings),
+    ];
     if let Some(tokens) = request.max_tokens {
-        body["max_output_tokens"] = json!(tokens);
+        body_fields.push((
+            "max_output_tokens",
+            JsonPayload::parse(&tokens.to_string()).expect("integer token limit is valid JSON"),
+        ));
     }
+    let body = object(&body_fields)?;
     let mut headers = vec![("Content-Type".into(), "application/json".into())];
     let _ = crate::wire_options::merge_headers(profile, &mut headers);
     Ok(Some(WireRequest::new(
         format!("{}/alpha/search", profile.base_url.trim_end_matches('/')),
         headers,
-        WireValue::from(body),
+        WireValue::owned_raw_json(body),
     )))
 }
 
