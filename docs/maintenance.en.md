@@ -17,7 +17,7 @@ Architecture changes also require `cargo test --all-features --locked`, independ
 
 Preserve model `features` and verified `pricing.rules` during catalog refreshes. Effort is not a unit-price dimension. Fast uses only model-specific published multipliers or fixed rates; preserve affected buckets, currency, context bands, validity dates, sources and verification dates. Leave unverified fast prices unset.
 
-## Publishing 0.2.0
+## Publishing the current crate version (currently 0.3.0)
 
 The public client API is in `lingxi-llm-client`; four renamed transport forks are separate workspace packages used to verify the local dependency closure. CI runs Clippy on all SDK targets with `--no-deps`; the workspace package gate separately builds and verifies all five archives, without applying the SDK's lint policy to vendored upstream sources. Local workspace packaging does not establish that crates.io serves those fork versions. Publishing the client requires the four matching fork versions to be available from crates.io first, plus permission and network access. There is no automated publishing workflow.
 

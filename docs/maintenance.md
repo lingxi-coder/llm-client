@@ -17,7 +17,7 @@
 
 更新目录时保留各模型的 `features` 和经过核验的 `pricing.rules`：effort 不作为单价维度，fast 仅使用该模型的官方倍率或独立费率；保留适用计费桶、币种、上下文区间、有效时间、来源及核验日期。未核实的 fast 价格留空。
 
-## 发布 0.2.0
+## 发布当前 crate 版本（目前为 0.3.0）
 
 公共客户端 API 位于 `lingxi-llm-client`；四个重命名的 transport fork 是独立 workspace package，用于验证本地依赖闭包。CI 使用 `--no-deps` 对 SDK 的全部目标运行 Clippy；workspace package 检查会单独构建并验证全部五个归档，不会把 SDK 的 lint 策略应用到 vendored 上游源码。本地 workspace 打包不能证明 crates.io 已提供这些 fork 版本。发布客户端前，四个匹配版本必须先能从 crates.io 获取，并且需要发布权限及可用的网络连接。本仓库没有自动发布工作流。
 

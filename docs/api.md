@@ -377,7 +377,8 @@ use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, LlmError, Se
 use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
-    let profiles = builtin_providers()?;
+    let profiles = builtin_providers()?.into_iter()
+        .filter(|profile| profile.profile_name == "glm").collect::<Vec<_>>();
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;

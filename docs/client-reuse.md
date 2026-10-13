@@ -15,7 +15,9 @@ use lingxi_llm_client::{builtin_catalog, LlmClientBuilder};
 use lingxi_llm_client::protocol::Region;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let (client, config) = LlmClientBuilder::new(builtin_catalog()?)?
+let profiles = builtin_catalog()?.iter()
+    .filter(|profile| profile.profile_name == "openai").cloned().collect::<Vec<_>>();
+let (client, config) = LlmClientBuilder::new(&profiles)?
     .with_region(Region::International)
     .build_managed()?;
 config.set_config_dir("./config").await?;
