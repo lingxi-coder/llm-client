@@ -87,8 +87,11 @@ impl WireCodec for OpenAiResponsesCodec {
     ) -> Result<ChatResponse, LlmError> {
         if (200..300).contains(&resp.status)
             && crate::providers::openai::codex_search::supports(context.profile())
-            && crate::response_json::ResponseJsonScanner::parse(&resp.body, "invalid Codex search response")
-                .is_ok_and(|body| body.string_at("/output").is_some())
+            && crate::response_json::ResponseJsonScanner::parse(
+                &resp.body,
+                "invalid Codex search response",
+            )
+            .is_ok_and(|body| body.string_at("/output").is_some())
         {
             return crate::providers::openai::codex_search::decode(resp).map(|mut response| {
                 response.model = context.request_model.clone();

@@ -136,8 +136,14 @@ async fn codex_generation_rejects_hosted_search_before_dispatch() {
     let client = builder.build().unwrap();
     let mut search = request_with_exact_text();
     search.set_hosted_web_search(Some(Default::default()));
-    let result = client.chat().stream(&search, &RequestOptions::default()).await;
-    assert!(matches!(result, Err(LlmError::UnsupportedCapability { .. })));
+    let result = client
+        .chat()
+        .stream(&search, &RequestOptions::default())
+        .await;
+    assert!(matches!(
+        result,
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
     assert!(transport.requests.lock().unwrap().is_empty());
 }
 

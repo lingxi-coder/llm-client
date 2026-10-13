@@ -558,7 +558,11 @@ impl lingxi_llm_client::transport::WebSocketConnection for WsConnection {
                 bytes
             }
         }));
-        Ok(StreamResponse { status: 200, headers: vec![], body: stream::iter(frames).boxed() })
+        Ok(StreamResponse {
+            status: 200,
+            headers: vec![],
+            body: stream::iter(frames).boxed(),
+        })
     }
     async fn close(&mut self) -> Result<(), LlmError> {
         Ok(())
@@ -583,7 +587,10 @@ async fn check_websocket_event_framing(multiline: bool) {
         .build()
         .unwrap();
     let sent = Arc::new(Mutex::new(Vec::new()));
-    let mut socket = WsConnection { sent: sent.clone(), multiline };
+    let mut socket = WsConnection {
+        sent: sent.clone(),
+        multiline,
+    };
     let received = client
         .prepare_on(
             "primary",
