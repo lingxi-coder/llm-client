@@ -44,6 +44,7 @@ impl lingxi_llm_client::client::options::RequestFinalizer for ReintroduceChatGpt
         body["max_output_tokens"] = json!(512);
         body["temperature"] = json!(0.8);
         body["top_p"] = json!(0.9);
+        body["stream"] = json!(false);
         body["store"] = json!(true);
         body.as_object_mut().unwrap().remove("instructions");
         request.body = serde_json::to_vec(&body).unwrap().into();
@@ -121,6 +122,23 @@ fn client(transport: Arc<RecordingTransport>) -> LlmClient {
         .with_region(Region::International);
     builder.register_authenticator(AuthStrategy::ChatGptOAuth, Arc::new(NoopChatGptAuth));
     builder.build().unwrap()
+}
+
+#[tokio::test]
+async fn codex_generation_rejects_hosted_search_before_dispatch() {
+    let transport = Arc::new(RecordingTransport::default());
+    let mut configured = profile();
+    configured.base_url = "https://chatgpt.com/backend-api/codex".into();
+    configured.extra["web_search"] = json!("openai_responses");
+    let mut builder = LlmClientBuilder::with_transport(transport.clone(), &[configured])
+        .with_region(Region::International);
+    builder.register_authenticator(AuthStrategy::ChatGptOAuth, Arc::new(NoopChatGptAuth));
+    let client = builder.build().unwrap();
+    let mut search = request_with_exact_text();
+    search.set_hosted_web_search(Some(Default::default()));
+    let result = client.chat().stream(&search, &RequestOptions::default()).await;
+    assert!(matches!(result, Err(LlmError::UnsupportedCapability { .. })));
+    assert!(transport.requests.lock().unwrap().is_empty());
 }
 
 fn request() -> ChatRequest {
@@ -202,6 +220,7 @@ fn assert_generation_wire(body: &[u8], exact_text: bool) {
     assert!(value.get("temperature").is_none());
     assert!(value.get("top_p").is_none());
     assert_eq!(value["store"], false);
+    assert_eq!(value["stream"], true);
     assert_eq!(value["instructions"], "");
     assert_eq!(value["prompt_cache_key"], "retain-me");
     assert!(!raw.contains("utf16_code_units"));

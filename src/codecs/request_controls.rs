@@ -9,6 +9,16 @@ pub(super) fn apply(
     family: P,
     body: &mut Map<String, Value>,
 ) -> Result<(), LlmError> {
+    if family != P::OpenAiResponses
+        && req
+            .native_options
+            .iter()
+            .any(|value| value.is::<crate::providers::openai::codex_search::CodexSearchRequest>())
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message: "Codex standalone search requires the Responses protocol".into(),
+        });
+    }
     let controls = &req.controls;
     if let (Some(previous), Some(scoped)) =
         (&controls.responses.previous_response_id, &req.continuation)

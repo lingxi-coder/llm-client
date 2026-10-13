@@ -40,6 +40,7 @@ pub fn chatgpt_body(body: &mut serde_json::Value) {
             body.remove(key);
         }
         body.insert("store".into(), false.into());
+        body.insert("stream".into(), true.into());
         body.entry("instructions").or_insert_with(|| "".into());
     }
 }
@@ -54,18 +55,22 @@ pub(crate) fn chatgpt_source_body(
     };
     let mut fields = Vec::new();
     let mut has_store = false;
+    let mut has_stream = false;
     let mut has_instructions = false;
     for entry in entries {
         let key = String::from_utf16(entry.key_units).ok();
         if matches!(
             key.as_deref(),
-            Some("max_output_tokens" | "temperature" | "top_p")
+            Some("max_output_tokens" | "metadata" | "temperature" | "top_p")
         ) {
             continue;
         }
         let source = if key.as_deref() == Some("store") {
             has_store = true;
             "false".to_owned()
+        } else if key.as_deref() == Some("stream") {
+            has_stream = true;
+            "true".to_owned()
         } else {
             if key.as_deref() == Some("instructions") {
                 has_instructions = true;
@@ -79,6 +84,9 @@ pub(crate) fn chatgpt_source_body(
     }
     if !has_store {
         fields.push(("store".encode_utf16().collect(), "false".into()));
+    }
+    if !has_stream {
+        fields.push(("stream".encode_utf16().collect(), "true".into()));
     }
     if !has_instructions {
         fields.push(("instructions".encode_utf16().collect(), "\"\"".into()));

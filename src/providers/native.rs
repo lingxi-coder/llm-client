@@ -150,6 +150,11 @@ fn validate_request_options(options: &[NativeExtension]) -> Result<(), LlmError>
             });
         }
         match format {
+            super::openai::codex_search::CodexSearchRequest::FORMAT => {
+                extension
+                    .decode::<super::openai::codex_search::CodexSearchRequest>()?
+                    .validate()?;
+            }
             super::anthropic::native::AnthropicRequestOptions::FORMAT => {
                 extension.decode::<super::anthropic::native::AnthropicRequestOptions>()?;
             }

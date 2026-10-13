@@ -670,9 +670,17 @@ impl PreparedCall {
             .map(|frame| {
                 frame.map(|bytes| {
                     let mut sse = Vec::with_capacity(bytes.len() + 8);
-                    sse.extend_from_slice(b"data: ");
-                    sse.extend_from_slice(&bytes);
-                    sse.extend_from_slice(b"\n\n");
+                    // A WebSocket message is one JSON event, even when its
+                    // representation spans lines. Prefix every line so the
+                    // SSE splitter retains the entire event rather than only
+                    // the opening line. CRLF and blank lines are valid JSON
+                    // whitespace and must not terminate the synthetic event.
+                    for line in bytes.split(|byte| *byte == b'\n') {
+                        sse.extend_from_slice(b"data: ");
+                        sse.extend_from_slice(line.strip_suffix(b"\r").unwrap_or(line));
+                        sse.push(b'\n');
+                    }
+                    sse.push(b'\n');
                     sse.into()
                 })
             })
@@ -798,7 +806,7 @@ impl ReceivedCall {
     /// Collect an ordinary response without decoding its semantic content.
     /// Resource cleanup is retained until after the observation is delivered.
     pub async fn collect(self) -> Result<CollectedResponse, LlmError> {
-        let response = if (200..300).contains(&self.response.status) {
+        let mut response = if (200..300).contains(&self.response.status) {
             HttpExecutor::collect_response(self.response, None).await?
         } else {
             HttpResponse {
@@ -807,6 +815,13 @@ impl ReceivedCall {
                 body: crate::transport::collect_error_body(self.response.body).await,
             }
         };
+        if self.call.mode == RequestMode::Complete {
+            super::executor::normalize_codex_completion(
+                &mut response,
+                self.call.prepared.codec.as_ref(),
+                &self.call.prepared.context,
+            )?;
+        }
         let usage = self
             .call
             .prepared

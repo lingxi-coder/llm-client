@@ -95,6 +95,15 @@ fn each_adapter_emits_its_documented_hosted_search_shape() {
 }
 
 #[test]
+fn codex_generation_cannot_execute_hosted_search() {
+    let mut p = profile("openai_responses", "open_ai_responses");
+    p.base_url = "https://chatgpt.com/backend-api/codex".into();
+    assert!(
+        matches!(encode(&request(), &p), Err(LlmError::UnsupportedCapability { message }) if message.contains("standalone CodexSearchRequest"))
+    );
+}
+
+#[test]
 fn explicit_search_adapter_is_preserved_for_known_provider_identities() {
     for &(adapter, protocol) in ADAPTERS {
         let configured = profile(adapter, protocol);

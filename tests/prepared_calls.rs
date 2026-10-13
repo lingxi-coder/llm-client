@@ -476,8 +476,9 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
     let wire = std::str::from_utf8(bytes).unwrap();
     assert!(wire.contains("\\ud800"), "{wire}");
     assert!(wire.contains("\"store\":false"), "{wire}");
+    assert!(wire.contains("\"stream\":true"), "{wire}");
     assert!(wire.contains("\"instructions\":\"\\ud801\""), "{wire}");
-    assert!(wire.contains("\\ud802"), "{wire}");
+    assert!(!wire.contains("\\ud802"), "{wire}");
     assert!(!wire.contains("\\ud803"), "{wire}");
     assert!(!wire.contains("\\ud804"), "{wire}");
     for removed in ["max_output_tokens", "temperature", "top_p"] {
@@ -540,15 +541,24 @@ async fn selected_prices_survive_removing_the_profile_during_an_attempt() {
 
 struct WsConnection {
     sent: Arc<Mutex<Vec<Bytes>>>,
+    multiline: bool,
 }
 #[async_trait]
 impl lingxi_llm_client::transport::WebSocketConnection for WsConnection {
     async fn send(&mut self, body: Bytes) -> Result<StreamResponse, LlmError> {
         self.sent.lock().unwrap().push(body);
-        Ok(StreamResponse { status: 200, headers: vec![], body: stream::iter([
+        let frames = [
             Ok(Bytes::from_static(br#"{"type":"response.created","response":{"id":"r1","model":"wire"}}"#)),
             Ok(Bytes::from_static(br#"{"type":"response.completed","response":{"id":"r1","model":"wire","output":[],"usage":{"input_tokens":10,"output_tokens":2}}}"#)),
-        ]).boxed() })
+        ].map(|frame: Result<Bytes, LlmError>| frame.map(|bytes| {
+            if self.multiline {
+                let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                Bytes::from(serde_json::to_string_pretty(&value).unwrap().replace('\n', "\r\n\r\n"))
+            } else {
+                bytes
+            }
+        }));
+        Ok(StreamResponse { status: 200, headers: vec![], body: stream::iter(frames).boxed() })
     }
     async fn close(&mut self) -> Result<(), LlmError> {
         Ok(())
@@ -556,6 +566,15 @@ impl lingxi_llm_client::transport::WebSocketConnection for WsConnection {
 }
 #[tokio::test]
 async fn prepared_websocket_send_uses_one_response_create_and_decodes_usage() {
+    check_websocket_event_framing(false).await;
+}
+
+#[tokio::test]
+async fn prepared_websocket_preserves_multiline_json_events_and_blank_lines() {
+    check_websocket_event_framing(true).await;
+}
+
+async fn check_websocket_event_framing(multiline: bool) {
     let http = http(200, "{}", false);
     let mut profiles = profiles("open_ai_responses");
     profiles[0].supports_websockets = true;
@@ -564,7 +583,7 @@ async fn prepared_websocket_send_uses_one_response_create_and_decodes_usage() {
         .build()
         .unwrap();
     let sent = Arc::new(Mutex::new(Vec::new()));
-    let mut socket = WsConnection { sent: sent.clone() };
+    let mut socket = WsConnection { sent: sent.clone(), multiline };
     let received = client
         .prepare_on(
             "primary",
@@ -580,7 +599,11 @@ async fn prepared_websocket_send_uses_one_response_create_and_decodes_usage() {
     let mut stream = received
         .into_stream()
         .unwrap_or_else(|_| panic!("success stream"));
-    while stream.next_batch().await.is_some() {}
+    while let Some(batch) = stream.next_batch().await {
+        for event in batch.events {
+            event.unwrap();
+        }
+    }
     assert_eq!(stream.usage_report().state, UsageState::Complete);
     assert_eq!(stream.observed_usage().unwrap().output_tokens, 2);
     assert_eq!(http.sends.load(Ordering::SeqCst), 0);
