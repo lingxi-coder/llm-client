@@ -102,6 +102,9 @@ pub fn supports_with_config(
     profile: &crate::protocol::ProviderProfile,
     config: &crate::protocol::WebSearchConfig,
 ) -> bool {
+    if crate::providers::openai::codex_search::supports(profile) {
+        return crate::providers::openai::codex_search::validate_config(config).is_ok();
+    }
     let mut request = serde_json::from_value::<crate::protocol::ChatRequest>(
         json!({"model":"capability-probe", "messages":[]}),
     )

@@ -24,6 +24,10 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    req.validate_hosted_tools()?;
+    if let Some(request) = crate::providers::openai::codex_search::encode(req, profile, opts)? {
+        return Ok(request);
+    }
     let computer_tool = validate_computer_request(req, profile)?;
     if req.anthropic_mcp_servers().next().is_some() {
         return Err(LlmError::UnsupportedCapability {
@@ -32,7 +36,6 @@ pub fn request<'a>(
     }
     crate::providers::openai::prompt_cache::validate(req, opts)?;
     crate::providers::anthropic::code_execution::validate(req, opts)?;
-    req.validate_hosted_tools()?;
     crate::providers::openrouter::server_tools::validate(req, profile, None, false)?;
     let has_openrouter_tool_search = req.hosted_openrouter_tool_search().is_some();
     let openai_tool_search = req.hosted_openai_tool_search();
@@ -282,6 +285,12 @@ pub fn request<'a>(
     crate::codecs::structured::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     crate::wire_options::merge_headers(profile, &mut headers);
+
+    // Codex accepts generation only over SSE, including callers collecting
+    // a complete response. Hosts may have deferred OAuth during encoding.
+    if crate::providers::openai::search::codex_responses(profile) {
+        body.insert("stream".into(), json!(true));
+    }
 
     let url = if let Some(search) = req.hosted_file_search() {
         crate::providers::qwen::responses_policy::file_search_url(profile, &search.workspace_id)?

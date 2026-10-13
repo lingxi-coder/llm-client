@@ -158,6 +158,63 @@ fn remaining_timeout(
         .transpose()
 }
 
+/// Complete callers on Codex still receive SSE. Keep the terminal Responses
+/// JSON intact so the ordinary decoder and accounting retain native output,
+/// citations, usage and exact tool argument bytes.
+pub(super) fn normalize_codex_completion(
+    response: &mut HttpResponse,
+    codec: &dyn WireCodec,
+    context: &CodecContext,
+) -> Result<(), LlmError> {
+    let profile = context.profile();
+    if !(200..300).contains(&response.status)
+        || profile.protocol != crate::protocol::ProtocolFamily::OpenAiResponses
+        || !(profile.auth == crate::protocol::AuthStrategy::ChatGptOAuth
+            || crate::providers::openai::search::codex_responses(profile))
+        || response
+            .body
+            .iter()
+            .find(|byte| !byte.is_ascii_whitespace())
+            == Some(&b'{')
+    {
+        return Ok(());
+    }
+    let mut decoder = codec.stream_decoder(context);
+    decoder.set_response_headers(&response.headers);
+    decoder.set_response_status(response.status);
+    for event in decoder
+        .push_bytes(&response.body)
+        .into_iter()
+        .chain(decoder.finish())
+    {
+        event?;
+    }
+    #[derive(serde::Deserialize)]
+    struct Envelope<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+        #[serde(borrow)]
+        response: Option<&'a serde_json::value::RawValue>,
+    }
+    let mut splitter = crate::framing::sse::SseFrameSplitter::new();
+    let mut frames = splitter.push(&response.body)?;
+    frames.extend(splitter.finish()?);
+    for frame in frames {
+        let Ok(event) = serde_json::from_slice::<Envelope<'_>>(&frame) else {
+            continue;
+        };
+        if matches!(event.kind, "response.completed" | "response.incomplete") {
+            if let Some(terminal) = event.response {
+                response.body = bytes::Bytes::copy_from_slice(terminal.get().as_bytes());
+                return Ok(());
+            }
+        }
+    }
+    Err(LlmError::StreamInterrupted {
+        message: "Codex completion stream has no terminal response".into(),
+    })
+}
+
 fn apply_generation_body_policies(
     request: &ChatRequest,
     profile: &ProviderProfile,
@@ -859,7 +916,7 @@ impl<'client> RequestExecutor<'client> {
                 .with_provider_observation(backend.stream_observation(&context)),
             )));
         }
-        let response = if decision {
+        let mut response = if decision {
             HttpExecutor::collect_response_with_partial(response, None)
                 .await
                 .map_err(|(error, response)| {
@@ -870,6 +927,9 @@ impl<'client> RequestExecutor<'client> {
                 .await
                 .map_err(|error| AttemptFailure::new(error, None, files.clone()))?
         };
+        if let Err(error) = normalize_codex_completion(&mut response, codec.as_ref(), &context) {
+            return Err(AttemptFailure::new(error, Some(response), files));
+        }
         let mut decoded = match codec.decode_response(&response, &context) {
             Ok(decoded) => decoded,
             Err(error) => return Err(AttemptFailure::new(error, Some(response), files)),

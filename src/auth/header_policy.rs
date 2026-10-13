@@ -40,6 +40,7 @@ pub fn chatgpt_body(body: &mut serde_json::Value) {
             body.remove(key);
         }
         body.insert("store".into(), false.into());
+        body.insert("stream".into(), true.into());
         body.entry("instructions").or_insert_with(|| "".into());
     }
 }

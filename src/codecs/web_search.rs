@@ -195,7 +195,7 @@ pub(crate) fn apply_policy(
     body.insert("tool_choice".into(), choice);
     Ok(())
 }
-fn validate_domains(search: &WebSearchConfig) -> Result<(), LlmError> {
+pub(crate) fn validate_domains(search: &WebSearchConfig) -> Result<(), LlmError> {
     if !search.allowed_domains.is_empty() && !search.blocked_domains.is_empty() {
         return Err(invalid(
             "web search accepts allowed_domains or blocked_domains, not both",
