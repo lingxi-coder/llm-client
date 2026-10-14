@@ -161,11 +161,18 @@ pub struct NativeAnthropicContextInput {
     pub model_supports_context_1m: Option<bool>,
     /// Context window from a current Native dynamic-context observation.
     pub dynamic_context_window: Option<u64>,
+    /// Host-authorized suppression of the context-1m beta after a Native
+    /// refusal. The SDK applies it to the final encoded request before auth.
+    pub context_1m_beta_suppressed: bool,
     /// Exact membership in Native's planned `betas` list; this is not inferred
     /// from the eventual signed HTTP header.
     pub thinking_resumption_beta_requested: Option<bool>,
     /// Whether Native planned the 1M context beta for this request.
     pub context_1m_beta_requested: Option<bool>,
+    /// Exact membership in Native planned thinking-binding-controls beta header.
+    /// None means membership was not observed; the SDK does not infer it
+    /// from thinking settings or final wire headers.
+    pub native_thinking_binding_controls_beta_requested: Option<bool>,
 }
 
 /// Trusted request facts for Native Anthropic safeguards and current beta features.

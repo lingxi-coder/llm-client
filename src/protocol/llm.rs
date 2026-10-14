@@ -170,6 +170,18 @@ impl std::fmt::Debug for ProxyAuthHelperChallenge {
     }
 }
 
+/// Native 2.1.295 thinking-binding-controls refusal evidence, kept separate
+/// so the host can apply its first-party and retry-stage policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeThinkingBindingControlsErrorEvidence {
+    /// Native nNe: named beta/capability refusal or block_binding extra input.
+    pub explicit_refusal: bool,
+    /// Native aMt: exact TBC token appeared in the response text.
+    pub token_refusal: bool,
+    /// Native xL: response text contains the generic invalid-beta flag marker.
+    pub invalid_beta_flag: bool,
+}
+
 /// Source-backed Native Anthropic error facts attached to the selected route.
 /// These remain process-local and are never serialized with the error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +198,13 @@ pub struct NativeAnthropicErrorFacts {
     pub thinking_resumption_beta_requested: Option<bool>,
     /// Native Aet matched an HTTP 400 rejection of an actually sent beta.
     pub thinking_resumption_beta_refused: bool,
+    /// Exact host-observed planned membership of the Native
+    /// thinking-binding-controls beta on this request.
+    pub native_thinking_binding_controls_beta_requested: Option<bool>,
+    /// Source-backed nNe/aMt/xL facts, present only for a Native request that
+    /// planned the TBC beta and received an HTTP 400 response.
+    pub native_thinking_binding_controls_error_evidence:
+        Option<NativeThinkingBindingControlsErrorEvidence>,
     /// Exact response evidence needed by Native error consumers. This stays
     /// process-local with the other Native facts and is not serialized.
     pub response: Option<NativeAnthropicErrorResponse>,
@@ -1875,6 +1894,8 @@ mod tests {
             thinking_resumption_refused: false,
             thinking_resumption_beta_requested: None,
             thinking_resumption_beta_refused: false,
+            native_thinking_binding_controls_beta_requested: None,
+            native_thinking_binding_controls_error_evidence: None,
             response: None,
         };
         let error = LlmError::InvalidRequest {

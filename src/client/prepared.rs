@@ -407,6 +407,18 @@ impl RequestDraft {
             .context
             .set_native_anthropic_context_1m_beta_requested(requested);
     }
+    /// Record exact Native beta admission computed after initial draft
+    /// encoding. The value is retained for late header emission and response
+    /// error facts; it is not reconstructed from wire headers.
+    pub fn set_native_anthropic_thinking_binding_controls_beta_requested(
+        &mut self,
+        requested: Option<bool>,
+    ) {
+        self.call
+            .prepared
+            .context
+            .set_native_thinking_binding_controls_beta_requested(requested);
+    }
     /// Provide trusted selected-route facts for Native Anthropic request-id
     /// policy. The SDK applies the per-attempt stage while sealing and the
     /// fetch fallback immediately before dispatch.
@@ -506,6 +518,19 @@ impl RequestDraft {
                 }
             }
         }
+        if matches!(self.call.mode, RequestMode::Complete | RequestMode::Stream) {
+            super::executor::apply_native_thinking_binding_controls_beta(
+                &self.call.prepared.context,
+                &mut self.call.prepared.http.headers,
+            );
+        }
+        // Context-1m suppression runs after the final TBC header append, while
+        // preserving all unrelated final body and header source bytes.
+        super::executor::apply_native_context_1m_suppression(
+            &self.call.prepared.context,
+            &self.call.profile,
+            &mut self.call.prepared.http,
+        )?;
         self.call
             .prepared
             .backend
@@ -1079,6 +1104,38 @@ impl LlmClient {
 mod request_body_policy_tests {
     use super::*;
 
+    #[derive(Debug, Default)]
+    struct CaptureAuthenticator(std::sync::Mutex<Option<(Vec<(String, String)>, Vec<u8>)>>);
+
+    #[async_trait::async_trait]
+    impl crate::Authenticator for CaptureAuthenticator {
+        async fn apply(
+            &self,
+            request: &mut HttpRequest,
+            _profile: &ProviderProfile,
+            _credential: Option<&crate::protocol::Secret<String>>,
+        ) -> Result<(), LlmError> {
+            *self.0.lock().expect("capture lock") =
+                Some((request.headers.clone(), request.body.to_vec()));
+            request
+                .headers
+                .push(("x-test-authenticated".into(), "yes".into()));
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct UnusedTransport;
+
+    #[async_trait::async_trait]
+    impl Transport for UnusedTransport {
+        async fn send(&self, _request: HttpRequest) -> Result<StreamResponse, LlmError> {
+            Err(LlmError::Transport {
+                message: "the TBC draft test must not dispatch".into(),
+            })
+        }
+    }
+
     #[test]
     fn chatgpt_body_policy_is_generation_only() {
         use crate::protocol::{AuthStrategy, ProtocolFamily};
@@ -1108,5 +1165,106 @@ mod request_body_policy_tests {
             ProtocolFamily::OpenAiChat,
             RequestMode::Complete
         ));
+    }
+
+    #[tokio::test]
+    async fn post_encode_tbc_and_context_1m_facts_finalize_before_signing() {
+        use crate::client::options::RequestAuthenticator;
+        use crate::client::{LlmClientBuilder, NativeAnthropicContextInput};
+        use crate::protocol::{ConversationMessage, ProtocolFamily, Region};
+
+        let beta = crate::providers::anthropic::beta_repair::Beta::ThinkingBindingControls.header();
+
+        let profile: ProviderProfile = serde_json::from_value(serde_json::json!({
+            "provider_id": "bedrock",
+            "profile_name": "bedrock-tbc-draft-test",
+            "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "protocol": "bedrock_claude",
+            "auth": "api_key",
+            "models": [{
+                "display_model": "wire-model",
+                "request_model": "wire-model",
+                "billing_model": "wire-model"
+            }],
+            "extra": {
+                "betas": ["configured-beta", beta, "context-1m-2025-08-07"],
+                "body": {"anthropic_beta": ["configured-body-beta", "context-1m-2025-08-07"]}
+            }
+        }))
+        .expect("Bedrock test profile");
+        assert_eq!(profile.protocol, ProtocolFamily::BedrockClaude);
+
+        let client = LlmClientBuilder::with_transport(
+            std::sync::Arc::new(UnusedTransport),
+            std::slice::from_ref(&profile),
+        )
+        .with_region(Region::International)
+        .build()
+        .expect("client with hosted codec");
+        let authenticator = std::sync::Arc::new(CaptureAuthenticator::default());
+        let options = RequestOptions {
+            native_anthropic_context: NativeAnthropicContextInput {
+                context_1m_beta_suppressed: true,
+                ..Default::default()
+            },
+            authenticator: Some(RequestAuthenticator(authenticator.clone())),
+            ..Default::default()
+        };
+
+        let mut request = ChatRequest::new("wire-model");
+        request
+            .messages
+            .push(ConversationMessage::user_text("hello"));
+        let mut draft = client
+            .prepare_draft_on(
+                &profile.profile_name,
+                &request,
+                &options,
+                RequestMode::Complete,
+            )
+            .await
+            .expect("prepared hosted draft");
+
+        assert!(draft.request().headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("anthropic-beta")
+                && value.split(',').any(|part| part.trim() == beta)
+        }));
+        // This is the late Host header producer, after codec encoding and all
+        // configured/inference beta sources have already been assembled.
+        draft.request_mut().headers.push((
+            "anthropic-beta".into(),
+            "host-late-beta,context-1m-2025-08-07".into(),
+        ));
+        draft.set_native_anthropic_thinking_binding_controls_beta_requested(Some(true));
+        let call = draft.seal().await.expect("seal and authenticate request");
+
+        let captured = authenticator
+            .0
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("authenticator saw request");
+        let beta_headers = captured
+            .0
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            beta_headers,
+            [
+                "configured-beta",
+                "host-late-beta,thinking-binding-controls-2026-08-01"
+            ]
+        );
+        let body = std::str::from_utf8(&captured.1).expect("request JSON");
+        assert!(body.contains("configured-body-beta"), "{body}");
+        assert!(!body.contains(beta), "{body}");
+        assert!(!body.contains("context-1m-2025-08-07"), "{body}");
+        assert!(call
+            .request()
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-test-authenticated" && value == "yes"));
     }
 }

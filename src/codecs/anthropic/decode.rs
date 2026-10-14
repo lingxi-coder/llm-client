@@ -41,22 +41,25 @@ pub fn response(
                 native_route.is_some() && resp.status == 529,
             );
             return Err(match native_route {
-                    Some((provider_id, protocol)) => error.with_native_anthropic_error(
-                        provider_text,
-                        native_error_facts(
-                            provider_id,
-                            protocol,
-                            resp.status,
-                            context.and_then(
-                                crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
-                            ).or(Some(false)),
-                            None,
-                            None,
-                            resp,
+                Some((provider_id, protocol)) => {
+                    let facts = native_error_facts(
+                        provider_id,
+                        protocol,
+                        resp.status,
+                        context.and_then(
+                            crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
+                        ).or(Some(false)),
+                        context.and_then(
+                            crate::codecs::CodecContext::native_thinking_binding_controls_beta_requested,
                         ),
-                    ),
-                    None => error.with_provider_error_text(provider_text),
-                });
+                        Some(&provider_text),
+                        None,
+                        resp,
+                    );
+                    error.with_native_anthropic_error(provider_text, facts)
+                }
+                None => error.with_provider_error_text(provider_text),
+            });
         }
         Err(error) => return Err(error),
     };
@@ -97,6 +100,9 @@ pub fn response(
                     context.and_then(
                         crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
                     ).or(Some(false)),
+                    context.and_then(
+                        crate::codecs::CodecContext::native_thinking_binding_controls_beta_requested,
+                    ),
                     native_text.as_ref(),
                     Some(&scanner),
                     resp,
@@ -645,6 +651,7 @@ fn native_error_facts(
     protocol: ProtocolFamily,
     status: u16,
     beta_requested: Option<bool>,
+    thinking_binding_controls_beta_requested: Option<bool>,
     native_text: Option<&crate::protocol::ProviderErrorText>,
     scanner: Option<&ResponseJsonScanner>,
     response: &HttpResponse,
@@ -661,6 +668,32 @@ fn native_error_facts(
             normalized_error_code,
             Some("dlp_request_denied" | "claude_code_version_too_old")
         );
+    let native_thinking_binding_controls_error_evidence = if status == 400
+        && thinking_binding_controls_beta_requested == Some(true)
+    {
+        native_text.map(|text| {
+                let message = text.display();
+                let has_protected_error =
+                    crate::providers::anthropic::beta_repair::prefix_rejected(status, &message)
+                        || crate::providers::anthropic::beta_repair::signature_rejected(
+                            status, &message,
+                        );
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence {
+                    explicit_refusal: !has_protected_error
+                        && crate::providers::anthropic::beta_repair::thinking_binding_controls_explicit_refusal(
+                            &message,
+                        ),
+                    token_refusal: !has_protected_error
+                        && message.contains(
+                            crate::providers::anthropic::beta_repair::Beta::ThinkingBindingControls
+                                .header(),
+                        ),
+                    invalid_beta_flag: message.to_lowercase().contains("invalid beta flag"),
+                }
+            })
+    } else {
+        None
+    };
     crate::protocol::NativeAnthropicErrorFacts {
         provider_id,
         protocol,
@@ -678,6 +711,8 @@ fn native_error_facts(
                         "beta_header:thinking-resumption-2026-07-17",
                     )
             }),
+        native_thinking_binding_controls_beta_requested: thinking_binding_controls_beta_requested,
+        native_thinking_binding_controls_error_evidence,
         response: Some(crate::protocol::NativeAnthropicErrorResponse {
             body: scanner
                 .and_then(|scanner| scanner.raw_source_at(""))
@@ -1145,6 +1180,135 @@ mod complete_response_validation_tests {
         assert!(facts.thinking_resumption_refused);
         assert_eq!(facts.thinking_resumption_beta_requested, Some(true));
         assert!(facts.thinking_resumption_beta_refused);
+    }
+
+    #[test]
+    fn native_tbc_error_evidence_matches_qee_classes_and_guards() {
+        let profile: crate::protocol::ProviderProfile = serde_json::from_value(json!({
+            "profile_name": "bedrock",
+            "provider_id": "bedrock",
+            "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "protocol": "bedrock_claude",
+            "auth": "none",
+            "models": [{
+                "display_model": "wire-model",
+                "request_model": "wire-model",
+                "billing_model": "wire-model"
+            }]
+        }))
+        .unwrap();
+        let decode = |status: u16, message: &str, requested: Option<bool>| {
+            let mut context = crate::codecs::CodecContext::new(
+                &profile,
+                "wire-model",
+                crate::codecs::RequestMode::Complete,
+            )
+            .with_native_anthropic_context(Default::default());
+            context.set_native_thinking_binding_controls_beta_requested(requested);
+            let body = format!(
+                r#"{{"message":{},"error":{{"type":"invalid_request_error","message":{}}}}}"#,
+                serde_json::to_string(message).unwrap(),
+                serde_json::to_string(message).unwrap()
+            );
+            let error = super::response(
+                &HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.into_bytes().into(),
+                },
+                Some(&context),
+                false,
+                false,
+            )
+            .unwrap_err();
+            let facts = error.native_anthropic_error_facts().unwrap();
+            (
+                facts.native_thinking_binding_controls_beta_requested,
+                facts.native_thinking_binding_controls_error_evidence,
+            )
+        };
+        let token = "thinking-binding-controls-2026-08-01";
+        for (message, expected) in [
+            (
+                format!("anthropic-beta rejected {token}"),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence {
+                    explicit_refusal: true,
+                    token_refusal: true,
+                    invalid_beta_flag: false,
+                },
+            ),
+            (
+                format!("server rejected token {token}"),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence {
+                    explicit_refusal: false,
+                    token_refusal: true,
+                    invalid_beta_flag: false,
+                },
+            ),
+            (
+                "thinking.adaptive.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted".into(),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence {
+                    explicit_refusal: true,
+                    token_refusal: false,
+                    invalid_beta_flag: false,
+                },
+            ),
+            (
+                "The backend reported INVALID BETA FLAG".into(),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence {
+                    explicit_refusal: false,
+                    token_refusal: false,
+                    invalid_beta_flag: true,
+                },
+            ),
+            (
+                "billing limit reached".into(),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence::default(),
+            ),
+            (
+                format!("thinking block is not created in this conversation; anthropic-beta rejected {token}"),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence::default(),
+            ),
+            (
+                format!("thinking.signature field required; anthropic-beta rejected {token}"),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence::default(),
+            ),
+            (
+                "thinking.adaptive.block_binding: Extra inputs are not permitted; thinking block is not created in this conversation".into(),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence::default(),
+            ),
+            (
+                "thinking.enabled.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted; thinking.signature field required".into(),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence::default(),
+            ),
+            (
+                "thinking.signature field required; invalid beta flag".into(),
+                crate::protocol::NativeThinkingBindingControlsErrorEvidence {
+                    explicit_refusal: false,
+                    token_refusal: false,
+                    invalid_beta_flag: true,
+                },
+            ),
+        ] {
+            let (requested, evidence) = decode(400, &message, Some(true));
+            assert_eq!(requested, Some(true));
+            assert_eq!(evidence, Some(expected), "message={message}");
+        }
+
+        for requested in [None, Some(false)] {
+            let (_, evidence) = decode(
+                400,
+                "anthropic-beta rejected thinking-binding-controls-2026-08-01",
+                requested,
+            );
+            assert_eq!(evidence, None, "requested={requested:?}");
+        }
+        let (_, evidence) = decode(
+            422,
+            "anthropic-beta rejected thinking-binding-controls-2026-08-01",
+            Some(true),
+        );
+        assert_eq!(evidence, None);
     }
 
     #[test]

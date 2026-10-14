@@ -22,6 +22,55 @@ use std::{future::Future, time::Duration};
 
 use crate::providers::dispatch::{self, ChatBackend};
 
+pub(super) fn apply_native_thinking_binding_controls_beta(
+    context: &CodecContext,
+    headers: &mut Vec<(String, String)>,
+) {
+    if context.native_thinking_binding_controls_beta_requested() != Some(true) {
+        return;
+    }
+    let beta = crate::providers::anthropic::beta_repair::Beta::ThinkingBindingControls.header();
+    for (_, value) in headers
+        .iter_mut()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+    {
+        let parts = value.split(',').collect::<Vec<_>>();
+        if parts.iter().any(|part| part.trim() == beta) {
+            *value = parts
+                .into_iter()
+                .filter(|part| part.trim() != beta)
+                .collect::<Vec<_>>()
+                .join(",");
+        }
+    }
+    if let Some((_, value)) = headers
+        .iter_mut()
+        .rev()
+        .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+    {
+        if !value.is_empty() {
+            value.push(',');
+        }
+        value.push_str(beta);
+    } else {
+        headers.push(("anthropic-beta".into(), beta.into()));
+    }
+}
+
+pub(super) fn apply_native_context_1m_suppression(
+    context: &CodecContext,
+    profile: &ProviderProfile,
+    request: &mut HttpRequest,
+) -> Result<(), LlmError> {
+    if context.native_anthropic_context_1m_beta_suppressed() {
+        crate::providers::anthropic::native_beta::suppress_context_1m_beta(
+            request,
+            profile.protocol,
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn request_authority(request_url: &str) -> Option<String> {
     let url = url::Url::parse(request_url).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -905,6 +954,12 @@ impl<'client> RequestExecutor<'client> {
                 http.body = body.into();
             }
         }
+        if authenticate && matches!(mode, RequestMode::Complete | RequestMode::Stream) {
+            apply_native_thinking_binding_controls_beta(&context, &mut http.headers);
+        }
+        // Suppress a refused context token after body policies and the final
+        // beta header append, before validation and authentication.
+        apply_native_context_1m_suppression(&context, profile, &mut http)?;
         backend.validate_prepared_body(http.body.len(), endpoint)?;
 
         validate_prepared_file_expirations(request, &prepared.uses, self.clock.now())?;
@@ -1424,6 +1479,302 @@ mod tests {
         assert!(is_attachment_capability_fallback(1, true, &error));
         assert!(!is_attachment_capability_fallback(0, true, &error));
         assert!(!is_attachment_capability_fallback(1, false, &error));
+    }
+
+    fn native_profile(protocol: &str, extra: serde_json::Value) -> ProviderProfile {
+        let (provider_id, base_url) = match protocol {
+            "bedrock_claude" => ("bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com"),
+            "vertex_claude" => (
+                "vertex",
+                "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
+            ),
+            "foundry_claude" => ("foundry", "https://foundry.example.test"),
+            _ => ("anthropic", "https://api.anthropic.com"),
+        };
+        serde_json::from_value(serde_json::json!({
+            "provider_id": provider_id,
+            "profile_name": "context-1m-suppression-test",
+            "base_url": base_url,
+            "protocol": protocol,
+            "auth": "none",
+            "models": [{
+                "display_model": "wire-model",
+                "request_model": "wire-model",
+                "billing_model": "wire-model"
+            }],
+            "extra": extra
+        }))
+        .expect("fixture profile")
+    }
+
+    fn native_hosted_request(
+        protocol: &str,
+        extra: serde_json::Value,
+        request: &ChatRequest,
+    ) -> (ProviderProfile, CodecContext, HttpRequest) {
+        use crate::codecs::anthropic::AnthropicMessagesCodec;
+        use crate::codecs::{EncodeRequest, RequestMode, WireCodec};
+        use crate::hosting::{BedrockClaudeCodec, FoundryClaudeCodec, VertexClaudeCodec};
+
+        let profile = native_profile(protocol, extra);
+        let context = CodecContext::new(&profile, "wire-model", RequestMode::Complete)
+            .with_native_anthropic_context(crate::client::NativeAnthropicContextInput {
+                context_1m_beta_suppressed: true,
+                ..Default::default()
+            });
+        let input = EncodeRequest::new(request);
+        let wire = match protocol {
+            "bedrock_claude" => BedrockClaudeCodec.encode_request(input, &context),
+            "vertex_claude" => VertexClaudeCodec.encode_request(input, &context),
+            "foundry_claude" => FoundryClaudeCodec.encode_request(input, &context),
+            "anthropic_messages" => AnthropicMessagesCodec.encode_request(input, &context),
+            _ => panic!("unsupported fixture protocol {protocol}"),
+        }
+        .expect("final hosted request");
+        (profile, context, wire)
+    }
+
+    #[derive(Debug, Default)]
+    struct CapturedSigningInput(std::sync::Mutex<Option<(Vec<(String, String)>, Vec<u8>)>>);
+
+    #[async_trait::async_trait]
+    impl crate::auth::Authenticator for CapturedSigningInput {
+        async fn apply(
+            &self,
+            request: &mut HttpRequest,
+            _profile: &ProviderProfile,
+            _credential: Option<&crate::protocol::Secret<String>>,
+        ) -> Result<(), LlmError> {
+            *self.0.lock().expect("capture lock") =
+                Some((request.headers.clone(), request.body.to_vec()));
+            request
+                .headers
+                .push(("x-test-signature".into(), "signed".into()));
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct AppendContext1mHeader;
+
+    impl crate::client::options::RequestFinalizer for AppendContext1mHeader {
+        fn finalize(
+            &self,
+            request: &mut HttpRequest,
+            _profile: &ProviderProfile,
+        ) -> Result<(), LlmError> {
+            request.headers.push((
+                "anthropic-beta".into(),
+                "host-finalizer-beta,context-1m-2025-08-07".into(),
+            ));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn late_tbc_append_then_context_suppression_is_idempotent_and_disjoint() {
+        use crate::client::NativeAnthropicContextInput;
+        use crate::codecs::RequestMode;
+
+        let beta = crate::providers::anthropic::beta_repair::Beta::ThinkingBindingControls.header();
+        let context_beta = crate::providers::anthropic::native_beta::CONTEXT_1M_BETA_HEADER;
+        let extra = serde_json::json!({
+            "betas": ["keep-beta", beta, context_beta],
+            "body": {"anthropic_beta": [context_beta, null, "body-beta"]}
+        });
+        let (profile, _, mut request) =
+            native_hosted_request("bedrock_claude", extra, &ChatRequest::new("wire-model"));
+        let context = CodecContext::new(&profile, "wire-model", RequestMode::Complete)
+            .with_native_anthropic_context(NativeAnthropicContextInput {
+                context_1m_beta_suppressed: true,
+                native_thinking_binding_controls_beta_requested: Some(true),
+                ..Default::default()
+            });
+
+        apply_native_thinking_binding_controls_beta(&context, &mut request.headers);
+        apply_native_context_1m_suppression(&context, &profile, &mut request).unwrap();
+        let first_headers = request.headers.clone();
+        let first_body = request.body.clone();
+
+        apply_native_thinking_binding_controls_beta(&context, &mut request.headers);
+        apply_native_context_1m_suppression(&context, &profile, &mut request).unwrap();
+
+        assert_eq!(request.headers, first_headers);
+        assert_eq!(request.body, first_body);
+        let beta_values = request
+            .headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            beta_values,
+            ["keep-beta,thinking-binding-controls-2026-08-01"]
+        );
+        let body = std::str::from_utf8(&request.body).unwrap();
+        assert!(body.contains("body-beta"), "{body}");
+        assert!(!body.contains(context_beta), "{body}");
+        assert!(!body.contains(beta), "{body}");
+    }
+
+    #[tokio::test]
+    async fn hosted_finalizer_suppresses_context_beta_before_auth_without_losing_source_json() {
+        use crate::auth::Authenticator;
+        use crate::protocol::{
+            ContentBlock, ConversationMessage, JsonPayload, MessageRole, ProtocolFamily,
+        };
+
+        let mut chat = ChatRequest::new("wire-model");
+        chat.messages.push(ConversationMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ProviderContent {
+                protocol: ProtocolFamily::AnthropicMessages,
+                value: JsonPayload::parse(r#"{"type":"text","text":"\ud800","number":1.00}"#)
+                    .unwrap(),
+            }],
+            native_options: Vec::new(),
+        });
+        let (profile, context, mut request) = native_hosted_request(
+            "bedrock_claude",
+            serde_json::json!({
+                "betas": ["other-configured-beta", "context-1m-2025-08-07"],
+                "body": {"anthropic_beta": ["context-1m-2025-08-07", null, "body-beta"]}
+            }),
+            &chat,
+        );
+        let encoded_body_before_suppression = request.body.clone();
+        assert_eq!(
+            request
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+                .map(|(_, value)| value.as_str()),
+            Some("other-configured-beta,context-1m-2025-08-07")
+        );
+        let options = RequestOptions {
+            finalizer: Some(Arc::new(AppendContext1mHeader)),
+            ..Default::default()
+        };
+        options
+            .finalizer
+            .as_ref()
+            .unwrap()
+            .finalize(&mut request, &profile)
+            .unwrap();
+        apply_native_context_1m_suppression(&context, &profile, &mut request).unwrap();
+
+        let signer = CapturedSigningInput::default();
+        signer.apply(&mut request, &profile, None).await.unwrap();
+        let captured = signer
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("sign input captured");
+        let beta_values = captured
+            .0
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            beta_values,
+            ["other-configured-beta", "host-finalizer-beta"]
+        );
+        let body = std::str::from_utf8(&captured.1).unwrap();
+        assert!(
+            body.contains(r#""anthropic_beta":[null,"body-beta"]"#),
+            "{body}"
+        );
+        let encoded_body = std::str::from_utf8(&encoded_body_before_suppression).unwrap();
+        assert!(
+            encoded_body.contains(r#""text":"\ud800","number":1}"#),
+            "Native request encoding applies JavaScript numeric spelling: {encoded_body}"
+        );
+        let expected_body = encoded_body.replacen(
+            r#""anthropic_beta":["context-1m-2025-08-07",null,"body-beta"]"#,
+            r#""anthropic_beta":[null,"body-beta"]"#,
+            1,
+        );
+        assert_ne!(expected_body, encoded_body, "the encoded beta is removed");
+        assert_eq!(
+            body, expected_body,
+            "all other encoded source bytes survive"
+        );
+        assert!(body.contains(r#""anthropic_version":"bedrock-2023-05-31""#));
+        assert!(!body.contains("context-1m-2025-08-07"));
+        assert_eq!(
+            request.headers.last().unwrap(),
+            &("x-test-signature".into(), "signed".into())
+        );
+    }
+
+    #[test]
+    fn context_1m_suppression_headers_are_limited_to_native_claude_route_families() {
+        use crate::protocol::ChatRequest;
+
+        for protocol in [
+            "anthropic_messages",
+            "foundry_claude",
+            "bedrock_claude",
+            "vertex_claude",
+        ] {
+            let (profile, context, mut request) = native_hosted_request(
+                protocol,
+                serde_json::json!({"betas":["context-1m-2025-08-07","keep-beta"]}),
+                &ChatRequest::new("wire-model"),
+            );
+            apply_native_context_1m_suppression(&context, &profile, &mut request).unwrap();
+            let header = request
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+                .map(|(_, value)| value.as_str());
+            assert_eq!(header, Some("keep-beta"), "protocol={protocol}");
+        }
+
+        let profile = native_profile("open_ai_responses", serde_json::json!({}));
+        let context =
+            CodecContext::new(&profile, "wire-model", crate::codecs::RequestMode::Complete)
+                .with_native_anthropic_context(crate::client::NativeAnthropicContextInput {
+                    context_1m_beta_suppressed: true,
+                    ..Default::default()
+                });
+        let mut request = HttpRequest {
+            method: "POST".into(),
+            url: "https://example.test".into(),
+            headers: vec![("anthropic-beta".into(), "context-1m-2025-08-07,keep".into())],
+            http1_header_layout: None,
+            body: bytes::Bytes::from_static(br#"{"anthropic_beta":["context-1m-2025-08-07"]}"#),
+            timeout: None,
+        };
+        apply_native_context_1m_suppression(&context, &profile, &mut request).unwrap();
+        assert_eq!(request.headers[0].1, "context-1m-2025-08-07,keep");
+        assert_eq!(
+            request.body,
+            br#"{"anthropic_beta":["context-1m-2025-08-07"]}"#[..]
+        );
+
+        let profile = native_profile("bedrock_claude", serde_json::json!({}));
+        let context =
+            CodecContext::new(&profile, "wire-model", crate::codecs::RequestMode::Complete)
+                .with_native_anthropic_context(
+                    crate::client::NativeAnthropicContextInput::default(),
+                );
+        let mut request = HttpRequest {
+            method: "POST".into(),
+            url: "https://example.test".into(),
+            headers: vec![("anthropic-beta".into(), "context-1m-2025-08-07,keep".into())],
+            http1_header_layout: None,
+            body: bytes::Bytes::from_static(br#"{"anthropic_beta":["context-1m-2025-08-07"]}"#),
+            timeout: None,
+        };
+        apply_native_context_1m_suppression(&context, &profile, &mut request).unwrap();
+        assert_eq!(request.headers[0].1, "context-1m-2025-08-07,keep");
+        assert_eq!(
+            request.body,
+            br#"{"anthropic_beta":["context-1m-2025-08-07"]}"#[..]
+        );
     }
 
     #[test]

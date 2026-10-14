@@ -350,6 +350,15 @@ impl ResponseJsonScanner {
         self.raw_source_for_node(self.node_ref_at(pointer)?)
     }
 
+    /// Byte range for one validated JSON value, used by source-preserving
+    /// request rewrites that must leave every unrelated source byte intact.
+    pub(crate) fn source_range_at(&self, pointer: &str) -> Option<Range<usize>> {
+        self.document
+            .node_source_spans
+            .get(self.node_id_at(pointer)?)
+            .cloned()
+    }
+
     /// Build the typed provider-error text directly from a selected source
     /// string before any part of the response is materialized as `Value`.
     /// Callers select the provider-specific pointer with `string_at`; this

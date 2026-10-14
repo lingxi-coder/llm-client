@@ -21,9 +21,10 @@ pub enum Beta {
     MidConversationSystem,
     MidConversationToolChanges,
     AfkMode,
+    ThinkingBindingControls,
 }
 impl Beta {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::CacheDiagnosis,
         Self::PromptCachingEvict,
         Self::ThinkingDisplayUpdates,
@@ -31,6 +32,7 @@ impl Beta {
         Self::MidConversationSystem,
         Self::MidConversationToolChanges,
         Self::AfkMode,
+        Self::ThinkingBindingControls,
     ];
     pub const fn header(self) -> &'static str {
         match self {
@@ -41,6 +43,7 @@ impl Beta {
             Self::MidConversationSystem => "mid-conversation-system-2026-04-07",
             Self::MidConversationToolChanges => "mid-conversation-tool-changes-2026-07-01",
             Self::AfkMode => "afk-mode-2026-01-31",
+            Self::ThinkingBindingControls => "thinking-binding-controls-2026-08-01",
         }
     }
     const fn mask(self) -> u8 {
@@ -242,6 +245,24 @@ fn header_rejected(message: &str, beta: Beta) -> bool {
         && (message.contains("anthropic-beta") || message.contains("anthropic_beta")))
         || capability_rejected(message, &format!("beta_header:{}", beta.header()))
 }
+
+fn thinking_binding_block_binding_rejected(message: &str) -> bool {
+    [
+        "thinking.adaptive.block_binding: Extra inputs are not permitted",
+        "thinking.adaptive.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted",
+        "thinking.enabled.block_binding: Extra inputs are not permitted",
+        "thinking.enabled.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted",
+    ]
+    .iter()
+    .any(|pattern| message.contains(pattern))
+}
+
+/// Native nNe explicit TBC evidence, used only by Native error decoding.
+pub(crate) fn thinking_binding_controls_explicit_refusal(message: &str) -> bool {
+    header_rejected(message, Beta::ThinkingBindingControls)
+        || thinking_binding_block_binding_rejected(message)
+}
+
 fn ascii_word_character(byte: Option<&u8>) -> bool {
     byte.is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
 }
@@ -312,7 +333,10 @@ pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec
     Beta::ALL
         .into_iter()
         .filter(|beta| {
-            sent.iter().any(|h| h == beta.header())
+            // Native EZe/iNe uses a fixed candidate registry that excludes
+            // TBC; its QEe stage consumes the separate decoded error facts.
+            *beta != Beta::ThinkingBindingControls
+                && sent.iter().any(|h| h == beta.header())
                 && if *beta == Beta::AfkMode {
                     // Native Kie is independent of the generic beta-header
                     // classifier: any 400 containing the sent AFK token trips
@@ -335,7 +359,10 @@ pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec
             let strong = strong
                 && !matches!(
                     beta,
-                    Beta::MidConversationSystem | Beta::MidConversationToolChanges | Beta::AfkMode
+                    Beta::MidConversationSystem
+                        | Beta::MidConversationToolChanges
+                        | Beta::AfkMode
+                        | Beta::ThinkingBindingControls
                 );
             Rejection { beta, strong }
         })
@@ -380,7 +407,9 @@ pub fn reject_named(
 ) {
     for rejected in rejections {
         conversation.reject(rejected.beta);
-        if let Some(model) = model.filter(|_| rejected.strong) {
+        if let Some(model) =
+            model.filter(|_| rejected.strong && rejected.beta != Beta::ThinkingBindingControls)
+        {
             cache.reject(model, rejected.beta);
         }
     }
@@ -695,7 +724,10 @@ mod tests {
         let scope = ConversationBetaState::default();
         let cache = ModelBetaRejections::default();
         reject_named(
-            &Beta::ALL.map(|beta| Rejection { beta, strong: true }),
+            &Beta::ALL.map(|beta| Rejection {
+                beta,
+                strong: beta != Beta::ThinkingBindingControls,
+            }),
             &scope,
             Some("model-a"),
             &cache,
@@ -703,7 +735,12 @@ mod tests {
         let fresh = ConversationBetaState::default();
         let mut headers = BTreeMap::from([(
             "anthropic-beta".into(),
-            Beta::ALL.map(Beta::header).join(","),
+            Beta::ALL
+                .into_iter()
+                .filter(|beta| *beta != Beta::ThinkingBindingControls)
+                .map(Beta::header)
+                .collect::<Vec<_>>()
+                .join(","),
         )]);
         let mut body = JsonPayload::parse(
             r#"{"diagnostics":{"previous_message_id":"msg"},"cache_control":{"type":"ephemeral","evict_on_complete":true},"opaque":{"z":"\ud800","a":[1,2]}}"#,
@@ -869,6 +906,78 @@ mod tests {
             !model_rejections.rejected("claude-opus-4-8", Beta::MidConversationSystem),
             "Native pfr reads the per-conversation mid-conversation-system refusal"
         );
+    }
+
+    #[test]
+    fn tbc_refusal_is_owned_by_native_facts_not_generic_beta_rejection() {
+        let beta = Beta::ThinkingBindingControls;
+        let token = beta.header();
+        for message in [
+            format!("Unexpected value(s) {token} for the anthropic-beta header."),
+            format!("capability_rejected: beta_header:{token}"),
+            "thinking.adaptive.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted".into(),
+            "invalid beta flag".into(),
+        ] {
+            let body = JsonPayload::parse(&format!(
+                r#"{{"type":"error","error":{{"type":"invalid_request_error","message":{}}}}}"#,
+                serde_json::to_string(&message).unwrap()
+            ))
+            .unwrap();
+            let sent = vec![token.to_owned()];
+            assert!(named_rejections(400, &body, &sent).is_empty());
+            assert!(request_rejections(400, &body, &sent).is_empty());
+        }
+
+        let conversation = ConversationBetaState::default();
+        let model_rejections = ModelBetaRejections::default();
+        reject_named(
+            &[Rejection { beta, strong: true }],
+            &conversation,
+            Some("claude-bedrock-model"),
+            &model_rejections,
+        );
+        assert!(conversation.rejected(beta));
+        assert!(!model_rejections.rejected("claude-bedrock-model", beta));
+
+        let mut same_conversation = BTreeMap::from([("anthropic-beta".into(), token.to_owned())]);
+        apply_rejections(
+            &mut same_conversation,
+            &mut JsonPayload::default(),
+            &conversation,
+            Some("claude-bedrock-model"),
+            None,
+            &model_rejections,
+        )
+        .unwrap();
+        assert_eq!(same_conversation["anthropic-beta"], "");
+
+        let fresh_conversation = ConversationBetaState::default();
+        let mut fresh = BTreeMap::from([("anthropic-beta".into(), token.to_owned())]);
+        apply_rejections(
+            &mut fresh,
+            &mut JsonPayload::default(),
+            &fresh_conversation,
+            Some("claude-bedrock-model"),
+            None,
+            &model_rejections,
+        )
+        .unwrap();
+        assert_eq!(fresh["anthropic-beta"], token);
+    }
+
+    #[test]
+    fn tbc_block_binding_schema_classifier_matches_native_nne_shapes() {
+        for message in [
+            "thinking.adaptive.block_binding: Extra inputs are not permitted",
+            "thinking.adaptive.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted",
+            "thinking.enabled.block_binding: Extra inputs are not permitted",
+            "thinking.enabled.block_binding.prefix_mismatch_behavior: Extra inputs are not permitted",
+        ] {
+            assert!(thinking_binding_controls_explicit_refusal(message));
+        }
+        assert!(!thinking_binding_controls_explicit_refusal(
+            "thinking.adaptive.block_binding.prefix_mismatch_behavior: Unknown field"
+        ));
     }
 
     #[test]

@@ -278,11 +278,15 @@ impl CodecContext {
     /// are never promoted into Native facts.
     pub fn with_native_anthropic_context(
         mut self,
-        context: crate::client::NativeAnthropicContextInput,
+        mut context: crate::client::NativeAnthropicContextInput,
     ) -> Self {
         self.native_anthropic_thinking_resumption_beta_requested = self
             .native_anthropic_error_route()
             .and(context.thinking_resumption_beta_requested);
+        context.native_thinking_binding_controls_beta_requested = self
+            .native_thinking_binding_controls_beta_route()
+            .then_some(context.native_thinking_binding_controls_beta_requested)
+            .flatten();
         self.native_anthropic_context = context;
         self
     }
@@ -379,6 +383,32 @@ impl CodecContext {
         self.native_anthropic_thinking_resumption_beta_requested
     }
 
+    /// Exact planned membership for Native's thinking-binding-controls beta.
+    /// Its producer fact is accepted only on a recognized Native Anthropic route.
+    pub(crate) fn native_thinking_binding_controls_beta_requested(&self) -> Option<bool> {
+        self.native_thinking_binding_controls_beta_route()
+            .then_some(
+                self.native_anthropic_context
+                    .native_thinking_binding_controls_beta_requested,
+            )
+            .flatten()
+    }
+
+    fn native_thinking_binding_controls_beta_route(&self) -> bool {
+        self.native_anthropic_error_route().is_some()
+    }
+
+    pub(crate) fn set_native_thinking_binding_controls_beta_requested(
+        &mut self,
+        requested: Option<bool>,
+    ) {
+        self.native_anthropic_context
+            .native_thinking_binding_controls_beta_requested = self
+            .native_thinking_binding_controls_beta_route()
+            .then_some(requested)
+            .flatten();
+    }
+
     pub(crate) fn set_native_anthropic_thinking_resumption_beta_requested(
         &mut self,
         requested: Option<bool>,
@@ -433,6 +463,14 @@ impl CodecContext {
             .filter(|window| *window > 0)
             .map(|window| window as f64)
     }
+
+    /// Host-directed refusal retry suppression, limited to Native Anthropic
+    /// routes. This is applied to the final request before authentication.
+    pub(crate) fn native_anthropic_context_1m_beta_suppressed(&self) -> bool {
+        self.native_anthropic_context.context_1m_beta_suppressed
+            && self.native_anthropic_error_route().is_some()
+    }
+
     pub fn file_validation_time(&self) -> std::time::SystemTime {
         self.file_validation_time
             .unwrap_or_else(std::time::SystemTime::now)
@@ -597,6 +635,71 @@ mod model_source_context_tests {
             low_context.model_identity_units
         );
         assert!(high_context.profile().models.is_empty());
+    }
+
+    #[test]
+    fn tbc_membership_preserves_tri_state_only_for_native_anthropic_routes() {
+        fn tbc_profile(protocol: &str, provider_id: &str) -> ProviderProfile {
+            serde_json::from_value(serde_json::json!({
+                "provider_id": provider_id,
+                "profile_name": "tbc-route-test",
+                "base_url": "https://example.test",
+                "protocol": protocol,
+                "auth": "none",
+                "models": [{
+                    "display_model": "wire-model",
+                    "request_model": "wire-model",
+                    "billing_model": "wire-model"
+                }]
+            }))
+            .unwrap()
+        }
+
+        for (protocol, provider_id) in [
+            ("anthropic_messages", "anthropic"),
+            ("anthropic_messages", "anthropicAws"),
+            ("anthropic_messages", "anthropicGoogleCloud"),
+            ("anthropic_messages", "foundry"),
+            ("anthropic_messages", "gateway"),
+            ("anthropic_messages", "mantle"),
+            ("foundry_claude", "foundry"),
+            ("bedrock_claude", "bedrock"),
+            ("vertex_claude", "vertex"),
+        ] {
+            let profile = tbc_profile(protocol, provider_id);
+            for requested in [None, Some(false), Some(true)] {
+                let context = CodecContext::new(&profile, "wire-model", RequestMode::Complete)
+                    .with_native_anthropic_context(crate::client::NativeAnthropicContextInput {
+                        native_thinking_binding_controls_beta_requested: requested,
+                        ..Default::default()
+                    });
+                assert_eq!(
+                    context.native_thinking_binding_controls_beta_requested(),
+                    requested,
+                    "protocol={protocol} requested={requested:?}"
+                );
+                let mut post_encode =
+                    CodecContext::new(&profile, "wire-model", RequestMode::Complete)
+                        .with_native_anthropic_context(Default::default());
+                post_encode.set_native_thinking_binding_controls_beta_requested(requested);
+                assert_eq!(
+                    post_encode.native_thinking_binding_controls_beta_requested(),
+                    requested,
+                    "late setter protocol={protocol} requested={requested:?}"
+                );
+            }
+        }
+
+        let generic_compatible = tbc_profile("anthropic_messages", "third-party-compatible");
+        let blocked = CodecContext::new(&generic_compatible, "wire-model", RequestMode::Complete)
+            .with_native_anthropic_context(crate::client::NativeAnthropicContextInput {
+                native_thinking_binding_controls_beta_requested: Some(true),
+                ..Default::default()
+            });
+        assert_eq!(
+            blocked.native_thinking_binding_controls_beta_requested(),
+            None
+        );
     }
 }
 

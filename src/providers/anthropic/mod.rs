@@ -42,6 +42,7 @@ pub mod fallback_request;
 pub mod fallback_response;
 pub mod limits;
 mod metadata_json;
+pub(crate) mod native_beta;
 pub mod refusal_fallback;
 pub mod request_policy;
 pub mod response_policy;
