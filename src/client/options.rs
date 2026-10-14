@@ -153,7 +153,7 @@ impl NativeAnthropicEndpointAdmission {
 /// Current Native Anthropic context facts available to the SDK. `None` means
 /// that source was not observed; a generic model-directory fallback is not
 /// substituted for Native's own context registry.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeAnthropicContextInput {
     /// Context window from the selected Native model-registry observation.
     pub model_registry_context_window: Option<u64>,
@@ -173,6 +173,16 @@ pub struct NativeAnthropicContextInput {
     /// None means membership was not observed; the SDK does not infer it
     /// from thinking settings or final wire headers.
     pub native_thinking_binding_controls_beta_requested: Option<bool>,
+    /// Exact Native `X.model` selector before any provider wire-model mapping.
+    /// This is a JSON string payload so unpaired UTF-16 units remain intact.
+    /// A missing or non-string value leaves model-dependent HQ evidence unknown.
+    pub native_hq_model_source: Option<crate::protocol::JsonPayload>,
+    /// Host-observed result of Native's `cc(X.model)` provider mapping.
+    /// `Other` means a known Native provider whose Bkt classifier is always
+    /// unknown; unsupported or unrepresented Native families (including
+    /// Mantle in hosts without that route) must remain absent.
+    pub native_hq_model_provider_family:
+        Option<crate::protocol::NativeAnthropicModelProviderFamily>,
 }
 
 /// Trusted request facts for Native Anthropic safeguards and current beta features.

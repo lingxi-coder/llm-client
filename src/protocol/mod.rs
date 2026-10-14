@@ -45,7 +45,8 @@ pub use image::*;
 pub use llm::{
     CapabilitySupport, ChatRequest, ChatResponse, FileSearchHit, FileSearchResult, HostedTool,
     LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing,
-    NativeAnthropicErrorFacts, NativeAnthropicErrorResponse,
+    NativeAnthropicErrorFacts, NativeAnthropicErrorResponse, NativeAnthropicModelProviderFamily,
+    NativeHqKnownErrorEvidence, NativeHrn15ErrorEvidence,
     NativeThinkingBindingControlsErrorEvidence, ProviderErrorText, ProviderListing,
     ProxyAuthHeader, ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation,
     ResponseCacheStatus, ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice,

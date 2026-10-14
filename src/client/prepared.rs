@@ -1104,8 +1104,10 @@ impl LlmClient {
 mod request_body_policy_tests {
     use super::*;
 
+    type CapturedRequest = (Vec<(String, String)>, Vec<u8>);
+
     #[derive(Debug, Default)]
-    struct CaptureAuthenticator(std::sync::Mutex<Option<(Vec<(String, String)>, Vec<u8>)>>);
+    struct CaptureAuthenticator(std::sync::Mutex<Option<CapturedRequest>>);
 
     #[async_trait::async_trait]
     impl crate::Authenticator for CaptureAuthenticator {

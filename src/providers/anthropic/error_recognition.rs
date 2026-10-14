@@ -1,7 +1,11 @@
 //! Native GGt guards over a current APIError envelope. Keep IR recognition
 //! separate from pF policy guards: only IR suppresses failed-probe accounting.
 use super::beta_repair::{capability_rejected, error_message, prefix_rejected};
-use crate::protocol::JsonPayload;
+use crate::protocol::{
+    JsonPayload, NativeAnthropicModelProviderFamily, NativeHqKnownErrorEvidence,
+    NativeHrn15ErrorEvidence,
+};
+use crate::response_json::{FlatJsonKind, JsonNodeRef, ResponseJsonScanner};
 #[cfg(test)]
 use serde_json::Value;
 use std::sync::OnceLock;
@@ -274,6 +278,394 @@ fn mid_system_copy(message: &str) -> bool {
         return true;
     }
     message.contains("not supported") && role_system_tails(&lower).next().is_some()
+}
+
+fn native_header_rejected(message: &str, header: &str) -> bool {
+    (message.contains(header)
+        && (message.contains("anthropic-beta") || message.contains("anthropic_beta")))
+        || capability_rejected(message, &format!("beta_header:{header}"))
+}
+
+fn native_d_normalize(message: &str) -> String {
+    if !message.contains("<!DOCTYPE html") && !message.contains("<html") {
+        return message.to_owned();
+    }
+    static HTML_TITLE: OnceLock<regex::Regex> = OnceLock::new();
+    HTML_TITLE
+        .get_or_init(|| regex::Regex::new(r"<title>([^<]+)</title>").expect("static title regex"))
+        .captures(message)
+        .and_then(|captures| captures.get(1))
+        .map(|title| title.as_str().trim().to_owned())
+        .unwrap_or_default()
+}
+
+fn native_hq_outdated(status: u16, message: &str, scanner: &ResponseJsonScanner) -> bool {
+    if scanner.string_at("/error/error/details/error_code") == Some("claude_code_version_too_old") {
+        return true;
+    }
+
+    let nested_message = ["/error/error/message", "/error/message"]
+        .into_iter()
+        .filter_map(|path| scanner.string_at(path))
+        .filter(|message| !message.is_empty())
+        .map(native_d_normalize)
+        .find(|message| !message.is_empty());
+    let source_message = nested_message.as_deref().unwrap_or(message);
+    status == 400
+        && js_match!(
+            r"\bClaude Code [^\t\n\x0B\x0C\r \x81]+ (?:does not support this model; version [^\t\n\x0B\x0C\r \x81]+ or newer is required|is older than the minimum version required by your organization's policy)",
+            &regex_units(source_message)
+        )
+}
+
+fn native_aws_credentials_error(message: &str, error_type: Option<&str>) -> bool {
+    let error_type = error_type.unwrap_or_default();
+    static AUTH_MESSAGE: OnceLock<regex::Regex> = OnceLock::new();
+    let auth_message = AUTH_MESSAGE.get_or_init(|| {
+        regex::RegexBuilder::new(
+            r"ExpiredToken|InvalidSignature|SignatureDoesNotMatch|UnrecognizedClient|InvalidClientTokenId|security token.*(invalid|expired)|signature we calculated does not match|Bearer Token has expired|Authentication failed.*API Key|Missing required parameters in the API Key",
+        )
+        .case_insensitive(true)
+        .build()
+        .expect("static Native AWS credential regex")
+    });
+    auth_message.is_match(&format!("{error_type} {message}"))
+        || [
+            "UnrecognizedClientException",
+            "ExpiredTokenException",
+            "InvalidSignatureException",
+            "RequestTimeTooSkewed",
+            "TokenRefreshRequired",
+            "CredentialsProviderError",
+        ]
+        .iter()
+        .any(|token| message.contains(token) || error_type.contains(token))
+}
+
+fn native_model_refused(
+    status: u16,
+    message: &str,
+    error_type: Option<&str>,
+    model_source: Option<&JsonPayload>,
+    provider_family: Option<NativeAnthropicModelProviderFamily>,
+    scanner: Option<&ResponseJsonScanner>,
+) -> Option<bool> {
+    if model_source.is_none_or(|source| source.root_string_code_units().is_none()) {
+        return None;
+    }
+    match provider_family? {
+        NativeAnthropicModelProviderFamily::FirstParty
+        | NativeAnthropicModelProviderFamily::Foundry
+        | NativeAnthropicModelProviderFamily::Other => Some(false),
+        NativeAnthropicModelProviderFamily::Bedrock
+        | NativeAnthropicModelProviderFamily::Vertex => {
+            let vertex = provider_family == Some(NativeAnthropicModelProviderFamily::Vertex);
+            // Native's AWS credential helper is intentionally skipped for
+            // Vertex. The HTTP APIError constructor has no cause chain/name
+            // override, so the only possible name here is "Error".
+            if (!vertex && native_aws_credentials_error(message, error_type)) || status == 401 {
+                return Some(false);
+            }
+            let scanner = scanner?;
+            if native_hq_outdated(status, message, scanner) {
+                return Some(false);
+            }
+            let lower = message.to_lowercase();
+            let refused = match provider_family {
+                Some(NativeAnthropicModelProviderFamily::Bedrock) => {
+                    (status == 403
+                        && lower.contains(
+                            "you don't have access to the model with the specified model id",
+                        ))
+                        || (status == 400
+                            && lower.contains("the provided model identifier is invalid")
+                            && !lower.contains("on-demand throughput"))
+                }
+                Some(NativeAnthropicModelProviderFamily::Vertex) => {
+                    status == 404
+                        && message.contains("Publisher Model")
+                        && lower.contains("not found")
+                }
+                _ => false,
+            };
+            Some(refused)
+        }
+    }
+}
+
+fn native_json_property<'a>(node: JsonNodeRef<'a>, name: &str) -> Option<JsonNodeRef<'a>> {
+    if node.kind() != FlatJsonKind::Object {
+        return None;
+    }
+    let key_units = name.encode_utf16().collect::<Vec<_>>();
+    node.object_entries()?
+        .into_iter()
+        .rev()
+        .find(|entry| entry.key_units == key_units.as_slice())
+        .map(|entry| entry.value)
+}
+
+fn native_json_property_path<'a>(
+    scanner: &'a ResponseJsonScanner,
+    path: &[&str],
+) -> Option<JsonNodeRef<'a>> {
+    let mut node = scanner.root_node();
+    for key in path {
+        node = native_json_property(node, key)?;
+    }
+    Some(node)
+}
+
+fn native_api_error_body_is_object(scanner: &ResponseJsonScanner) -> bool {
+    matches!(
+        scanner.root_node().kind(),
+        FlatJsonKind::Object | FlatJsonKind::Array
+    )
+}
+
+/// Evaluate Native 2.1.295's `kYe`/Hrn15 response-only classifiers on the
+/// exact HTTP APIError wrapper HQ examines. The same-error prefix-heal marker
+/// is intentionally supplied later to `aggregate_claim` by its Host owner.
+pub(crate) fn native_hq_hrn15_error_evidence(
+    original_status: u16,
+    message: Option<&str>,
+    scanner: Option<&ResponseJsonScanner>,
+) -> Option<NativeHrn15ErrorEvidence> {
+    if !matches!(original_status, 400 | 422) {
+        return None;
+    }
+    let message = message?;
+    let lower = message.to_lowercase();
+    let lower_without_backticks = lower.replace('`', "");
+    let prefix_lock_message_match = lower.contains("not created in this conversation")
+        || lower.contains("bound to a different conversation");
+    let prompt_too_long = lower.contains("prompt is too long")
+        || lower.contains("input is too long for requested model")
+        || capability_rejected(message, "prompt_too_long");
+    let context_overflow = lower.contains("input length and `max_tokens` exceed context limit")
+        || capability_rejected(message, "max_tokens_context_overflow");
+    let credit_balance_too_low = lower.contains("credit balance is too low");
+    let organization_disabled = lower.contains("organization has been disabled");
+    let fast_mode_not_enabled = message.contains("Fast mode is not enabled");
+    let advisor_model_unavailable =
+        message.contains("cannot be used as an advisor when the request model is");
+    let api_error_body_is_object = scanner.is_some_and(native_api_error_body_is_object);
+    let dlp_request_denied = api_error_body_is_object
+        && scanner
+            .and_then(|scanner| {
+                native_json_property_path(scanner, &["error", "details", "error_code"])
+            })
+            .and_then(|value| value.string_at())
+            == Some("dlp_request_denied");
+    let policy_blocked = api_error_body_is_object
+        && scanner
+            .and_then(|scanner| native_json_property_path(scanner, &["error", "type"]))
+            .and_then(|value| value.string_at())
+            == Some("policy_blocked");
+    let output_blocked_by_content_filter =
+        message.contains("Output blocked by content filtering policy");
+    let mid_conversation_system_rejected = mid_system_copy(message)
+        || capability_rejected(message, "mid_conv_system")
+        || capability_rejected(message, "beta_header:mid-conversation-system-2026-04-07");
+
+    Some(NativeHrn15ErrorEvidence {
+        original_status,
+        prefix_lock_message_match,
+        prompt_too_long,
+        context_overflow,
+        credit_balance_too_low,
+        organization_disabled,
+        fast_mode_not_enabled,
+        advisor_model_unavailable,
+        dlp_request_denied,
+        policy_blocked,
+        output_blocked_by_content_filter,
+        native_hie_claim: false,
+        native_su_claim: false,
+        mid_conversation_system_rejected,
+        encrypted_search_payload_rejected: [
+            "invalid encrypted_content in search_result block",
+            "invalid encrypted_index in text block",
+            "failed to decrypt web search result content",
+        ]
+        .iter()
+        .any(|copy| lower_without_backticks.contains(copy)),
+        encrypted_code_execution_payload_rejected: lower_without_backticks
+            .contains("invalid encrypted_stdout in encrypted_code_execution_result block"),
+    })
+}
+
+fn native_tool_addition_rejected(message: &str, units: &[u8]) -> bool {
+    if js_match!(r"Input tag 'tool_(addition|removal)'", units)
+        || native_header_rejected(message, "mid-conversation-tool-changes-2026-07-01")
+    {
+        return true;
+    }
+    if !js_match!(r"\btool_addition\b", units) || cache_field_rejected(message, units) {
+        return false;
+    }
+    // Zie returns a named result for these cases and "other" for any remaining
+    // tool_addition message; both make its non-null predicate true.
+    true
+}
+
+fn native_tool_definition_rejected(message: &str, units: &[u8]) -> bool {
+    js_match!(r"Input tag 'tool_definition'", units)
+        || native_header_rejected(message, "inline-tools-2026-09-15")
+        || (message.contains("are not available on this platform")
+            && js_match!(r"tool definitions|tool_addition", units))
+        || message.contains("cannot yet be defined in a message")
+        || (message.contains("is already used by a")
+            && js_match!(r"tool\.definition|tool_addition", units))
+}
+
+fn native_qie_system_parse(units: &[u8]) -> bool {
+    js_match!(
+        r"(?i)(?:messages\.([0-9]{1,6}): )?(?:role .{0,2}system.{0,2} must (?:precede an|follow a)|use the top-level .{0,2}system.{0,2} parameter for the initial system prompt)",
+        units
+    )
+}
+
+fn native_per_message_effort_rejected(
+    message: &str,
+    units: &[u8],
+    structured_output_rejected: bool,
+) -> bool {
+    if structured_output_rejected
+        || (js_match!(
+            r"(?i)effort '([a-z]+)' is not supported when thinking is disabled",
+            units
+        ) && !js_match!(r"messages\.[0-9]+:\s*output_config\.effort", units))
+        || native_qie_system_parse(units)
+    {
+        return false;
+    }
+    native_header_rejected(message, "per-turn-control-2026-07-01")
+        || (message.contains("output_config") && !message.contains("output_config.timing"))
+        || capability_rejected(message, "effort_unsupported")
+}
+
+/// Compute only the source-backed predicates in Native 2.1.295's HQ `gB`
+/// aggregate. Caller status 422 is normalized to the exact status-400 wrapper
+/// HQ constructs before invoking `gB`. The model-refusal predicate remains
+/// unknown without an explicit Native model source and provider mapping.
+pub(crate) fn native_hq_known_error_evidence(
+    status: u16,
+    message: Option<&str>,
+    model_source: Option<&JsonPayload>,
+    provider_family: Option<NativeAnthropicModelProviderFamily>,
+    scanner: Option<&ResponseJsonScanner>,
+    amzn_error_type: Option<&str>,
+) -> Option<NativeHqKnownErrorEvidence> {
+    let normalized_status = match status {
+        400 | 422 => 400,
+        _ => return None,
+    };
+    let message = message?;
+    let units = regex_units(message);
+    let lower = message.to_lowercase();
+    let lower_without_backticks = lower.replace('`', "");
+    let body = scanner.and_then(|scanner| {
+        scanner
+            .raw_source_at("")
+            .and_then(|source| JsonPayload::parse(source).ok())
+    });
+    let static_beta_rejection = body.as_ref().map(|body| {
+        let candidates = [
+            super::beta_repair::Beta::CacheDiagnosis,
+            super::beta_repair::Beta::PromptCachingEvict,
+            super::beta_repair::Beta::ThinkingDisplayUpdates,
+            super::beta_repair::Beta::ThinkingTokenCount,
+        ]
+        .map(|beta| beta.header().to_owned());
+        !super::beta_repair::named_rejections(normalized_status, body, &candidates).is_empty()
+    });
+    let thinking_type = thinking_type_rejected(message, &units);
+    let signature = super::beta_repair::signature_rejected(normalized_status, message);
+    let prefix = super::beta_repair::prefix_rejected(normalized_status, message);
+    let structured_output = lower.contains("output_config.format: extra inputs are not permitted")
+        || capability_rejected(message, "structured_outputs_unsupported");
+    let per_message_effort = native_per_message_effort_rejected(message, &units, structured_output);
+    let unsupported_effort = !thinking_type
+        && ((lower.contains("effort parameter") && lower.contains("not support"))
+            || (lower.contains("output_config")
+                && lower.contains("effort")
+                && lower.contains("extra inputs are not permitted"))
+            || capability_rejected(message, "effort_unsupported"));
+    let advisor_tag = js_match!(r"Input tag 'advisor_[0-9]+'", &units);
+    let tbc = !signature
+        && !prefix
+        && (native_header_rejected(message, "thinking-binding-controls-2026-08-01")
+            || js_match!(
+                r"thinking\.(adaptive|enabled)\.block_binding(\.prefix_mismatch_behavior)?: Extra inputs are not permitted",
+                &units
+            ));
+    Some(NativeHqKnownErrorEvidence {
+        normalized_status,
+        model_refused: native_model_refused(
+            normalized_status,
+            message,
+            amzn_error_type,
+            model_source,
+            provider_family,
+            scanner,
+        ),
+        afk_mode_beta_rejected: Some(native_header_rejected(message, "afk-mode-2026-01-31")),
+        advisor_tool_result_rejected: Some(
+            message.contains("Advisor tool result content could not be processed")
+                || message.contains("found in advisor_tool_result blocks"),
+        ),
+        advisor_tool_model_rejected: Some(
+            message.contains("the advisor tool is not available")
+                || message.contains("cannot be used as an advisor")
+                || js_match!(r"tools\.\d+\.model: ", &units)
+                || advisor_tag,
+        ),
+        encrypted_search_payload_rejected: Some(
+            [
+                "invalid encrypted_content in search_result block",
+                "invalid encrypted_index in text block",
+                "failed to decrypt web search result content",
+            ]
+            .iter()
+            .any(|copy| lower_without_backticks.contains(copy)),
+        ),
+        encrypted_code_execution_payload_rejected: Some(
+            lower_without_backticks
+                .contains("invalid encrypted_stdout in encrypted_code_execution_result block"),
+        ),
+        media_input_rejected: Some(media_rejected(message, &units)),
+        named_beta_rejected: static_beta_rejection,
+        cache_keepalive_beta_rejected: Some(native_header_rejected(
+            message,
+            "cache-keepalive-2026-09-03",
+        )),
+        thinking_resumption_beta_rejected: Some(native_header_rejected(
+            message,
+            "thinking-resumption-2026-07-17",
+        )),
+        thinking_binding_controls_rejected: Some(tbc),
+        thinking_type_rejected: Some(thinking_type),
+        thinking_signature_rejected: Some(signature),
+        mid_conversation_system_rejected: Some(
+            mid_system_copy(message)
+                || capability_rejected(message, "mid_conv_system")
+                || capability_rejected(message, "beta_header:mid-conversation-system-2026-04-07"),
+        ),
+        tool_addition_rejected: Some(native_tool_addition_rejected(message, &units)),
+        tool_definition_rejected: Some(native_tool_definition_rejected(message, &units)),
+        cache_control_field_rejected: Some(
+            cache_field_rejected(message, &units)
+                || capability_rejected(message, "cache_control_field"),
+        ),
+        per_message_effort_rejected: Some(per_message_effort),
+        per_turn_timing_rejected: Some(
+            native_header_rejected(message, "timing-2026-09-09")
+                || message.contains("output_config.timing"),
+        ),
+        effort_unsupported: Some(unsupported_effort),
+        structured_outputs_rejected: Some(structured_output),
+    })
 }
 
 /// GGt's prefix-healing marker belongs to the error object, so its owner must

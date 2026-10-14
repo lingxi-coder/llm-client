@@ -280,13 +280,21 @@ impl CodecContext {
         mut self,
         mut context: crate::client::NativeAnthropicContextInput,
     ) -> Self {
-        self.native_anthropic_thinking_resumption_beta_requested = self
-            .native_anthropic_error_route()
-            .and(context.thinking_resumption_beta_requested);
+        let native_error_route = self.native_anthropic_error_route().is_some();
+        self.native_anthropic_thinking_resumption_beta_requested = native_error_route
+            .then_some(context.thinking_resumption_beta_requested)
+            .flatten();
         context.native_thinking_binding_controls_beta_requested = self
             .native_thinking_binding_controls_beta_route()
             .then_some(context.native_thinking_binding_controls_beta_requested)
             .flatten();
+        context.native_hq_model_source = native_error_route
+            .then_some(context.native_hq_model_source)
+            .flatten()
+            .filter(|source| source.root_string_code_units().is_some());
+        if !native_error_route {
+            context.native_hq_model_provider_family = None;
+        }
         self.native_anthropic_context = context;
         self
     }
@@ -381,6 +389,25 @@ impl CodecContext {
     /// array, not the post-authentication HTTP header collection.
     pub(crate) fn native_anthropic_thinking_resumption_beta_requested(&self) -> Option<bool> {
         self.native_anthropic_thinking_resumption_beta_requested
+    }
+
+    /// Exact logical Native X.model selector retained as JSON/UTF-16 source.
+    /// Non-string roots and non-Native routes are deliberately unobserved.
+    pub(crate) fn native_hq_model_source(&self) -> Option<&JsonPayload> {
+        self.native_anthropic_error_route()?;
+        self.native_anthropic_context
+            .native_hq_model_source
+            .as_ref()
+    }
+
+    /// Host-observed Native `cc(X.model)` family; never inferred from profile
+    /// names or wire-model aliases.
+    pub(crate) fn native_hq_model_provider_family(
+        &self,
+    ) -> Option<crate::protocol::NativeAnthropicModelProviderFamily> {
+        self.native_anthropic_error_route()?;
+        self.native_anthropic_context
+            .native_hq_model_provider_family
     }
 
     /// Exact planned membership for Native's thinking-binding-controls beta.

@@ -182,6 +182,152 @@ pub struct NativeThinkingBindingControlsErrorEvidence {
     pub invalid_beta_flag: bool,
 }
 
+/// Host-observed result of Native `cc(X.model)` for one selected request.
+/// This is explicit route state; it is never inferred from an SDK profile name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeAnthropicModelProviderFamily {
+    FirstParty,
+    Bedrock,
+    Vertex,
+    Foundry,
+    /// A known Native provider for which Native's model-refusal classifier
+    /// returns `unknown` (all families except Bedrock, Vertex, and Mantle).
+    Other,
+}
+
+/// The individual predicates in Native 2.1.295's HQ `gB` known-error OR.
+/// Each entry remains tri-state because some predicates need host model or
+/// complete response facts that may not have been observed by the SDK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHqKnownErrorEvidence {
+    /// HQ wraps an original HTTP 422 as an APIError with status 400 before gB.
+    pub normalized_status: u16,
+    pub model_refused: Option<bool>,
+    pub afk_mode_beta_rejected: Option<bool>,
+    pub advisor_tool_result_rejected: Option<bool>,
+    pub advisor_tool_model_rejected: Option<bool>,
+    pub encrypted_search_payload_rejected: Option<bool>,
+    pub encrypted_code_execution_payload_rejected: Option<bool>,
+    pub media_input_rejected: Option<bool>,
+    pub named_beta_rejected: Option<bool>,
+    pub cache_keepalive_beta_rejected: Option<bool>,
+    pub thinking_resumption_beta_rejected: Option<bool>,
+    pub thinking_binding_controls_rejected: Option<bool>,
+    pub thinking_type_rejected: Option<bool>,
+    pub thinking_signature_rejected: Option<bool>,
+    pub mid_conversation_system_rejected: Option<bool>,
+    pub tool_addition_rejected: Option<bool>,
+    pub tool_definition_rejected: Option<bool>,
+    pub cache_control_field_rejected: Option<bool>,
+    pub per_message_effort_rejected: Option<bool>,
+    pub per_turn_timing_rejected: Option<bool>,
+    pub effort_unsupported: Option<bool>,
+    pub structured_outputs_rejected: Option<bool>,
+}
+
+impl NativeHqKnownErrorEvidence {
+    /// Exact tri-state reduction of Native's OR expression. A known positive
+    /// claim wins even when another claim is unobserved; absence is never
+    /// treated as a negative observation.
+    pub fn aggregate_claim(&self) -> Option<bool> {
+        let claims = [
+            self.model_refused,
+            self.afk_mode_beta_rejected,
+            self.advisor_tool_result_rejected,
+            self.advisor_tool_model_rejected,
+            self.encrypted_search_payload_rejected,
+            self.encrypted_code_execution_payload_rejected,
+            self.media_input_rejected,
+            self.named_beta_rejected,
+            self.cache_keepalive_beta_rejected,
+            self.thinking_resumption_beta_rejected,
+            self.thinking_binding_controls_rejected,
+            self.thinking_type_rejected,
+            self.thinking_signature_rejected,
+            self.mid_conversation_system_rejected,
+            self.tool_addition_rejected,
+            self.tool_definition_rejected,
+            self.cache_control_field_rejected,
+            self.per_message_effort_rejected,
+            self.per_turn_timing_rejected,
+            self.effort_unsupported,
+            self.structured_outputs_rejected,
+        ];
+        if claims.contains(&Some(true)) {
+            Some(true)
+        } else if claims.iter().all(|claim| *claim == Some(false)) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+/// Native `kYe`'s 15 response classifiers used by the later `jk` guard.
+/// Every response-only predicate is computed by the SDK. The prefix-lock
+/// predicate keeps the message/status match separate because Native's
+/// `yMt` marker is attached by its prefix handler after the response arrives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeHrn15ErrorEvidence {
+    /// Original HTTP status; HQ wraps 422 in a fresh status-400 APIError.
+    pub original_status: u16,
+    /// Native AL matched, before the host-owned `!yMt` condition.
+    pub prefix_lock_message_match: bool,
+    pub prompt_too_long: bool,
+    pub context_overflow: bool,
+    pub credit_balance_too_low: bool,
+    pub organization_disabled: bool,
+    pub fast_mode_not_enabled: bool,
+    pub advisor_model_unavailable: bool,
+    pub dlp_request_denied: bool,
+    pub policy_blocked: bool,
+    pub output_blocked_by_content_filter: bool,
+    /// Native Hie is a literal false stub in 2.1.295.
+    pub native_hie_claim: bool,
+    /// Native SU is a literal false stub in 2.1.295.
+    pub native_su_claim: bool,
+    pub mid_conversation_system_rejected: bool,
+    pub encrypted_search_payload_rejected: bool,
+    pub encrypted_code_execution_payload_rejected: bool,
+}
+
+impl NativeHrn15ErrorEvidence {
+    /// Reduce Native `kYe` without treating the unobserved prefix-handler
+    /// marker as false. `prefix_lock_heal_declined` must refer to this exact
+    /// status-400 APIError. A wrapped original 422 is a fresh APIError, so it
+    /// cannot carry that marker.
+    pub fn aggregate_claim(&self, prefix_lock_heal_declined: Option<bool>) -> Option<bool> {
+        let non_prefix_claims = [
+            self.prompt_too_long,
+            self.context_overflow,
+            self.credit_balance_too_low,
+            self.organization_disabled,
+            self.fast_mode_not_enabled,
+            self.advisor_model_unavailable,
+            self.dlp_request_denied,
+            self.policy_blocked,
+            self.output_blocked_by_content_filter,
+            self.native_hie_claim,
+            self.native_su_claim,
+            self.mid_conversation_system_rejected,
+            self.encrypted_search_payload_rejected,
+            self.encrypted_code_execution_payload_rejected,
+        ];
+        if non_prefix_claims.contains(&true) {
+            return Some(true);
+        }
+        if !self.prefix_lock_message_match {
+            return Some(false);
+        }
+        let marker = if self.original_status == 422 {
+            Some(false)
+        } else {
+            prefix_lock_heal_declined
+        };
+        marker.map(|declined| !declined)
+    }
+}
+
 /// Source-backed Native Anthropic error facts attached to the selected route.
 /// These remain process-local and are never serialized with the error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,17 +351,30 @@ pub struct NativeAnthropicErrorFacts {
     /// planned the TBC beta and received an HTTP 400 response.
     pub native_thinking_binding_controls_error_evidence:
         Option<NativeThinkingBindingControlsErrorEvidence>,
+    /// Exact logical `X.model` source and Native provider mapping supplied by
+    /// the host for the HQ model-refusal predicate. The model is retained as
+    /// raw JSON so UTF-16 code units, including lone surrogates, survive.
+    pub native_hq_model_source: Option<JsonPayload>,
+    pub native_hq_model_provider_family: Option<NativeAnthropicModelProviderFamily>,
+    /// Source-backed per-predicate evidence for Native's HQ `gB` OR.
+    pub native_hq_known_error_evidence: Option<NativeHqKnownErrorEvidence>,
+    /// Source-backed Native `kYe`/Hrn15 evidence used by HQ's separate `jk`
+    /// guard. The prefix-heal marker remains a host observation.
+    pub native_hq_hrn15_evidence: Option<NativeHrn15ErrorEvidence>,
     /// Exact response evidence needed by Native error consumers. This stays
     /// process-local with the other Native facts and is not serialized.
     pub response: Option<NativeAnthropicErrorResponse>,
 }
 
 /// Bounded Native Anthropic response fields consumed after error decoding.
-/// The body is exact raw JSON source when parsing succeeded; only the two
-/// source-read headers are retained, not the whole header map.
+/// The body is exact raw JSON source when parsing succeeded; only headers used
+/// by source-backed Native classifiers are retained, not the whole map.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NativeAnthropicErrorResponse {
     pub body: Option<JsonPayload>,
+    /// HTTP APIError factory leaves ordinary response errors on Error.name.
+    pub api_error_name: Option<String>,
+    pub amzn_error_type: Option<String>,
     pub unified_representative_claim: Option<String>,
     pub unified_overage_disabled_reason: Option<String>,
 }
@@ -224,6 +383,8 @@ impl std::fmt::Debug for NativeAnthropicErrorResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeAnthropicErrorResponse")
             .field("body", &self.body.as_ref().map(|_| "<retained>"))
+            .field("api_error_name", &self.api_error_name)
+            .field("amzn_error_type", &self.amzn_error_type)
             .field(
                 "unified_representative_claim",
                 &self
@@ -1896,6 +2057,10 @@ mod tests {
             thinking_resumption_beta_refused: false,
             native_thinking_binding_controls_beta_requested: None,
             native_thinking_binding_controls_error_evidence: None,
+            native_hq_model_source: None,
+            native_hq_model_provider_family: None,
+            native_hq_known_error_evidence: None,
+            native_hq_hrn15_evidence: None,
             response: None,
         };
         let error = LlmError::InvalidRequest {

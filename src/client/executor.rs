@@ -736,7 +736,7 @@ impl<'client> RequestExecutor<'client> {
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
             .with_model_source(req.request.model_source.as_ref(), profile)?
-            .with_native_anthropic_context(opts.native_anthropic_context)
+            .with_native_anthropic_context(opts.native_anthropic_context.clone())
             .with_native_anthropic_request_context(opts.native_anthropic_request_context.clone())
             .with_native_anthropic_endpoint_admission(
                 opts.native_anthropic_endpoint_admission.as_ref(),
@@ -834,7 +834,7 @@ impl<'client> RequestExecutor<'client> {
         );
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
             .with_model_source(req.request.model_source.as_ref(), profile)?
-            .with_native_anthropic_context(opts.native_anthropic_context)
+            .with_native_anthropic_context(opts.native_anthropic_context.clone())
             .with_native_anthropic_request_context(opts.native_anthropic_request_context.clone())
             .with_native_anthropic_endpoint_admission(
                 opts.native_anthropic_endpoint_admission.as_ref(),
@@ -1178,7 +1178,7 @@ impl<'client> RequestExecutor<'client> {
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
                 .with_model_source(req.model_source.as_ref(), head.profile)?
-                .with_native_anthropic_context(opts.native_anthropic_context)
+                .with_native_anthropic_context(opts.native_anthropic_context.clone())
                 .with_native_anthropic_request_context(
                     opts.native_anthropic_request_context.clone(),
                 )
@@ -1534,8 +1534,10 @@ mod tests {
         (profile, context, wire)
     }
 
+    type CapturedSigningRequest = (Vec<(String, String)>, Vec<u8>);
+
     #[derive(Debug, Default)]
-    struct CapturedSigningInput(std::sync::Mutex<Option<(Vec<(String, String)>, Vec<u8>)>>);
+    struct CapturedSigningInput(std::sync::Mutex<Option<CapturedSigningRequest>>);
 
     #[async_trait::async_trait]
     impl crate::auth::Authenticator for CapturedSigningInput {

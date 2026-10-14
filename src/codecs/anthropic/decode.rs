@@ -23,46 +23,37 @@ pub fn response(
         .as_deref()
         .map(str::as_bytes)
         .unwrap_or(&resp.body);
-    let scanner = match ResponseJsonScanner::parse(
-        response_bytes,
-        "Anthropic response is not valid JSON",
-    ) {
-        Ok(scanner) => scanner,
-        Err(_error) if is_http_error => {
-            let (body, provider_text) = if native_route.is_some() {
-                ResponseJson::native_anthropic_raw_http_error(resp.status, &resp.body)
-            } else {
-                ResponseJson::raw_http_error(resp.status, &resp.body)
-            };
-            let error = classify_error(
-                resp.status,
-                &body,
-                retry_after(resp),
-                native_route.is_some() && resp.status == 529,
-            );
-            return Err(match native_route {
-                Some((provider_id, protocol)) => {
-                    let facts = native_error_facts(
-                        provider_id,
-                        protocol,
-                        resp.status,
-                        context.and_then(
-                            crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
-                        ).or(Some(false)),
-                        context.and_then(
-                            crate::codecs::CodecContext::native_thinking_binding_controls_beta_requested,
-                        ),
-                        Some(&provider_text),
-                        None,
-                        resp,
-                    );
-                    error.with_native_anthropic_error(provider_text, facts)
-                }
-                None => error.with_provider_error_text(provider_text),
-            });
-        }
-        Err(error) => return Err(error),
-    };
+    let scanner =
+        match ResponseJsonScanner::parse(response_bytes, "Anthropic response is not valid JSON") {
+            Ok(scanner) => scanner,
+            Err(_error) if is_http_error => {
+                let (body, provider_text) = if native_route.is_some() {
+                    ResponseJson::native_anthropic_raw_http_error(resp.status, &resp.body)
+                } else {
+                    ResponseJson::raw_http_error(resp.status, &resp.body)
+                };
+                let error = classify_error(
+                    resp.status,
+                    &body,
+                    retry_after(resp),
+                    native_route.is_some() && resp.status == 529,
+                );
+                return Err(match native_route {
+                    Some((provider_id, protocol)) => {
+                        let facts = native_error_facts(
+                            (provider_id, protocol),
+                            context,
+                            Some(&provider_text),
+                            None,
+                            resp,
+                        );
+                        error.with_native_anthropic_error(provider_text, facts)
+                    }
+                    None => error.with_provider_error_text(provider_text),
+                });
+            }
+            Err(error) => return Err(error),
+        };
     if is_http_error {
         let selected_text = scanner.provider_error_text_at("/error/message", None)?;
         let native_text = native_route
@@ -94,15 +85,8 @@ pub fn response(
             Some((provider_id, protocol)) => error.with_native_anthropic_error(
                 provider_text,
                 native_error_facts(
-                    provider_id,
-                    protocol,
-                    resp.status,
-                    context.and_then(
-                        crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested,
-                    ).or(Some(false)),
-                    context.and_then(
-                        crate::codecs::CodecContext::native_thinking_binding_controls_beta_requested,
-                    ),
+                    (provider_id, protocol),
+                    context,
                     native_text.as_ref(),
                     Some(&scanner),
                     resp,
@@ -646,16 +630,58 @@ pub(super) fn native_anthropic_retry_base_eligible(
     Ok(message.display().contains(MARKER))
 }
 
-fn native_error_facts(
-    provider_id: crate::protocol::ProviderId,
-    protocol: ProtocolFamily,
+fn native_hq_error_body_truthy(scanner: &ResponseJsonScanner) -> bool {
+    match scanner.kind_at("") {
+        Some(FlatJsonKind::Null) | None => false,
+        Some(FlatJsonKind::Boolean) => scanner.raw_source_at("") == Some("true"),
+        Some(FlatJsonKind::Number) => scanner
+            .number_source_at("")
+            .and_then(|source| source.parse::<f64>().ok())
+            .is_some_and(|number| number != 0.0 && !number.is_nan()),
+        Some(FlatJsonKind::String) => scanner.string_at("").is_some_and(|text| !text.is_empty()),
+        Some(FlatJsonKind::Array | FlatJsonKind::Object) => true,
+    }
+}
+
+/// Reconstruct the exact `new xt(400, Kn.error, Kn.message, ...)` message that
+/// HQ passes to its `gB` classifier. A truthy parsed body is re-rendered at
+/// status 400; a falsy or unavailable body falls back to the already-built
+/// Native message, preserving its original 422 prefix before adding 400.
+fn native_hq_wrapped_error_text(
     status: u16,
-    beta_requested: Option<bool>,
-    thinking_binding_controls_beta_requested: Option<bool>,
+    original: Option<&crate::protocol::ProviderErrorText>,
+    scanner: Option<&ResponseJsonScanner>,
+) -> Option<crate::protocol::ProviderErrorText> {
+    match status {
+        400 => original.cloned(),
+        422 => {
+            let original = original?;
+            match scanner.filter(|scanner| native_hq_error_body_truthy(scanner)) {
+                Some(scanner) => scanner.native_anthropic_http_error_text(Some(400)).ok(),
+                None => Some(original.prefixed("400 ")),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn native_error_facts(
+    (provider_id, protocol): (crate::protocol::ProviderId, ProtocolFamily),
+    context: Option<&crate::codecs::CodecContext>,
     native_text: Option<&crate::protocol::ProviderErrorText>,
     scanner: Option<&ResponseJsonScanner>,
     response: &HttpResponse,
 ) -> crate::protocol::NativeAnthropicErrorFacts {
+    let status = response.status;
+    let beta_requested = context
+        .and_then(crate::codecs::CodecContext::native_anthropic_thinking_resumption_beta_requested)
+        .or(Some(false));
+    let thinking_binding_controls_beta_requested = context
+        .and_then(crate::codecs::CodecContext::native_thinking_binding_controls_beta_requested);
+    let native_hq_model_source =
+        context.and_then(crate::codecs::CodecContext::native_hq_model_source);
+    let native_hq_model_provider_family =
+        context.and_then(crate::codecs::CodecContext::native_hq_model_provider_family);
     // `gVr` consumes apiErrorStatus and the normalized `apiError` value. The
     // current jio path maps these two exact nested error codes to its excluded
     // semantic reasons; `apiErrorCode` itself is a different field and is not
@@ -674,14 +700,14 @@ fn native_error_facts(
         native_text.map(|text| {
                 let message = text.display();
                 let has_protected_error =
-                    crate::providers::anthropic::beta_repair::prefix_rejected(status, &message)
+                    crate::providers::anthropic::beta_repair::prefix_rejected(status, message)
                         || crate::providers::anthropic::beta_repair::signature_rejected(
-                            status, &message,
+                            status, message,
                         );
                 crate::protocol::NativeThinkingBindingControlsErrorEvidence {
                     explicit_refusal: !has_protected_error
                         && crate::providers::anthropic::beta_repair::thinking_binding_controls_explicit_refusal(
-                            &message,
+                            message,
                         ),
                     token_refusal: !has_protected_error
                         && message.contains(
@@ -694,6 +720,26 @@ fn native_error_facts(
     } else {
         None
     };
+    let native_hq_wrapped_text = native_hq_wrapped_error_text(status, native_text, scanner);
+    let native_hq_known_error_evidence =
+        crate::providers::anthropic::error_recognition::native_hq_known_error_evidence(
+            status,
+            native_hq_wrapped_text
+                .as_ref()
+                .map(crate::protocol::ProviderErrorText::display),
+            native_hq_model_source,
+            native_hq_model_provider_family,
+            scanner,
+            response.header("x-amzn-errortype"),
+        );
+    let native_hq_hrn15_evidence =
+        crate::providers::anthropic::error_recognition::native_hq_hrn15_error_evidence(
+            status,
+            native_hq_wrapped_text
+                .as_ref()
+                .map(crate::protocol::ProviderErrorText::display),
+            scanner,
+        );
     crate::protocol::NativeAnthropicErrorFacts {
         provider_id,
         protocol,
@@ -713,10 +759,16 @@ fn native_error_facts(
             }),
         native_thinking_binding_controls_beta_requested: thinking_binding_controls_beta_requested,
         native_thinking_binding_controls_error_evidence,
+        native_hq_model_source: native_hq_model_source.cloned(),
+        native_hq_model_provider_family,
+        native_hq_known_error_evidence,
+        native_hq_hrn15_evidence,
         response: Some(crate::protocol::NativeAnthropicErrorResponse {
             body: scanner
                 .and_then(|scanner| scanner.raw_source_at(""))
                 .and_then(|source| JsonPayload::parse(source).ok()),
+            api_error_name: Some("Error".into()),
+            amzn_error_type: response.header("x-amzn-errortype").map(str::to_owned),
             unified_representative_claim: response
                 .header("anthropic-ratelimit-unified-representative-claim")
                 .map(str::to_owned),
@@ -950,28 +1002,570 @@ mod complete_response_validation_tests {
     use serde_json::json;
 
     fn native_context(beta_requested: Option<bool>) -> crate::codecs::CodecContext {
+        native_context_with_hq(beta_requested, None, None, None)
+    }
+
+    fn native_context_with_hq(
+        beta_requested: Option<bool>,
+        model_source: Option<JsonPayload>,
+        provider_family: Option<crate::protocol::NativeAnthropicModelProviderFamily>,
+        tbc_requested: Option<bool>,
+    ) -> crate::codecs::CodecContext {
+        let (provider_id, base_url, protocol, request_model) = match provider_family {
+            Some(crate::protocol::NativeAnthropicModelProviderFamily::Bedrock) => (
+                "bedrock",
+                "https://bedrock-runtime.us-east-1.amazonaws.com",
+                "bedrock_claude",
+                "wire-model",
+            ),
+            Some(crate::protocol::NativeAnthropicModelProviderFamily::Vertex) => (
+                "vertex",
+                "https://us-central1-aiplatform.googleapis.com",
+                "vertex_claude",
+                "wire-model",
+            ),
+            _ => (
+                "anthropic",
+                "https://api.anthropic.com",
+                "anthropic_messages",
+                "claude-opus-5",
+            ),
+        };
         let profile: crate::protocol::ProviderProfile = serde_json::from_value(json!({
-            "profile_name": "native",
-            "provider_id": "anthropic",
-            "base_url": "https://api.anthropic.com",
-            "protocol": "anthropic_messages",
+            "profile_name": "native-hq-test",
+            "provider_id": provider_id,
+            "base_url": base_url,
+            "protocol": protocol,
             "auth": "none",
             "models": [{
                 "display_model": "Claude",
-                "request_model": "claude-opus-5",
-                "billing_model": "claude-opus-5"
+                "request_model": request_model,
+                "billing_model": request_model
             }]
         }))
         .unwrap();
         crate::codecs::CodecContext::new(
             &profile,
-            "claude-opus-5",
+            request_model,
             crate::codecs::RequestMode::Complete,
         )
         .with_native_anthropic_context(crate::client::NativeAnthropicContextInput {
             thinking_resumption_beta_requested: beta_requested,
+            native_thinking_binding_controls_beta_requested: tbc_requested,
+            native_hq_model_source: model_source,
+            native_hq_model_provider_family: provider_family,
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn native_hq_claims_use_real_http_decode_and_preserve_tri_state() {
+        let decode = |status: u16,
+                      message: &str,
+                      model_source: Option<JsonPayload>,
+                      provider_family: Option<
+            crate::protocol::NativeAnthropicModelProviderFamily,
+        >,
+                      tbc_requested: Option<bool>,
+                      amzn_error_type: Option<&str>,
+                      nested_error: Option<serde_json::Value>| {
+            let context =
+                native_context_with_hq(None, model_source, provider_family, tbc_requested);
+            let mut error = json!({
+                "type": "invalid_request_error",
+                "message": message,
+            });
+            if let Some(nested_error) = nested_error {
+                error["error"] = nested_error;
+            }
+            let body = serde_json::to_vec(&json!({"message": message, "error": error})).unwrap();
+            let headers = amzn_error_type
+                .map(|value| vec![("x-amzn-errortype".into(), value.into())])
+                .unwrap_or_default();
+            super::response(
+                &HttpResponse {
+                    status,
+                    headers,
+                    body: body.into(),
+                },
+                Some(&context),
+                false,
+                false,
+            )
+            .unwrap_err()
+        };
+        let model = || Some(JsonPayload::parse(r#""claude-opus-5""#).unwrap());
+        let other = Some(crate::protocol::NativeAnthropicModelProviderFamily::Other);
+
+        let no_claim = decode(
+            400,
+            "billing limit reached",
+            model(),
+            other,
+            None,
+            None,
+            None,
+        );
+        let no_claim_facts = no_claim.native_anthropic_error_facts().unwrap();
+        let no_claim_evidence = no_claim_facts
+            .native_hq_known_error_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(no_claim_evidence.normalized_status, 400);
+        assert_eq!(no_claim_evidence.aggregate_claim(), Some(false));
+        assert_eq!(no_claim_evidence.model_refused, Some(false));
+        assert!(no_claim_facts
+            .native_hq_model_source
+            .as_ref()
+            .is_some_and(|source| source.root_string_code_units().is_some()));
+
+        let positive = decode(
+            400,
+            "anthropic-beta rejected afk-mode-2026-01-31",
+            model(),
+            other,
+            None,
+            None,
+            None,
+        );
+        let positive_evidence = positive
+            .native_anthropic_error_facts()
+            .unwrap()
+            .native_hq_known_error_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(positive_evidence.afk_mode_beta_rejected, Some(true));
+        assert_eq!(positive_evidence.aggregate_claim(), Some(true));
+
+        let no_model_context = native_context_with_hq(None, None, None, None);
+        let positive_with_unknown_claims = super::response(
+            &HttpResponse {
+                status: 400,
+                headers: Vec::new(),
+                body: b"anthropic-beta rejected afk-mode-2026-01-31"
+                    .to_vec()
+                    .into(),
+            },
+            Some(&no_model_context),
+            false,
+            false,
+        )
+        .unwrap_err();
+        let partial_evidence = positive_with_unknown_claims
+            .native_anthropic_error_facts()
+            .unwrap()
+            .native_hq_known_error_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(partial_evidence.model_refused, None);
+        assert_eq!(partial_evidence.named_beta_rejected, None);
+        assert_eq!(partial_evidence.afk_mode_beta_rejected, Some(true));
+        assert_eq!(partial_evidence.aggregate_claim(), Some(true));
+
+        let model_refusal = decode(
+            400,
+            "The provided model identifier is invalid",
+            model(),
+            Some(crate::protocol::NativeAnthropicModelProviderFamily::Bedrock),
+            None,
+            None,
+            None,
+        );
+        let refusal_facts = model_refusal.native_anthropic_error_facts().unwrap();
+        assert_eq!(
+            refusal_facts
+                .native_hq_known_error_evidence
+                .as_ref()
+                .unwrap()
+                .model_refused,
+            Some(true)
+        );
+
+        let credential_precedence = decode(
+            400,
+            "The provided model identifier is invalid",
+            model(),
+            Some(crate::protocol::NativeAnthropicModelProviderFamily::Bedrock),
+            None,
+            Some("UnrecognizedClientException"),
+            None,
+        );
+        let credential_facts = credential_precedence
+            .native_anthropic_error_facts()
+            .unwrap();
+        assert_eq!(
+            credential_facts
+                .native_hq_known_error_evidence
+                .as_ref()
+                .unwrap()
+                .model_refused,
+            Some(false)
+        );
+        let response = credential_facts.response.as_ref().unwrap();
+        assert_eq!(response.api_error_name.as_deref(), Some("Error"));
+        assert_eq!(
+            response.amzn_error_type.as_deref(),
+            Some("UnrecognizedClientException")
+        );
+
+        let outdated = decode(
+            422,
+            "The provided model identifier is invalid",
+            model(),
+            Some(crate::protocol::NativeAnthropicModelProviderFamily::Bedrock),
+            Some(true),
+            None,
+            Some(json!({
+                "details": {"error_code": "claude_code_version_too_old"},
+                "message": "Claude Code 2.1 is older than the minimum version required by your organization's policy"
+            })),
+        );
+        let outdated_facts = outdated.native_anthropic_error_facts().unwrap();
+        let outdated_evidence = outdated_facts
+            .native_hq_known_error_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(outdated_evidence.normalized_status, 400);
+        assert_eq!(outdated_evidence.model_refused, Some(false));
+        assert_eq!(
+            outdated_facts.native_thinking_binding_controls_error_evidence,
+            None
+        );
+
+        let tbc_422 = decode(
+            422,
+            "anthropic-beta rejected thinking-binding-controls-2026-08-01",
+            model(),
+            other,
+            Some(true),
+            None,
+            None,
+        );
+        let tbc_facts = tbc_422.native_anthropic_error_facts().unwrap();
+        let tbc_evidence = tbc_facts.native_hq_known_error_evidence.as_ref().unwrap();
+        assert_eq!(tbc_evidence.thinking_binding_controls_rejected, Some(true));
+        assert_eq!(tbc_evidence.aggregate_claim(), Some(true));
+        assert_eq!(
+            tbc_facts.native_thinking_binding_controls_error_evidence,
+            None
+        );
+
+        let unobserved_model = decode(400, "billing limit reached", None, other, None, None, None);
+        let unobserved = unobserved_model
+            .native_anthropic_error_facts()
+            .unwrap()
+            .native_hq_known_error_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(unobserved.model_refused, None);
+        assert_eq!(unobserved.aggregate_claim(), None);
+
+        let non_string_model = decode(
+            400,
+            "billing limit reached",
+            Some(JsonPayload::parse(r#"{"model":"claude-opus-5"}"#).unwrap()),
+            Some(crate::protocol::NativeAnthropicModelProviderFamily::Bedrock),
+            None,
+            None,
+            None,
+        );
+        let non_string_facts = non_string_model.native_anthropic_error_facts().unwrap();
+        assert_eq!(non_string_facts.native_hq_model_source, None);
+        assert_eq!(
+            non_string_facts
+                .native_hq_known_error_evidence
+                .as_ref()
+                .unwrap()
+                .model_refused,
+            None
+        );
+
+        let lone_surrogate = JsonPayload::parse(r#""claude-\ud800""#).unwrap();
+        let lone_surrogate_error = decode(
+            400,
+            "billing limit reached",
+            Some(lone_surrogate),
+            other,
+            None,
+            None,
+            None,
+        );
+        let source_units = lone_surrogate_error
+            .native_anthropic_error_facts()
+            .unwrap()
+            .native_hq_model_source
+            .as_ref()
+            .unwrap()
+            .root_string_code_units()
+            .unwrap();
+        assert_eq!(
+            source_units,
+            "claude-".encode_utf16().chain([0xd800]).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn native_hq_422_wrapper_message_matches_xt_make_message_truthiness() {
+        let native_original = |status: u16, body: &[u8]| {
+            let response_text = ResponseJson::response_text(body);
+            match ResponseJsonScanner::parse(response_text.as_bytes(), "fixture response") {
+                Ok(scanner) => {
+                    let text = scanner
+                        .native_anthropic_http_error_text(Some(status))
+                        .unwrap();
+                    (Some(scanner), text)
+                }
+                Err(_) => {
+                    let (_, text) = ResponseJson::native_anthropic_raw_http_error(status, body);
+                    (None, text)
+                }
+            }
+        };
+        let assert_message = |status: u16, body: &[u8], expected: &str| {
+            let (scanner, original) = native_original(status, body);
+            let wrapped =
+                super::native_hq_wrapped_error_text(status, Some(&original), scanner.as_ref())
+                    .unwrap();
+            assert_eq!(wrapped.display(), expected, "body={body:?}");
+        };
+
+        assert_message(
+            422,
+            br#"{"message":"afk-mode-2026-01-31 rejected"}"#,
+            "400 afk-mode-2026-01-31 rejected",
+        );
+        assert_message(
+            422,
+            br#"{"message":{"detail":"nested"}}"#,
+            r#"400 {"detail":"nested"}"#,
+        );
+        assert_message(
+            422,
+            br#"{"message":"","other":1}"#,
+            r#"400 {"message":"","other":1}"#,
+        );
+        assert_message(422, br#"{"message":false}"#, r#"400 {"message":false}"#);
+        assert_message(422, b"true", "400 true");
+        assert_message(422, b"1", "400 1");
+        assert_message(422, b"[]", "400 []");
+        assert_message(422, b"raw Native response", "400 422 raw Native response");
+        assert_message(422, b"null", "400 422 null");
+        assert_message(422, b"false", "400 422 false");
+        assert_message(422, b"0", "400 422 0");
+        assert_message(422, b"-0", "400 422 -0");
+        assert_message(422, b"\"\"", "400 422 \"\"");
+        assert_message(422, b"", "400 422 status code (no body)");
+        assert_message(
+            400,
+            br#"{"message":"afk-mode-2026-01-31 rejected"}"#,
+            "400 afk-mode-2026-01-31 rejected",
+        );
+
+        let body = br#"{"message":"claim \ud800"}"#;
+        let (scanner, original) = native_original(422, body);
+        let wrapped =
+            super::native_hq_wrapped_error_text(422, Some(&original), scanner.as_ref()).unwrap();
+        assert_eq!(wrapped.display(), "400 claim �");
+        assert_eq!(
+            wrapped.utf16_code_units(),
+            &[52, 48, 48, 32, 99, 108, 97, 105, 109, 32, 0xd800]
+        );
+    }
+
+    #[test]
+    fn native_hq_422_truthiness_cases_flow_through_http_decoder() {
+        let source = Some(JsonPayload::parse(r#""claude-opus-5""#).unwrap());
+        let family = Some(crate::protocol::NativeAnthropicModelProviderFamily::Other);
+        let decode = |status: u16, body: &[u8]| {
+            let context = native_context_with_hq(None, source.clone(), family, Some(true));
+            super::response(
+                &HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.to_vec().into(),
+                },
+                Some(&context),
+                false,
+                false,
+            )
+            .unwrap_err()
+        };
+
+        let falsy_bodies: [&[u8]; 5] = [b"null", b"false", b"0", b"-0", b"\"\""];
+        for body in falsy_bodies {
+            let error = decode(422, body);
+            let facts = error.native_anthropic_error_facts().unwrap();
+            let evidence = facts.native_hq_known_error_evidence.as_ref().unwrap();
+            assert_eq!(evidence.normalized_status, 400);
+            assert_eq!(evidence.aggregate_claim(), Some(false), "body={body:?}");
+            assert_eq!(facts.native_thinking_binding_controls_error_evidence, None);
+        }
+
+        let empty_raw = decode(422, b"");
+        let empty_facts = empty_raw.native_anthropic_error_facts().unwrap();
+        let empty_evidence = empty_facts.native_hq_known_error_evidence.as_ref().unwrap();
+        assert_eq!(empty_evidence.normalized_status, 400);
+        assert_eq!(empty_evidence.aggregate_claim(), None);
+
+        let body = br#"{"message":"anthropic-beta rejected afk-mode-2026-01-31"}"#;
+        for status in [400, 422] {
+            let error = decode(status, body);
+            let evidence = error
+                .native_anthropic_error_facts()
+                .unwrap()
+                .native_hq_known_error_evidence
+                .as_ref()
+                .unwrap();
+            assert_eq!(evidence.afk_mode_beta_rejected, Some(true));
+            assert_eq!(evidence.aggregate_claim(), Some(true));
+        }
+
+        let raw = decode(422, b"anthropic-beta rejected afk-mode-2026-01-31");
+        let raw_evidence = raw
+            .native_anthropic_error_facts()
+            .unwrap()
+            .native_hq_known_error_evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(raw_evidence.afk_mode_beta_rejected, Some(true));
+        assert_eq!(raw_evidence.aggregate_claim(), Some(true));
+    }
+
+    #[test]
+    fn native_hq_hrn15_claims_use_http_decoder_and_keep_prefix_marker_unknown() {
+        let decode_body = |status: u16, body: &[u8]| {
+            let context = native_context_with_hq(None, None, None, None);
+            super::response(
+                &HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.to_vec().into(),
+                },
+                Some(&context),
+                false,
+                false,
+            )
+            .unwrap_err()
+            .native_anthropic_error_facts()
+            .unwrap()
+            .native_hq_hrn15_evidence
+            .unwrap()
+        };
+        let decode_message = |status: u16, message: &str| {
+            let body = serde_json::to_vec(&json!({"message": message})).unwrap();
+            decode_body(status, &body)
+        };
+        let assert_positive = |evidence: crate::protocol::NativeHrn15ErrorEvidence, claim: bool| {
+            assert!(claim);
+            assert_eq!(evidence.aggregate_claim(None), Some(true));
+        };
+
+        let baseline = decode_message(400, "billing limit reached");
+        assert_eq!(baseline.original_status, 400);
+        assert_eq!(baseline.aggregate_claim(None), Some(false));
+        assert!(!baseline.native_hie_claim);
+        assert!(!baseline.native_su_claim);
+
+        let prefix_400 = decode_message(400, "Not created in this conversation");
+        assert!(prefix_400.prefix_lock_message_match);
+        assert_eq!(prefix_400.aggregate_claim(None), None);
+        assert_eq!(prefix_400.aggregate_claim(Some(true)), Some(false));
+        assert_eq!(prefix_400.aggregate_claim(Some(false)), Some(true));
+        let prefix_422 = decode_message(422, "Not created in this conversation");
+        assert!(prefix_422.prefix_lock_message_match);
+        assert_eq!(prefix_422.original_status, 422);
+        assert_eq!(prefix_422.aggregate_claim(None), Some(true));
+        assert_eq!(prefix_422.aggregate_claim(Some(true)), Some(true));
+
+        let prompt = decode_message(400, "Input is too long for requested model");
+        assert_positive(prompt, prompt.prompt_too_long);
+        let prompt_marker = decode_message(400, "capability_rejected: prompt_too_long");
+        assert_positive(prompt_marker, prompt_marker.prompt_too_long);
+        let context = decode_message(400, "input length and `max_tokens` exceed context limit");
+        assert_positive(context, context.context_overflow);
+        let context_marker =
+            decode_message(400, "capability_rejected: max_tokens_context_overflow");
+        assert_positive(context_marker, context_marker.context_overflow);
+        let credit = decode_message(400, "Credit balance is too low");
+        assert_positive(credit, credit.credit_balance_too_low);
+        let organization = decode_message(400, "Organization has been disabled");
+        assert_positive(organization, organization.organization_disabled);
+        let fast_mode = decode_message(400, "Fast mode is not enabled");
+        assert_positive(fast_mode, fast_mode.fast_mode_not_enabled);
+        let advisor = decode_message(
+            400,
+            "tool cannot be used as an advisor when the request model is incompatible",
+        );
+        assert_positive(advisor, advisor.advisor_model_unavailable);
+
+        let dlp = decode_body(
+            400,
+            br#"{"error":{"details":{"error_code":"dlp_request_denied"}}}"#,
+        );
+        assert_positive(dlp, dlp.dlp_request_denied);
+        let policy = decode_body(400, br#"{"error":{"type":"policy_blocked"}}"#);
+        assert_positive(policy, policy.policy_blocked);
+        let content_filter = decode_message(400, "Output blocked by content filtering policy");
+        assert_positive(
+            content_filter,
+            content_filter.output_blocked_by_content_filter,
+        );
+        let mid_system = decode_message(400, "capability_rejected: mid_conv_system");
+        assert_positive(mid_system, mid_system.mid_conversation_system_rejected);
+        let mid_system_copy = decode_message(400, "role system is not supported in this message");
+        assert_positive(
+            mid_system_copy,
+            mid_system_copy.mid_conversation_system_rejected,
+        );
+        let encrypted_search =
+            decode_message(400, "Invalid `encrypted_content` in `search_result` block");
+        assert_positive(
+            encrypted_search,
+            encrypted_search.encrypted_search_payload_rejected,
+        );
+        let encrypted_code = decode_message(
+            400,
+            "Invalid `encrypted_stdout` in encrypted_code_execution_result block",
+        );
+        assert_positive(
+            encrypted_code,
+            encrypted_code.encrypted_code_execution_payload_rejected,
+        );
+
+        let raw = decode_body(400, b"dlp_request_denied");
+        assert!(!raw.dlp_request_denied);
+        assert!(!raw.policy_blocked);
+        assert_eq!(raw.aggregate_claim(None), Some(false));
+        let falsy_root = decode_body(400, b"false");
+        assert!(!falsy_root.dlp_request_denied);
+        assert!(!falsy_root.policy_blocked);
+        assert_eq!(falsy_root.aggregate_claim(None), Some(false));
+        let array_root = decode_body(400, b"[]");
+        assert!(!array_root.dlp_request_denied);
+        assert!(!array_root.policy_blocked);
+        assert_eq!(array_root.aggregate_claim(None), Some(false));
+        let duplicate_error = decode_body(
+            400,
+            br#"{"error":{"type":"policy_blocked"},"error":{"type":"other"}}"#,
+        );
+        assert!(!duplicate_error.policy_blocked);
+        assert_eq!(duplicate_error.aggregate_claim(None), Some(false));
+
+        assert!(super::response(
+            &HttpResponse {
+                status: 503,
+                headers: Vec::new(),
+                body: br#"{"message":"busy"}"#.to_vec().into(),
+            },
+            Some(&native_context_with_hq(None, None, None, None)),
+            false,
+            false,
+        )
+        .unwrap_err()
+        .native_anthropic_error_facts()
+        .unwrap()
+        .native_hq_hrn15_evidence
+        .is_none());
     }
 
     fn response(
