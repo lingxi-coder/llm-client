@@ -576,6 +576,7 @@ fn request(model: &str) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: model.to_owned(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

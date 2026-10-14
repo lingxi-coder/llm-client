@@ -439,6 +439,7 @@ mod tests {
             prompt_cache: Default::default(),
             output_format: Default::default(),
             service_tier: None,
+            model_source: None,
             model: "deepseek-flash".to_owned(),
             native_options: Vec::new(),
             hosted_tools: vec![
@@ -616,6 +617,7 @@ mod tests {
             prompt_cache: Default::default(),
             output_format: Default::default(),
             service_tier: None,
+            model_source: None,
             model: "gpt-6-astra".to_owned(),
             native_options: Vec::new(),
             hosted_tools: vec![],

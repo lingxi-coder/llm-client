@@ -17,13 +17,38 @@ use serde_json::{json, Map, Value};
 /// has to carry something.
 const DEFAULT_MAX_TOKENS: u64 = 4096;
 
+/// Apply Native's `[1m]` / `[2m]` model marker removal to UTF-16 source
+/// units without converting through Rust `String` (which cannot retain lone
+/// surrogates). The original request carrier remains untouched for identity.
+pub(crate) fn normalized_model_source(source: &JsonPayload) -> Result<JsonPayload, LlmError> {
+    crate::codecs::input::normalized_model_source_units(source)
+        .map(|units| JsonPayload::string_from_utf16_code_units(&units))
+}
+
+/// Convert the normalized source model the way Native's Vertex SDK does when
+/// assigning it inside a `URL.pathname` template. The WHATWG URL boundary
+/// converts the resulting UTF-16 string to USVString, replacing each isolated
+/// surrogate with U+FFFD before percent-encoding the path. Keep this behavior
+/// specific to Vertex; Bedrock uses `encodeURIComponent` and throws instead.
+pub(crate) fn vertex_url_path_model_source(source: &JsonPayload) -> Result<String, LlmError> {
+    crate::codecs::input::normalized_model_source_units(source)
+        .map(|units| String::from_utf16_lossy(&units))
+}
+
 pub fn request<'a>(
     wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    let source_context = req
+        .model_source
+        .as_ref()
+        .map(|source| opts.clone().with_model_source(Some(source), profile))
+        .transpose()?;
+    let opts = source_context.as_ref().unwrap_or(opts);
     crate::codecs::validate_tool_wire_shapes(req)?;
+    crate::codecs::validate_model_source_protocol(req, profile.protocol)?;
     crate::codecs::reject_typed_native(req, profile.protocol)?;
     crate::providers::anthropic::conversation::validate(req, opts)?;
     crate::providers::anthropic::client_toolsets::validate(req, opts)?;
@@ -294,8 +319,14 @@ pub fn request<'a>(
         .filter(|config| !config.inline_toolset())
         .map(|config| (config.name().to_owned(), config.toolset_value()))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?
-        .with("messages", WireValue::array(messages));
+    let mut body = crate::codecs::request_controls::wire_body(req, profile.protocol, body)?;
+    if let Some(model_source) = &req.model_source {
+        body = body.with(
+            "model",
+            WireValue::owned_raw_json(normalized_model_source(model_source)?),
+        );
+    }
+    body = body.with("messages", WireValue::array(messages));
     if let Some(classifier) = opts
         .native_anthropic_request_context()
         .and_then(|context| context.server_classifier.as_ref())
@@ -981,5 +1012,96 @@ mod native_tool_result_order_tests {
             encode(&compatible, &compatible_opts, Some(true)).as_slice(),
             br#"{"type":"tool_result","tool_use_id":"toolu_native_iserror_true_295","content":"MCP_RESULT_ISERROR_TRUE","is_error":true}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod model_source_tests {
+    use super::*;
+    use crate::codecs::{CodecContext, RequestMode};
+    use crate::protocol::ChatRequest;
+
+    fn profile(request_model: &str) -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": "anthropic",
+            "profile_name": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": request_model,
+                "request_model": request_model,
+                "billing_model": request_model
+            }]
+        }))
+        .expect("fixture profile")
+    }
+
+    fn encoded_body(request_model: &str, model_source: Option<&[u16]>) -> Vec<u8> {
+        let profile = profile(request_model);
+        let context = CodecContext::new(&profile, request_model, RequestMode::Complete);
+        let mut chat_request = ChatRequest::new("configured-route");
+        chat_request.model_source = model_source.map(JsonPayload::string_from_utf16_code_units);
+        request(EncodeRequest::new(&chat_request), &profile, &context)
+            .expect("encode Claude request")
+            .encode()
+            .expect("serialize Claude request")
+            .body
+            .to_vec()
+    }
+
+    #[test]
+    fn lone_surrogate_models_reach_physical_claude_json_as_distinct_sources() {
+        let high = encoded_body("wire-model", Some(&[0xD800]));
+        let low = encoded_body("wire-model", Some(&[0xDC00]));
+        let high_wire = std::str::from_utf8(&high).unwrap();
+        let low_wire = std::str::from_utf8(&low).unwrap();
+
+        assert!(high_wire.contains(r#""model":"\ud800""#), "{high_wire}");
+        assert!(low_wire.contains(r#""model":"\udc00""#), "{low_wire}");
+        assert_ne!(high, low);
+
+        let mut high_request = ChatRequest::new("configured-route");
+        high_request.model_source = Some(JsonPayload::string_from_utf16_code_units(&[0xD800]));
+        let mut low_request = ChatRequest::new("configured-route");
+        low_request.model_source = Some(JsonPayload::string_from_utf16_code_units(&[0xDC00]));
+        assert_ne!(high_request, low_request);
+        assert_eq!(
+            high_request
+                .clone()
+                .model_source
+                .and_then(|source| source.root_string_code_units()),
+            Some(vec![0xD800])
+        );
+    }
+
+    #[test]
+    fn well_formed_model_sources_keep_the_existing_claude_encoding() {
+        let ascii = "wire-model".encode_utf16().collect::<Vec<_>>();
+        assert_eq!(
+            encoded_body("wire-model", None),
+            encoded_body("wire-model", Some(&ascii))
+        );
+
+        let non_bmp = "😀".encode_utf16().collect::<Vec<_>>();
+        assert_eq!(encoded_body("😀", None), encoded_body("😀", Some(&non_bmp)));
+    }
+
+    #[test]
+    fn model_source_removes_only_native_context_markers_without_losing_other_units() {
+        let source = "claude[3m][1m]".encode_utf16().collect::<Vec<_>>();
+        let body = encoded_body("wire-model", Some(&source));
+        let wire = std::str::from_utf8(&body).unwrap();
+        assert!(wire.contains(r#""model":"claude[3m]""#), "{wire}");
+    }
+
+    #[test]
+    fn vertex_path_source_uses_url_usv_string_replacement() {
+        let high = JsonPayload::string_from_utf16_code_units(&[0xD800]);
+        let low = JsonPayload::string_from_utf16_code_units(&[0xDC00]);
+        let pair = JsonPayload::string_from_utf16_code_units(&[0xD83D, 0xDE80]);
+        assert_eq!(vertex_url_path_model_source(&high).unwrap(), "\u{FFFD}");
+        assert_eq!(vertex_url_path_model_source(&low).unwrap(), "\u{FFFD}");
+        assert_eq!(vertex_url_path_model_source(&pair).unwrap(), "\u{1F680}");
     }
 }

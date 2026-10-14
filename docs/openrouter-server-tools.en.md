@@ -49,6 +49,7 @@ pub async fn discover_a_client_tool(
         prompt_cache: Default::default(),
         output_format: Default::default(),
         model: "openai/gpt-5.2".into(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![lingxi_llm_client::providers::openrouter::native::OpenRouterHostedTool::ToolSearch(
             OpenRouterToolSearchConfig {

@@ -27,7 +27,7 @@ pub use client::AnthropicClient;
 /// Anthropic request model ID.
 #[must_use]
 pub fn supports_per_message_effort(model: &str) -> bool {
-    conversation::supports_per_message_effort(model)
+    conversation::supports_per_message_effort_model(model)
 }
 
 pub mod native;

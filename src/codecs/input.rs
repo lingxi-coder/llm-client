@@ -1,5 +1,48 @@
 //! Pure request data passed to wire codecs. No credentials or execution state.
-use crate::protocol::{ChatRequest, CredentialConfig, ModelProfile, ProviderInfo, ProviderProfile};
+use crate::protocol::{
+    ChatRequest, CredentialConfig, JsonPayload, ModelProfile, ProviderInfo, ProviderProfile,
+};
+
+/// Native removes these exact context-window markers from a selected model
+/// before sending it to Claude. Work on UTF-16 units so a surrounding lone
+/// surrogate remains part of the source identity.
+pub(crate) fn normalized_model_source_units(
+    source: &JsonPayload,
+) -> Result<Vec<u16>, crate::protocol::LlmError> {
+    source.validate_root_string("ChatRequest.model_source")?;
+    let units = source
+        .root_string_code_units()
+        .expect("validated model source has a JSON string root");
+    let mut normalized = Vec::with_capacity(units.len());
+    let mut offset = 0;
+    while offset < units.len() {
+        let marker_matches = units
+            .get(offset..offset.saturating_add(4))
+            .is_some_and(|marker| {
+                marker.len() == 4
+                    && marker[0] == b'[' as u16
+                    && (marker[1] == b'1' as u16 || marker[1] == b'2' as u16)
+                    && (marker[2] == b'm' as u16 || marker[2] == b'M' as u16)
+                    && marker[3] == b']' as u16
+            });
+        if marker_matches {
+            offset += 4;
+        } else {
+            normalized.push(units[offset]);
+            offset += 1;
+        }
+    }
+    Ok(normalized)
+}
+
+fn utf16_ends_with_ascii(units: &[u16], suffix: &str) -> bool {
+    let suffix = suffix.as_bytes();
+    units.len() >= suffix.len()
+        && units[units.len() - suffix.len()..]
+            .iter()
+            .zip(suffix)
+            .all(|(unit, expected)| *unit == u16::from(*expected))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestMode {
@@ -15,6 +58,10 @@ pub enum RequestMode {
 pub struct CodecContext {
     pub(crate) profile: ProviderProfile,
     pub(crate) request_model: String,
+    selected_route_model: Option<ModelProfile>,
+    model_identity_units: Vec<u16>,
+    model_source: Option<JsonPayload>,
+    model_source_has_1m_suffix: bool,
     pub(crate) stream: bool,
     mode: RequestMode,
     pub(crate) file_account_scope: Option<String>,
@@ -57,6 +104,16 @@ impl CodecContext {
         models: impl Iterator<Item = &'a ModelProfile>,
         mode: RequestMode,
     ) -> Self {
+        let models = models
+            .map(|model| {
+                let mut model = model.clone();
+                model.pricing = None;
+                model.info.pricing = None;
+                model.billing_mode = None;
+                model
+            })
+            .collect::<Vec<_>>();
+        let selected_route_model = models.first().cloned();
         let connection = ProviderProfile {
             inference: profile.inference.clone(),
             chat_enabled: profile.chat_enabled,
@@ -68,15 +125,7 @@ impl CodecContext {
             model_list: Default::default(),
             auth: profile.auth,
             credential: CredentialConfig::None,
-            models: models
-                .map(|model| {
-                    let mut model = model.clone();
-                    model.pricing = None;
-                    model.info.pricing = None;
-                    model.billing_mode = None;
-                    model
-                })
-                .collect(),
+            models,
             images: Default::default(),
             embeddings: Default::default(),
             decisions: profile.decisions,
@@ -104,6 +153,10 @@ impl CodecContext {
         Self {
             profile: connection,
             request_model: request_model.to_owned(),
+            selected_route_model,
+            model_identity_units: request_model.encode_utf16().collect(),
+            model_source: None,
+            model_source_has_1m_suffix: false,
             stream: mode == RequestMode::Stream,
             mode,
             file_account_scope: None,
@@ -117,6 +170,62 @@ impl CodecContext {
             native_anthropic_thinking_resumption_beta_requested: None,
             model_complete_empty_cache_blocks: false,
         }
+    }
+    /// Replace the selected catalog identity with the Native source model for
+    /// model-scoped capability, inference, and wire decisions. The route still
+    /// supplies connection, transport, and authentication configuration.
+    pub(crate) fn with_model_source(
+        mut self,
+        source: Option<&JsonPayload>,
+        source_profile: &ProviderProfile,
+    ) -> Result<Self, crate::protocol::LlmError> {
+        let Some(source) = source else {
+            return Ok(self);
+        };
+        source.validate_root_string("ChatRequest.model_source")?;
+        let original_units = source
+            .root_string_code_units()
+            .expect("validated model source has a JSON string root");
+        let normalized_units = normalized_model_source_units(source)?;
+        let normalized_string = String::from_utf16(&normalized_units).ok();
+        let selected_route_model = normalized_string
+            .as_ref()
+            .and_then(|model| {
+                self.selected_route_model
+                    .as_ref()
+                    .filter(|candidate| candidate.request_model == *model)
+            })
+            .cloned();
+        self.model_identity_units.clone_from(&normalized_units);
+        self.model_source_has_1m_suffix = utf16_ends_with_ascii(&original_units, "[1m]");
+        self.model_source = Some(source.clone());
+        self.profile.models.clear();
+        match normalized_string {
+            Some(model) => {
+                self.request_model.clone_from(&model);
+                let mut exact_rows = source_profile
+                    .models
+                    .iter()
+                    .filter(|candidate| candidate.request_model == model);
+                let source_model = selected_route_model.or_else(|| {
+                    let first = exact_rows.next()?.clone();
+                    exact_rows.next().is_none().then_some(first)
+                });
+                if let Some(mut source_model) = source_model {
+                    source_model.pricing = None;
+                    source_model.info.pricing = None;
+                    source_model.billing_mode = None;
+                    self.profile.models.push(source_model);
+                }
+            }
+            None => {
+                // A malformed UTF-16 selector has no Rust string key. Keep its
+                // code units as the authoritative identity, with no route
+                // model's catalog capabilities attached to it.
+                self.request_model.clear();
+            }
+        }
+        Ok(self)
     }
     /// Set the caller's non-secret identity for account-bound execution state.
     pub fn with_account_scope(mut self, scope: Option<&str>) -> Self {
@@ -307,7 +416,8 @@ impl CodecContext {
         {
             return Some(window as f64);
         }
-        if self.request_model.ends_with("[1m]")
+        if (self.model_source_has_1m_suffix
+            || (self.model_source.is_none() && self.request_model.ends_with("[1m]")))
             && self.native_anthropic_context.model_supports_context_1m == Some(true)
         {
             return Some(1_000_000.0);
@@ -346,6 +456,25 @@ impl CodecContext {
     pub fn request_model(&self) -> &str {
         &self.request_model
     }
+    /// Exact Native-normalized model identity, including isolated UTF-16
+    /// surrogates that cannot be represented by `request_model`.
+    pub(crate) fn model_identity_matches(&self, model: &str) -> bool {
+        self.model_identity_units == model.encode_utf16().collect::<Vec<_>>()
+    }
+    pub(crate) fn model_identity_matches_any(&self, models: &[&str]) -> bool {
+        models
+            .iter()
+            .any(|model| self.model_identity_matches(model))
+    }
+    pub(crate) fn model_identity_display(&self) -> String {
+        String::from_utf16_lossy(&self.model_identity_units)
+    }
+    pub(crate) fn has_model_source(&self) -> bool {
+        self.model_source.is_some()
+    }
+    pub(crate) fn selected_route_model(&self) -> Option<&ModelProfile> {
+        self.selected_route_model.as_ref()
+    }
     pub fn mode(&self) -> RequestMode {
         self.mode
     }
@@ -382,6 +511,92 @@ impl<'a> EncodeRequest<'a> {
     }
     pub fn media(self) -> &'a [PreparedMedia<'a>] {
         self.media
+    }
+}
+
+#[cfg(test)]
+mod model_source_context_tests {
+    use super::*;
+    use crate::protocol::ProtocolFamily;
+    use serde_json::json;
+
+    fn profile() -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": "anthropic",
+            "profile_name": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [
+                {
+                    "display_model": "route-selector",
+                    "request_model": "route-selector",
+                    "billing_model": "route-selector"
+                },
+                {
+                    "display_model": "claude-sonnet-5-5",
+                    "request_model": "claude-sonnet-5-5",
+                    "billing_model": "claude-sonnet-5-5"
+                }
+            ]
+        }))
+        .expect("fixture profile")
+    }
+
+    #[test]
+    fn source_model_replaces_route_model_identity_and_keeps_context_marker_semantics() {
+        let profile = profile();
+        let route_model = profile
+            .models
+            .iter()
+            .find(|model| model.request_model == "route-selector")
+            .unwrap();
+        let source = JsonPayload::string("claude-sonnet-5-5[1m]");
+        let context = CodecContext::for_model(&profile, route_model, RequestMode::Complete)
+            .with_model_source(Some(&source), &profile)
+            .expect("valid Native model source");
+
+        assert_eq!(context.request_model(), "claude-sonnet-5-5");
+        assert!(context.model_identity_matches("claude-sonnet-5-5"));
+        assert!(!context.model_identity_matches("route-selector"));
+        assert!(context.model_source_has_1m_suffix);
+        assert_eq!(context.profile().models.len(), 1);
+        assert_eq!(
+            context.profile().models[0].request_model,
+            "claude-sonnet-5-5"
+        );
+        assert_eq!(
+            context.profile().protocol,
+            ProtocolFamily::AnthropicMessages
+        );
+        assert_eq!(
+            context.selected_route_model().unwrap().request_model,
+            "route-selector"
+        );
+    }
+
+    #[test]
+    fn malformed_source_keeps_distinct_units_and_ascii_family_identity() {
+        let profile = profile();
+        let route_model = &profile.models[0];
+        let high_units = [vec![0xD800], "claude-sonnet-5-5".encode_utf16().collect()].concat();
+        let low_units = [vec![0xDC00], "claude-sonnet-5-5".encode_utf16().collect()].concat();
+        let high = JsonPayload::string_from_utf16_code_units(&high_units);
+        let low = JsonPayload::string_from_utf16_code_units(&low_units);
+        let high_context = CodecContext::for_model(&profile, route_model, RequestMode::Complete)
+            .with_model_source(Some(&high), &profile)
+            .expect("lone surrogates are valid JSON string sources");
+        let low_context = CodecContext::for_model(&profile, route_model, RequestMode::Complete)
+            .with_model_source(Some(&low), &profile)
+            .expect("lone surrogates are valid JSON string sources");
+
+        assert_eq!(high_context.request_model(), "");
+        assert!(!high_context.model_identity_matches("route-selector"));
+        assert_ne!(
+            high_context.model_identity_units,
+            low_context.model_identity_units
+        );
+        assert!(high_context.profile().models.is_empty());
     }
 }
 

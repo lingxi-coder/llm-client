@@ -38,6 +38,7 @@ fn request() -> ChatRequest {
         output_format: Default::default(),
         controls: Default::default(),
         model: "GPT Audio".into(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

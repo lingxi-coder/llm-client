@@ -40,8 +40,21 @@ const PER_MESSAGE_EFFORT_MODELS: &[&str] = &[
 
 /// Pinned served models that support Native per-message effort controls.
 #[must_use]
-pub(crate) fn supports_per_message_effort(model: &str) -> bool {
-    PER_MESSAGE_EFFORT_MODELS.contains(&model)
+pub(crate) fn supports_per_message_effort(context: &CodecContext) -> bool {
+    supports_per_message_effort_identity(|model| context.model_identity_matches(model))
+}
+
+/// Public string-model queries use the same exact UTF-16 catalog predicate as
+/// source-preserving request contexts.
+#[must_use]
+pub(crate) fn supports_per_message_effort_model(model: &str) -> bool {
+    supports_per_message_effort_identity(|supported| {
+        model.encode_utf16().eq(supported.encode_utf16())
+    })
+}
+
+fn supports_per_message_effort_identity(mut matches: impl FnMut(&str) -> bool) -> bool {
+    PER_MESSAGE_EFFORT_MODELS.iter().any(|model| matches(model))
 }
 
 fn invalid(message: impl Into<String>) -> LlmError {
@@ -396,10 +409,10 @@ fn validate_message_options(request: &ChatRequest, context: &CodecContext) -> Re
                 "Anthropic per-message options are supported only on system messages",
             ));
         }
-        if options.effort.is_some() && !supports_per_message_effort(context.request_model()) {
+        if options.effort.is_some() && !supports_per_message_effort(context) {
             return Err(unsupported(format!(
                 "Anthropic per-message effort is not documented for model {:?}",
-                context.request_model()
+                context.model_identity_display()
             )));
         }
         match options.clear_at {
@@ -1251,11 +1264,11 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
     }
     if !only_per_message_effort
         && (contains_system || contains_changes)
-        && !SUPPORTED_MODELS.contains(&context.request_model())
+        && !context.model_identity_matches_any(SUPPORTED_MODELS)
     {
         return Err(unsupported(format!(
             "Anthropic mid-conversation system messages and tool changes are not documented for model {:?}",
-            context.request_model()
+            context.model_identity_display()
         )));
     }
     if contains_changes
@@ -1565,4 +1578,55 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod per_message_effort_identity_tests {
+    use super::*;
+
+    fn profile() -> ProviderProfile {
+        serde_json::from_value(serde_json::json!({
+            "provider_id": "anthropic",
+            "profile_name": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "claude-opus-5-5",
+                "request_model": "claude-opus-5-5",
+                "billing_model": "claude-opus-5-5"
+            }]
+        }))
+        .expect("fixture profile")
+    }
+
+    #[test]
+    fn public_string_and_request_context_use_exact_model_identity() {
+        let profile = profile();
+        let route_context = CodecContext::for_model(
+            &profile,
+            &profile.models[0],
+            crate::codecs::RequestMode::Complete,
+        );
+        assert!(supports_per_message_effort(&route_context));
+        assert!(crate::providers::anthropic::supports_per_message_effort(
+            "claude-opus-5-5"
+        ));
+        assert!(!crate::providers::anthropic::supports_per_message_effort(
+            "claude-opus-5-5x"
+        ));
+
+        let unsupported_source = JsonPayload::string("claude-opus-5-5x");
+        let unsupported_context = route_context
+            .clone()
+            .with_model_source(Some(&unsupported_source), &profile)
+            .expect("valid source model");
+        assert!(!supports_per_message_effort(&unsupported_context));
+
+        let supported_source = JsonPayload::string("claude-sonnet-5-5");
+        let supported_context = route_context
+            .with_model_source(Some(&supported_source), &profile)
+            .expect("valid source model");
+        assert!(supports_per_message_effort(&supported_context));
+    }
 }

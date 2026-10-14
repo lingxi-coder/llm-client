@@ -33,6 +33,7 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "claude-sonnet-4-5".into(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

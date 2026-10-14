@@ -343,6 +343,7 @@ fn minimax_m3_encodes_only_uploaded_video_file_refs() {
         controls: Default::default(),
         service_tier: None,
         model: "MiniMax-M3".into(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

@@ -20,6 +20,7 @@ pub struct PreparedCall {
     deadline: Option<Instant>,
     profile: ProviderProfile,
     model: ModelProfile,
+    model_source: Option<crate::protocol::JsonPayload>,
     mode: RequestMode,
     continuation: Option<crate::protocol::ContinuationRef>,
     file_expirations: Vec<String>,
@@ -147,6 +148,11 @@ impl ClientSnapshot {
                 )?
             };
         let native_anthropic_request_header_facts = prepared.native_anthropic_request_header_facts;
+        let pricing_identity = super::FrozenPricing::for_request(
+            selected.profile,
+            selected.model,
+            request.request.model_source.as_ref(),
+        );
         Ok(RequestDraft {
             native_traceparent: None,
             semantic_body: None,
@@ -180,7 +186,8 @@ impl ClientSnapshot {
                     .total_timeout
                     .and_then(|timeout| started.checked_add(timeout)),
                 profile: selected.profile.clone(),
-                model: selected.model.clone(),
+                model: pricing_identity.model.clone(),
+                model_source: pricing_identity.model_source.clone(),
                 mode,
             },
         })
@@ -696,6 +703,7 @@ impl PreparedCall {
         super::FrozenPricing {
             profile: self.profile.clone(),
             model: self.model.clone(),
+            model_source: self.model_source.clone(),
         }
     }
     /// Final authenticated wire request. Its Debug implementation redacts secrets.

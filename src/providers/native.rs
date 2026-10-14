@@ -13,6 +13,9 @@ impl ChatRequest {
     /// Reject malformed, unknown, and duplicate native tools before provider
     /// helpers read optional typed views. No unknown format is silently dropped.
     pub fn validate_hosted_tools(&self) -> Result<(), LlmError> {
+        if let Some(model_source) = &self.model_source {
+            model_source.validate_root_string("ChatRequest.model_source")?;
+        }
         validate_request_options(&self.native_options)?;
         for tool in &self.tools {
             validate_options(

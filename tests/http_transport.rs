@@ -652,6 +652,7 @@ fn completion() -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "test-model".into(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

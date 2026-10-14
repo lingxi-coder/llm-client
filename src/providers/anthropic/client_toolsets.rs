@@ -217,10 +217,10 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             "Anthropic Browser and Computer toolsets require the first-party Anthropic Messages or Vertex Claude protocol",
         ));
     }
-    if !SUPPORTED_MODELS.contains(&context.request_model()) {
+    if !context.model_identity_matches_any(SUPPORTED_MODELS) {
         return Err(unsupported(format!(
             "Anthropic Browser and Computer toolsets are not documented for model {:?}",
-            context.request_model()
+            context.model_identity_display()
         )));
     }
     if has_beta(profile, FINE_GRAINED_TOOL_STREAMING_BETA) {

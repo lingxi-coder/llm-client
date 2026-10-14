@@ -87,6 +87,7 @@ async fn ask(api_key: String) -> Result<String, Box<dyn std::error::Error>> {
         controls: Default::default(),
         service_tier: None,
         model: "my-model".into(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

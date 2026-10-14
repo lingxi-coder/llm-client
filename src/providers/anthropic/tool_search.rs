@@ -92,26 +92,24 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
                     "Anthropic hosted tool search requires the first-party Anthropic Messages provider",
                 ));
             }
-            require_model(
-                context.request_model(),
-                CLAUDE_API_MODELS_AND_ALIASES,
-                "Claude API",
-            )
+            require_context_model(context, CLAUDE_API_MODELS_AND_ALIASES, "Claude API")
         }
-        ProtocolFamily::VertexClaude => {
-            require_model(context.request_model(), VERTEX_MODELS, "Vertex AI")
-        }
+        ProtocolFamily::VertexClaude => require_context_model(context, VERTEX_MODELS, "Vertex AI"),
         ProtocolFamily::FoundryClaude => {
             let deployment = crate::hosting::foundry::require_deployment(context)?;
             let supported = match deployment.hosting {
                 crate::protocol::FoundryHosting::Anthropic => FOUNDRY_ANTHROPIC_MODELS,
                 crate::protocol::FoundryHosting::Azure => FOUNDRY_AZURE_MODELS,
             };
-            require_model(
-                &deployment.model_id,
-                supported,
-                "Microsoft Foundry Tool Search",
-            )
+            if context.has_model_source() {
+                require_context_model(context, supported, "Microsoft Foundry Tool Search")
+            } else {
+                require_model(
+                    &deployment.model_id,
+                    supported,
+                    "Microsoft Foundry Tool Search",
+                )
+            }
         }
         // The Anthropic compatibility table documents Bedrock InvokeModel,
         // while Bedrock accepts either model IDs or inference-profile ARNs.
@@ -122,6 +120,21 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             "Anthropic hosted tool search is not supported by the {:?} codec",
             profile.protocol
         ))),
+    }
+}
+
+fn require_context_model(
+    context: &CodecContext,
+    supported: &[&str],
+    platform: &str,
+) -> Result<(), LlmError> {
+    if context.model_identity_matches_any(supported) {
+        Ok(())
+    } else {
+        Err(unsupported(format!(
+            "Anthropic hosted tool search is not documented for {platform} model {:?}",
+            context.model_identity_display()
+        )))
     }
 }
 

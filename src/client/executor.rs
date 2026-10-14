@@ -460,11 +460,17 @@ fn decision_attempt_report(
     response: Option<&HttpResponse>,
     attempt: &Attempt<'_>,
     mode: RequestMode,
+    model_source: Option<&crate::protocol::JsonPayload>,
 ) -> DecisionAttemptReport {
     let usage = response.map_or_else(Default::default, |response| {
-        let context = CodecContext::for_model(attempt.profile, attempt.model, mode);
+        let context = CodecContext::for_model(attempt.profile, attempt.model, mode)
+            .with_model_source(model_source, attempt.profile)
+            .expect("model source was validated before attempt execution");
         crate::codecs::usage::response_report(response, &context)
     });
+    let context = CodecContext::for_model(attempt.profile, attempt.model, mode)
+        .with_model_source(model_source, attempt.profile)
+        .expect("model source was validated before attempt execution");
     let model = response
         .and_then(|response| serde_json::from_slice::<serde_json::Value>(&response.body).ok())
         .and_then(|body| {
@@ -473,7 +479,7 @@ fn decision_attempt_report(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| attempt.model.request_model.clone());
+        .unwrap_or_else(|| context.request_model().to_owned());
     DecisionAttemptReport {
         model,
         executed_profile: attempt.profile.profile_name.clone(),
@@ -511,6 +517,7 @@ fn decision_failure(
     attempt: &Attempt<'_>,
     mode: RequestMode,
     decision: bool,
+    model_source: Option<&crate::protocol::JsonPayload>,
     prior_attempts: Vec<DecisionAttemptReport>,
 ) -> DecisionExecutionError {
     let AttemptFailure {
@@ -526,13 +533,17 @@ fn decision_failure(
             .is_some_and(|response| (200..300).contains(&response.status))
         {
             let response = response.expect("successful status checked above");
-            let usage = decision_attempt_report(Some(&response), attempt, mode).usage;
+            let usage = decision_attempt_report(Some(&response), attempt, mode, model_source).usage;
             let reported = Box::new(DecisionDecodeFailure {
                 error,
                 response,
                 usage,
                 profile_name: attempt.profile.profile_name.clone(),
-                request_model: attempt.model.request_model.clone(),
+                request_model: CodecContext::for_model(attempt.profile, attempt.model, mode)
+                    .with_model_source(model_source, attempt.profile)
+                    .expect("model source was validated before attempt execution")
+                    .request_model()
+                    .to_owned(),
                 prior_attempts,
             });
             return if incomplete_response {
@@ -543,7 +554,7 @@ fn decision_failure(
                 DecisionExecutionError::InvalidResponse(reported)
             };
         }
-        let final_attempt = decision_attempt_report(response.as_ref(), attempt, mode);
+        let final_attempt = decision_attempt_report(response.as_ref(), attempt, mode, model_source);
         if !prior_attempts.is_empty() || final_attempt.usage.state != UsageState::Missing {
             return DecisionExecutionError::ReportedProvider {
                 error,
@@ -625,6 +636,7 @@ impl<'client> RequestExecutor<'client> {
     ) -> Result<PreparedAttempt, LlmError> {
         let (mode, authenticate, decision) = preparation;
         let profile = attempt.profile;
+        crate::codecs::validate_model_source_protocol(req.request, profile.protocol)?;
         let is_anthropic_model_protocol = matches!(
             profile.protocol,
             ProtocolFamily::AnthropicMessages
@@ -634,7 +646,15 @@ impl<'client> RequestExecutor<'client> {
         );
         let model_complete_cache_decision = opts.model_complete_cache_gate.as_ref().map(|gate| {
             crate::protocol::NativeModelProvider::for_profile(profile)
-                .map(|provider| gate.decision(provider))
+                .map(|provider| {
+                    if let Some(source) = req.request.model_source.as_ref() {
+                        let units = crate::codecs::input::normalized_model_source_units(source)
+                            .expect("model source was validated before attempt execution");
+                        gate.decision_for_source_model_units(provider, &units)
+                    } else {
+                        gate.decision(provider)
+                    }
+                })
                 .unwrap_or(crate::protocol::NativeModelCacheDecision::Undetermined)
         });
         // Missing registry/credential observations must not silently mean
@@ -666,6 +686,7 @@ impl<'client> RequestExecutor<'client> {
         let backend = dispatch::chat(profile);
         let codec = backend.codec(profile, self.codecs)?;
         let validation_context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_model_source(req.request.model_source.as_ref(), profile)?
             .with_native_anthropic_context(opts.native_anthropic_context)
             .with_native_anthropic_request_context(opts.native_anthropic_request_context.clone())
             .with_native_anthropic_endpoint_admission(
@@ -763,6 +784,7 @@ impl<'client> RequestExecutor<'client> {
             opts.file_account_scope.as_deref(),
         );
         let mut context = CodecContext::for_model(profile, attempt.model, mode)
+            .with_model_source(req.request.model_source.as_ref(), profile)?
             .with_native_anthropic_context(opts.native_anthropic_context)
             .with_native_anthropic_request_context(opts.native_anthropic_request_context.clone())
             .with_native_anthropic_endpoint_admission(
@@ -801,7 +823,7 @@ impl<'client> RequestExecutor<'client> {
             .attachments
             .prepare_provider_file_inputs(
                 profile,
-                &attempt.model.request_model,
+                context.request_model(),
                 request,
                 &req.attachments,
                 ProviderFilePreparation {
@@ -1020,10 +1042,11 @@ impl<'client> RequestExecutor<'client> {
                     requested,
                     continuation,
                 )
-                .with_pricing(super::FrozenPricing {
-                    profile: attempt.profile.clone(),
-                    model: attempt.model.clone(),
-                })
+                .with_pricing(super::FrozenPricing::for_request(
+                    attempt.profile,
+                    attempt.model,
+                    req.request.model_source.as_ref(),
+                ))
                 .with_provider_observation(backend.stream_observation(&context)),
             )));
         }
@@ -1093,9 +1116,13 @@ impl<'client> RequestExecutor<'client> {
         mode: RequestMode,
     ) -> Result<(), LlmError> {
         req.validate_hosted_tools()?;
+        if let Some(head) = connections.first() {
+            crate::codecs::validate_model_source_protocol(req, head.profile.protocol)?;
+        }
         validate_request_file_expirations(req, self.clock.now())?;
         if let Some(head) = connections.first() {
             let context = CodecContext::for_model(head.profile, head.model, mode)
+                .with_model_source(req.model_source.as_ref(), head.profile)?
                 .with_native_anthropic_context(opts.native_anthropic_context)
                 .with_native_anthropic_request_context(
                     opts.native_anthropic_request_context.clone(),
@@ -1252,8 +1279,12 @@ impl<'client> RequestExecutor<'client> {
             let outcome = if replay.repair_missing_files && !missing.is_empty() {
                 if decision {
                     if let Err(failure) = &outcome {
-                        let reported =
-                            decision_attempt_report(failure.response.as_ref(), &attempt, mode);
+                        let reported = decision_attempt_report(
+                            failure.response.as_ref(),
+                            &attempt,
+                            mode,
+                            prepared_request.request.model_source.as_ref(),
+                        );
                         if reported.usage.state != UsageState::Missing {
                             prior_attempts.push(reported);
                         }
@@ -1293,6 +1324,7 @@ impl<'client> RequestExecutor<'client> {
                             &attempt,
                             mode,
                             true,
+                            prepared_request.request.model_source.as_ref(),
                             prior_attempts,
                         ));
                     }
@@ -1304,8 +1336,12 @@ impl<'client> RequestExecutor<'client> {
                         ) || route.failover.matches(&failure.error));
                     if may_failover && attempt_index + 1 < attempt_count {
                         if decision {
-                            let reported =
-                                decision_attempt_report(failure.response.as_ref(), &attempt, mode);
+                            let reported = decision_attempt_report(
+                                failure.response.as_ref(),
+                                &attempt,
+                                mode,
+                                prepared_request.request.model_source.as_ref(),
+                            );
                             if reported.usage.state != UsageState::Missing {
                                 prior_attempts.push(reported);
                             }
@@ -1317,6 +1353,7 @@ impl<'client> RequestExecutor<'client> {
                         &attempt,
                         mode,
                         decision,
+                        prepared_request.request.model_source.as_ref(),
                         prior_attempts,
                     ));
                 }

@@ -164,10 +164,15 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
     let dynamic_filter_model = foundry_deployment
         .map(|deployment| deployment.model_id.as_str())
         .unwrap_or_else(|| context.request_model());
-    if dynamic_filtering_requested && !DYNAMIC_FILTER_MODELS.contains(&dynamic_filter_model) {
+    let dynamic_filter_supported = if context.has_model_source() {
+        context.model_identity_matches_any(DYNAMIC_FILTER_MODELS)
+    } else {
+        DYNAMIC_FILTER_MODELS.contains(&dynamic_filter_model)
+    };
+    if dynamic_filtering_requested && !dynamic_filter_supported {
         return Err(unsupported(format!(
             "Anthropic Web Fetch dynamic filtering is not documented for model {:?}",
-            dynamic_filter_model
+            context.model_identity_display()
         )));
     }
     if request.tools.iter().any(|tool| tool.name == "web_fetch") {

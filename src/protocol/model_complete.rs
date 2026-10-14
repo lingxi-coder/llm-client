@@ -258,6 +258,53 @@ impl NativeModelCacheGate {
             &self.environment,
         )
     }
+
+    /// Evaluate a Native UTF-16 model source instead of inheriting the route
+    /// selector's model-scoped cache decision. Valid sources use the exact
+    /// normalized selector; malformed sources retain ASCII-family checks but
+    /// cannot match a different catalog selector through lossy conversion.
+    pub(crate) fn decision_for_source_model_units(
+        &self,
+        provider: NativeModelProvider,
+        source_model_units: &[u16],
+    ) -> NativeModelCacheDecision {
+        let mut model = self.model.clone();
+        if let Ok(selector) = String::from_utf16(source_model_units) {
+            model.effective_selector = selector;
+            return model_complete_cache_decision(
+                &model,
+                provider,
+                &self.settings,
+                &self.registry,
+                &self.environment,
+            );
+        }
+
+        model.effective_selector.clear();
+        let decision = model_complete_cache_decision(
+            &model,
+            provider,
+            &self.settings,
+            &self.registry,
+            &self.environment,
+        );
+        let source_contains = |needle: &str| {
+            let needle = needle.as_bytes();
+            source_model_units.windows(needle.len()).any(|window| {
+                window
+                    .iter()
+                    .zip(needle)
+                    .all(|(unit, expected)| *unit == u16::from(*expected))
+            })
+        };
+        if self.environment.disable_fable && source_contains("claude-fable-")
+            || self.environment.disable_mythos && source_contains("claude-mythos-")
+        {
+            NativeModelCacheDecision::Disabled
+        } else {
+            decision
+        }
+    }
 }
 
 impl NativeModelProvider {
@@ -442,6 +489,48 @@ pub fn model_complete_cache_decision(
         NativeModelCacheDecision::Undetermined
     } else {
         NativeModelCacheDecision::Enabled
+    }
+}
+
+#[cfg(test)]
+mod source_model_cache_gate_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_source_keeps_ascii_family_cache_gate_without_route_model_fallback() {
+        let gate = NativeModelCacheGate {
+            model: NativeModelGateIdentity::unchanged("route-sonnet-model"),
+            settings: NativeModelSettingsSnapshot::new(
+                "route-sonnet-model",
+                NativeModelObservation::Unobserved,
+            ),
+            registry: NativeModelRegistrySnapshot::unobserved(),
+            environment: NativeModelEnvironmentSnapshot {
+                disable_all: false,
+                disable_haiku: false,
+                disable_sonnet: false,
+                disable_opus: false,
+                disable_fable: true,
+                disable_mythos: false,
+                default_haiku_model: None,
+                default_sonnet_model: None,
+                default_opus_model: None,
+                default_fable_model: None,
+                small_fast_model: None,
+                assume_first_party_base_url: false,
+                anthropic_base_url: None,
+            },
+        };
+        let source = [vec![0xD800], "claude-fable-5-1".encode_utf16().collect()].concat();
+
+        assert_eq!(
+            gate.decision_for_source_model_units(NativeModelProvider::FirstParty, &source),
+            NativeModelCacheDecision::Disabled
+        );
+        assert_eq!(
+            gate.decision(NativeModelProvider::FirstParty),
+            NativeModelCacheDecision::Enabled
+        );
     }
 }
 

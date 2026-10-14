@@ -33,6 +33,9 @@ use std::sync::Arc;
 /// Retain the wire-field shapes that were enforced by the original typed
 /// string/array carriers, before uploads or authentication can have effects.
 pub(crate) fn validate_tool_wire_shapes(request: &ChatRequest) -> Result<(), LlmError> {
+    if let Some(model_source) = &request.model_source {
+        model_source.validate_root_string("ChatRequest.model_source")?;
+    }
     for tool in &request.tools {
         if !tool.input_schema.is_root_object() {
             return Err(LlmError::InvalidRequest {
@@ -52,6 +55,93 @@ pub(crate) fn validate_tool_wire_shapes(request: &ChatRequest) -> Result<(), Llm
         }
     }
     Ok(())
+}
+
+/// A source-backed model id is meaningful only to the Anthropic Messages
+/// codec family. Other providers keep their configured model strategy and
+/// must reject this carrier rather than silently ignoring or coercing it.
+pub(crate) fn validate_model_source_protocol(
+    request: &ChatRequest,
+    family: ProtocolFamily,
+) -> Result<(), LlmError> {
+    if let Some(source) = &request.model_source {
+        if !matches!(
+            family,
+            ProtocolFamily::AnthropicMessages
+                | ProtocolFamily::VertexClaude
+                | ProtocolFamily::BedrockClaude
+                | ProtocolFamily::FoundryClaude
+        ) {
+            return Err(LlmError::UnsupportedCapability {
+                message: format!("model_source is not supported by {family:?}"),
+            });
+        }
+        if family == ProtocolFamily::BedrockClaude {
+            let normalized = crate::codecs::anthropic::encode::normalized_model_source(source)?;
+            let units = normalized
+                .root_string_code_units()
+                .expect("normalized model source has a JSON string root");
+            if String::from_utf16(&units).is_err() {
+                return Err(LlmError::InvalidRequest {
+                    // Native's Bedrock SDK applies encodeURIComponent while
+                    // building `/model/{model}/invoke`; an isolated surrogate
+                    // throws this URIError before a request reaches transport.
+                    message: "URIError: URI malformed".to_owned(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod model_source_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn exact_model_source_is_limited_to_claude_wire_families() {
+        let mut request = ChatRequest::new("configured-route");
+        request.model_source = Some(crate::protocol::JsonPayload::string_from_utf16_code_units(
+            &[0xD800],
+        ));
+        for family in [
+            ProtocolFamily::AnthropicMessages,
+            ProtocolFamily::FoundryClaude,
+        ] {
+            assert!(validate_model_source_protocol(&request, family).is_ok());
+        }
+        assert!(validate_model_source_protocol(&request, ProtocolFamily::VertexClaude).is_ok());
+        assert_eq!(
+            validate_model_source_protocol(&request, ProtocolFamily::BedrockClaude).unwrap_err(),
+            LlmError::InvalidRequest {
+                message: "URIError: URI malformed".to_owned(),
+            }
+        );
+        for family in [
+            ProtocolFamily::OpenAiChat,
+            ProtocolFamily::OpenAiResponses,
+            ProtocolFamily::GeminiGenerateContent,
+            ProtocolFamily::GeminiInteractions,
+            ProtocolFamily::VertexGemini,
+            ProtocolFamily::AzureOpenAi,
+        ] {
+            assert!(validate_model_source_protocol(&request, family).is_err());
+        }
+
+        request.model_source = Some(crate::protocol::JsonPayload::string("claude-sonnet-5-5"));
+        for family in [
+            ProtocolFamily::AnthropicMessages,
+            ProtocolFamily::VertexClaude,
+            ProtocolFamily::BedrockClaude,
+            ProtocolFamily::FoundryClaude,
+        ] {
+            assert!(validate_model_source_protocol(&request, family).is_ok());
+        }
+        request.model_source = None;
+        for family in ProtocolFamily::ALL {
+            assert!(validate_model_source_protocol(&request, family).is_ok());
+        }
+    }
 }
 
 /// A Responses continuation id is endpoint-side state, not an optional hint.

@@ -61,6 +61,7 @@ fn request(messages: Vec<ConversationMessage>) -> ChatRequest {
         controls: Default::default(),
         service_tier: None,
         model: "m".to_owned(),
+        model_source: None,
         native_options: Vec::new(),
         hosted_tools: vec![],
         continuation: None,

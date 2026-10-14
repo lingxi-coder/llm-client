@@ -45,6 +45,12 @@ pub(crate) fn require_deployment(context: &CodecContext) -> Result<&FoundryDeplo
             "Foundry deployment identity requires the Foundry Claude codec",
         ));
     }
+    if context.has_model_source() {
+        return context
+            .selected_route_model()
+            .and_then(|model| model.foundry.as_ref())
+            .ok_or_else(|| unsupported("this Foundry route requires its selected model row to declare hosting and model_id"));
+    }
     let mut rows = context
         .profile()
         .models

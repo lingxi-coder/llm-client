@@ -1436,6 +1436,12 @@ pub struct ChatRequest {
     /// Requested output contract, separate from strict function tools.
     #[serde(default)]
     pub output_format: super::OutputFormat,
+    /// Exact source model string for Claude protocol wire identity. This is
+    /// separate from `model`, which remains the configured route selector.
+    /// The Claude codec serializes this JSON string source directly; other
+    /// protocols reject it instead of coercing or dropping it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_source: Option<JsonPayload>,
     pub model: String,
     /// Explicit wire-level controls. These are validated against the selected
     /// protocol and never change shared profile defaults.
@@ -1478,6 +1484,7 @@ impl ChatRequest {
     #[must_use]
     pub fn new(model: impl Into<String>) -> Self {
         Self {
+            model_source: None,
             model: model.into(),
             prompt_cache: super::PromptCachePolicy::default(),
             output_format: super::OutputFormat::default(),
@@ -2111,6 +2118,30 @@ mod tests {
     }
 
     #[test]
+    fn exact_model_source_round_trips_lone_units_and_keeps_them_distinct() {
+        let mut high = ChatRequest::new("configured-route");
+        high.model_source = Some(JsonPayload::string_from_utf16_code_units(&[0xD800]));
+        let mut low = ChatRequest::new("configured-route");
+        low.model_source = Some(JsonPayload::string_from_utf16_code_units(&[0xDC00]));
+
+        assert_ne!(high, low);
+        let encoded = serde_json::to_string(&high).unwrap();
+        assert!(encoded.contains(r#""model_source":"\ud800""#));
+        let decoded: ChatRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            decoded
+                .model_source
+                .as_ref()
+                .and_then(JsonPayload::root_string_code_units),
+            Some(vec![0xD800])
+        );
+        assert_ne!(
+            decoded.model_source,
+            Some(JsonPayload::string_from_utf16_code_units(&[0xDC00]))
+        );
+    }
+
+    #[test]
     fn response_ids_are_optional_in_current_requests_and_reports() {
         let req: ChatRequest = serde_json::from_value(serde_json::json!({
             "model": "m",
@@ -2161,6 +2192,7 @@ mod tests {
             output_format: Default::default(),
             controls: Default::default(),
             service_tier: None,
+            model_source: None,
             model: "m".to_owned(),
             native_options: Vec::new(),
             hosted_tools: vec![],

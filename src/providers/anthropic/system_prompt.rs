@@ -957,6 +957,15 @@ pub fn project_classifier_system_blocks(
 /// Default prompt-cache setting, using the same model-family environment gates
 /// as the host had before this provider conversion moved into the SDK.
 pub fn prompt_caching_enabled(model: &str, protocol: ProtocolFamily) -> bool {
+    prompt_caching_enabled_for_utf16_model(&model.encode_utf16().collect::<Vec<_>>(), protocol)
+}
+
+/// Source-preserving counterpart for callers which carry a JavaScript model
+/// selector that Rust `String` cannot represent exactly.
+pub fn prompt_caching_enabled_for_utf16_model(
+    model_units: &[u16],
+    protocol: ProtocolFamily,
+) -> bool {
     if !matches!(
         protocol,
         ProtocolFamily::AnthropicMessages
@@ -969,20 +978,32 @@ pub fn prompt_caching_enabled(model: &str, protocol: ProtocolFamily) -> bool {
     if env_truthy("DISABLE_PROMPT_CACHING") {
         return false;
     }
-    let model = model.to_ascii_lowercase();
-    if model.contains("haiku") && env_truthy("DISABLE_PROMPT_CACHING_HAIKU") {
+    let contains = |needle: &str| {
+        let needle = needle.as_bytes();
+        model_units.windows(needle.len()).any(|window| {
+            window.iter().zip(needle).all(|(unit, expected)| {
+                let unit = if (u16::from(b'A')..=u16::from(b'Z')).contains(unit) {
+                    *unit + (u16::from(b'a') - u16::from(b'A'))
+                } else {
+                    *unit
+                };
+                unit == u16::from(*expected)
+            })
+        })
+    };
+    if contains("haiku") && env_truthy("DISABLE_PROMPT_CACHING_HAIKU") {
         return false;
     }
-    if model.contains("sonnet") && env_truthy("DISABLE_PROMPT_CACHING_SONNET") {
+    if contains("sonnet") && env_truthy("DISABLE_PROMPT_CACHING_SONNET") {
         return false;
     }
-    if model.contains("opus") && env_truthy("DISABLE_PROMPT_CACHING_OPUS") {
+    if contains("opus") && env_truthy("DISABLE_PROMPT_CACHING_OPUS") {
         return false;
     }
-    if model.contains("fable") && env_truthy("DISABLE_PROMPT_CACHING_FABLE") {
+    if contains("fable") && env_truthy("DISABLE_PROMPT_CACHING_FABLE") {
         return false;
     }
-    if model.contains("mythos") && env_truthy("DISABLE_PROMPT_CACHING_MYTHOS") {
+    if contains("mythos") && env_truthy("DISABLE_PROMPT_CACHING_MYTHOS") {
         return false;
     }
     true

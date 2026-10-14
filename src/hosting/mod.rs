@@ -183,18 +183,53 @@ impl WireCodec for VertexClaudeCodec {
         req: EncodeRequest<'_>,
         opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
+        let source_context = req
+            .request()
+            .model_source
+            .as_ref()
+            .map(|source| opts.clone().with_model_source(Some(source), opts.profile()))
+            .transpose()?;
+        let opts = source_context.as_ref().unwrap_or(opts);
         let profile = opts.profile();
-        let mut http = crate::codecs::anthropic::encode::request(req, profile, opts)?;
+        crate::codecs::validate_model_source_protocol(req.request(), ProtocolFamily::VertexClaude)?;
         let action = if opts.stream {
             "streamRawPredict"
         } else {
             "rawPredict"
         };
-        http.http.url = format!(
-            "{}/publishers/anthropic/models/{}:{action}",
-            profile.base_url.trim_end_matches('/'),
-            opts.request_model
-        );
+        let source_model = req
+            .request()
+            .model_source
+            .as_ref()
+            .map(crate::codecs::anthropic::encode::vertex_url_path_model_source)
+            .transpose()?;
+        let path_model = source_model
+            .clone()
+            .unwrap_or_else(|| opts.request_model.clone());
+        let mut http = crate::codecs::anthropic::encode::request(req, profile, opts)?;
+        if source_model.is_some() {
+            // Native assigns the complete model endpoint to URL.pathname. Do
+            // the same here so source `?` and `#` remain path data instead of
+            // changing the request's query or fragment. The ordinary route
+            // model keeps its existing URL construction below.
+            let mut url =
+                url::Url::parse(&profile.base_url).map_err(|error| LlmError::InvalidRequest {
+                    message: format!("Invalid Vertex base URL: {error}"),
+                })?;
+            let path = format!(
+                "{}/publishers/anthropic/models/{}:{action}",
+                url.path().trim_end_matches('/'),
+                path_model
+            );
+            url.set_path(&path);
+            http.http.url = url.into();
+        } else {
+            http.http.url = format!(
+                "{}/publishers/anthropic/models/{}:{action}",
+                profile.base_url.trim_end_matches('/'),
+                path_model
+            );
+        }
         let version = profile
             .extra
             .get("api_version")
@@ -327,6 +362,16 @@ impl WireCodec for BedrockClaudeCodec {
         req: &crate::protocol::ChatRequest,
         context: &CodecContext,
     ) -> Result<(), LlmError> {
+        let source_context = req
+            .model_source
+            .as_ref()
+            .map(|source| {
+                context
+                    .clone()
+                    .with_model_source(Some(source), context.profile())
+            })
+            .transpose()?;
+        let context = source_context.as_ref().unwrap_or(context);
         crate::codecs::validate_tool_wire_shapes(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::codecs::inference::validate(req, context)
@@ -340,7 +385,18 @@ impl WireCodec for BedrockClaudeCodec {
         req: EncodeRequest<'_>,
         opts: &CodecContext,
     ) -> Result<HttpRequest, LlmError> {
+        let source_context = req
+            .request()
+            .model_source
+            .as_ref()
+            .map(|source| opts.clone().with_model_source(Some(source), opts.profile()))
+            .transpose()?;
+        let opts = source_context.as_ref().unwrap_or(opts);
         let profile = opts.profile();
+        crate::codecs::validate_model_source_protocol(
+            req.request(),
+            ProtocolFamily::BedrockClaude,
+        )?;
         let mut http = crate::codecs::anthropic::encode::request(req, profile, opts)?;
         let action = if opts.stream {
             "invoke-with-response-stream"
@@ -483,6 +539,137 @@ impl BedrockStreamDecoder {
                 self.ended = true;
                 out.push(Err(error));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_source_path_tests {
+    use super::*;
+    use crate::codecs::{CodecContext, EncodeRequest, RequestMode};
+    use crate::protocol::{ChatRequest, JsonPayload, ProviderProfile};
+    use serde_json::json;
+
+    fn profile(protocol: &str, base_url: &str) -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": "anthropic",
+            "profile_name": "route",
+            "base_url": base_url,
+            "protocol": protocol,
+            "auth": "none",
+            "models": [{
+                "display_model": "route-model",
+                "request_model": "route-model",
+                "billing_model": "route-model"
+            }]
+        }))
+        .expect("fixture profile")
+    }
+
+    fn request(source: JsonPayload) -> ChatRequest {
+        let mut request = ChatRequest::new("configured-route");
+        request.model_source = Some(source);
+        request
+    }
+
+    #[test]
+    fn valid_source_model_replaces_bedrock_and_vertex_path_identity() {
+        let source = JsonPayload::string("source-model");
+        let bedrock = profile(
+            "bedrock_claude",
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+        );
+        let bedrock_context =
+            CodecContext::for_model(&bedrock, &bedrock.models[0], RequestMode::Complete);
+        let bedrock_wire = BedrockClaudeCodec
+            .encode_request(
+                EncodeRequest::new(&request(source.clone())),
+                &bedrock_context,
+            )
+            .expect("well-formed Bedrock model id");
+        assert_eq!(
+            bedrock_wire.url,
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/source-model/invoke"
+        );
+
+        let vertex = profile(
+            "vertex_claude",
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
+        );
+        let vertex_context =
+            CodecContext::for_model(&vertex, &vertex.models[0], RequestMode::Complete);
+        let vertex_wire = VertexClaudeCodec
+            .encode_request(EncodeRequest::new(&request(source)), &vertex_context)
+            .expect("well-formed Vertex model id");
+        assert!(vertex_wire
+            .url
+            .ends_with("/publishers/anthropic/models/source-model:rawPredict"));
+    }
+
+    #[test]
+    fn bedrock_malformed_source_preserves_native_uri_error() {
+        let source = JsonPayload::string_from_utf16_code_units(&[0xD800]);
+        let profile = profile(
+            "bedrock_claude",
+            "https://bedrock-runtime.us-east-1.amazonaws.com",
+        );
+        let context = CodecContext::for_model(&profile, &profile.models[0], RequestMode::Complete);
+        assert_eq!(
+            BedrockClaudeCodec
+                .encode_request(EncodeRequest::new(&request(source)), &context)
+                .unwrap_err(),
+            LlmError::InvalidRequest {
+                message: "URIError: URI malformed".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn vertex_path_uses_whatwg_surrogate_replacement_without_route_fallback() {
+        let source = JsonPayload::string_from_utf16_code_units(&[0xD800]);
+        let profile = profile(
+            "vertex_claude",
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
+        );
+        let context = CodecContext::for_model(&profile, &profile.models[0], RequestMode::Complete);
+        let wire = VertexClaudeCodec
+            .encode_request(EncodeRequest::new(&request(source)), &context)
+            .expect("Vertex URL pathname accepts a lone surrogate as U+FFFD");
+        let url = url::Url::parse(&wire.url).expect("encoded Vertex request URL");
+        assert!(url
+            .path()
+            .ends_with("/publishers/anthropic/models/%EF%BF%BD:rawPredict"));
+        assert!(!url
+            .path()
+            .ends_with("/publishers/anthropic/models/route-model:rawPredict"));
+    }
+
+    #[test]
+    fn vertex_source_model_uses_native_pathname_setter_semantics() {
+        let profile = profile(
+            "vertex_claude",
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/?keep=1#fragment",
+        );
+        let context = CodecContext::for_model(&profile, &profile.models[0], RequestMode::Complete);
+        let base =
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1";
+        for (source, expected_path) in [
+            ("x?y#z", "/publishers/anthropic/models/x%3Fy%23z:rawPredict"),
+            ("x%raw", "/publishers/anthropic/models/x%raw:rawPredict"),
+            ("x%2Fy", "/publishers/anthropic/models/x%2Fy:rawPredict"),
+            ("x/y", "/publishers/anthropic/models/x/y:rawPredict"),
+        ] {
+            let wire = VertexClaudeCodec
+                .encode_request(
+                    EncodeRequest::new(&request(JsonPayload::string(source))),
+                    &context,
+                )
+                .expect("valid source model is assigned as URL pathname");
+            let url = url::Url::parse(&wire.url).expect("encoded Vertex request URL");
+            assert!(url.path().ends_with(expected_path), "{}", url.path());
+            assert_eq!(url.query(), Some("keep=1"), "{}", wire.url);
+            assert_eq!(url.fragment(), Some("fragment"), "{}", wire.url);
+            assert!(wire.url.starts_with(base), "{}", wire.url);
         }
     }
 }

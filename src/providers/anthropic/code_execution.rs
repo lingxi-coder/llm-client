@@ -83,20 +83,29 @@ fn foundry_deployment(context: &CodecContext) -> Option<&crate::protocol::Foundr
 /// row must explicitly say Anthropic-hosted and name a documented model.
 pub(crate) fn supports_execution(context: &CodecContext) -> bool {
     if is_official_profile(context.profile()) {
-        return SUPPORTED_MODELS.contains(&context.request_model());
+        return context.model_identity_matches_any(SUPPORTED_MODELS);
     }
-    foundry_deployment(context)
-        .is_some_and(|deployment| SUPPORTED_MODELS.contains(&deployment.model_id.as_str()))
+    foundry_deployment(context).is_some_and(|deployment| {
+        if context.has_model_source() {
+            context.model_identity_matches_any(SUPPORTED_MODELS)
+        } else {
+            SUPPORTED_MODELS.contains(&deployment.model_id.as_str())
+        }
+    })
 }
 
 /// Whether the selected route/model pair supports Programmatic Tool Calling.
 /// Haiku 4.5 and the Foundry Mythos preview remain Code Execution-only.
 pub(crate) fn supports_programmatic_tool_calling(context: &CodecContext) -> bool {
     if is_official_profile(context.profile()) {
-        return PROGRAMMATIC_TOOL_CALLING_MODELS.contains(&context.request_model());
+        return context.model_identity_matches_any(PROGRAMMATIC_TOOL_CALLING_MODELS);
     }
     foundry_deployment(context).is_some_and(|deployment| {
-        PROGRAMMATIC_TOOL_CALLING_MODELS.contains(&deployment.model_id.as_str())
+        if context.has_model_source() {
+            context.model_identity_matches_any(PROGRAMMATIC_TOOL_CALLING_MODELS)
+        } else {
+            PROGRAMMATIC_TOOL_CALLING_MODELS.contains(&deployment.model_id.as_str())
+        }
     })
 }
 
@@ -329,7 +338,7 @@ pub(crate) fn validate_with_inline_tools(
         if !supports_programmatic_tool_calling(context) {
             return Err(unsupported(format!(
                 "Anthropic programmatic tool calling is not documented for the selected model and hosting identity (wire model {:?})",
-                context.request_model()
+                context.model_identity_display()
             )));
         }
         for tool in tool_specs.iter().filter(|tool| {
@@ -436,7 +445,7 @@ pub(crate) fn validate_with_inline_tools(
         }
         return Err(unsupported(format!(
             "Anthropic Code Execution is not documented for the selected model and hosting identity (wire model {:?})",
-            context.request_model()
+            context.model_identity_display()
         )));
     }
     if request
@@ -529,7 +538,7 @@ pub(crate) fn validate_with_inline_tools(
         if scope.profile_name() != profile.profile_name
             || !scope_matches_route
             || Some(scope.account_scope()) != context.account_scope()
-            || scope.request_model() != context.request_model()
+            || !context.model_identity_matches(scope.request_model())
         {
             return Err(invalid(
                 "Anthropic container reference does not match the selected profile, endpoint, account_scope, or request model",

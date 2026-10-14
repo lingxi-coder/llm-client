@@ -176,8 +176,24 @@ pub fn resolve_anthropic_server_fallback_summary_model(
 pub struct FrozenPricing {
     pub(super) profile: ProviderProfile,
     pub(super) model: ModelProfile,
+    pub(super) model_source: Option<JsonPayload>,
 }
 impl FrozenPricing {
+    /// Capture pricing and identity from the Native-normalized model source.
+    /// A route row is reused only when it is the actual source model; otherwise
+    /// a unique exact catalog match is required for model-specific prices.
+    pub(crate) fn for_request(
+        profile: &ProviderProfile,
+        selected_model: &ModelProfile,
+        model_source: Option<&JsonPayload>,
+    ) -> Self {
+        Self {
+            profile: profile.clone(),
+            model: model_for_source(profile, selected_model, model_source),
+            model_source: model_source.cloned(),
+        }
+    }
+
     /// Capture one exact model row from a provider configuration.
     pub fn capture(
         profile: &ProviderProfile,
@@ -199,6 +215,7 @@ impl FrozenPricing {
         Ok(Self {
             profile: profile.clone(),
             model: model.clone(),
+            model_source: None,
         })
     }
     /// Apply an explicit caller-provided price declaration before dispatch.
@@ -237,6 +254,12 @@ impl FrozenPricing {
     }
     pub fn model(&self) -> &ModelProfile {
         &self.model
+    }
+
+    /// Exact Native model source associated with this pricing snapshot, when
+    /// the request used a UTF-16 source projection.
+    pub fn model_source(&self) -> Option<&JsonPayload> {
+        self.model_source.as_ref()
     }
 
     /// Estimate an observed attempt using only its frozen prices and confirmed
@@ -587,6 +610,51 @@ impl FrozenPricing {
             executed_at: inference.executed_at,
         }))
     }
+}
+
+fn model_for_source(
+    profile: &ProviderProfile,
+    selected_model: &ModelProfile,
+    model_source: Option<&JsonPayload>,
+) -> ModelProfile {
+    let Some(model_source) = model_source else {
+        return selected_model.clone();
+    };
+    let units = crate::codecs::input::normalized_model_source_units(model_source)
+        .expect("model source was validated before pricing capture");
+    let source_model = String::from_utf16(&units).ok();
+    let exact_model = source_model.as_ref().and_then(|source_model| {
+        if selected_model.request_model == *source_model {
+            return Some(selected_model);
+        }
+        let mut rows = profile
+            .models
+            .iter()
+            .filter(|model| model.request_model == *source_model);
+        let first = rows.next()?;
+        rows.next().is_none().then_some(first)
+    });
+    if let Some(model) = exact_model {
+        return model.clone();
+    }
+
+    // Preserve the request identity while making every route-model pricing
+    // and capability fact unavailable for an unmatched source.
+    let mut model = selected_model.clone();
+    let identity = source_model.unwrap_or_default();
+    model.display_model.clone_from(&identity);
+    model.request_model.clone_from(&identity);
+    model.billing_model = identity;
+    model.foundry = None;
+    model.hidden = false;
+    model.aliases.clear();
+    model.description = None;
+    model.metadata = Default::default();
+    model.capability_support = None;
+    model.pricing = None;
+    model.billing_mode = Some(BillingMode::Unknown);
+    model.info = Default::default();
+    model
 }
 
 struct ComponentQuoteResult {
@@ -1046,5 +1114,68 @@ fn failed_component(
 fn push_unique(values: &mut Vec<String>, value: String) {
     if !values.contains(&value) {
         values.push(value);
+    }
+}
+
+#[cfg(test)]
+mod model_source_pricing_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn profile() -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": "anthropic",
+            "profile_name": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [
+                {
+                    "display_model": "route-model",
+                    "request_model": "route-model",
+                    "billing_model": "route-model",
+                    "pricing": {"input_per_million": 99.0}
+                },
+                {
+                    "display_model": "source-model",
+                    "request_model": "source-model",
+                    "billing_model": "source-model",
+                    "pricing": {"input_per_million": 2.0}
+                }
+            ]
+        }))
+        .expect("fixture profile")
+    }
+
+    #[test]
+    fn source_pricing_uses_only_an_exact_source_row_and_retains_raw_units() {
+        let profile = profile();
+        let selected = &profile.models[0];
+        let source = JsonPayload::string("source-model[1m]");
+        let priced = FrozenPricing::for_request(&profile, selected, Some(&source));
+        assert_eq!(priced.model().request_model, "source-model");
+        assert_eq!(
+            priced.model().pricing.as_ref().unwrap().input_per_million,
+            Some(2.0)
+        );
+        assert_eq!(
+            priced.model_source().unwrap().root_string_code_units(),
+            Some("source-model[1m]".encode_utf16().collect())
+        );
+
+        let unknown = JsonPayload::string("unlisted-model");
+        let unpriced = FrozenPricing::for_request(&profile, selected, Some(&unknown));
+        assert_eq!(unpriced.model().request_model, "unlisted-model");
+        assert!(unpriced.model().pricing.is_none());
+        assert_eq!(unpriced.model().billing_mode, Some(BillingMode::Unknown));
+
+        let malformed = JsonPayload::string_from_utf16_code_units(&[0xD800]);
+        let unpriced = FrozenPricing::for_request(&profile, selected, Some(&malformed));
+        assert_eq!(unpriced.model().request_model, "");
+        assert!(unpriced.model().pricing.is_none());
+        assert_eq!(
+            unpriced.model_source().unwrap().root_string_code_units(),
+            Some(vec![0xD800])
+        );
     }
 }
