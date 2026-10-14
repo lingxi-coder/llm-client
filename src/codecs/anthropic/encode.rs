@@ -13,10 +13,6 @@ use crate::providers::anthropic::types::{
 
 use serde_json::{json, Map, Value};
 
-/// This provider requires `max_tokens`; a request that does not set one still
-/// has to carry something.
-const DEFAULT_MAX_TOKENS: u64 = 4096;
-
 /// Apply Native's `[1m]` / `[2m]` model marker removal to UTF-16 source
 /// units without converting through Rust `String` (which cannot retain lone
 /// surrogates). The original request carrier remains untouched for identity.
@@ -119,10 +115,12 @@ pub fn request<'a>(
         "model".to_owned(),
         Value::String(opts.request_model.clone()),
     );
-    body.insert(
-        "max_tokens".to_owned(),
-        Value::from(req.max_tokens.map_or(DEFAULT_MAX_TOKENS, u64::from)),
-    );
+    if opts.mode() != crate::RequestMode::CountTokens {
+        body.insert(
+            "max_tokens".to_owned(),
+            Value::from(opts.required_output_tokens(req)?),
+        );
+    }
 
     // The system prompt is a top-level array here, not a message, and the
     // explicit cache breakpoints are applied after tools and messages are encoded.
@@ -1031,7 +1029,8 @@ mod model_source_tests {
             "models": [{
                 "display_model": request_model,
                 "request_model": request_model,
-                "billing_model": request_model
+                "billing_model": request_model,
+                "metadata": {"applicationOutputTokens":4096}
             }]
         }))
         .expect("fixture profile")
@@ -1041,6 +1040,7 @@ mod model_source_tests {
         let profile = profile(request_model);
         let context = CodecContext::new(&profile, request_model, RequestMode::Complete);
         let mut chat_request = ChatRequest::new("configured-route");
+        chat_request.max_tokens = Some(4096);
         chat_request.model_source = model_source.map(JsonPayload::string_from_utf16_code_units);
         request(EncodeRequest::new(&chat_request), &profile, &context)
             .expect("encode Claude request")

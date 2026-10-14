@@ -29,6 +29,7 @@ off_peak_multiplier = 0.5
 
 [[model]]
 id = "deepseek-flash"
+application_output_tokens = 384000 # Application policy, not provider default.
 name = "DeepSeek V4.1 Flash"
 description = "DeepSeek V4.1 Flash model for reasoning and agentic coding"
 family = "deepseek-flash"
@@ -63,6 +64,7 @@ effort = { support = "supported", default = "high" }
 
 [[model]]
 id = "deepseek-v4-pro"
+application_output_tokens = 384000 # Application policy, not provider default.
 name = "DeepSeek V4 Pro"
 description = "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes"
 family = "deepseek-thinking"

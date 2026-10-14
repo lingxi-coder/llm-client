@@ -48,7 +48,7 @@ pub use llm::{
     NativeAnthropicErrorFacts, NativeAnthropicErrorResponse, ProviderErrorText, ProviderListing,
     ProxyAuthHeader, ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation,
     ResponseCacheStatus, ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice,
-    ToolSpec, Usage, WebCitation, WebSearchConfig, WebSearchResult,
+    ToolInputIssue, ToolSpec, Usage, WebCitation, WebSearchConfig, WebSearchResult,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,

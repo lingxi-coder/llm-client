@@ -568,6 +568,7 @@ mod model_source_path_tests {
 
     fn request(source: JsonPayload) -> ChatRequest {
         let mut request = ChatRequest::new("configured-route");
+        request.max_tokens = Some(4096);
         request.model_source = Some(source);
         request
     }

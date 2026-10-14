@@ -111,6 +111,7 @@ pub(crate) fn response_with_approval_support(
         });
     }
     let mut content = Vec::new();
+    let mut tool_input_issues = Vec::new();
     let mut saw_tool_call = false;
     let mut saw_refusal = false;
     let output = body
@@ -204,21 +205,11 @@ pub(crate) fn response_with_approval_support(
             );
             if JsonPayload::parse_fragments([&arguments]).is_err() {
                 if body["status"].as_str() == Some("incomplete") {
-                    let source = response_json
-                        .take_raw_json_source_at(&format!("/output/{item_index}"))?
-                        .ok_or_else(|| LlmError::InvalidRequest {
-                            message: "incomplete Responses function call source was not retained"
-                                .into(),
-                        })?;
-                    content.push(ContentBlock::ProviderContent {
-                        protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                        value: JsonPayload::parse(source).map_err(|error| {
-                            LlmError::InvalidRequest {
-                                message: format!(
-                                    "incomplete function call source is invalid JSON: {error}"
-                                ),
-                            }
-                        })?,
+                    tool_input_issues.push(crate::protocol::ToolInputIssue {
+                        block_index: item_index,
+                        tool_name: item["name"].as_str().unwrap().into(),
+                        tool_id: Some(ToolUseId::new(item["call_id"].as_str().unwrap())),
+                        input_bytes: item["arguments"].as_str().unwrap().len(),
                     });
                     continue;
                 }
@@ -248,6 +239,7 @@ pub(crate) fn response_with_approval_support(
         ),
         file_search: crate::codecs::file_search_decode::responses_payload(&provider_payload),
         native_metadata: Vec::new(),
+        tool_input_issues,
         message: ConversationMessage {
             native_options: Vec::new(),
             role: MessageRole::Assistant,

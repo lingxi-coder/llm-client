@@ -22,7 +22,7 @@ connection = { group = "kimi", connection_id = "open", order = 1 }
 
 # The terminal usage object is omitted from SSE unless it is asked for, which
 # would otherwise leave the transcript and every token counter at zero.
-extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
+extra = { stream_usage_opt_in = true, preserve_reasoning_content = true, max_tokens_field = "max_completion_tokens" }
 
 [[model]]
 id = "kimi-k2.6"
