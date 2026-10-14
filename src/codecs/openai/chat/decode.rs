@@ -31,6 +31,7 @@ pub(super) fn response_with_usage_mode(
     let refusal = message.get("refusal").and_then(Value::as_str);
 
     let mut content = Vec::new();
+    let mut tool_input_issues = Vec::new();
     let reasoning = super::reasoning::display_text(message);
     if !reasoning.is_empty() {
         content.push(ContentBlock::Thinking {
@@ -89,7 +90,29 @@ pub(super) fn response_with_usage_mode(
             &format!("/choices/0/message/tool_calls/{call_index}/function/arguments"),
             arguments,
         )?)?;
-        let input = crate::exact_json::parse_tool_input_json(&arguments)?;
+        let input = match crate::exact_json::parse_tool_input_json(&arguments) {
+            Ok(input) => input,
+            Err(error)
+                if matches!(
+                    choice.get("finish_reason").and_then(Value::as_str),
+                    Some("length" | "tool_calls" | "stop")
+                ) =>
+            {
+                tool_input_issues.push(crate::protocol::ToolInputIssue {
+                    block_index: call_index,
+                    tool_name: function
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                    tool_id: call.get("id").and_then(Value::as_str).map(ToolUseId::new),
+                    input_bytes: arguments.len(),
+                });
+                let _ = error;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         content.push(ContentBlock::ToolUse {
             input_json: Some(arguments.clone()),
             id: ToolUseId::new(call.get("id").and_then(Value::as_str).unwrap_or_default()),
@@ -119,6 +142,7 @@ pub(super) fn response_with_usage_mode(
         ),
         file_search: None,
         native_metadata: Vec::new(),
+        tool_input_issues,
         message: ConversationMessage {
             native_options: Vec::new(),
             role: MessageRole::Assistant,

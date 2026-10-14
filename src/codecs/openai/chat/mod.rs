@@ -51,7 +51,12 @@ impl WireCodec for OpenAiChatCodec {
             context.profile(),
             context,
         )?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::inference::validate(
+            req,
+            context.profile(),
+            context.request_model(),
+            context.mode(),
+        )
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::OpenAiChat

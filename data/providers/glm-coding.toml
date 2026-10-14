@@ -29,6 +29,7 @@ connection = { group = "zhipu", connection_id = "coding", order = 0 }
 
 [[model]]
 id = "glm-4.6v"
+application_output_tokens = 32768 # Application policy, not provider default.
 name = "GLM-4.6V"
 description = "GLM vision model for visual reasoning, documents, and multimodal agents"
 family = "glm"
@@ -59,6 +60,7 @@ effort = { support = "unknown" }
 
 [[model]]
 id = "glm-4.7"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-4.7"
 description = "Flagship GLM model for hybrid reasoning, coding, and agentic engineering"
 family = "glm"
@@ -89,6 +91,7 @@ effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5-turbo"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5-Turbo"
 description = "Efficient GLM model for fast reasoning, coding, and agent workflows"
 family = "glm"
@@ -119,6 +122,7 @@ effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.1"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5.1"
 description = "Flagship GLM model for hybrid reasoning, coding, and agentic engineering"
 family = "glm"
@@ -149,6 +153,7 @@ effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.2"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5.2"
 description = "Open flagship GLM for long-horizon coding agents and million-token context work"
 family = "glm"
@@ -179,6 +184,7 @@ effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.2-highspeed"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5.2 Highspeed"
 description = "Open flagship GLM for long-horizon coding agents and million-token context work"
 family = "glm"
@@ -209,6 +215,7 @@ effort = { support = "unknown" }
 
 [[model]]
 id = "glm-5.3"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5.3"
 description = "Flagship GLM model for long-horizon coding, agents, and complex project delivery"
 family = "glm"
@@ -239,6 +246,7 @@ effort = { support = "unknown", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5.3-flash"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5.3-Flash"
 description = "Native multimodal GLM model for efficient coding and long-horizon agent tasks"
 family = "glm"
@@ -269,6 +277,7 @@ effort = { support = "unknown", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5.3-highspeed"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5.3 Highspeed"
 description = "Flagship GLM model for long-horizon coding, agents, and complex project delivery"
 family = "glm"
@@ -299,6 +308,7 @@ effort = { support = "unknown", levels = ["low", "high", "max"] }
 
 [[model]]
 id = "glm-5v-turbo"
+application_output_tokens = 131072 # Application policy, not provider default.
 name = "GLM-5V-Turbo"
 description = "GLM vision model for visual reasoning, documents, and multimodal agents"
 family = "glm"

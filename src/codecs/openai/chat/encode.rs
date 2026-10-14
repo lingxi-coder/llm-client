@@ -66,7 +66,7 @@ pub fn request<'a>(
             message: "hosted file search is supported only on Qwen Responses profiles".into(),
         });
     }
-    let max_tokens_field = max_tokens_field(profile)?;
+    let max_tokens_field = max_tokens_field(profile, &opts.request_model)?;
     let mut messages: Vec<WireValue<'a>> = Vec::new();
     let qwen_long = crate::providers::qwen::chat_policy::validate_long_input(
         profile,
@@ -641,8 +641,14 @@ fn split_tool_result_media<'a>(
 /// Select the request field used for the output token limit. A profile can opt
 /// a direct OpenAI Chat Completions endpoint into the field required by newer
 /// model families while compatible endpoints retain the historical default.
-fn max_tokens_field(profile: &ProviderProfile) -> Result<&'static str, LlmError> {
+fn max_tokens_field(profile: &ProviderProfile, model: &str) -> Result<&'static str, LlmError> {
     match profile.extra.get("max_tokens_field") {
+        None if crate::providers::qwen::chat_policy::supports_total_output_budget(
+            profile, model,
+        ) =>
+        {
+            Ok("max_completion_tokens")
+        }
         None => Ok("max_tokens"),
         Some(Value::String(field)) if field == "max_tokens" => Ok("max_tokens"),
         Some(Value::String(field)) if field == "max_completion_tokens" => {

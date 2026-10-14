@@ -47,7 +47,12 @@ impl WireCodec for OpenAiResponsesCodec {
         }
         encode::validate_computer_request(req, context.profile())?;
         crate::providers::openai::prompt_cache::validate(req, context)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(
+            req,
+            context.profile(),
+            context.request_model(),
+            context.mode(),
+        )?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         if !crate::providers::qwen::hosted::validate(
             req,

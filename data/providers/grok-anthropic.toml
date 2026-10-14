@@ -26,6 +26,7 @@ connection = { group = "xai", connection_id = "anthropic", order = 1, hidden = t
 
 [[model]]
 id = "grok-4.20"
+application_output_tokens = 1800000 # Application policy, not provider default.
 name = "Grok 4.20"
 description = "Grok 4.20 is a reasoning model from SpaceXAI with industry-leading speed and agentic tool calling capabilities. It combines the lowest hallucination rate on the market with strict prompt adherance, delivering..."
 release_date = "2026-03-31"
@@ -54,6 +55,7 @@ budget = { support = "unsupported", dynamic = "unsupported" }
 
 [[model]]
 id = "grok-4.20-multi-agent"
+application_output_tokens = 1800000 # Application policy, not provider default.
 name = "Grok 4.20 Multi-Agent"
 description = "Grok 4.20 Multi-Agent is a variant of SpaceXAI’s Grok 4.20 designed for collaborative, agent-based workflows. Multiple agents operate in parallel to conduct deep research, coordinate tool use, and synthesize information..."
 release_date = "2026-03-31"
@@ -82,6 +84,7 @@ budget = { support = "unsupported", dynamic = "unsupported" }
 
 [[model]]
 id = "grok-4.3"
+application_output_tokens = 900000 # Application policy, not provider default.
 name = "Grok 4.3"
 description = "Grok 4.3 is a reasoning model from SpaceXAI. It accepts text and image inputs with text output, and is suited for agentic workflows, instruction-following tasks, and applications requiring high factual..."
 release_date = "2026-04-30"
@@ -110,6 +113,7 @@ budget = { support = "unsupported", dynamic = "unsupported" }
 
 [[model]]
 id = "grok-4.5"
+application_output_tokens = 450000 # Application policy, not provider default.
 name = "Grok 4.5"
 description = "Grok 4.5 is a model from SpaceXAI with frontier performance on coding, knowledge work, and STEM."
 release_date = "2026-07-08"
@@ -139,6 +143,7 @@ effort = { support = "unknown", levels = ["low", "medium", "high"] }
 
 [[model]]
 id = "grok-4.6"
+application_output_tokens = 450000 # Application policy, not provider default.
 name = "Grok 4.6"
 description = "Grok 4.6 is SpaceXAI's smartest model with frontier performance on coding, knowledge work, and STEM."
 release_date = "2026-08-12"
@@ -168,6 +173,7 @@ effort = { support = "unknown", levels = ["low", "medium", "high", "xhigh"] }
 
 [[model]]
 id = "grok-4.7"
+application_output_tokens = 32000 # Application policy, not provider default.
 name = "Grok 4.7"
 description = "SpaceXAI's frontier model for coding, agentic tasks, and knowledge work."
 release_date = "2026-09-21"
@@ -195,6 +201,7 @@ budget = { support = "unsupported", dynamic = "unsupported" }
 effort = { support = "supported", levels = ["low", "medium", "high", "xhigh"], default = "high" }
 [[model]]
 id = "grok-build-0.1"
+application_output_tokens = 230400 # Application policy, not provider default.
 name = "Grok Build 0.1"
 description = "Grok Build 0.1 is SpaceXAI’s fast coding model trained specifically for agentic software engineering workflows. It supports text and image inputs with text output, and is optimized for interactive coding..."
 release_date = "2026-05-20"

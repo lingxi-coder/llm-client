@@ -22,6 +22,7 @@ extra = { web_search = "minimax" }
 
 [[model]]
 id = "MiniMax-M2.7"
+application_output_tokens = 204800 # Application policy, not provider default.
 name = "MiniMax M2.7"
 context_window = 1000000
 max_output = 204800
@@ -57,6 +58,7 @@ verified_at = "2026-09-24"
 
 [[model]]
 id = "MiniMax-M2.7-highspeed"
+application_output_tokens = 204800 # Application policy, not provider default.
 name = "MiniMax M2.7 Highspeed"
 context_window = 1000000
 max_output = 204800
@@ -92,6 +94,7 @@ verified_at = "2026-09-24"
 
 [[model]]
 id = "MiniMax-M3"
+application_output_tokens = 524288 # Application policy, not provider default.
 name = "MiniMax M3"
 context_window = 1048576
 max_output = 524288

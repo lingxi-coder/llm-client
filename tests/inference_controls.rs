@@ -470,6 +470,7 @@ fn standard_fast_quotes_and_unknown_prices_do_not_depend_on_effort() {
         web_search: None,
         file_search: None,
         native_metadata: Vec::new(),
+        tool_input_issues: Vec::new(),
         stop_reason: StopReason::EndTurn,
         usage: UsageReport::measured(
             Usage {

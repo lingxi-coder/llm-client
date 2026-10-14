@@ -36,7 +36,12 @@ pub(crate) trait ChatBackend: Send + Sync {
         // compatible codec cannot silently drop options it does not support.
         super::google::chat::validate_host(req, context)?;
         super::anthropic::chat::validate_host(req, context)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(
+            req,
+            context.profile(),
+            context.request_model(),
+            context.mode(),
+        )?;
         super::qwen::chat::validate_host(req, context)?;
         super::openrouter::chat::validate_host(req, context, opts)?;
         validate_mcp_authorizations(&opts.mcp_authorizations, req, context.profile())?;

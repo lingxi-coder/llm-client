@@ -8,7 +8,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// A response projection plus the lossless stream observations behind it.
-/// `response` may be partial: consult `terminal` before treating it as complete.
+/// `response` may be partial: consult the stop reason and incomplete-block
+/// metadata as well as `terminal`. A length stop is terminal but truncated.
 #[derive(Debug, Clone)]
 pub struct StreamAssembly {
     pub response: ChatResponse,
@@ -420,7 +421,7 @@ impl StreamAccumulator {
                 unfinished.then_some(*index)
             })
             .collect();
-        let incomplete_tools = self
+        let incomplete_tools: Vec<IncompleteTool> = self
             .blocks
             .iter()
             .filter_map(|(index, block)| {
@@ -455,6 +456,19 @@ impl StreamAccumulator {
                 web_search: self.web_search.clone(),
                 file_search: self.file_search.clone(),
                 native_metadata: Vec::new(),
+                tool_input_issues: incomplete_tools
+                    .iter()
+                    .map(|issue| crate::protocol::ToolInputIssue {
+                        block_index: issue.block,
+                        tool_name: issue.name.clone(),
+                        input_bytes: issue.input_bytes,
+                        tool_id: self
+                            .blocks
+                            .get(&issue.block)
+                            .and_then(|b| b.tool.as_ref())
+                            .map(|tool| tool.id.clone()),
+                    })
+                    .collect(),
                 stop_reason: self
                     .stop_reason
                     .clone()
@@ -475,7 +489,13 @@ impl StreamAccumulator {
 
     pub fn finish(self) -> Result<StreamAssembly, StreamAssemblyError> {
         let result = self.snapshot();
-        if !result.terminal || !result.unfinished_blocks.is_empty() {
+        // A length stop is a terminal provider outcome, not a broken transport.
+        // Keep incomplete arguments in observations/metadata, never executable
+        // content, so the host can apply its output-limit recovery policy.
+        if !result.terminal
+            || (!result.unfinished_blocks.is_empty()
+                && result.response.stop_reason != StopReason::MaxTokens)
+        {
             return Err(StreamAssemblyError {
                 source: LlmError::StreamInterrupted {
                     message: if result.terminal {
@@ -684,6 +704,24 @@ mod tests {
         assert!(error.partial.terminal);
         assert!(error.partial.response.message.content.is_empty());
         assert_eq!(error.partial.response.usage.state, UsageState::Complete);
+    }
+
+    #[test]
+    fn length_stop_preserves_incomplete_tool_metadata_without_executable_input() {
+        let mut accumulator = StreamAccumulator::new();
+        accumulator.observe(&tool(0, "{\"content\":\"unfinished HTML"));
+        accumulator.observe(&StreamEvent::BlockEnd { block: 0 });
+        let mut terminal = end();
+        if let StreamEvent::End { stop_reason, .. } = &mut terminal {
+            *stop_reason = StopReason::MaxTokens;
+        }
+        accumulator.observe(&terminal);
+        let result = accumulator.finish().unwrap();
+        assert_eq!(result.response.stop_reason, StopReason::MaxTokens);
+        assert!(result.response.message.content.is_empty());
+        assert_eq!(result.incomplete_tools.len(), 1);
+        assert_eq!(result.unfinished_blocks, vec![0]);
+        assert_eq!(result.response.usage.state, UsageState::Complete);
     }
 
     #[test]

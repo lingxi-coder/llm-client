@@ -20,7 +20,7 @@ description = "Kimi models covered by a coding subscription."
 console_url = "https://www.kimi.com/code/console"
 api_key_url = "https://www.kimi.com/code/console"
 connection = { group = "kimi", connection_id = "code", order = 0 }
-extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
+extra = { stream_usage_opt_in = true, preserve_reasoning_content = true, max_tokens_field = "max_completion_tokens" }
 
 [[model]]
 id = "k3"

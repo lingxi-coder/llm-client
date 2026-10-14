@@ -43,7 +43,12 @@ impl WireCodec for AzureOpenAiCodec {
     ) -> Result<(), LlmError> {
         crate::exact_json::validate_tool_input_carriers(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(
+            req,
+            context.profile(),
+            context.request_model(),
+            context.mode(),
+        )?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
             req,
             context.profile(),
@@ -244,7 +249,12 @@ impl WireCodec for VertexGeminiCodec {
         crate::exact_json::validate_tool_input_carriers(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         gemini::encode::validate_audio_input(req)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(
+            req,
+            context.profile(),
+            context.request_model(),
+            context.mode(),
+        )?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
             req,
             context.profile(),
@@ -336,7 +346,12 @@ impl WireCodec for BedrockClaudeCodec {
     ) -> Result<(), LlmError> {
         crate::exact_json::validate_tool_input_carriers(req)?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::inference::validate(
+            req,
+            context.profile(),
+            context.request_model(),
+            context.mode(),
+        )
     }
     fn family(&self) -> ProtocolFamily {
         ProtocolFamily::BedrockClaude

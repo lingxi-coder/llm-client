@@ -228,6 +228,7 @@ pub(crate) fn validate(
     req: &ChatRequest,
     profile: &ProviderProfile,
     model: &str,
+    mode: crate::RequestMode,
 ) -> Result<(), LlmError> {
     if (!req.anthropic_client_toolsets().is_empty()
         || crate::providers::anthropic::client_toolset_history::has_metadata(req))
@@ -348,7 +349,10 @@ pub(crate) fn validate(
                         ));
                     }
                     if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
-                        || (!interleaved && n >= req.max_tokens.unwrap_or(4096))
+                        || (!interleaved
+                            && mode != crate::RequestMode::CountTokens
+                            && u64::from(n)
+                                >= super::input::required_output_tokens(profile, model, req)?)
                     {
                         return Err(invalid("manual thinking needs at least 1024 tokens and a budget below max_tokens (except enabled interleaved thinking)"));
                     }
@@ -429,7 +433,7 @@ pub(crate) fn apply(
     headers: &mut Vec<(String, String)>,
 ) -> Result<(), LlmError> {
     let p = context.profile();
-    validate(req, p, context.request_model())?;
+    validate(req, p, context.request_model(), context.mode())?;
     let (t, tier) = controls(req, p)?;
     let rw = p.reasoning_wire();
     let t = effective_thinking(t, rw);

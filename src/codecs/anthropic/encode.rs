@@ -13,10 +13,6 @@ use crate::providers::anthropic::types::{
 
 use serde_json::{json, Map, Value};
 
-/// This provider requires `max_tokens`; a request that does not set one still
-/// has to carry something.
-const DEFAULT_MAX_TOKENS: u64 = 4096;
-
 pub fn request<'a>(
     wire: EncodeRequest<'a>,
     profile: &ProviderProfile,
@@ -93,10 +89,12 @@ pub fn request<'a>(
         "model".to_owned(),
         Value::String(opts.request_model.clone()),
     );
-    body.insert(
-        "max_tokens".to_owned(),
-        Value::from(req.max_tokens.map_or(DEFAULT_MAX_TOKENS, u64::from)),
-    );
+    if opts.mode() != crate::RequestMode::CountTokens {
+        body.insert(
+            "max_tokens".to_owned(),
+            Value::from(opts.required_output_tokens(req)?),
+        );
+    }
 
     // The system prompt is a top-level array here, not a message, and the
     // explicit cache breakpoints are applied after tools and messages are encoded.

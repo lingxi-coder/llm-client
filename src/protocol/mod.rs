@@ -41,8 +41,8 @@ pub use llm::{
     CapabilitySupport, ChatRequest, ChatResponse, FileSearchHit, FileSearchResult, HostedTool,
     LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing, ProviderListing,
     ReportedCost, ResponseCacheObservation, ResponseCacheStatus, ServerToolUsage, StopReason,
-    StreamEvent, SystemBlock, ToolChoice, ToolSpec, Usage, WebCitation, WebSearchConfig,
-    WebSearchResult,
+    StreamEvent, SystemBlock, ToolChoice, ToolInputIssue, ToolSpec, Usage, WebCitation,
+    WebSearchConfig, WebSearchResult,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,
