@@ -967,7 +967,7 @@ mod tests {
             "models": [{
                 "display_model": "text-contributor-model",
                 "request_model": "text-contributor-model",
-                "billing_model": "text-contributor-model"
+                "billing_model": "text-contributor-model", "metadata":{"applicationOutputTokens":4096}
             }]
         }))
         .unwrap();
