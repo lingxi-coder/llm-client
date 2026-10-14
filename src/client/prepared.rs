@@ -39,10 +39,11 @@ impl ClientSnapshot {
         request: &ChatRequest,
         options: &RequestOptions,
     ) -> Result<Option<u64>, LlmError> {
-        let resolved = self
-            .state
-            .config
-            .resolve_request(&request.model, Some(profile))?;
+        let resolved = self.state.config.resolve_request_with_protocol(
+            &request.model,
+            Some(profile),
+            options.protocol,
+        )?;
         let selected = resolved.connections[0].profile;
         if !crate::providers::dispatch::chat(selected).supports_exact_count(selected) {
             return Ok(None);
@@ -85,17 +86,25 @@ impl ClientSnapshot {
         options: &RequestOptions,
         mode: RequestMode,
     ) -> Result<RequestDraft, LlmError> {
-        let resolved = self
-            .state
-            .config
-            .resolve_request(&request.model, Some(profile))?;
+        let resolved = self.state.config.resolve_request_with_protocol(
+            &request.model,
+            Some(profile),
+            options.protocol,
+        )?;
         let selected = resolved
             .connections
             .first()
             .ok_or_else(|| LlmError::ModelUnavailable {
                 message: "no connection selected".into(),
             })?;
-        if selected.profile.profile_name != profile {
+        if selected.profile.profile_name != profile
+            && options.protocol.is_none()
+            && self
+                .state
+                .config
+                .profile(profile)
+                .is_none_or(|p| p.connection.default_protocol.is_none())
+        {
             return Err(LlmError::InvalidRequest {
                 message: "prepare_on requires an exact connection name, not a group".into(),
             });
@@ -508,6 +517,16 @@ impl RequestDraft {
     }
     pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
         self.settle_body()?;
+        let mut expected_budget = self.call.prepared.output_budget_fields.clone();
+        // The authenticated ChatGPT Responses policy explicitly forbids this
+        // field. Its removal is SDK protocol projection, not a host override.
+        if matches!(self.call.profile.auth, crate::protocol::AuthStrategy::ChatGptOAuth | crate::protocol::AuthStrategy::ChatGptPlan)
+            && self.call.profile.protocol == ProtocolFamily::OpenAiResponses {
+            expected_budget.remove("max_output_tokens");
+        }
+        if self.call.mode != RequestMode::CountTokens && super::executor::generation_budget_fields(&self.call.prepared.http.body)? != expected_budget {
+            return Err(LlmError::InvalidRequest { message: "draft changed the resolved output budget before sealing".into() });
+        }
         if matches!(self.call.mode, RequestMode::Complete | RequestMode::Stream) {
             if let Some(facts) = self.call.native_anthropic_request_header_facts {
                 crate::providers::response_headers::ensure_native_client_request_id(
@@ -623,6 +642,10 @@ mod request_body_policy_tests {
 }
 
 impl PreparedCall {
+    /// Resolved attempt value and provenance. The caller-owned request retains
+    /// its original explicit/automatic intent.
+    pub fn output_budget(&self) -> Option<&super::ResolvedOutputBudget> { self.prepared.output_budget.as_ref() }
+
     pub(super) fn is_bound_to_session(&self, binding: &Arc<()>) -> bool {
         self.session_binding
             .as_ref()
@@ -850,7 +873,7 @@ impl ReceivedCall {
                 body: crate::transport::collect_error_body(self.response.body).await,
             }
         };
-        if self.call.mode == RequestMode::Complete {
+        if self.call.mode == RequestMode::Complete && (200..300).contains(&response.status) {
             super::executor::normalize_codex_completion(
                 &mut response,
                 self.call.prepared.codec.as_ref(),
@@ -992,6 +1015,9 @@ impl CollectedResponse {
     /// Decode only after the caller has retained usage_report(). This is
     /// synchronous; malformed tool JSON cannot erase the retained observation.
     pub fn decode(&self) -> Result<ChatResponse, LlmError> {
+        if !(200..300).contains(&self.response.status) {
+            return Err(self.call.prepared.codec.decode_error_response(&self.response, &self.call.prepared.context));
+        }
         let mut response = self
             .call
             .prepared

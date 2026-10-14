@@ -127,9 +127,13 @@ pub(crate) fn model_reference(
     model: &str,
     media_type: &str,
 ) -> ModelFileReference {
-    if profile.protocol == ProtocolFamily::AnthropicMessages
-        && model.eq_ignore_ascii_case("minimax-m3")
-        && media_type.starts_with("video/")
+    if matches!(
+        profile.protocol,
+        ProtocolFamily::AnthropicMessages | ProtocolFamily::OpenAiChat
+    ) && matches!(
+        model.to_ascii_lowercase().as_str(),
+        "minimax-m3" | "minimax-m3.1-flash-preview"
+    ) && media_type.starts_with("video/")
     {
         ModelFileReference::FileUri
     } else {

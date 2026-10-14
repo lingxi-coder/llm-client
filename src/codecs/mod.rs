@@ -178,6 +178,31 @@ pub trait WireCodec: Send + Sync + 'static {
         response: &HttpResponse,
         context: &CodecContext,
     ) -> Result<ChatResponse, LlmError>;
+    /// Preserve HTTP status classification when a bounded error body is not
+    /// valid JSON. Successful responses still use the strict decoder.
+    fn decode_error_response(&self, resp: &HttpResponse, context: &CodecContext) -> LlmError {
+        let sanitized;
+        let response = if crate::response_json::ResponseJson::parse(
+            &resp.body,
+            "invalid HTTP error JSON",
+        )
+        .is_err()
+        {
+            sanitized = HttpResponse {
+                status: resp.status,
+                headers: resp.headers.clone(),
+                body: serde_json::to_vec(&serde_json::json!({"error":{"message":format!("HTTP {} returned a non-JSON or truncated error body", resp.status)}})).expect("error envelope serializes").into(),
+            };
+            &sanitized
+        } else {
+            resp
+        };
+        self.decode_response(response, context)
+            .err()
+            .unwrap_or_else(|| LlmError::ProviderInternal {
+                message: format!("request failed with HTTP {}", resp.status),
+            })
+    }
     fn stream_decoder(&self, context: &CodecContext) -> Box<dyn StreamDecoder>;
 }
 

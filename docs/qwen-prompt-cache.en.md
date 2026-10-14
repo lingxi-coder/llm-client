@@ -10,10 +10,12 @@ use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl};
 # fn configure(request: &mut lingxi_llm_client::protocol::ChatRequest) {
 request.prompt_cache.breakpoints = vec![
     CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::FiveMinutes,
     },
     CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::FiveMinutes,
     },

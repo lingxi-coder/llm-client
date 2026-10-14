@@ -344,6 +344,7 @@ impl WireCodec for FakeCodec {
             web_search: None,
             file_search: None,
             native_metadata: Vec::new(),
+        tool_input_issues: Vec::new(),
             message: ConversationMessage {
                 native_options: Vec::new(),
                 role: MessageRole::Assistant,

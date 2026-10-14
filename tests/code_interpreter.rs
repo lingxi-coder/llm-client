@@ -336,6 +336,8 @@ fn failover_profile(name: &str, order: u32) -> ProviderProfile {
     let mut profile = profile("openai", true);
     profile.profile_name = name.into();
     profile.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
         group: Some("openai-code-interpreter-no-replay".into()),
         connection_id: Some(name.into()),
         order,

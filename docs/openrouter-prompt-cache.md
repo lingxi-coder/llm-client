@@ -18,6 +18,7 @@ use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, Prom
 let policy = PromptCachePolicy {
     automatic: None,
     breakpoints: vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::Message { index: 0, block: 0 },
         ttl: CacheTtl::ThirtyMinutes,
     }],

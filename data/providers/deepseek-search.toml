@@ -18,7 +18,7 @@ description = "DeepSeek native search over its Anthropic-compatible endpoint."
 console_url = "https://platform.deepseek.com"
 api_key_url = "https://platform.deepseek.com/api_keys"
 docs_url = "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/"
-connection = { group = "deepseek-search", connection_id = "anthropic", order = 0 }
+connection = { group = "deepseek-search", connection_id = "anthropic", order = 0, protocol_profiles = { open_ai_chat = "deepseek", open_ai_responses = "deepseek-responses" } }
 extra = { web_search = "deepseek", supports_unsigned_thinking = true }
 
 # Same model prices and schedule as the existing DeepSeek catalog snapshot.
@@ -29,6 +29,7 @@ off_peak_multiplier = 0.5
 
 [[model]]
 id = "deepseek-flash"
+application_output_tokens = 384000 # Preserved per-model application policy, not an API default.
 name = "DeepSeek V4.1 Flash"
 description = "DeepSeek V4.1 Flash model for reasoning and agentic coding"
 family = "deepseek-flash"
@@ -63,6 +64,7 @@ effort = { support = "supported", default = "high" }
 
 [[model]]
 id = "deepseek-v4-pro"
+application_output_tokens = 384000 # Preserved per-model application policy, not an API default.
 name = "DeepSeek V4 Pro"
 description = "DeepSeek V4 Pro snapshot with million-token context and support for thinking and non-thinking modes"
 family = "deepseek-thinking"

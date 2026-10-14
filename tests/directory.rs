@@ -514,11 +514,21 @@ fn every_preset_either_publishes_a_directory_or_says_it_does_not() {
     assert_eq!(
         declared_none,
         [
+            "anthropic-chat",
             "deepseek-search",
             "glm-coding",
+            "kimi-anthropic-intl",
+            "kimi-code-anthropic",
+            "kimi-code-responses",
             "minimax",
             "minimax-intl",
+            "minimax-responses",
+            "minimax-responses-intl",
+            "qwen-anthropic",
+            "qwen-anthropic-intl",
             "zai-coding",
+            "zai-coding-chat",
+            "zai-coding-responses",
         ],
         "compatibility endpoints without a configured model-directory route"
     );

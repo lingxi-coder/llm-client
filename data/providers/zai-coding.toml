@@ -16,10 +16,11 @@ display_name = "GLM Coding Plan International"
 description = "GLM Coding Plan on Z.AI's international Anthropic-compatible API."
 console_url = "https://z.ai"
 api_key_url = "https://z.ai/manage-apikey/apikey-list"
-connection = { group = "zhipu-coding-intl", connection_id = "anthropic", order = 0 }
+connection = { group = "zhipu-coding-intl", connection_id = "anthropic", order = 0, protocol_profiles = { open_ai_responses = "zai-coding-responses", open_ai_chat = "zai-coding-chat" } }
 
 [[model]]
 id = "glm-4.7"
+application_output_tokens = 131072 # Preserved per-model application policy, not an API default.
 name = "GLM-4.7"
 context_window = 204800
 max_output = 131072

@@ -3,7 +3,7 @@
 
 use super::route::{ConnectionHop, PricingModelRef, ResolvedRoute};
 use super::snapshot::RuntimeSnapshot;
-use crate::protocol::{AuthStrategy, LlmError, ModelProfile, ProviderProfile};
+use crate::protocol::{AuthStrategy, LlmError, ModelProfile, ProtocolFamily, ProviderProfile};
 use thiserror::Error;
 
 /// Borrow the exact rows from the immutable snapshot for the whole request.
@@ -80,6 +80,11 @@ impl RequestRoute<'_> {
 /// change, which is why they are distinct variants rather than one string.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ResolveError {
+    #[error("profile {profile:?} has no authorized route for format {protocol:?}")]
+    UnsupportedProtocol {
+        profile: String,
+        protocol: ProtocolFamily,
+    },
     #[error("no available profile declares model {model:?}")]
     UnknownModel { model: String },
     #[error(
@@ -138,7 +143,87 @@ impl RuntimeSnapshot {
         requested: &str,
         profile: Option<&str>,
     ) -> Result<RequestRoute<'_>, ResolveError> {
-        self.resolve_request_with_precedence(requested, profile, false)
+        self.resolve_request_with_protocol(requested, profile, None)
+    }
+
+    pub(super) fn resolve_request_with_protocol(
+        &self,
+        requested: &str,
+        profile: Option<&str>,
+        protocol: Option<ProtocolFamily>,
+    ) -> Result<RequestRoute<'_>, ResolveError> {
+        let source = match self.resolve_request_with_precedence(requested, profile, false) {
+            Ok(source) => source,
+            Err(error @ ResolveError::UnknownModel { .. }) => {
+                // A format-specific model (such as GPT Audio) need not exist
+                // on the account's default Responses endpoint. The account
+                // must still be explicit; never search other accounts here.
+                let owner = profile.or_else(|| requested.split_once('/').map(|(p, _)| p));
+                let Some(head) = owner
+                    .and_then(|p| self.profile(p))
+                    .filter(|p| p.supports_region(self.region))
+                else {
+                    return Err(error);
+                };
+                let Some(format) = protocol.or(head.connection.default_protocol) else {
+                    return Err(error);
+                };
+                if format == head.protocol {
+                    return Err(error);
+                }
+                let model = requested
+                    .strip_prefix(&format!("{}/", head.profile_name))
+                    .unwrap_or(requested);
+                return self.resolve_alternate_protocol(head, model, format);
+            }
+            Err(error) => return Err(error),
+        };
+        let head = source.connections[0].profile;
+        let protocol = protocol
+            .or(head.connection.default_protocol)
+            .unwrap_or(head.protocol);
+        let mut selected = if head.protocol == protocol {
+            source
+        } else {
+            return self.resolve_alternate_protocol(head, &source.route.request_model, protocol);
+        };
+        selected
+            .connections
+            .retain(|c| c.profile.protocol == protocol);
+        selected.promote_head(0);
+        Ok(selected)
+    }
+
+    fn resolve_alternate_protocol(
+        &self,
+        head: &ProviderProfile,
+        model: &str,
+        protocol: ProtocolFamily,
+    ) -> Result<RequestRoute<'_>, ResolveError> {
+        let invalid = || ResolveError::UnsupportedProtocol {
+            profile: head.profile_name.clone(),
+            protocol,
+        };
+        let name = head
+            .connection
+            .protocol_profiles
+            .get(&protocol)
+            .ok_or_else(invalid)?;
+        let target = self.profile(name).ok_or_else(invalid)?;
+        // Only declared routes on the same account and billing product qualify.
+        if target.provider_id != head.provider_id
+            || target.credential != head.credential
+            || target.protocol != protocol
+            || target.pricing.billing_mode != head.pricing.billing_mode
+        {
+            return Err(invalid());
+        }
+        let mut selected = self.resolve_request_with_precedence(model, Some(name), true)?;
+        selected
+            .connections
+            .retain(|c| c.profile.protocol == protocol);
+        selected.promote_head(0);
+        Ok(selected)
     }
     fn resolve_request_with_precedence(
         &self,
@@ -175,6 +260,13 @@ impl RuntimeSnapshot {
                 (p.supports_region(self.region) && in_scope(p)).then_some((p, &p.models[*mi]))
             })
             .collect();
+
+        // Alternate formats are opt-in. Hidden siblings still participate in
+        // the selected account's failover chain, but cannot make an existing
+        // unscoped model ambiguous merely by adding another wire profile.
+        if profile.is_none() && matches.iter().any(|(p, _)| !p.connection.hidden) {
+            matches.retain(|(p, _)| !p.connection.hidden);
+        }
 
         // Structured clients expose `profile/model` refs so two providers
         // serving the same model stay distinguishable, but a provider's protocol
@@ -375,6 +467,19 @@ impl super::ClientSnapshot {
     pub fn resolve(&self, model: &str) -> Result<ResolvedRoute, ResolveError> {
         self.state.config.resolve(model)
     }
+    /// Resolve the effective format without sending a request. None applies
+    /// the account's default format; Some explicitly overrides that default.
+    pub fn resolve_in_with_protocol(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+        protocol: Option<ProtocolFamily>,
+    ) -> Result<ResolvedRoute, ResolveError> {
+        self.state
+            .config
+            .resolve_request_with_protocol(model, profile, protocol)
+            .map(|r| r.route)
+    }
     pub fn resolve_in(
         &self,
         model: &str,
@@ -388,6 +493,20 @@ impl super::ClientSnapshot {
 /// Useful to hosts that attach their own display metadata and retry policies.
 pub struct RoutingCatalog(super::snapshot::RuntimeSnapshot);
 impl RoutingCatalog {
+    /// Token limits of the exact model row selected by the native-ID naming
+    /// policy, including its protocol-selected connection. Sibling routes can
+    /// publish different limits for the same wire ID.
+    pub fn output_token_limits_in(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<super::OutputTokenLimits, ResolveError> {
+        let route = self.resolve_in_prefer_native(model, profile)?;
+        let selected = self.0.resolve_request_with_protocol(
+            &route.display_model, Some(&route.profile_name), None,
+        )?;
+        Ok(super::OutputTokenLimits::from_metadata(&selected.connections[0].model.metadata))
+    }
     /// Immutable selected profiles, including their model inference facts.
     pub fn profiles(&self) -> &[ProviderProfile] {
         &self.0.profiles
@@ -400,15 +519,35 @@ impl RoutingCatalog {
         model: &str,
         profile: Option<&str>,
     ) -> Result<ResolvedRoute, ResolveError> {
+        let resolved = self
+            .0
+            .resolve_request_with_precedence(model, profile, true)?;
+        let selected = resolved.connections[0].profile;
         self.0
-            .resolve_request_with_precedence(model, profile, true)
-            .map(|resolved| resolved.route)
+            .resolve_request_with_protocol(
+                &resolved.route.request_model,
+                Some(&selected.profile_name),
+                None,
+            )
+            .map(|r| r.route)
     }
 
     pub fn new(profiles: Vec<ProviderProfile>, region: crate::protocol::Region) -> Self {
         Self(super::snapshot::RuntimeSnapshot::new(
             region, profiles, None,
         ))
+    }
+    /// Resolve the effective format without sending a request. None applies
+    /// the account's default format; Some explicitly overrides that default.
+    pub fn resolve_in_with_protocol(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+        protocol: Option<ProtocolFamily>,
+    ) -> Result<ResolvedRoute, ResolveError> {
+        self.0
+            .resolve_request_with_protocol(model, profile, protocol)
+            .map(|r| r.route)
     }
     pub fn resolve_in(
         &self,

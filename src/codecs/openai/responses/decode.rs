@@ -51,6 +51,7 @@ pub(crate) fn response_with_approval_support(
         });
     }
     let mut content = Vec::new();
+    let mut tool_input_issues = Vec::new();
     let mut saw_tool_call = false;
     let mut saw_refusal = false;
     let output = body
@@ -116,10 +117,9 @@ pub(crate) fn response_with_approval_support(
                 .is_err()
             {
                 if body["status"].as_str() == Some("incomplete") {
-                    content.push(ContentBlock::ProviderContent {
-                        protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
-                        value: item.clone(),
-                    });
+                    tool_input_issues.push(crate::protocol::ToolInputIssue { block_index:item_index,
+                        tool_name:item["name"].as_str().unwrap().into(),
+                        tool_id:Some(ToolUseId::new(item["call_id"].as_str().unwrap())),input_bytes:item["arguments"].as_str().unwrap().len() });
                     continue;
                 }
                 return Err(LlmError::InvalidRequest {
@@ -145,6 +145,7 @@ pub(crate) fn response_with_approval_support(
         ),
         file_search: crate::codecs::file_search_decode::responses(&body),
         native_metadata: Vec::new(),
+        tool_input_issues,
         message: ConversationMessage {
             native_options: Vec::new(),
             role: MessageRole::Assistant,

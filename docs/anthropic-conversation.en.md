@@ -13,6 +13,7 @@ request.messages.push(ConversationMessage {
     content: vec![ContentBlock::Text {
         text: "Use explicit units in subsequent answers.".into(),
         thought_signature: None,
+        citations: None,
     }],
 });
 # }

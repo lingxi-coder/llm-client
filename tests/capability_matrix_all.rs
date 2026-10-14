@@ -14,6 +14,7 @@ fn evidence_matrices_cover_every_current_builtin_model_once() {
         include_str!("../data/capability-matrix-openai-gemini.json"),
         include_str!("../data/capability-matrix-china.json"),
         include_str!("../data/capability-matrix-west.json"),
+        include_str!("../data/capability-matrix-protocols.json"),
     ] {
         let matrix: Value = serde_json::from_str(source).unwrap();
         assert_eq!(matrix["schema_version"], 1);

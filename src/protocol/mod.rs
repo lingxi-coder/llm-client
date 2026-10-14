@@ -42,7 +42,7 @@ pub use llm::{
     LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing, ProviderListing,
     ReportedCost, ResponseCacheObservation, ResponseCacheStatus, ServerToolUsage, StopReason,
     StreamEvent, SystemBlock, ToolChoice, ToolSpec, Usage, WebCitation, WebSearchConfig,
-    WebSearchResult,
+    WebSearchResult, ToolInputIssue,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,

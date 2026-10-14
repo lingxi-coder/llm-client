@@ -144,7 +144,8 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let profiles = builtin_providers()?;
+    let profiles = builtin_providers()?.into_iter()
+        .filter(|profile| profile.profile_name == "openai").collect::<Vec<_>>();
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
@@ -173,7 +174,7 @@ export OPENAI_API_KEY="your-api-key"
 cargo run
 ```
 
-这里由示例代码读取环境变量；客户端不会自动读取密钥。`openai` 是内置 profile 名，`gpt-4.1-mini` 是仓库内置目录中的模型 ID，需要你的账号有权访问。可通过 `client.providers()` 和 `client.chat().models()` 查看配置中的连接与模型。
+示例仅登记实际使用的 `openai` 连接。完整内置目录中的 Copilot 等连接需要宿主先注册匹配的认证器，否则 `build()` 返回 `MissingAuthenticator`。这里由示例代码读取环境变量；客户端不会自动读取密钥。`openai` 是内置 profile 名，`gpt-4.1-mini` 是仓库内置目录中的模型 ID，需要你的账号有权访问。可通过 `client.providers()` 和 `client.chat().models()` 查看配置中的连接与模型。
 
 对话通过 `client.chat()` 调用：`complete_in()` 指定连接，`complete()` 按模型自动路由，`stream_in()` / `stream()` 返回流式事件。`client.chat().models()` 会过滤元数据中声明图像输出的模型；`client.images().models()` 读取独立图像目录。旧顶层对话和流式方法已删除。详见 [ChatService](docs/api.md#chatservice) 和[流式响应](docs/api.md#流式响应)。
 
@@ -396,3 +397,7 @@ CI 还会测试 `tokenizers-all` 配置，并分别编译每个 tokenizer featur
 - [实施状态](docs/implementation-plan.md) · [OpenAI/Gemini 能力证据矩阵](docs/capability-matrix-openai-gemini.md) · [中国提供方能力证据矩阵](docs/capability-matrix-china.md) · [其他提供方能力证据矩阵](docs/capability-matrix-west.md)
 
 [真实提供方验收与只读检查](docs/provider-acceptance.md)
+
+## 系统技术手册
+
+跨层接入与运行机制由 LingXi 双语技术手册维护。本地入口为相邻 `lingxi-app/docs/technical/zh/README.md`；[官网 SDK 指南](https://lingxios.net/docs/llm-client) 的发布基线请与工作树核对。下列本仓库专项指南继续负责 Provider 与 SDK 细节。

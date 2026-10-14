@@ -34,6 +34,29 @@ pub struct AudioOperationDescriptor {
     /// Exact provider service entry point for advanced/provider-only operations.
     pub advanced_service: Option<String>,
 }
+impl AudioOperationDescriptor {
+    /// Convert a device locale into the common operation's documented language
+    /// hint. Text-to-speech APIs that choose language from the input text receive
+    /// no hint; provider-specific language controls remain on the typed service.
+    pub fn language_hint_for_locale(&self, locale: Option<&str>) -> Option<String> {
+        if !self.common_adapter { return None; }
+        let locale = locale?.trim();
+        if locale.is_empty() || locale == "auto" { return None; }
+        let service = self.advanced_service.as_deref()?;
+        if self.operation == AudioOperation::Synthesis && service == "GoogleClient::vertex_speech" {
+            return Some(locale.to_owned());
+        }
+        let iso_code = matches!((self.operation, service),
+            (AudioOperation::FileTranscription, "OpenAiClient::audio" | "XaiClient::audio"
+                | "OpenRouterClient::audio (models require explicit discovery)")
+            | (AudioOperation::Synthesis, "XaiClient::audio"));
+        if !iso_code { return None; }
+        let primary = locale.split(['-', '_']).next()?;
+        (primary.len() == 2 && primary.bytes().all(|c| c.is_ascii_alphabetic()))
+            .then(|| primary.to_ascii_lowercase())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioCapabilities {
     pub profile_name: String,
@@ -652,4 +675,29 @@ pub(crate) fn catalog(
         }
     }
     Ok(c)
+}
+
+#[cfg(test)]
+mod locale_tests {
+    use super::*;
+    #[test]
+    fn locale_hints_follow_native_operation_parameters() {
+        let descriptor = |kind, service| operation(kind, vec![], None, true, service);
+        assert_eq!(descriptor(AudioOperation::FileTranscription, "OpenAiClient::audio")
+            .language_hint_for_locale(Some("en-US")), Some("en".into()));
+        assert_eq!(descriptor(AudioOperation::FileTranscription, "OpenAiClient::audio")
+            .language_hint_for_locale(Some("zh-CN")), Some("zh".into()));
+        for service in ["OpenAiClient::audio", "GoogleClient::speech", "QwenClient::tts", "MiniMaxClient::audio"] {
+            assert_eq!(descriptor(AudioOperation::Synthesis, service)
+                .language_hint_for_locale(Some("en-US")), None);
+        }
+        assert_eq!(descriptor(AudioOperation::Synthesis, "GoogleClient::vertex_speech")
+            .language_hint_for_locale(Some("en-US")), Some("en-US".into()));
+        assert_eq!(descriptor(AudioOperation::FileTranscription, "MiniMaxClient::audio")
+            .language_hint_for_locale(Some("en-US")), None);
+        assert_eq!(descriptor(AudioOperation::FileTranscription, "ZhipuClient::cloud_audio")
+            .language_hint_for_locale(Some("en-US")), None);
+        assert_eq!(descriptor(AudioOperation::Synthesis, "XaiClient::audio")
+            .language_hint_for_locale(Some("en-US")), Some("en".into()));
+    }
 }

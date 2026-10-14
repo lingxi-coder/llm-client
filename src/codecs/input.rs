@@ -158,12 +158,20 @@ impl CodecContext {
     pub fn request_model(&self) -> &str {
         &self.request_model
     }
+    pub(crate) fn required_output_tokens(&self, request: &ChatRequest) -> Result<u64, crate::protocol::LlmError> {
+        required_output_tokens(&self.profile, &self.request_model, request)
+    }
     pub fn mode(&self) -> RequestMode {
         self.mode
     }
     pub fn file_scope(&self) -> Option<&str> {
         self.file_account_scope.as_deref()
     }
+}
+
+pub(crate) fn required_output_tokens(profile: &ProviderProfile, model: &str, request: &ChatRequest) -> Result<u64, crate::protocol::LlmError> {
+    crate::client::resolve_output_budget(profile, model, request.max_tokens)?.value.map(u64::from)
+        .ok_or_else(|| crate::protocol::LlmError::InvalidRequest { message: "output budget is required by this protocol".into() })
 }
 
 /// Borrowed model input. Media bindings are prepared separately from the

@@ -1,3 +1,4 @@
+connection = { protocol_profiles = { open_ai_chat = "openai-chat" } }
 embeddings = { mode = "enabled", value = { api = "open_ai", endpoint = "https://api.openai.com/v1/embeddings", models_endpoint = "https://api.openai.com/v1/models", auth = { type = "bearer" }, max_inputs = 2048 } }
 retrieval = { mode = "enabled", value = { api = "open_ai", endpoint = "https://api.openai.com/v1/vector_stores", auth = { type = "bearer" } } }
 batches = { mode = "enabled", value = { api = "open_ai", endpoint = "https://api.openai.com/v1/batches", files_endpoint = "https://api.openai.com/v1/files", auth = { type = "bearer" } } }

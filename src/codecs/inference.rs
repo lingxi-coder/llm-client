@@ -228,7 +228,22 @@ pub(crate) fn validate(
     req: &ChatRequest,
     profile: &ProviderProfile,
     model: &str,
+    mode: crate::RequestMode,
 ) -> Result<(), LlmError> {
+    if profile.provider_id.as_str() == "minimax"
+        && profile.protocol == ProtocolFamily::OpenAiResponses
+        && matches!(req.tool_choice, ToolChoice::Any | ToolChoice::Tool { .. })
+    {
+        return Err(unsupported(
+            "MiniMax Responses supports only auto or none tool choice",
+        ));
+    }
+    if crate::providers::openai::chat_audio::has_output(req) {
+        crate::providers::openai::chat_audio::validate(
+            req,
+            &CodecContext::new(profile, model, crate::codecs::RequestMode::Complete),
+        )?;
+    }
     if (!req.anthropic_client_toolsets().is_empty()
         || crate::providers::anthropic::client_toolset_history::has_metadata(req))
         && !crate::providers::anthropic::client_toolsets::supports_profile(profile)
@@ -287,6 +302,8 @@ pub(crate) fn validate(
     }
     if thinking.mode == Some(ThinkingMode::Adaptive)
         && !matches!(rw, ReasoningWire::Anthropic | ReasoningWire::Gemini)
+        && !(rw == ReasoningWire::ThinkingType
+            && profile.extra["supports_adaptive_thinking"] == true)
     {
         return Err(reject("adaptive thinking on this wire"));
     }
@@ -312,7 +329,15 @@ pub(crate) fn validate(
             .filter(|e| f.effort_mode_error(thinking.mode, *e).is_none())
     });
     if let Some(effort) = effort {
-        if f.supports_effort(thinking.mode, effort) == CapabilitySupport::Unsupported {
+        // MiniMax M3's Responses effort=none is an on/off mapping, not a
+        // claim that the model supports adjustable reasoning depth.
+        let minimax_disable = profile.provider_id.as_str() == "minimax"
+            && profile.protocol == ProtocolFamily::OpenAiResponses
+            && effort == ReasoningEffort::None
+            && f.supports_mode(ThinkingMode::Disabled) == CapabilitySupport::Supported;
+        if !minimax_disable
+            && f.supports_effort(thinking.mode, effort) == CapabilitySupport::Unsupported
+        {
             return Err(reject("the requested effort"));
         }
     }
@@ -348,7 +373,7 @@ pub(crate) fn validate(
                         ));
                     }
                     if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
-                        || (!interleaved && n >= req.max_tokens.unwrap_or(4096))
+                        || (!interleaved && mode != crate::RequestMode::CountTokens && u64::from(n) >= super::input::required_output_tokens(profile, model, req)?)
                     {
                         return Err(invalid("manual thinking needs at least 1024 tokens and a budget below max_tokens (except enabled interleaved thinking)"));
                     }
@@ -377,6 +402,8 @@ pub(crate) fn validate(
     }
     if thinking.mode == Some(ThinkingMode::Enabled)
         && thinking.effort.is_none()
+        && !(profile.provider_id.as_str() == "minimax"
+            && profile.protocol == ProtocolFamily::OpenAiResponses)
         && matches!(
             rw,
             ReasoningWire::OpenAiChat | ReasoningWire::OpenAiResponses
@@ -429,7 +456,7 @@ pub(crate) fn apply(
     headers: &mut Vec<(String, String)>,
 ) -> Result<(), LlmError> {
     let p = context.profile();
-    validate(req, p, context.request_model())?;
+    validate(req, p, context.request_model(), context.mode())?;
     let (t, tier) = controls(req, p)?;
     let rw = p.reasoning_wire();
     let t = effective_thinking(t, rw);
@@ -439,6 +466,13 @@ pub(crate) fn apply(
         ReasoningWire::OpenAiChat | ReasoningWire::OpenAiResponses => {
             let effort = if mode == Some(ThinkingMode::Disabled) {
                 Some(ReasoningEffort::None)
+            } else if p.provider_id.as_str() == "minimax"
+                && rw == ReasoningWire::OpenAiResponses
+                && mode == Some(ThinkingMode::Enabled)
+            {
+                // M3 uses a non-none effort to switch thinking on; this does
+                // not claim adjustable thinking depth on that model.
+                t.effort.or(Some(ReasoningEffort::High))
             } else {
                 t.effort
             };

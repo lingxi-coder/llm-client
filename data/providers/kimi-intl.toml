@@ -15,8 +15,8 @@ display_name = "Kimi International"
 description = "Kimi models on Moonshot's international API."
 console_url = "https://platform.kimi.ai"
 api_key_url = "https://platform.kimi.ai/console/api-keys"
-connection = { group = "kimi-intl", connection_id = "chat", order = 0 }
-extra = { stream_usage_opt_in = true, preserve_reasoning_content = true }
+connection = { group = "kimi-intl", connection_id = "chat", order = 0, protocol_profiles = { anthropic_messages = "kimi-anthropic-intl", open_ai_responses = "kimi-search-intl" } }
+extra = { stream_usage_opt_in = true, preserve_reasoning_content = true, max_tokens_field = "max_completion_tokens" }
 
 [[model]]
 id = "kimi-k2.6"

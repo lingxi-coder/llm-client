@@ -14,6 +14,7 @@ pub(crate) fn apply(
         &SearchPolicy {
             protocols: &[
                 ProtocolFamily::AnthropicMessages,
+                ProtocolFamily::OpenAiResponses,
                 ProtocolFamily::FoundryClaude,
                 ProtocolFamily::VertexClaude,
             ],
@@ -21,11 +22,21 @@ pub(crate) fn apply(
             max_uses: false,
             choice: ChoicePolicy::AutoOrNone,
             reserved_tool_name: true,
-            choice_wire: ChoiceWire::Messages,
+            choice_wire: if profile.protocol == ProtocolFamily::OpenAiResponses {
+                ChoiceWire::Chat
+            } else {
+                ChoiceWire::Messages
+            },
         },
         |search, body| {
             let _ = body;
-            Ok(Some(web_search::messages_tool(search)))
+            Ok(Some(
+                if profile.protocol == ProtocolFamily::OpenAiResponses {
+                    serde_json::json!({"type": "web_search"})
+                } else {
+                    web_search::messages_tool(search)
+                },
+            ))
         },
     )
 }

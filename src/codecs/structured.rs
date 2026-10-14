@@ -59,6 +59,11 @@ pub(crate) fn apply(
 
 fn validate_contract(req: &ChatRequest, context: &CodecContext) -> Result<(), LlmError> {
     let profile = context.profile();
+    if profile.provider_id.as_str() == "anthropic" && profile.protocol == ProtocolFamily::OpenAiChat {
+        if !matches!(req.output_format, OutputFormat::Text) || req.tools.iter().any(|t| t.strict) {
+            return Err(unsupported("Anthropic OpenAI compatibility ignores response_format and strict tools; select Anthropic Messages"));
+        }
+    }
     crate::providers::dispatch::validate_output_contract(req, profile, context.request_model())?;
     super::cache::validate(req, context)?;
     let claude_messages =

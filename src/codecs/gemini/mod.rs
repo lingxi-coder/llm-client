@@ -41,7 +41,7 @@ impl WireCodec for GeminiCodec {
         crate::exact_json::validate_tool_input_carriers(req)?;
         crate::codecs::reject_typed_native(req, context.profile().protocol)?;
         encode::validate_audio_input(req)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())?;
+        crate::codecs::inference::validate(req, context.profile(), context.request_model(), context.mode())?;
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::providers::google::hosted_tools::validate_hosted_tool_request(
             req,

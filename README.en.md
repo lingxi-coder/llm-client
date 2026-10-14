@@ -144,7 +144,8 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let profiles = builtin_providers()?;
+    let profiles = builtin_providers()?.into_iter()
+        .filter(|profile| profile.profile_name == "openai").collect::<Vec<_>>();
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;
@@ -173,7 +174,7 @@ export OPENAI_API_KEY="your-api-key"
 cargo run
 ```
 
-The example reads the environment variable explicitly; the client does not load credentials automatically. `openai` is a built-in profile name, and `gpt-4.1-mini` is a model ID in the repository's catalog; your account must have access to it. Use `client.providers()` and `client.chat().models()` to inspect configured connections and models.
+The example registers only the selected `openai` profile. Other bundled profiles, such as Copilot, require their matching host authenticator before `build()`; otherwise it returns `MissingAuthenticator`. The example reads the environment variable explicitly; the client does not load credentials automatically. `openai` is a built-in profile name, and `gpt-4.1-mini` is a model ID in the repository's catalog; your account must have access to it. Use `client.providers()` and `client.chat().models()` to inspect configured connections and models.
 
 Use `client.chat()` for conversations: `complete_in()` selects a connection, `complete()` routes by model, and `stream_in()` / `stream()` return streaming events. `client.chat().models()` filters out models whose metadata declares image output; `client.images().models()` lists the separate image catalog. Old top-level completion and streaming methods have been removed. See [ChatService](docs/api.en.md#chatservice) and [Streaming Responses](docs/api.en.md#streaming-responses).
 
@@ -396,3 +397,27 @@ This project is licensed under either the MIT License or Apache License 2.0, at 
 - [Implementation status](docs/implementation-plan.md) · [OpenAI/Gemini capability evidence matrix](docs/capability-matrix-openai-gemini.en.md) · [China provider capability evidence matrix](docs/capability-matrix-china.en.md) · [Other provider capability evidence matrix](docs/capability-matrix-west.en.md)
 
 [Live provider acceptance and read-only checks](docs/provider-acceptance.en.md)
+
+### Selecting a provider's wire format
+
+An account can declare alternate formats in
+`connection.protocol_profiles` (a map from `ProtocolFamily` to profile name).
+Each format has its own complete profile: endpoint, authentication, codec,
+models, and native feature support. Selection requires the same provider and
+credential reference, and never infers an official endpoint for a custom proxy.
+The built-in DeepSeek, xAI, Qwen, and Kimi profiles declare their supported
+alternate formats; regional and account boundaries remain separate.
+
+Set `RequestOptions { protocol: Some(ProtocolFamily::AnthropicMessages),
+..Default::default() }` to select the format for a call, including streaming and
+prepared calls. `ClientConfigManager::set_default_protocol(profile, Some(format))`
+persists an account's default; passing `None` resets it. Precedence is explicit
+call format, configured default, then the profile's original `protocol`.
+`resolve_in_with_protocol` resolves the same selection without network access,
+so callers can inspect the selected profile's feature support before invoking it.
+Unsupported formats fail before sending a request. A format override does not
+change the default or automatically switch formats during retry.
+
+## System technical handbook
+
+Cross-layer integration and runtime behavior are maintained in the LingXi bilingual handbook. The sibling local entry is `lingxi-app/docs/technical/en/README.md`; compare the published [SDK guide](https://lingxios.net/docs/llm-client) baseline with your working tree. Repository-specific provider and SDK guides remain the detailed references.

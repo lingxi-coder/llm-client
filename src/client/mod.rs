@@ -49,6 +49,8 @@ pub use account::{
 };
 pub use chat::ChatService;
 pub use options::RequestOptions;
+mod output_budget;
+pub use output_budget::{OutputTokenLimits, OutputBudgetSource, ResolvedOutputBudget, resolve_output_budget, recovery_output_budget, claude_application_output_default};
 pub use resolve::{ResolveError, RoutingCatalog};
 pub use store::{
     ClientConfigManager, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,

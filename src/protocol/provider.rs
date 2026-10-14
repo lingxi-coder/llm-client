@@ -324,6 +324,14 @@ impl FailoverTriggers {
 /// behaving exactly as it did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionSpec {
+    /// Explicit alternate wire routes for this account. Each named profile owns
+    /// its endpoint, authentication and feature contract; formats are never guessed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub protocol_profiles: std::collections::BTreeMap<ProtocolFamily, String>,
+    /// Default request format. None uses this profile's declared `protocol`.
+    /// An explicit RequestOptions::protocol always takes precedence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_protocol: Option<ProtocolFamily>,
     /// Group this connection belongs to. `None` = the profile stands alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -358,6 +366,9 @@ impl ConnectionSpec {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMetadata {
+    /// Explicit application default for protocols with a required output budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_output_tokens: Option<u32>,
     #[serde(default)]
     pub family: Option<String>,
     #[serde(default)]

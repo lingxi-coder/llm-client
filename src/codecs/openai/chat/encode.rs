@@ -31,6 +31,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::providers::kimi::chat::validate(req, opts)?;
     crate::codecs::reject_typed_native(req, profile.protocol)?;
     crate::providers::anthropic::code_execution::validate(req, opts)?;
     crate::providers::qwen::cache::validate(req, opts)?;
@@ -66,7 +67,7 @@ pub fn request<'a>(
             message: "hosted file search is supported only on Qwen Responses profiles".into(),
         });
     }
-    let max_tokens_field = max_tokens_field(profile)?;
+    let max_tokens_field = max_tokens_field(profile, &opts.request_model)?;
     let mut messages: Vec<WireValue<'a>> = Vec::new();
     let qwen_long = crate::providers::qwen::chat_policy::validate_long_input(
         profile,
@@ -240,6 +241,7 @@ pub fn request<'a>(
     crate::codecs::inference::apply(req, opts, &mut body, &mut headers)?;
     crate::codecs::request_controls::apply(req, profile.protocol, &mut body)?;
     crate::codecs::structured::apply(req, opts, &mut body)?;
+    crate::providers::openai::chat_audio::apply(req, opts, &mut body)?;
     crate::providers::openrouter::prompt_cache::apply(req, opts, &mut body)?;
     crate::wire_options::merge_body(profile, &mut body);
     if opts.stream && crate::providers::qwen::cache::applies(opts) {
@@ -370,13 +372,14 @@ fn encode_message<'a>(
                     message: "Chat reasoning metadata belongs to an assistant message".into(),
                 });
             }
-            if native_reasoning.is_some() {
-                return Err(LlmError::InvalidRequest {
-                    message: "an assistant message may contain only one Chat reasoning envelope"
-                        .into(),
-                });
+            let fields = crate::providers::openai::chat_audio::replay(*protocol, value)?
+                .map(Ok).unwrap_or_else(|| super::reasoning::replay_fields(*protocol, value))?;
+            let native = native_reasoning.get_or_insert_with(Map::new);
+            for (key, value) in fields {
+                if native.insert(key, value).is_some() {
+                    return Err(LlmError::InvalidRequest { message: "duplicate Chat message metadata".into() });
+                }
             }
-            native_reasoning = Some(super::reasoning::replay_fields(*protocol, value)?);
         }
     }
     let mut reasoning = String::new();
@@ -390,6 +393,14 @@ fn encode_message<'a>(
 
     for (block_index, block) in m.content.iter().enumerate() {
         let block = wire.block(block);
+        if profile.provider_id.as_str() == "minimax"
+            && matches!(block, ContentBlock::Video { .. })
+            && role != "user"
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "MiniMax Chat video input belongs to a user message".into(),
+            });
+        }
         let position = CachePosition::Message {
             index: message_index,
             block: block_index,
@@ -497,10 +508,9 @@ fn encode_message<'a>(
             // (gate 18); this wire has no slot, so a replayed block is dropped
             // rather than sent somewhere it would be rejected.
             ContentBlock::RedactedThinking { .. } => {}
-            ContentBlock::Video { .. } => {
-                return Err(LlmError::UnsupportedCapability {
-                    message: "Chat Completions does not support video content blocks".into(),
-                });
+            ContentBlock::Video { source } => {
+                let uri = crate::providers::minimax::chat::chat_video_uri(source, opts)?;
+                parts.push(json!({"type":"video_url","video_url":{"url":uri}}).into());
             }
             ContentBlock::ToolUse {
                 id, name, input, input_json, ..
@@ -641,8 +651,10 @@ fn split_tool_result_media<'a>(
 /// Select the request field used for the output token limit. A profile can opt
 /// a direct OpenAI Chat Completions endpoint into the field required by newer
 /// model families while compatible endpoints retain the historical default.
-fn max_tokens_field(profile: &ProviderProfile) -> Result<&'static str, LlmError> {
+fn max_tokens_field(profile: &ProviderProfile, model: &str) -> Result<&'static str, LlmError> {
     match profile.extra.get("max_tokens_field") {
+        None if crate::providers::qwen::chat_policy::supports_total_output_budget(profile, model) =>
+            Ok("max_completion_tokens"),
         None => Ok("max_tokens"),
         Some(Value::String(field)) if field == "max_tokens" => Ok("max_tokens"),
         Some(Value::String(field)) if field == "max_completion_tokens" => {
@@ -839,9 +851,9 @@ fn inline<'a>(
             )
         }
         _ => {
-            return Err(LlmError::UnsupportedCapability {
-                message: "Chat Completions does not support video content blocks".into(),
-            });
+            crate::providers::minimax::chat::validate_chat_video(context, Some(&attachment.media_type), Some(media.bytes.len()))?;
+            WireValue::from(json!({"type":"video_url"}))
+                .with("video_url", WireValue::from(json!({})).with("url", uri()))
         }
     }))
 }

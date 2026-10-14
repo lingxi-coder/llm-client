@@ -9,7 +9,9 @@ use lingxi_llm_client::{builtin_providers, LlmClientBuilder};
 use lingxi_llm_client::protocol::{ImageGenerationRequest, ImageOutputOptions, ImageRequestOptions, Region, Secret};
 
 async fn generate(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
-    let client = LlmClientBuilder::new(&builtin_providers()?)?
+    let profiles = builtin_providers()?.into_iter()
+        .filter(|profile| profile.profile_name == "openai").collect::<Vec<_>>();
+    let client = LlmClientBuilder::new(&profiles)?
         .with_region(Region::International).build()?;
     let request = ImageGenerationRequest {
         model: "gpt-image-1.5".into(),

@@ -27,8 +27,10 @@ message.content.iter().filter_map(|block| {
         tool_use_id: id.clone(),
         toolset_name: toolset_name.clone(),
         content: format!("Host execution unavailable for {toolset_name:?}/{name}"),
-        is_error: true,
+        is_error: Some(true),
         blocks: None,
+        output_json: None,
+        cache_reference: None,
     })
 }).collect()
 # }

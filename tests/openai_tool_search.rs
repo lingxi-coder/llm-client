@@ -323,6 +323,8 @@ async fn hosted_search_is_not_retried_on_a_fallback_connection() {
         let mut profile = profile("gpt-6-astra");
         profile.profile_name = name.into();
         profile.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
             group: Some("openai-tool-search".into()),
             connection_id: Some(name.into()),
             order,

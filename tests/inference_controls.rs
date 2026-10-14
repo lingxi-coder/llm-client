@@ -470,6 +470,7 @@ fn standard_fast_quotes_and_unknown_prices_do_not_depend_on_effort() {
         web_search: None,
         file_search: None,
         native_metadata: Vec::new(),
+        tool_input_issues: Vec::new(),
         stop_reason: StopReason::EndTurn,
         usage: UsageReport::measured(
             Usage {
@@ -798,6 +799,8 @@ fn tier_profiles() -> Vec<ProviderProfile> {
                 ..Default::default()
             });
             p.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
                 group: Some("tiers".into()),
                 connection_id: Some(name.into()),
                 order: i as u32,

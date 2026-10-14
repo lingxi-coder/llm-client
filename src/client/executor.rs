@@ -71,6 +71,8 @@ fn validate_prepared_file_expirations(
 /// special-cased inside the walk.
 pub(super) struct PreparedAttempt {
     pub(super) inference: crate::protocol::InferenceReport,
+    pub(super) output_budget: Option<super::ResolvedOutputBudget>,
+    pub(super) output_budget_fields: serde_json::Map<String, serde_json::Value>,
     pub(super) http: HttpRequest,
     pub(super) native_anthropic_request_header_facts:
         Option<crate::providers::response_headers::NativeAnthropicRequestHeaderFacts>,
@@ -613,6 +615,17 @@ impl<'client> RequestExecutor<'client> {
     ) -> Result<PreparedAttempt, LlmError> {
         let (mode, authenticate, decision) = preparation;
         let profile = attempt.profile;
+        // Resolve against this exact connection before thinking validation and
+        // encoding. Preserve the caller's None/explicit intent across failover.
+        let mut attempt_request = req.request.clone();
+        let mut output_budget = None;
+        if mode != RequestMode::CountTokens {
+            let policy_profile = CodecContext::for_model(profile, attempt.model, mode);
+            let budget = super::resolve_output_budget(policy_profile.profile(), &attempt.model.request_model, attempt_request.max_tokens)?;
+            attempt_request.max_tokens = budget.value;
+            output_budget = Some(budget);
+        }
+        let req = &ResolvedRequest { request: &attempt_request, attachments: req.attachments.clone() };
         validate_request_file_expirations(req.request, self.clock.now())?;
         let backend = dispatch::chat(profile);
         let codec = backend.codec(profile, self.codecs)?;
@@ -774,9 +787,13 @@ impl<'client> RequestExecutor<'client> {
         // produced by the verified codec.
         let decision_wire =
             decision.then(|| (http.method.clone(), http.url.clone(), http.body.clone()));
+        let generation_budget_before_hooks = generation_budget_fields(&http.body)?;
         backend.apply_request_options(opts, profile, &mut http)?;
         if let Some(finalizer) = &opts.finalizer {
             finalizer.finalize(&mut http, profile)?;
+        }
+        if mode != RequestMode::CountTokens && generation_budget_fields(&http.body)? != generation_budget_before_hooks {
+            return Err(LlmError::InvalidRequest { message: "request hooks changed the resolved output budget".into() });
         }
         apply_generation_body_policies(req.request, profile, opts, mode, authenticate, &mut http)?;
         let native_anthropic_request_header_facts =
@@ -789,6 +806,16 @@ impl<'client> RequestExecutor<'client> {
                     facts,
                     crate::providers::response_headers::NativeRequestIdStage::PerAttempt,
                 )?;
+            }
+        }
+        if mode != RequestMode::CountTokens {
+            let final_budget = generation_budget_fields(&http.body)?;
+            let values: Vec<_> = final_budget.values().filter_map(serde_json::Value::as_u64).collect();
+            let native_budget_omitted = authenticate && profile.protocol == ProtocolFamily::OpenAiResponses
+                && matches!(profile.auth, AuthStrategy::ChatGptOAuth | AuthStrategy::ChatGptPlan);
+            let expected = if native_budget_omitted { None } else { attempt_request.max_tokens.map(u64::from) };
+            if values.len() > 1 || values.first().copied() != expected {
+                return Err(LlmError::InvalidRequest { message: "wire output budget conflicts with the resolved typed budget".into() });
             }
         }
         backend.validate_prepared_body(http.body.len(), endpoint)?;
@@ -819,6 +846,8 @@ impl<'client> RequestExecutor<'client> {
         }
         Ok(PreparedAttempt {
             inference,
+            output_budget,
+            output_budget_fields: generation_budget_fields(&http.body)?,
             http,
             native_anthropic_request_header_facts,
             context,
@@ -851,6 +880,8 @@ impl<'client> RequestExecutor<'client> {
             backend,
             files,
             cleanup,
+            output_budget: _,
+            output_budget_fields: _,
         } = prepared;
         let deadline = opts
             .total_timeout
@@ -887,12 +918,7 @@ impl<'client> RequestExecutor<'client> {
                 headers: response.headers,
                 body: collect_error_body(response.body).await,
             };
-            let error = codec
-                .decode_response(&response, &context)
-                .err()
-                .unwrap_or_else(|| LlmError::ProviderInternal {
-                    message: format!("request failed with HTTP {}", response.status),
-                });
+            let error = codec.decode_error_response(&response, &context);
             return Err(AttemptFailure::new(error, Some(response), files));
         }
         if mode == RequestMode::Stream {
@@ -1255,4 +1281,19 @@ mod tests {
         assert_eq!(continued[0].profile.profile_name, "primary");
         assert_eq!(continued[0].model.request_model, "wire-m");
     }
+}
+
+/// Budget-only projection for hook validation. Never includes prompt or credentials.
+pub(super) fn generation_budget_fields(body: &[u8]) -> Result<serde_json::Map<String, serde_json::Value>, LlmError> {
+    let body = crate::exact_json::parse_request_body_json(body)?.value;
+    let mut fields = serde_json::Map::new();
+    for key in ["max_tokens", "max_completion_tokens", "max_output_tokens"] {
+        if let Some(value) = body.get(key) { fields.insert(key.into(), value.clone()); }
+    }
+    for (parent, key) in [("generationConfig", "maxOutputTokens"), ("generation_config", "max_output_tokens")] {
+        if let Some(value) = body.get(parent).and_then(|v| v.get(key)) {
+            fields.insert(format!("{parent}.{key}"), value.clone());
+        }
+    }
+    Ok(fields)
 }

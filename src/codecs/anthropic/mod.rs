@@ -55,7 +55,7 @@ impl WireCodec for AnthropicMessagesCodec {
         crate::providers::anthropic::mcp::validate(req, context)?;
         crate::providers::anthropic::web_fetch::validate(req, context)?;
         crate::providers::anthropic::code_execution::validate(req, context)?;
-        crate::codecs::inference::validate(req, context.profile(), context.request_model())
+        crate::codecs::inference::validate(req, context.profile(), context.request_model(), context.mode())
             .and_then(|()| {
                 crate::providers::openrouter::server_tools::validate(
                     req,

@@ -19,7 +19,7 @@ description = "Kimi K3 with server-managed web search over Responses."
 console_url = "https://platform.kimi.com"
 api_key_url = "https://platform.kimi.com/console/api-keys"
 docs_url = "https://platform.kimi.com/docs/api/responses"
-connection = { group = "kimi-search", connection_id = "responses", order = 0 }
+connection = { group = "kimi-search", connection_id = "responses", order = 0, protocol_profiles = { open_ai_chat = "kimi" } }
 extra = { web_search = "kimi" }
 
 # Model and token prices copied from the existing Moonshot catalog snapshot.

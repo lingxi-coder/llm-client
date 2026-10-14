@@ -30,6 +30,7 @@ request.tools.push(ToolSpec {
         "properties": { "query": { "type": "string" } },
         "required": ["query"]
     }),
+    input_schema_json: None,
     strict: false,
     defer_loading: false,
     native_options: Vec::new(),

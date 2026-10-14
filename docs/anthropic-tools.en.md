@@ -17,6 +17,7 @@ request.tools.push(ToolSpec {
     name: "find_calendar_events".into(),
     description: "Find calendar events by date, person, or topic".into(),
     input_schema: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}),
+    input_schema_json: None,
     strict: false,
     defer_loading: true,
     native_options: Vec::new(),

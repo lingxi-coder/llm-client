@@ -17,7 +17,7 @@ description = "Kimi server-managed web search on the international API."
 console_url = "https://platform.kimi.ai"
 api_key_url = "https://platform.kimi.ai/console/api-keys"
 docs_url = "https://platform.kimi.ai/docs/api/responses"
-connection = { group = "kimi-search-intl", connection_id = "responses", order = 0 }
+connection = { group = "kimi-search-intl", connection_id = "responses", order = 0, protocol_profiles = { anthropic_messages = "kimi-anthropic-intl", open_ai_chat = "kimi-intl" } }
 extra = { web_search = "kimi" }
 
 [[model]]

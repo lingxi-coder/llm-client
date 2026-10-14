@@ -46,7 +46,7 @@ fn profiles(protocol: &str) -> Vec<ProviderProfile> {
                 "profile_name":name, "provider_id":"test", "base_url":"https://example.test",
                 "protocol":protocol, "auth":"none",
                 "connection":{"group":"test", "connection_id":name},
-                "models":[{"request_model":"wire", "display_model":"test", "billing_model":"wire"}]
+                "models":[{"request_model":"wire", "display_model":"test", "billing_model":"wire", "metadata":{"applicationOutputTokens":4096}}]
             }))
             .unwrap()
         })
@@ -341,7 +341,7 @@ async fn chatgpt_oauth_body_policy_precedes_exact_responses_serialization() {
         .push(lingxi_llm_client::protocol::ConversationMessage::user_text(
             "�",
         ));
-    input.max_tokens = Some(96);
+    input.max_tokens = None;
     input.temperature = Some(0.4);
     let options = RequestOptions {
         credential: Some(Secret::new("synthetic-chatgpt-token".into())),
@@ -583,7 +583,9 @@ async fn bad_tool_json_cannot_erase_complete_usage() {
         .unwrap();
     assert_eq!(response.usage_report().state, UsageState::Complete);
     assert_eq!(response.usage_report().usage.unwrap().reasoning_tokens, 3);
-    assert!(response.decode().is_err());
+    let decoded=response.decode().unwrap();
+    assert!(decoded.message.content.is_empty());
+    assert_eq!(decoded.tool_input_issues.len(),1);
     assert_eq!(response.usage_report().usage.unwrap().output_tokens, 7);
 }
 
@@ -1430,4 +1432,41 @@ async fn draft_body_reorder_retains_exact_schemas_by_tool_name() {
     assert_eq!(projection.value["tools"][0]["name"], "second");
     assert!(projection.raw_subtrees["/tools/0/input_schema"].contains("\\ud801"));
     assert!(projection.raw_subtrees["/tools/1/input_schema"].contains("\\ud800"));
+}
+
+#[tokio::test]
+async fn output_budget_is_resolved_on_selected_connection_and_draft_cannot_override_it() {
+    let transport = http(200, "{}", false);
+    let mut rows = profiles("open_ai_chat");
+    rows[0].models[0].metadata.max_output_tokens = Some(1000);
+    rows[1].models[0].metadata.max_output_tokens = Some(10000);
+    let client = LlmClientBuilder::with_transport(transport.clone(), &rows)
+        .with_region(Region::International).build().unwrap();
+    let mut input = request();
+    input.max_tokens = Some(8000);
+    for (name, expected) in [("primary", 1000), ("secondary", 8000)] {
+        let prepared = client.prepare_on(name, &input, &RequestOptions::default(), RequestMode::Complete).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&prepared.request().body).unwrap();
+        assert_eq!(body["max_tokens"], expected);
+        assert_eq!(input.max_tokens, Some(8000));
+    }
+    input.max_tokens = None;
+    let mut draft = client.prepare_draft_on("primary", &input, &RequestOptions::default(), RequestMode::Complete).await.unwrap();
+    let mut body = draft.semantic_body_json().unwrap();
+    assert!(body.get("max_tokens").is_none());
+    body["max_tokens"] = json!(100);
+    draft.set_json_body(body, &Default::default()).unwrap();
+    match draft.seal().await { Err(error) => assert!(error.to_string().contains("output budget")), Ok(_) => panic!("budget override was accepted") }
+    assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn exact_count_does_not_require_generation_budget_for_unknown_messages_model() {
+    let transport = http(200, "{}", false);
+    let mut rows = profiles("anthropic_messages");
+    rows[0].models[0].metadata.application_output_tokens = None;
+    let client = LlmClientBuilder::with_transport(transport, &rows).with_region(Region::International).build().unwrap();
+    let prepared = client.prepare_on("primary", &request(), &RequestOptions::default(), RequestMode::CountTokens).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&prepared.request().body).unwrap();
+    assert!(body.get("max_tokens").is_none());
 }

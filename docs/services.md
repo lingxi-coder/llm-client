@@ -54,6 +54,7 @@ use lingxi_llm_client::protocol::{CacheBreakpoint, CachePosition, CacheTtl, Prom
 let policy = PromptCachePolicy {
     automatic: Some(CacheTtl::FiveMinutes),
     breakpoints: vec![CacheBreakpoint {
+        scope: None,
         position: CachePosition::System { index: 0 },
         ttl: CacheTtl::OneHour,
     }],
