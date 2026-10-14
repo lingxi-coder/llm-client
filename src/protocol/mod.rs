@@ -48,10 +48,10 @@ pub use llm::{
     NativeAnthropicErrorFacts, NativeAnthropicErrorResponse, NativeAnthropicModelProviderFamily,
     NativeHqKnownErrorEvidence, NativeHrn15ErrorEvidence,
     NativeThinkingBindingControlsErrorEvidence, NativeThinkingPrefixBlock,
-    NativeThinkingPrefixMismatch, ProviderErrorText, ProviderListing, ProxyAuthHeader,
-    ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation, ResponseCacheStatus,
-    ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice, ToolSpec, Usage,
-    WebCitation, WebSearchConfig, WebSearchResult,
+    NativeThinkingPrefixMismatch, NativeThinkingTypeRejection, ProviderErrorText, ProviderListing,
+    ProxyAuthHeader, ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation,
+    ResponseCacheStatus, ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice,
+    ToolSpec, Usage, WebCitation, WebSearchConfig, WebSearchResult,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,

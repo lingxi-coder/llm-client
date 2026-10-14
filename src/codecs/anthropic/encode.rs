@@ -1276,3 +1276,121 @@ mod native_local_tool_search_deferral_tests {
         assert_eq!(tools[1]["name"], "tool_search_tool_bm25");
     }
 }
+
+#[cfg(test)]
+mod native_lsn_manual_budget_tests {
+    use super::*;
+    use crate::client::{NativeAnthropicContextInput, NativeLsnManualBudget};
+    use crate::codecs::{CodecContext, RequestMode};
+    use crate::protocol::{ChatRequest, ThinkingBudget, ThinkingConfig, ThinkingMode};
+
+    fn profile(provider_id: &str) -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": provider_id,
+            "profile_name": "manual-budget-test",
+            "base_url": "https://api.example.test",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "wire-model",
+                "request_model": "wire-model",
+                "billing_model": "wire-model"
+            }]
+        }))
+        .expect("test provider profile")
+    }
+
+    fn request_with_budget(max_tokens: Option<u32>, budget_tokens: u32) -> ChatRequest {
+        let mut request = ChatRequest::new("wire-model");
+        request.max_tokens = max_tokens;
+        request.thinking = Some(ThinkingConfig {
+            mode: Some(ThinkingMode::Enabled),
+            budget: Some(ThinkingBudget::Tokens(budget_tokens)),
+            effort: None,
+        });
+        request
+            .messages
+            .push(crate::protocol::ConversationMessage::user_text("hello"));
+        request
+    }
+
+    fn encode_body(
+        profile: &ProviderProfile,
+        request: &ChatRequest,
+        provenance: Option<NativeLsnManualBudget>,
+    ) -> Result<Vec<u8>, LlmError> {
+        let context = CodecContext::new(profile, "wire-model", RequestMode::Complete)
+            .with_native_anthropic_context(NativeAnthropicContextInput {
+                native_lsn_manual_budget: provenance,
+                ..Default::default()
+            });
+        super::request(EncodeRequest::new(request), profile, &context)
+            .and_then(|wire| wire.encode())
+            .map(|wire| wire.body.to_vec())
+    }
+
+    #[test]
+    fn exact_native_floor_can_exceed_small_output_limit() {
+        let profile = profile("anthropic");
+        let request = request_with_budget(Some(512), 1024);
+        let body = encode_body(
+            &profile,
+            &request,
+            Some(NativeLsnManualBudget::new(1024, Some(512))),
+        )
+        .expect("Native Lsn's 1024-token floor is a valid local request");
+        let body: Value = serde_json::from_slice(&body).expect("encoded request JSON");
+        assert_eq!(body["max_tokens"], 512);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 1024);
+    }
+
+    #[test]
+    fn provenance_must_match_budget_and_output_limit_exactly() {
+        let profile = profile("anthropic");
+        let request = request_with_budget(Some(512), 1024);
+        for provenance in [
+            NativeLsnManualBudget::new(1023, Some(512)),
+            NativeLsnManualBudget::new(1024, Some(513)),
+        ] {
+            assert!(matches!(
+                encode_body(&profile, &request, Some(provenance)),
+                Err(LlmError::InvalidRequest { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn missing_or_non_native_provenance_keeps_generic_below_max_validation() {
+        let native = profile("anthropic");
+        let request = request_with_budget(Some(512), 1024);
+        assert!(matches!(
+            encode_body(&native, &request, None),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+
+        let compatible = profile("custom-anthropic-compatible");
+        assert!(matches!(
+            encode_body(
+                &compatible,
+                &request,
+                Some(NativeLsnManualBudget::new(1024, Some(512)))
+            ),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+    }
+
+    #[test]
+    fn native_provenance_does_not_relax_the_1024_minimum() {
+        let profile = profile("anthropic");
+        let request = request_with_budget(Some(256), 1000);
+        assert!(matches!(
+            encode_body(
+                &profile,
+                &request,
+                Some(NativeLsnManualBudget::new(1000, Some(256)))
+            ),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+    }
+}

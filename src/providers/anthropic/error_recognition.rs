@@ -3,7 +3,7 @@
 use super::beta_repair::{capability_rejected, error_message, prefix_rejected};
 use crate::protocol::{
     JsonPayload, NativeAnthropicModelProviderFamily, NativeHqKnownErrorEvidence,
-    NativeHrn15ErrorEvidence,
+    NativeHrn15ErrorEvidence, NativeThinkingTypeRejection,
 };
 use crate::response_json::{FlatJsonKind, JsonNodeRef, ResponseJsonScanner};
 #[cfg(test)]
@@ -50,6 +50,61 @@ fn thinking_type_rejected(message: &str, units: &[u8]) -> bool {
     ) || js_match!(r"(?i)\badaptive thinking is not supported", units)
         || capability_rejected(message, "thinking_type:enabled")
         || capability_rejected(message, "thinking_type:adaptive")
+}
+
+/// Return the exact target Native `tae` would retry after observing a raw
+/// `xt` HTTP 400. HQ's separately normalized error classifier still uses the
+/// broader `thinking_type_rejected` boolean above.
+pub(crate) fn native_thinking_type_rejection(
+    status: u16,
+    message: Option<&str>,
+) -> Option<NativeThinkingTypeRejection> {
+    if status != 400 {
+        return None;
+    }
+    let message = message?;
+    let units = regex_units(message);
+
+    static THINKING_TYPE_UNSUPPORTED: OnceLock<regex::bytes::Regex> = OnceLock::new();
+    let thinking_type_unsupported = THINKING_TYPE_UNSUPPORTED.get_or_init(|| {
+        regex::bytes::RegexBuilder::new(
+            r"(?i)thinking\.type[^a-z]{1,8}(enabled|adaptive)(?s:.*?)not supported",
+        )
+        .unicode(false)
+        .build()
+        .expect("static Native thinking-type regex")
+    });
+    if let Some(target) = thinking_type_unsupported
+        .captures(&units)
+        .and_then(|captures| captures.get(1))
+        .and_then(|target| std::str::from_utf8(target.as_bytes()).ok())
+    {
+        return match target.to_ascii_lowercase().as_str() {
+            "enabled" => Some(NativeThinkingTypeRejection::Enabled),
+            "adaptive" => Some(NativeThinkingTypeRejection::Adaptive),
+            _ => None,
+        };
+    }
+
+    static ADAPTIVE_UNSUPPORTED: OnceLock<regex::bytes::Regex> = OnceLock::new();
+    let adaptive_unsupported = ADAPTIVE_UNSUPPORTED.get_or_init(|| {
+        regex::bytes::RegexBuilder::new(r"(?i)\b(adaptive) thinking is not supported")
+            .unicode(false)
+            .build()
+            .expect("static Native adaptive-thinking regex")
+    });
+    if adaptive_unsupported.is_match(&units) {
+        return Some(NativeThinkingTypeRejection::Adaptive);
+    }
+
+    let lower = message.to_lowercase();
+    if lower.contains("thinking_type:enabled") {
+        return Some(NativeThinkingTypeRejection::Enabled);
+    }
+    if lower.contains("thinking_type:adaptive") {
+        return Some(NativeThinkingTypeRejection::Adaptive);
+    }
+    None
 }
 
 fn cache_field_rejected(message: &str, units: &[u8]) -> bool {

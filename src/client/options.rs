@@ -173,6 +173,10 @@ pub struct NativeAnthropicContextInput {
     /// None means membership was not observed; the SDK does not infer it
     /// from thinking settings or final wire headers.
     pub native_thinking_binding_controls_beta_requested: Option<bool>,
+    /// Exact Lsn-normalized manual budget for this ordinary Native main
+    /// request. This provenance permits the Native 1024-token floor to exceed
+    /// a smaller `max_tokens`; it does not bypass capability or range checks.
+    pub native_lsn_manual_budget: Option<NativeLsnManualBudget>,
     /// Exact Native `X.model` selector before any provider wire-model mapping.
     /// This is a JSON string payload so unpaired UTF-16 units remain intact.
     /// A missing or non-string value leaves model-dependent HQ evidence unknown.
@@ -183,6 +187,28 @@ pub struct NativeAnthropicContextInput {
     /// Mantle in hosts without that route) must remain absent.
     pub native_hq_model_provider_family:
         Option<crate::protocol::NativeAnthropicModelProviderFamily>,
+}
+
+/// A Native Lsn manual budget after applying its ordinary request clamp.
+/// The SDK compares both values with the encoded `thinking.budget_tokens` and
+/// request `max_tokens` before relaxing only the generic below-max check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeLsnManualBudget {
+    /// The final Native `thinking.budget_tokens` value.
+    pub budget_tokens: u32,
+    /// The final request `max_tokens` value used by Native's clamp.
+    pub request_max_tokens: Option<u32>,
+}
+
+impl NativeLsnManualBudget {
+    /// Bind exact Lsn-normalized values to one request.
+    #[must_use]
+    pub const fn new(budget_tokens: u32, request_max_tokens: Option<u32>) -> Self {
+        Self {
+            budget_tokens,
+            request_max_tokens,
+        }
+    }
 }
 
 /// Trusted request facts for Native Anthropic safeguards and current beta features.
@@ -198,6 +224,9 @@ pub struct NativeAnthropicRequestContext {
     pub afk_mode: bool,
     /// Whether Native admitted mid-conversation tool changes for this request.
     pub mid_conversation_tool_changes: bool,
+    /// Host-observed intent to resume an incomplete thinking block. This is
+    /// execution context only and is never serialized into the provider body.
+    pub resume_incomplete_thinking: bool,
 }
 
 /// Source-backed context attached to a Native `dangerous_tool_use` safeguard.

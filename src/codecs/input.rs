@@ -288,6 +288,9 @@ impl CodecContext {
             .native_thinking_binding_controls_beta_route()
             .then_some(context.native_thinking_binding_controls_beta_requested)
             .flatten();
+        context.native_lsn_manual_budget = native_error_route
+            .then_some(context.native_lsn_manual_budget)
+            .flatten();
         context.native_hq_model_source = native_error_route
             .then_some(context.native_hq_model_source)
             .flatten()
@@ -383,6 +386,15 @@ impl CodecContext {
                 | (crate::protocol::ProtocolFamily::FoundryClaude, _)
         );
         selected.then(|| (profile.provider_id.clone(), profile.protocol))
+    }
+
+    /// Exact normalized Native Lsn budget, only for a recognized Native main
+    /// generation. Side queries, token counting, and compatible profiles do
+    /// not inherit this request-local validation fact.
+    pub(crate) fn native_lsn_manual_budget(&self) -> Option<crate::client::NativeLsnManualBudget> {
+        self.anthropic_main_generation_request().then_some(())?;
+        self.native_anthropic_error_route()?;
+        self.native_anthropic_context.native_lsn_manual_budget
     }
 
     /// Native Aet consults strict membership in the request's planned `betas`

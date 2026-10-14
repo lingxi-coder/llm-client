@@ -51,7 +51,7 @@ pub use account::{
 pub use chat::ChatService;
 pub use options::{
     NativeAnthropicContextInput, NativeAnthropicEndpointAdmission, NativeAnthropicRequestContext,
-    NativeAnthropicServerClassifierContext, RequestOptions,
+    NativeAnthropicServerClassifierContext, NativeLsnManualBudget, RequestOptions,
 };
 pub use resolve::{ResolveError, RoutingCatalog};
 pub use store::{

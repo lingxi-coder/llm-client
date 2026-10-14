@@ -232,6 +232,7 @@ pub(crate) fn validate(
     let model = context.request_model();
     let native_endpoint_admitted = context.native_anthropic_endpoint_admitted();
     let native_main_request = context.native_anthropic_main_request();
+    let native_lsn_manual_budget = context.native_lsn_manual_budget();
     let foundry_per_turn_effort =
         crate::providers::anthropic::conversation::is_foundry_per_turn_effort_request(req, context);
     if (!req.anthropic_client_toolsets().is_empty()
@@ -352,6 +353,10 @@ pub(crate) fn validate(
                 if rw == ReasoningWire::Anthropic {
                     let interleaved = !req.tools.is_empty()
                         && beta_headers(profile).contains(&"interleaved-thinking-2025-05-14");
+                    let matches_native_lsn_budget =
+                        native_lsn_manual_budget.is_some_and(|native| {
+                            native.budget_tokens == n && native.request_max_tokens == req.max_tokens
+                        });
                     if req.temperature.is_some_and(|t| t != 1.0)
                         && profile.inference.enabled_requires_budget.unwrap_or(true)
                     {
@@ -360,7 +365,9 @@ pub(crate) fn validate(
                         ));
                     }
                     if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
-                        || (!interleaved && n >= req.max_tokens.unwrap_or(4096))
+                        || (!interleaved
+                            && n >= req.max_tokens.unwrap_or(4096)
+                            && !matches_native_lsn_budget)
                     {
                         return Err(invalid("manual thinking needs at least 1024 tokens and a budget below max_tokens (except enabled interleaved thinking)"));
                     }

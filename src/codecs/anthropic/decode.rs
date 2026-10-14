@@ -720,6 +720,11 @@ fn native_error_facts(
     } else {
         None
     };
+    let native_thinking_type_rejection =
+        crate::providers::anthropic::error_recognition::native_thinking_type_rejection(
+            status,
+            native_text.map(crate::protocol::ProviderErrorText::display),
+        );
     let native_hq_wrapped_text = native_hq_wrapped_error_text(status, native_text, scanner);
     let native_hq_known_error_evidence =
         crate::providers::anthropic::error_recognition::native_hq_known_error_evidence(
@@ -757,6 +762,7 @@ fn native_error_facts(
                         "beta_header:thinking-resumption-2026-07-17",
                     )
             }),
+        native_thinking_type_rejection,
         native_thinking_binding_controls_beta_requested: thinking_binding_controls_beta_requested,
         native_thinking_binding_controls_error_evidence,
         native_hq_model_source: native_hq_model_source.cloned(),
@@ -1060,6 +1066,78 @@ mod complete_response_validation_tests {
             native_hq_model_provider_family: provider_family,
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn native_thinking_type_error_fact_preserves_tae_target_and_status_gate() {
+        use crate::protocol::NativeThinkingTypeRejection::{Adaptive, Enabled};
+
+        let decode = |status: u16, message: &str| {
+            let context = native_context(None);
+            let body = serde_json::to_vec(&json!({
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": message}
+            }))
+            .unwrap();
+            super::response(
+                &HttpResponse {
+                    status,
+                    headers: Vec::new(),
+                    body: body.into(),
+                },
+                Some(&context),
+                false,
+                false,
+            )
+            .unwrap_err()
+        };
+        let target = |status, message| {
+            decode(status, message)
+                .native_anthropic_error_facts()
+                .unwrap()
+                .native_thinking_type_rejection
+        };
+
+        assert_eq!(
+            target(400, "thinking.type: enabled is not supported"),
+            Some(Enabled)
+        );
+        assert_eq!(
+            target(400, "thinking.type: adaptive is not supported"),
+            Some(Adaptive)
+        );
+        assert_eq!(
+            target(400, "adaptive thinking is not supported"),
+            Some(Adaptive)
+        );
+        assert_eq!(target(400, "THINKING_TYPE:ADAPTIVE"), Some(Adaptive));
+        assert_eq!(
+            target(400, "thinking_type:adaptive and thinking_type:enabled"),
+            Some(Enabled),
+            "the enabled marker is checked before the adaptive marker"
+        );
+        assert_eq!(
+            target(
+                400,
+                "thinking.type: adaptive is not supported; thinking_type:enabled"
+            ),
+            Some(Adaptive),
+            "the oto regex result takes precedence over CI markers"
+        );
+        assert_eq!(target(400, "adaptive thinking is unsupported"), None);
+
+        let unnormalized = decode(422, "thinking_type:enabled");
+        let facts = unnormalized.native_anthropic_error_facts().unwrap();
+        assert_eq!(facts.native_thinking_type_rejection, None);
+        assert_eq!(
+            facts
+                .native_hq_known_error_evidence
+                .as_ref()
+                .unwrap()
+                .thinking_type_rejected,
+            Some(true),
+            "HQ normalizes 422 for gB, but tae itself accepts only original 400"
+        );
     }
 
     #[test]

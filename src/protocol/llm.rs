@@ -182,6 +182,15 @@ pub struct NativeThinkingBindingControlsErrorEvidence {
     pub invalid_beta_flag: bool,
 }
 
+/// Target type from Native 2.1.295's `tae` model-rejection retry classifier.
+/// This is distinct from the broader normalized-HQ boolean claim: it is only
+/// present for an original HTTP 400 and tells the host which type to retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeThinkingTypeRejection {
+    Enabled,
+    Adaptive,
+}
+
 /// Host-observed result of Native `cc(X.model)` for one selected request.
 /// This is explicit route state; it is never inferred from an SDK profile name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,6 +353,9 @@ pub struct NativeAnthropicErrorFacts {
     pub thinking_resumption_beta_requested: Option<bool>,
     /// Native Aet matched an HTTP 400 rejection of an actually sent beta.
     pub thinking_resumption_beta_refused: bool,
+    /// Exact target of Native `tae` for an original HTTP 400 response.
+    /// This per-model retry hint is separate from HQ's broader gB claim.
+    pub native_thinking_type_rejection: Option<NativeThinkingTypeRejection>,
     /// Exact host-observed planned membership of the Native
     /// thinking-binding-controls beta on this request.
     pub native_thinking_binding_controls_beta_requested: Option<bool>,
@@ -2079,6 +2091,7 @@ mod tests {
             thinking_resumption_refused: false,
             thinking_resumption_beta_requested: None,
             thinking_resumption_beta_refused: false,
+            native_thinking_type_rejection: None,
             native_thinking_binding_controls_beta_requested: None,
             native_thinking_binding_controls_error_evidence: None,
             native_hq_model_source: None,
