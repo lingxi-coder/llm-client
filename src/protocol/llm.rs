@@ -366,12 +366,32 @@ pub struct NativeAnthropicErrorFacts {
     pub response: Option<NativeAnthropicErrorResponse>,
 }
 
+/// One message/content coordinate from Native's prefix-lock mismatch header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeThinkingPrefixBlock {
+    /// Zero-based message index reported by the provider.
+    pub message_index: u32,
+    /// Zero-based content-block index reported by the provider.
+    pub block_index: u32,
+}
+
+/// The bounded, parsed value of `anthropic-thinking-prefix-mismatch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeThinkingPrefixMismatch {
+    /// Validated request coordinate, when the header contains one.
+    pub block: Option<NativeThinkingPrefixBlock>,
+    /// Lowercase ASCII mismatch kind, when the header contains one.
+    pub kind: Option<String>,
+}
+
 /// Bounded Native Anthropic response fields consumed after error decoding.
 /// The body is exact raw JSON source when parsing succeeded; only headers used
 /// by source-backed Native classifiers are retained, not the whole map.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NativeAnthropicErrorResponse {
     pub body: Option<JsonPayload>,
+    /// Parsed Native mismatch coordinates, when the bounded header is valid.
+    pub thinking_prefix_mismatch: Option<NativeThinkingPrefixMismatch>,
     /// HTTP APIError factory leaves ordinary response errors on Error.name.
     pub api_error_name: Option<String>,
     pub amzn_error_type: Option<String>,
@@ -383,6 +403,10 @@ impl std::fmt::Debug for NativeAnthropicErrorResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeAnthropicErrorResponse")
             .field("body", &self.body.as_ref().map(|_| "<retained>"))
+            .field(
+                "thinking_prefix_mismatch",
+                &self.thinking_prefix_mismatch.as_ref().map(|_| "<present>"),
+            )
             .field("api_error_name", &self.api_error_name)
             .field("amzn_error_type", &self.amzn_error_type)
             .field(

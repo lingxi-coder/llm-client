@@ -767,6 +767,10 @@ fn native_error_facts(
             body: scanner
                 .and_then(|scanner| scanner.raw_source_at(""))
                 .and_then(|source| JsonPayload::parse(source).ok()),
+            thinking_prefix_mismatch:
+                crate::providers::anthropic::thinking_prefix_mismatch::parse_response_headers(
+                    &response.headers,
+                ),
             api_error_name: Some("Error".into()),
             amzn_error_type: response.header("x-amzn-errortype").map(str::to_owned),
             unified_representative_claim: response
@@ -1429,6 +1433,185 @@ mod complete_response_validation_tests {
             .unwrap();
         assert_eq!(raw_evidence.afk_mode_beta_rejected, Some(true));
         assert_eq!(raw_evidence.aggregate_claim(), Some(true));
+    }
+
+    #[test]
+    fn native_prefix_mismatch_header_is_bounded_and_route_scoped() {
+        use crate::protocol::{NativeThinkingPrefixBlock, NativeThinkingPrefixMismatch};
+
+        let native = native_context_with_hq(None, None, None, None);
+        let compatible_profile: crate::protocol::ProviderProfile = serde_json::from_value(json!({
+            "profile_name": "compatible-proxy",
+            "provider_id": "custom-prefix-proxy",
+            "base_url": "https://proxy.invalid",
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": "Claude",
+                "request_model": "wire-model",
+                "billing_model": "wire-model"
+            }]
+        }))
+        .unwrap();
+        let compatible = crate::codecs::CodecContext::new(
+            &compatible_profile,
+            "wire-model",
+            crate::codecs::RequestMode::Complete,
+        );
+        let decode_headers = |context: &crate::codecs::CodecContext,
+                              headers: Vec<(String, String)>| {
+            let body = serde_json::to_vec(&json!({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Not created in this conversation"
+                }
+            }))
+            .unwrap();
+            super::response(
+                &HttpResponse {
+                    status: 400,
+                    headers,
+                    body: body.into(),
+                },
+                Some(context),
+                false,
+                false,
+            )
+            .unwrap_err()
+        };
+        let decode = |context: &crate::codecs::CodecContext, header: String| {
+            decode_headers(
+                context,
+                vec![("anthropic-thinking-prefix-mismatch".into(), header)],
+            )
+        };
+        let header =
+            "block=messages.1.content.2;block=messages.3.content.4;kind=bad_kind;kind=UPPER";
+        let error = decode(&native, header.into());
+        let mismatch = error
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            mismatch,
+            &NativeThinkingPrefixMismatch {
+                block: Some(NativeThinkingPrefixBlock {
+                    message_index: 1,
+                    block_index: 2,
+                }),
+                kind: Some("bad_kind".into()),
+            }
+        );
+
+        let mut exactly_2048_units = "block=messages.0.content.0;pad=".to_owned();
+        while exactly_2048_units.encode_utf16().count() + 2 <= 2048 {
+            exactly_2048_units.push('😀');
+        }
+        while exactly_2048_units.encode_utf16().count() < 2048 {
+            exactly_2048_units.push('x');
+        }
+        assert_eq!(exactly_2048_units.encode_utf16().count(), 2048);
+        let exact_limit = decode(&native, exactly_2048_units.clone());
+        assert!(exact_limit
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .is_some());
+        exactly_2048_units.push('x');
+        let over_limit = decode(&native, exactly_2048_units);
+        assert!(over_limit
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .is_none());
+
+        let duplicate_values = decode_headers(
+            &native,
+            vec![
+                (
+                    "anthropic-thinking-prefix-mismatch".into(),
+                    "block=messages.1.content.2".into(),
+                ),
+                (
+                    "ANTHROPIC-THINKING-PREFIX-MISMATCH".into(),
+                    "kind=thinking".into(),
+                ),
+            ],
+        );
+        assert!(duplicate_values
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .is_none());
+
+        let mut first_duplicate_value = "block=messages.1.content.2;pad=".to_owned();
+        while first_duplicate_value.encode_utf16().count() + 2 <= 2046 {
+            first_duplicate_value.push('😀');
+        }
+        while first_duplicate_value.encode_utf16().count() < 2046 {
+            first_duplicate_value.push('x');
+        }
+        assert_eq!(first_duplicate_value.encode_utf16().count(), 2046);
+        assert!(decode(&native, first_duplicate_value.clone())
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .is_some());
+        let combined_over_limit = decode_headers(
+            &native,
+            vec![
+                (
+                    "ANTHROPIC-THINKING-PREFIX-MISMATCH".into(),
+                    first_duplicate_value,
+                ),
+                ("anthropic-thinking-prefix-mismatch".into(), "x".into()),
+            ],
+        );
+        assert!(combined_over_limit
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .is_none());
+
+        let malformed = decode(
+            &native,
+            "block=messages.1234567.content.0;kind=NotValid".into(),
+        );
+        assert!(malformed
+            .native_anthropic_error_facts()
+            .unwrap()
+            .response
+            .as_ref()
+            .unwrap()
+            .thinking_prefix_mismatch
+            .is_none());
+
+        let compatible_error = decode(
+            &compatible,
+            "block=messages.1.content.2;kind=thinking".into(),
+        );
+        assert!(compatible_error.native_anthropic_error_facts().is_none());
     }
 
     #[test]

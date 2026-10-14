@@ -83,6 +83,19 @@ pub(crate) fn supports_profile(profile: &ProviderProfile) -> bool {
     is_first_party_profile(profile) || profile.protocol == ProtocolFamily::VertexClaude
 }
 
+/// Native represents local tool search as an ordinary `ToolSpec` named
+/// `ToolSearch`; it does not require a provider-hosted search descriptor. Keep
+/// this exception scoped to an observed Native route and an eagerly listed
+/// local search tool. ToolSpec's typed name is emitted canonically, while
+/// `extra` only fills fields that are otherwise absent.
+pub(crate) fn has_native_local_tool_search(request: &ChatRequest, context: &CodecContext) -> bool {
+    context.native_anthropic_error_route().is_some()
+        && request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "ToolSearch" && !tool.defer_loading)
+}
+
 fn supports_message_options(context: &CodecContext) -> bool {
     supports_profile(context.profile()) || context.native_anthropic_endpoint_admitted()
 }
@@ -1548,7 +1561,9 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
             )));
         }
     }
-    if request.hosted_anthropic_tool_search().is_none() {
+    if request.hosted_anthropic_tool_search().is_none()
+        && !has_native_local_tool_search(request, context)
+    {
         for tool in request.tools.iter().filter(|tool| tool.defer_loading) {
             if !surfaced_deferred.contains(&tool.name) {
                 return Err(invalid(format!(

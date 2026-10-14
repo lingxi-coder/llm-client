@@ -49,6 +49,7 @@ pub mod response_policy;
 pub mod stream_observation;
 pub mod system_prompt;
 pub mod thinking_display;
+pub mod thinking_prefix_mismatch;
 
 mod connector;
 pub use connector::ConnectorTextAccumulator;

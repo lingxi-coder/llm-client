@@ -63,6 +63,8 @@ pub fn request<'a>(
     let has_anthropic_mcp = crate::providers::anthropic::mcp::has_top_level_toolsets(req);
     let has_openrouter_tool_search = req.hosted_openrouter_tool_search().is_some();
     let tool_search = req.hosted_anthropic_tool_search();
+    let has_native_local_tool_search =
+        crate::providers::anthropic::conversation::has_native_local_tool_search(req, opts);
     let web_fetch = req.hosted_anthropic_web_fetch();
     if req.hosted_openai_tool_search().is_some() {
         return Err(LlmError::UnsupportedCapability {
@@ -73,6 +75,7 @@ pub fn request<'a>(
         && tool_search.is_none()
         && !has_openrouter_tool_search
         && !crate::providers::anthropic::conversation::has_tool_additions(req)
+        && !has_native_local_tool_search
     {
         return Err(LlmError::InvalidRequest {
             message: "defer_loading requires a supported hosted tool-search server tool on the same request".into(),
@@ -1103,5 +1106,173 @@ mod model_source_tests {
         assert_eq!(vertex_url_path_model_source(&high).unwrap(), "\u{FFFD}");
         assert_eq!(vertex_url_path_model_source(&low).unwrap(), "\u{FFFD}");
         assert_eq!(vertex_url_path_model_source(&pair).unwrap(), "\u{1F680}");
+    }
+}
+
+#[cfg(test)]
+mod native_local_tool_search_deferral_tests {
+    use super::*;
+    use crate::codecs::{CodecContext, RequestMode};
+    use crate::protocol::{ChatRequest, ConversationMessage};
+    use crate::providers::anthropic::types::{
+        AnthropicToolSearchConfig, AnthropicToolSearchStrategy,
+    };
+
+    const MODEL: &str = "claude-sonnet-4-5";
+    const DEFERRED_PLACEHOLDER_DESCRIPTION: &str =
+        "Reserved placeholder that keeps deferred tool loading active; never call this tool.";
+
+    fn profile(provider_id: &str) -> ProviderProfile {
+        let base_url = if provider_id == "anthropic" {
+            "https://api.anthropic.com"
+        } else {
+            "https://proxy.invalid"
+        };
+        serde_json::from_value(json!({
+            "provider_id": provider_id,
+            "profile_name": format!("{provider_id}-fixture"),
+            "base_url": base_url,
+            "protocol": "anthropic_messages",
+            "auth": "none",
+            "models": [{
+                "display_model": MODEL,
+                "request_model": MODEL,
+                "billing_model": MODEL
+            }]
+        }))
+        .expect("profile fixture")
+    }
+
+    fn tool(name: &str, description: &str, defer_loading: bool) -> ToolSpec {
+        ToolSpec {
+            name: name.to_owned(),
+            description: JsonPayload::string(description),
+            input_schema: JsonPayload::parse(r#"{"type":"object","properties":{}}"#)
+                .expect("object schema"),
+            strict: false,
+            defer_loading,
+            native_options: Vec::new(),
+            tool_type: None,
+            extra: JsonPayload::default(),
+        }
+    }
+
+    fn request_with_tools(tools: Vec<ToolSpec>) -> ChatRequest {
+        let mut request = ChatRequest::new(MODEL);
+        request
+            .messages
+            .push(ConversationMessage::user_text("Find the matching tool."));
+        request.tools = tools;
+        request
+    }
+
+    fn native_local_search_request() -> ChatRequest {
+        request_with_tools(vec![
+            tool("ToolSearch", "Search the local tool catalog.", false),
+            tool("read_file", "Read a file.", true),
+            tool(
+                "DeferredToolPlaceholder",
+                DEFERRED_PLACEHOLDER_DESCRIPTION,
+                true,
+            ),
+        ])
+    }
+
+    fn encoded_body(request: &ChatRequest, profile: &ProviderProfile) -> Result<Vec<u8>, LlmError> {
+        let context = CodecContext::new(profile, MODEL, RequestMode::Complete);
+        let wire = super::request(EncodeRequest::new(request), profile, &context)?;
+        Ok(wire.encode()?.body.to_vec())
+    }
+
+    #[test]
+    fn native_local_tool_search_allows_deferred_specs_without_hosted_search() {
+        let profile = profile("anthropic");
+        let request = native_local_search_request();
+        let context = CodecContext::new(&profile, MODEL, RequestMode::Complete);
+        assert!(context.native_anthropic_error_route().is_some());
+        assert!(
+            crate::providers::anthropic::conversation::has_native_local_tool_search(
+                &request, &context
+            )
+        );
+        assert!(request.hosted_tools.is_empty());
+
+        let body: Value = serde_json::from_slice(&encoded_body(&request, &profile).unwrap())
+            .expect("encoded request JSON");
+        let tools = body["tools"].as_array().expect("tool spec array");
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0]["name"], "ToolSearch");
+        assert_eq!(tools[1]["name"], "read_file");
+        assert_eq!(tools[1]["defer_loading"], true);
+        assert_eq!(tools[2]["name"], "DeferredToolPlaceholder");
+        assert_eq!(tools[2]["defer_loading"], true);
+        assert!(tools.iter().all(|tool| {
+            !tool
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.starts_with("tool_search_tool_"))
+        }));
+        assert!(body.get("hosted_tools").is_none());
+    }
+
+    #[test]
+    fn deferred_specs_without_eager_local_tool_search_still_fail_on_native_route() {
+        let profile = profile("anthropic");
+        let request = request_with_tools(vec![tool("read_file", "Read a file.", true)]);
+        assert!(matches!(
+            encoded_body(&request, &profile),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+    }
+
+    #[test]
+    fn compatible_profile_with_same_tool_name_keeps_hosted_search_requirement() {
+        let profile = profile("compatible-proxy");
+        let request = native_local_search_request();
+        let context = CodecContext::new(&profile, MODEL, RequestMode::Complete);
+        assert!(context.native_anthropic_error_route().is_none());
+        assert!(
+            !crate::providers::anthropic::conversation::has_native_local_tool_search(
+                &request, &context
+            )
+        );
+        assert!(matches!(
+            encoded_body(&request, &profile),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+    }
+
+    #[test]
+    fn tool_extra_cannot_spoof_the_local_search_name() {
+        let profile = profile("anthropic");
+        let mut deferred = tool("read_file", "Read a file.", true);
+        deferred.extra = JsonPayload::parse(r#"{"name":"ToolSearch"}"#).expect("extra object");
+        let request = request_with_tools(vec![deferred]);
+        let context = CodecContext::new(&profile, MODEL, RequestMode::Complete);
+        assert!(
+            !crate::providers::anthropic::conversation::has_native_local_tool_search(
+                &request, &context
+            )
+        );
+        assert!(matches!(
+            encoded_body(&request, &profile),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+    }
+
+    #[test]
+    fn typed_hosted_tool_search_still_emits_its_provider_descriptor() {
+        let profile = profile("anthropic");
+        let mut request = request_with_tools(vec![tool("read_file", "Read a file.", true)]);
+        request.set_hosted_anthropic_tool_search(Some(AnthropicToolSearchConfig {
+            strategy: AnthropicToolSearchStrategy::Bm25,
+        }));
+
+        let body: Value = serde_json::from_slice(&encoded_body(&request, &profile).unwrap())
+            .expect("encoded request JSON");
+        let tools = body["tools"].as_array().expect("tool spec array");
+        assert_eq!(tools[0]["name"], "read_file");
+        assert_eq!(tools[1]["type"], "tool_search_tool_bm25_20251119");
+        assert_eq!(tools[1]["name"], "tool_search_tool_bm25");
     }
 }
