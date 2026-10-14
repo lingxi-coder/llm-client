@@ -30,7 +30,7 @@ fn profile(protocol: &str, base: &str) -> ProviderProfile {
         "base_url": base,
         "protocol": protocol,
         "auth": "none",
-        "models": [{"display_model": "m", "request_model": "wire-m", "billing_model": "wire-m"}],
+        "models": [{"display_model": "m", "request_model": "wire-m", "billing_model": "wire-m", "metadata":{"applicationOutputTokens":4096}}],
     }))
     .unwrap()
 }
@@ -458,10 +458,9 @@ fn an_incomplete_function_call_retains_its_truncation_reason() {
         .decode_response(&response, &wire_api::decode_context())
         .unwrap();
     assert_eq!(decoded.stop_reason, StopReason::MaxTokens);
-    assert!(matches!(
-        decoded.message.content.as_slice(),
-        [ContentBlock::ProviderContent { .. }]
-    ));
+    assert!(decoded.message.content.is_empty());
+    assert_eq!(decoded.tool_input_issues.len(), 1);
+    assert_eq!(decoded.tool_input_issues[0].tool_name, "read");
 
     let mut decoder = OpenAiResponsesCodec.stream_decoder(&wire_api::decode_context());
     let mut events = Vec::new();

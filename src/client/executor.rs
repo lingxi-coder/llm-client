@@ -139,6 +139,8 @@ fn validate_prepared_file_expirations(
 /// special-cased inside the walk.
 pub(super) struct PreparedAttempt {
     pub(super) inference: crate::protocol::InferenceReport,
+    pub(super) output_budget: Option<super::ResolvedOutputBudget>,
+    pub(super) output_budget_fields: serde_json::Map<String, serde_json::Value>,
     pub(super) http: HttpRequest,
     pub(super) native_anthropic_request_header_facts:
         Option<crate::providers::response_headers::NativeAnthropicRequestHeaderFacts>,
@@ -685,6 +687,24 @@ impl<'client> RequestExecutor<'client> {
     ) -> Result<PreparedAttempt, LlmError> {
         let (mode, authenticate, decision) = preparation;
         let profile = attempt.profile;
+        // Resolve against this exact connection before thinking validation and
+        // encoding. Preserve the caller's None/explicit intent across failover.
+        let mut attempt_request = req.request.clone();
+        let mut output_budget = None;
+        if mode != RequestMode::CountTokens {
+            let policy_profile = CodecContext::for_model(profile, attempt.model, mode);
+            let budget = super::resolve_output_budget(
+                policy_profile.profile(),
+                &attempt.model.request_model,
+                attempt_request.max_tokens,
+            )?;
+            attempt_request.max_tokens = budget.value;
+            output_budget = Some(budget);
+        }
+        let req = &ResolvedRequest {
+            request: &attempt_request,
+            attachments: req.attachments.clone(),
+        };
         crate::codecs::validate_model_source_protocol(req.request, profile.protocol)?;
         let is_anthropic_model_protocol = matches!(
             profile.protocol,
@@ -929,9 +949,17 @@ impl<'client> RequestExecutor<'client> {
         // produced by the verified codec.
         let decision_wire =
             decision.then(|| (http.method.clone(), http.url.clone(), http.body.clone()));
+        let generation_budget_before_hooks = generation_budget_fields(&http.body)?;
         backend.apply_request_options(opts, profile, &mut http)?;
         if let Some(finalizer) = &opts.finalizer {
             finalizer.finalize(&mut http, profile)?;
+        }
+        if mode != RequestMode::CountTokens
+            && generation_budget_fields(&http.body)? != generation_budget_before_hooks
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "request hooks changed the resolved output budget".into(),
+            });
         }
         apply_generation_body_policies(request, profile, opts, mode, authenticate, &mut http)?;
         let native_anthropic_request_header_facts =
@@ -944,6 +972,29 @@ impl<'client> RequestExecutor<'client> {
                     facts,
                     crate::providers::response_headers::NativeRequestIdStage::PerAttempt,
                 )?;
+            }
+        }
+        if mode != RequestMode::CountTokens {
+            let final_budget = generation_budget_fields(&http.body)?;
+            let values: Vec<_> = final_budget
+                .values()
+                .filter_map(serde_json::Value::as_u64)
+                .collect();
+            let native_budget_omitted = authenticate
+                && profile.protocol == ProtocolFamily::OpenAiResponses
+                && matches!(
+                    profile.auth,
+                    AuthStrategy::ChatGptOAuth | AuthStrategy::ChatGptPlan
+                );
+            let expected = if native_budget_omitted {
+                None
+            } else {
+                attempt_request.max_tokens.map(u64::from)
+            };
+            if values.len() > 1 || values.first().copied() != expected {
+                return Err(LlmError::InvalidRequest {
+                    message: "wire output budget conflicts with the resolved typed budget".into(),
+                });
             }
         }
         if authenticate && matches!(mode, RequestMode::Complete | RequestMode::Stream) {
@@ -988,6 +1039,8 @@ impl<'client> RequestExecutor<'client> {
         }
         Ok(PreparedAttempt {
             inference,
+            output_budget,
+            output_budget_fields: generation_budget_fields(&http.body)?,
             http,
             native_anthropic_request_header_facts,
             context,
@@ -1020,6 +1073,8 @@ impl<'client> RequestExecutor<'client> {
             backend,
             files,
             cleanup,
+            output_budget: _,
+            output_budget_fields: _,
         } = prepared;
         let deadline = opts
             .total_timeout
@@ -1800,4 +1855,42 @@ mod tests {
         assert_eq!(continued[0].profile.profile_name, "primary");
         assert_eq!(continued[0].model.request_model, "wire-m");
     }
+}
+
+/// Budget-only projection for hook validation. Never includes prompt or credentials.
+pub(super) fn generation_budget_fields(
+    body: &[u8],
+) -> Result<serde_json::Map<String, serde_json::Value>, LlmError> {
+    let source = std::str::from_utf8(body).map_err(|_| LlmError::InvalidRequest {
+        message: "request body is not UTF-8".into(),
+    })?;
+    let body =
+        crate::protocol::JsonPayload::parse(source).map_err(|_| LlmError::InvalidRequest {
+            message: "request body is not valid JSON".into(),
+        })?;
+    let mut fields = serde_json::Map::new();
+    for (pointer, key) in [
+        ("/max_tokens", "max_tokens"),
+        ("/max_completion_tokens", "max_completion_tokens"),
+        ("/max_output_tokens", "max_output_tokens"),
+        (
+            "/generationConfig/maxOutputTokens",
+            "generationConfig.maxOutputTokens",
+        ),
+        (
+            "/generation_config/max_output_tokens",
+            "generation_config.max_output_tokens",
+        ),
+    ] {
+        if let Some(value) = body.raw_source_at(pointer) {
+            let value = serde_json::from_str::<u64>(&value)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "output budget field must be a positive integer".into(),
+                })?;
+            fields.insert(key.into(), value.into());
+        }
+    }
+    Ok(fields)
 }

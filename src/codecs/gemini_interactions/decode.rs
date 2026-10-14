@@ -212,6 +212,7 @@ pub(crate) fn response(
         inference: Default::default(),
         web_search: None,
         file_search: None,
+        tool_input_issues: Vec::new(),
         native_metadata: vec![NativeExtension::new(
             "google.interactions.metadata.v1",
             source.clone(),

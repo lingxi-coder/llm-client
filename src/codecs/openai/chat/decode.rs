@@ -76,6 +76,7 @@ pub(super) fn response_with_usage_mode(
     let refusal = message.get("refusal").and_then(Value::as_str);
 
     let mut content = Vec::new();
+    let mut tool_input_issues = Vec::new();
     let reasoning = display_reasoning_text(&provider_payload);
     if !reasoning.is_empty() {
         content.push(ContentBlock::Thinking {
@@ -139,10 +140,32 @@ pub(super) fn response_with_usage_mode(
         .map_err(|message| LlmError::InvalidRequest {
             message: message.into(),
         })?;
-        let input =
-            JsonPayload::parse_fragments([&fragment]).map_err(|_| LlmError::InvalidRequest {
-                message: "provider returned malformed tool arguments".into(),
-            })?;
+        let input = match JsonPayload::parse_fragments([&fragment]) {
+            Ok(input) => input,
+            Err(_)
+                if matches!(
+                    choice.get("finish_reason").and_then(Value::as_str),
+                    Some("length" | "tool_calls" | "stop")
+                ) =>
+            {
+                tool_input_issues.push(crate::protocol::ToolInputIssue {
+                    block_index: call_index,
+                    tool_name: function
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .into(),
+                    tool_id: call.get("id").and_then(Value::as_str).map(ToolUseId::new),
+                    input_bytes: arguments.len(),
+                });
+                continue;
+            }
+            Err(_) => {
+                return Err(LlmError::InvalidRequest {
+                    message: "provider returned malformed tool arguments".into(),
+                })
+            }
+        };
         content.push(ContentBlock::ToolUse {
             id: ToolUseId::new(call.get("id").and_then(Value::as_str).unwrap_or_default()),
             name: function
@@ -177,6 +200,7 @@ pub(super) fn response_with_usage_mode(
         ),
         file_search: None,
         native_metadata: Vec::new(),
+        tool_input_issues,
         message: ConversationMessage {
             native_options: Vec::new(),
             role: MessageRole::Assistant,

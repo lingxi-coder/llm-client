@@ -388,6 +388,20 @@ impl super::ClientSnapshot {
 /// Useful to hosts that attach their own display metadata and retry policies.
 pub struct RoutingCatalog(super::snapshot::RuntimeSnapshot);
 impl RoutingCatalog {
+    /// Published limits of the exact selected route, independent of UI naming.
+    pub fn output_token_limits_in(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<super::OutputTokenLimits, ResolveError> {
+        let selected = self
+            .0
+            .resolve_request_with_precedence(model, profile, true)?;
+        Ok(super::OutputTokenLimits::from_metadata(
+            &selected.connections[0].model.metadata,
+        ))
+    }
+
     /// Immutable selected profiles, including their model inference facts.
     pub fn profiles(&self) -> &[ProviderProfile] {
         &self.0.profiles

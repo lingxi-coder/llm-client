@@ -492,6 +492,25 @@ impl RequestDraft {
     }
     pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
         self.settle_body()?;
+        let mut expected_budget = self.call.prepared.output_budget_fields.clone();
+        // The authenticated ChatGPT Responses policy explicitly forbids this
+        // field. Its removal is SDK protocol projection, not a host override.
+        if matches!(
+            self.call.profile.auth,
+            crate::protocol::AuthStrategy::ChatGptOAuth
+                | crate::protocol::AuthStrategy::ChatGptPlan
+        ) && self.call.profile.protocol == ProtocolFamily::OpenAiResponses
+        {
+            expected_budget.remove("max_output_tokens");
+        }
+        if self.call.mode != RequestMode::CountTokens
+            && super::executor::generation_budget_fields(&self.call.prepared.http.body)?
+                != expected_budget
+        {
+            return Err(LlmError::InvalidRequest {
+                message: "draft changed the resolved output budget before sealing".into(),
+            });
+        }
         if matches!(self.call.mode, RequestMode::Complete | RequestMode::Stream) {
             if let Some(body) = crate::exact_json::normalize_native_generation_json_body(
                 &self.call.prepared.http.body,
@@ -601,6 +620,12 @@ fn request_client_id(headers: &[(String, String)]) -> Option<&str> {
 }
 
 impl PreparedCall {
+    /// Resolved attempt value and provenance. The caller-owned request retains
+    /// its original explicit/automatic intent.
+    pub fn output_budget(&self) -> Option<&super::ResolvedOutputBudget> {
+        self.prepared.output_budget.as_ref()
+    }
+
     pub(super) fn is_bound_to_session(&self, binding: &Arc<()>) -> bool {
         self.session_binding
             .as_ref()

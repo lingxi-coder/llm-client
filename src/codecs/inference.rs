@@ -366,7 +366,9 @@ pub(crate) fn validate(
                     }
                     if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
                         || (!interleaved
-                            && n >= req.max_tokens.unwrap_or(4096)
+                            && context.mode() != crate::RequestMode::CountTokens
+                            && u64::from(n)
+                                >= super::input::required_output_tokens(profile, model, req)?
                             && !matches_native_lsn_budget)
                     {
                         return Err(invalid("manual thinking needs at least 1024 tokens and a budget below max_tokens (except enabled interleaved thinking)"));

@@ -1789,6 +1789,9 @@ impl ToolChoice {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatResponse {
+    /// Invalid argument strings excluded from executable response content.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_input_issues: Vec<ToolInputIssue>,
     #[serde(default)]
     pub inference: super::InferenceReport,
     /// A response-cache observation explicitly reported by the serving gateway.
@@ -2552,4 +2555,13 @@ mod tests {
         };
         assert_eq!(usage.total(), u64::MAX);
     }
+}
+
+/// Prompt-free diagnosis of a tool argument string that did not parse.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolInputIssue {
+    pub block_index: usize,
+    pub tool_name: String,
+    pub tool_id: Option<ToolUseId>,
+    pub input_bytes: usize,
 }

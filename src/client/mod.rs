@@ -53,6 +53,11 @@ pub use options::{
     NativeAnthropicContextInput, NativeAnthropicEndpointAdmission, NativeAnthropicRequestContext,
     NativeAnthropicServerClassifierContext, NativeLsnManualBudget, RequestOptions,
 };
+mod output_budget;
+pub use output_budget::{
+    claude_application_output_default, recovery_output_budget, resolve_output_budget,
+    OutputBudgetSource, OutputTokenLimits, ResolvedOutputBudget,
+};
 pub use resolve::{ResolveError, RoutingCatalog};
 pub use store::{
     ClientConfigManager, ProviderStoreError, ProviderSyncOperation, ProviderSyncResult,

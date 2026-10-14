@@ -237,6 +237,7 @@ pub(crate) fn decode(response: &HttpResponse) -> Result<ChatResponse, LlmError> 
         }),
         file_search: None,
         native_metadata: Vec::new(),
+        tool_input_issues: Vec::new(),
         stop_reason: StopReason::EndTurn,
         usage: Default::default(),
         model: String::new(),

@@ -164,6 +164,9 @@ struct CatalogModel {
     max_input: Option<u64>,
     #[serde(default)]
     max_output: Option<u64>,
+    /// Explicit application policy for mandatory-budget APIs; never a vendor default.
+    #[serde(default)]
+    application_output_tokens: Option<u32>,
     #[serde(default)]
     input_modalities: Vec<String>,
     #[serde(default)]
@@ -386,6 +389,7 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
         aliases: m.aliases.clone(),
         description: m.description.clone(),
         metadata: ModelMetadata {
+            application_output_tokens: m.application_output_tokens,
             family: m.family.clone(),
             status: None,
             release_date: m.release_date.clone(),
