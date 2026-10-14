@@ -186,6 +186,41 @@ pub struct NativeAnthropicErrorFacts {
     pub thinking_resumption_beta_requested: Option<bool>,
     /// Native Aet matched an HTTP 400 rejection of an actually sent beta.
     pub thinking_resumption_beta_refused: bool,
+    /// Exact response evidence needed by Native error consumers. This stays
+    /// process-local with the other Native facts and is not serialized.
+    pub response: Option<NativeAnthropicErrorResponse>,
+}
+
+/// Bounded Native Anthropic response fields consumed after error decoding.
+/// The body is exact raw JSON source when parsing succeeded; only the two
+/// source-read headers are retained, not the whole header map.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeAnthropicErrorResponse {
+    pub body: Option<JsonPayload>,
+    pub unified_representative_claim: Option<String>,
+    pub unified_overage_disabled_reason: Option<String>,
+}
+
+impl std::fmt::Debug for NativeAnthropicErrorResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeAnthropicErrorResponse")
+            .field("body", &self.body.as_ref().map(|_| "<retained>"))
+            .field(
+                "unified_representative_claim",
+                &self
+                    .unified_representative_claim
+                    .as_ref()
+                    .map(|_| "<present>"),
+            )
+            .field(
+                "unified_overage_disabled_reason",
+                &self
+                    .unified_overage_disabled_reason
+                    .as_ref()
+                    .map(|_| "<present>"),
+            )
+            .finish()
+    }
 }
 
 /// Provider error text with the exact JavaScript UTF-16 projection.
@@ -1840,6 +1875,7 @@ mod tests {
             thinking_resumption_refused: false,
             thinking_resumption_beta_requested: None,
             thinking_resumption_beta_refused: false,
+            response: None,
         };
         let error = LlmError::InvalidRequest {
             message: "500 provider error".into(),

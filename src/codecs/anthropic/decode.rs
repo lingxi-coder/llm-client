@@ -52,6 +52,7 @@ pub fn response(
                             ).or(Some(false)),
                             None,
                             None,
+                            resp,
                         ),
                     ),
                     None => error.with_provider_error_text(provider_text),
@@ -98,6 +99,7 @@ pub fn response(
                     ).or(Some(false)),
                     native_text.as_ref(),
                     Some(&scanner),
+                    resp,
                 ),
             ),
             None => error.with_provider_error_text(provider_text),
@@ -645,6 +647,7 @@ fn native_error_facts(
     beta_requested: Option<bool>,
     native_text: Option<&crate::protocol::ProviderErrorText>,
     scanner: Option<&ResponseJsonScanner>,
+    response: &HttpResponse,
 ) -> crate::protocol::NativeAnthropicErrorFacts {
     // `gVr` consumes apiErrorStatus and the normalized `apiError` value. The
     // current jio path maps these two exact nested error codes to its excluded
@@ -675,6 +678,17 @@ fn native_error_facts(
                         "beta_header:thinking-resumption-2026-07-17",
                     )
             }),
+        response: Some(crate::protocol::NativeAnthropicErrorResponse {
+            body: scanner
+                .and_then(|scanner| scanner.raw_source_at(""))
+                .and_then(|source| JsonPayload::parse(source).ok()),
+            unified_representative_claim: response
+                .header("anthropic-ratelimit-unified-representative-claim")
+                .map(str::to_owned),
+            unified_overage_disabled_reason: response
+                .header("anthropic-ratelimit-unified-overage-disabled-reason")
+                .map(str::to_owned),
+        }),
     }
 }
 
@@ -1131,6 +1145,49 @@ mod complete_response_validation_tests {
         assert!(facts.thinking_resumption_refused);
         assert_eq!(facts.thinking_resumption_beta_requested, Some(true));
         assert!(facts.thinking_resumption_beta_refused);
+    }
+
+    #[test]
+    fn native_error_facts_retain_full_json_body_and_only_model_validator_headers() {
+        let body = r#"{"message":"billing limit","error":{"type":"rate_limit_error","message":"billing limit","details":{"error_code":"credits_required","disabled_reason":"out_of_credits"}}}"#;
+        let error = super::response(
+            &HttpResponse {
+                status: 429,
+                headers: vec![
+                    (
+                        "anthropic-ratelimit-unified-representative-claim".into(),
+                        "claimed".into(),
+                    ),
+                    (
+                        "anthropic-ratelimit-unified-overage-disabled-reason".into(),
+                        "out_of_credits".into(),
+                    ),
+                    ("unrelated-header".into(), "must not be retained".into()),
+                ],
+                body: body.as_bytes().to_vec().into(),
+            },
+            Some(&native_context(None)),
+            false,
+            false,
+        )
+        .unwrap_err();
+
+        let facts = error.native_anthropic_error_facts().unwrap();
+        let response = facts.response.as_ref().unwrap();
+        assert_eq!(
+            response.body.as_ref().map(JsonPayload::as_json_source),
+            Some(body)
+        );
+        assert_eq!(
+            response.unified_representative_claim.as_deref(),
+            Some("claimed")
+        );
+        assert_eq!(
+            response.unified_overage_disabled_reason.as_deref(),
+            Some("out_of_credits")
+        );
+        assert!(!format!("{facts:?}").contains("billing limit"));
+        assert!(!format!("{facts:?}").contains("must not be retained"));
     }
 
     fn decode_block_fixture(value: Value) -> Option<ContentBlock> {

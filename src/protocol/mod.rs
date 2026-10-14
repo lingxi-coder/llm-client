@@ -22,6 +22,7 @@ pub use decision::{
 mod json_payload;
 mod model_complete;
 mod model_complete_catalog;
+mod model_suggestion;
 pub use json_payload::{JsonPayload, JsonPayloadFragment};
 mod native;
 pub use native::{NativeExtension, NativeType};
@@ -44,10 +45,10 @@ pub use image::*;
 pub use llm::{
     CapabilitySupport, ChatRequest, ChatResponse, FileSearchHit, FileSearchResult, HostedTool,
     LlmError, LlmErrorKind, ModelCapability, ModelCapabilitySupport, ModelListing,
-    NativeAnthropicErrorFacts, ProviderErrorText, ProviderListing, ProxyAuthHeader,
-    ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation, ResponseCacheStatus,
-    ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice, ToolSpec, Usage,
-    WebCitation, WebSearchConfig, WebSearchResult,
+    NativeAnthropicErrorFacts, NativeAnthropicErrorResponse, ProviderErrorText, ProviderListing,
+    ProxyAuthHeader, ProxyAuthHelperChallenge, ReportedCost, ResponseCacheObservation,
+    ResponseCacheStatus, ServerToolUsage, StopReason, StreamEvent, SystemBlock, ToolChoice,
+    ToolSpec, Usage, WebCitation, WebSearchConfig, WebSearchResult,
 };
 pub use message::{
     AttachmentRef, ContentBlock, ConversationMessage, DocumentSource, ImageSource, MessageRole,
@@ -59,6 +60,9 @@ pub use model_complete::{
     NativeModelCacheDecision, NativeModelCacheGate, NativeModelEnvironmentSnapshot,
     NativeModelGateIdentity, NativeModelObservation, NativeModelProvider,
     NativeModelRegistrySnapshot, NativeModelSettingsSnapshot, NativeServedCatalogFamilies,
+};
+pub use model_suggestion::{
+    native_model_suggestion, native_static_model_suggestion_defaults, NativeModelSuggestionFacts,
 };
 pub use provider::{
     AuthStrategy, AzureConfig, BatchPricing, BillingMode, ConnectionSpec, CredentialConfig,
