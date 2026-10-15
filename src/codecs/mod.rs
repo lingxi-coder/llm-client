@@ -296,11 +296,19 @@ pub trait WireCodec: Send + Sync + 'static {
     /// valid JSON. Successful responses still use the strict decoder.
     fn decode_error_response(&self, resp: &HttpResponse, context: &CodecContext) -> LlmError {
         let sanitized;
-        let response = if crate::response_json::ResponseJsonScanner::parse(
-            &resp.body,
-            "invalid HTTP error JSON",
-        )
-        .is_err()
+        // Native Anthropic formats an empty HTTP error body as
+        // "<status> status code (no body)". Let that codec see the original
+        // empty response so it can apply its route-specific source behavior.
+        // Keep the bounded non-JSON fallback for every non-Native route and
+        // for non-empty malformed bodies.
+        let native_empty_error_body =
+            resp.body.is_empty() && context.native_anthropic_error_route().is_some();
+        let response = if !native_empty_error_body
+            && crate::response_json::ResponseJsonScanner::parse(
+                &resp.body,
+                "invalid HTTP error JSON",
+            )
+            .is_err()
         {
             sanitized = HttpResponse {
                 status: resp.status,
@@ -377,3 +385,91 @@ pub(crate) fn builtin() -> Vec<Arc<dyn WireCodec>> {
 pub(crate) mod structured;
 
 pub(crate) mod cache;
+
+#[cfg(test)]
+mod native_empty_error_body_tests {
+    use super::*;
+    use crate::protocol::LlmErrorKind;
+    use serde_json::json;
+
+    fn profile(provider_id: &str, protocol: &str) -> ProviderProfile {
+        serde_json::from_value(json!({
+            "provider_id": provider_id,
+            "profile_name": "direct",
+            "base_url": "https://api.anthropic.com",
+            "protocol": protocol,
+            "auth": "none",
+            "models": [{
+                "display_model": "claude-sonnet-4-6",
+                "request_model": "claude-sonnet-4-6",
+                "billing_model": "claude-sonnet-4-6"
+            }]
+        }))
+        .expect("fixture profile")
+    }
+
+    fn empty_error() -> HttpResponse {
+        HttpResponse {
+            status: 400,
+            headers: Vec::new(),
+            body: Vec::new().into(),
+        }
+    }
+
+    #[test]
+    fn native_anthropic_empty_error_body_reaches_decoder_unchanged() {
+        let profile = profile("anthropic", "anthropic_messages");
+        let context = CodecContext::new(&profile, "claude-sonnet-4-6", RequestMode::Complete);
+        let codec = anthropic::AnthropicMessagesCodec;
+
+        let error = codec.decode_error_response(&empty_error(), &context);
+        assert_eq!(error.kind(), LlmErrorKind::InvalidRequest);
+        assert_eq!(
+            error.provider_error_text().map(|text| text.display()),
+            Some("400 status code (no body)")
+        );
+    }
+
+    #[test]
+    fn malformed_nonempty_native_body_still_uses_bounded_error_fallback() {
+        let profile = profile("anthropic", "anthropic_messages");
+        let context = CodecContext::new(&profile, "claude-sonnet-4-6", RequestMode::Complete);
+        let codec = anthropic::AnthropicMessagesCodec;
+        let response = HttpResponse {
+            status: 400,
+            headers: Vec::new(),
+            body: b"{truncated".to_vec().into(),
+        };
+
+        let error = codec.decode_error_response(&response, &context);
+        assert_eq!(error.kind(), LlmErrorKind::InvalidRequest);
+        let display = error
+            .provider_error_text()
+            .map(|text| text.display())
+            .expect("fallback keeps provider error text");
+        assert!(display.contains("HTTP 400 returned a non-JSON or truncated error body"));
+    }
+
+    #[test]
+    fn other_provider_empty_errors_keep_status_taxonomy_and_existing_fallback() {
+        let profile = profile("openai", "openai_chat");
+        let context = CodecContext::new(&profile, "claude-sonnet-4-6", RequestMode::Complete);
+        let codec = openai::chat::OpenAiChatCodec;
+        let response = empty_error();
+
+        // The OpenAI decoder can classify the original empty body from its
+        // status without losing the provider's 400 taxonomy.
+        let raw_error = codec.decode_response(&response, &context).unwrap_err();
+        assert_eq!(raw_error.kind(), LlmErrorKind::InvalidRequest);
+
+        // The shared default wrapper remains unchanged for non-Native routes.
+        let wrapped_error = codec.decode_error_response(&response, &context);
+        assert_eq!(wrapped_error.kind(), LlmErrorKind::InvalidRequest);
+        assert_eq!(
+            wrapped_error
+                .provider_error_text()
+                .map(|text| text.display()),
+            Some("400 HTTP 400 returned a non-JSON or truncated error body")
+        );
+    }
+}
