@@ -534,6 +534,34 @@ impl RoutingCatalog {
             .map(|r| r.route)
     }
 
+    /// Resolve a Native-preferred model while retaining every compatible
+    /// connection in its provider group, including siblings with a different
+    /// wire protocol. Hosts that walk this chain must re-resolve and prepare
+    /// each hop through its own profile so the request is adapted to that
+    /// connection. Explicit protocol selection continues to use the
+    /// protocol-specific resolver and keeps its protocol filter.
+    pub fn resolve_in_for_connection_failover(
+        &self,
+        model: &str,
+        profile: Option<&str>,
+    ) -> Result<ResolvedRoute, ResolveError> {
+        let resolved = self
+            .0
+            .resolve_request_with_precedence(model, profile, true)?;
+        let selected = self.0.resolve_request_with_protocol(
+            &resolved.route.request_model,
+            Some(&resolved.connections[0].profile.profile_name),
+            None,
+        )?;
+        self.0
+            .resolve_request_with_precedence(
+                &selected.route.request_model,
+                Some(&selected.route.profile_name),
+                true,
+            )
+            .map(|resolved| resolved.route)
+    }
+
     pub fn new(profiles: Vec<ProviderProfile>, region: crate::protocol::Region) -> Self {
         Self(super::snapshot::RuntimeSnapshot::new(
             region, profiles, None,

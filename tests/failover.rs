@@ -942,6 +942,148 @@ fn siblings_of_one_group_are_the_chain_in_connection_order() {
 }
 
 #[test]
+fn host_failover_chain_keeps_cross_protocol_siblings_but_explicit_protocol_stays_strict() {
+    let mut intl = conn(
+        "acme:intl",
+        "https://intl.test",
+        model("m-1", "m-1"),
+        Some("acme"),
+        1,
+        "per_token",
+        false,
+    );
+    intl.protocol = ProtocolFamily::AnthropicMessages;
+    let cn = conn(
+        "acme:cn",
+        "https://cn.test",
+        model("m-1", "m-1"),
+        Some("acme"),
+        0,
+        "per_token",
+        false,
+    );
+    let catalog = lingxi_llm_client::client::RoutingCatalog::new(
+        vec![intl.clone(), cn.clone()],
+        lingxi_llm_client::protocol::Region::International,
+    );
+
+    let preferred = catalog.resolve_in_prefer_native("m-1", None).unwrap();
+    let route = catalog
+        .resolve_in_for_connection_failover("m-1", None)
+        .unwrap();
+    assert_eq!(route.profile_name, preferred.profile_name);
+    assert_eq!(route.profile_name, "acme:cn");
+    assert_eq!(route.connection_chain.len(), 1);
+    assert_eq!(route.connection_chain[0].profile_name, "acme:intl");
+
+    let scoped = catalog
+        .resolve_in_for_connection_failover("m-1", Some("acme:intl"))
+        .unwrap();
+    assert_eq!(scoped.profile_name, "acme:intl");
+    assert_eq!(scoped.connection_chain.len(), 1);
+    assert_eq!(scoped.connection_chain[0].profile_name, "acme:cn");
+
+    let mut protocol_default_cn = cn.clone();
+    protocol_default_cn.connection.default_protocol = Some(ProtocolFamily::AnthropicMessages);
+    protocol_default_cn
+        .connection
+        .protocol_profiles
+        .insert(ProtocolFamily::AnthropicMessages, "acme:intl".into());
+    let defaulted = lingxi_llm_client::client::RoutingCatalog::new(
+        vec![intl.clone(), protocol_default_cn],
+        lingxi_llm_client::protocol::Region::International,
+    );
+    let defaulted_route = defaulted
+        .resolve_in_for_connection_failover("m-1", None)
+        .unwrap();
+    assert_eq!(
+        defaulted_route.profile_name, "acme:intl",
+        "the current account format default still selects the actual request head"
+    );
+    assert_eq!(defaulted_route.connection_chain.len(), 1);
+    assert_eq!(
+        defaulted_route.connection_chain[0].profile_name, "acme:cn",
+        "the full compatible group remains available after selecting the default format"
+    );
+
+    let mut chat = conn(
+        "acme:openai-chat",
+        "https://chat.test",
+        model("m-openai", "m-openai"),
+        Some("acme-openai"),
+        0,
+        "per_token",
+        false,
+    );
+    chat.protocol = ProtocolFamily::OpenAiChat;
+    chat.connection.default_protocol = Some(ProtocolFamily::OpenAiResponses);
+    chat.connection.protocol_profiles.insert(
+        ProtocolFamily::OpenAiResponses,
+        "acme:openai-responses".into(),
+    );
+    let mut responses = conn(
+        "acme:openai-responses",
+        "https://responses.test",
+        model("m-openai", "m-openai"),
+        Some("acme-openai"),
+        1,
+        "per_token",
+        false,
+    );
+    responses.protocol = ProtocolFamily::OpenAiResponses;
+    let openai_default = lingxi_llm_client::client::RoutingCatalog::new(
+        vec![chat, responses],
+        lingxi_llm_client::protocol::Region::International,
+    );
+    let openai_default_route = openai_default
+        .resolve_in_for_connection_failover("m-openai", None)
+        .unwrap();
+    assert_eq!(
+        openai_default_route.profile_name, "acme:openai-responses",
+        "an account's OpenAI Responses default still controls the actual request format"
+    );
+    assert_eq!(openai_default_route.connection_chain.len(), 1);
+    assert_eq!(
+        openai_default_route.connection_chain[0].profile_name, "acme:openai-chat",
+        "expanding the failover group must not replace the selected format head"
+    );
+
+    let explicit = catalog
+        .resolve_in_with_protocol("m-1", Some("acme:cn"), Some(ProtocolFamily::OpenAiChat))
+        .unwrap();
+    assert_eq!(explicit.profile_name, "acme:cn");
+    assert!(
+        explicit.connection_chain.is_empty(),
+        "explicit protocol resolution must not admit the Anthropic sibling"
+    );
+
+    let other_group = conn(
+        "other",
+        "https://other.test",
+        model("m-1", "m-1"),
+        Some("other"),
+        0,
+        "per_token",
+        false,
+    );
+    let ambiguous = lingxi_llm_client::client::RoutingCatalog::new(
+        vec![intl, cn, other_group],
+        lingxi_llm_client::protocol::Region::International,
+    );
+    assert!(matches!(
+        ambiguous.resolve_in_for_connection_failover("m-1", None),
+        Err(ResolveError::AmbiguousAcrossGroups { .. })
+    ));
+    assert_eq!(
+        ambiguous
+            .resolve_in_for_connection_failover("m-1", Some("acme:cn"))
+            .unwrap()
+            .profile_name,
+        "acme:cn"
+    );
+}
+
+#[test]
 fn scoping_to_one_connection_still_offers_the_whole_group() {
     let c = client(
         &[
