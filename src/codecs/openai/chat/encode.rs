@@ -386,11 +386,14 @@ fn encode_message<'a>(
                 });
             }
             let fields = crate::providers::openai::chat_audio::replay(*protocol, value)?
-                .map(Ok).unwrap_or_else(|| super::reasoning::replay_fields(*protocol, value))?;
+                .map(Ok)
+                .unwrap_or_else(|| super::reasoning::replay_fields(*protocol, value))?;
             let native = native_reasoning.get_or_insert_with(Map::new);
             for (key, value) in fields {
                 if native.insert(key, value).is_some() {
-                    return Err(LlmError::InvalidRequest { message: "duplicate Chat message metadata".into() });
+                    return Err(LlmError::InvalidRequest {
+                        message: "duplicate Chat message metadata".into(),
+                    });
                 }
             }
         }
@@ -884,7 +887,11 @@ fn inline<'a>(
             )
         }
         _ => {
-            crate::providers::minimax::chat::validate_chat_video(context, Some(&attachment.media_type), Some(media.bytes.len()))?;
+            crate::providers::minimax::chat::validate_chat_video(
+                context,
+                Some(&attachment.media_type),
+                Some(media.bytes.len()),
+            )?;
             WireValue::from(json!({"type":"video_url"}))
                 .with("video_url", WireValue::from(json!({})).with("url", uri()))
         }

@@ -30,11 +30,13 @@ pub(crate) fn apply(
         },
         |search, body| {
             let _ = body;
-            Ok(Some(if profile.protocol == ProtocolFamily::OpenAiResponses {
-                serde_json::json!({"type": "web_search"})
-            } else {
-                web_search::messages_tool(search)?
-            }))
+            Ok(Some(
+                if profile.protocol == ProtocolFamily::OpenAiResponses {
+                    serde_json::json!({"type": "web_search"})
+                } else {
+                    web_search::messages_tool(search)?
+                },
+            ))
         },
     )
 }

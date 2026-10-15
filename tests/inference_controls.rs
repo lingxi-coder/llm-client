@@ -832,8 +832,8 @@ fn tier_profiles() -> Vec<ProviderProfile> {
                 ..Default::default()
             });
             p.connection = ConnectionSpec {
-            protocol_profiles: Default::default(),
-            default_protocol: None,
+                protocol_profiles: Default::default(),
+                default_protocol: None,
                 group: Some("tiers".into()),
                 connection_id: Some(name.into()),
                 order: i as u32,

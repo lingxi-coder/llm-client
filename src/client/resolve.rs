@@ -501,9 +501,13 @@ impl RoutingCatalog {
     ) -> Result<super::OutputTokenLimits, ResolveError> {
         let route = self.resolve_in_prefer_native(model, profile)?;
         let selected = self.0.resolve_request_with_protocol(
-            &route.display_model, Some(&route.profile_name), None,
+            &route.display_model,
+            Some(&route.profile_name),
+            None,
         )?;
-        Ok(super::OutputTokenLimits::from_metadata(&selected.connections[0].model.metadata))
+        Ok(super::OutputTokenLimits::from_metadata(
+            &selected.connections[0].model.metadata,
+        ))
     }
     /// Immutable selected profiles, including their model inference facts.
     pub fn profiles(&self) -> &[ProviderProfile] {

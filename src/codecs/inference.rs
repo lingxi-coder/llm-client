@@ -234,7 +234,9 @@ pub(crate) fn validate(
         && profile.protocol == ProtocolFamily::OpenAiResponses
         && matches!(req.tool_choice, ToolChoice::Any | ToolChoice::Tool { .. })
     {
-        return Err(unsupported("MiniMax Responses supports only auto or none tool choice"));
+        return Err(unsupported(
+            "MiniMax Responses supports only auto or none tool choice",
+        ));
     }
     if crate::providers::openai::chat_audio::has_output(req) {
         crate::providers::openai::chat_audio::validate(req, context)?;

@@ -91,15 +91,21 @@ pub(super) fn response_with_usage_mode(
             value,
         });
     }
-    if provider_payload.kind_at("/choices/0/message/audio")
+    if provider_payload
+        .kind_at("/choices/0/message/audio")
         .is_some_and(|kind| kind != crate::response_json::FlatJsonKind::Null)
     {
-        let source = provider_payload.raw_source_at("/choices/0/message/audio")
-            .ok_or_else(|| LlmError::InvalidRequest { message: "OpenAI audio source was not retained".into() })?;
+        let source = provider_payload
+            .raw_source_at("/choices/0/message/audio")
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "OpenAI audio source was not retained".into(),
+            })?;
         content.push(ContentBlock::ProviderContent {
             protocol: ProtocolFamily::OpenAiChat,
             value: JsonPayload::object_from_fields(&[("audio".encode_utf16().collect(), source)])
-                .map_err(|error| LlmError::InvalidRequest { message: format!("OpenAI audio metadata is invalid JSON: {error}") })?,
+                .map_err(|error| LlmError::InvalidRequest {
+                message: format!("OpenAI audio metadata is invalid JSON: {error}"),
+            })?,
         });
     }
     let decoded_text = match message.get("content") {

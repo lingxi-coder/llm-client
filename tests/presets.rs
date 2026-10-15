@@ -793,9 +793,9 @@ fn a_batch_rate_is_carried_as_published_not_assumed_to_be_a_discount() {
         }
     }
     assert_eq!(
-        carried, 112,
-        "the catalog ships 112 batch rate sets, including Claude Haiku 5.5 and GPT-6.1 Sol; \
-         a refresh that changes this should change this number deliberately"
+        carried, 281,
+        "the catalog ships 281 protocol-specific profile/model batch rate rows, including \
+         sibling profiles; these are not unique model IDs, and a catalog refresh must update this deliberately"
     );
 }
 

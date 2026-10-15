@@ -258,15 +258,23 @@ impl EventDecoder for OpenAiStreamDecoder {
                     .ok_or_else(|| LlmError::InvalidRequest {
                         message: "OpenAI audio source was not retained".into(),
                     })?;
-                let mut audio = JsonPayload::parse(audio_source).map_err(|error| LlmError::InvalidRequest {
-                    message: format!("OpenAI audio metadata is invalid JSON: {error}"),
-                })?;
+                let mut audio =
+                    JsonPayload::parse(audio_source).map_err(|error| LlmError::InvalidRequest {
+                        message: format!("OpenAI audio metadata is invalid JSON: {error}"),
+                    })?;
                 if audio.kind_at("/id") == Some(FlatJsonKind::String) {
-                    self.audio_id = audio.raw_source_at("/id").and_then(|source| JsonPayload::parse(&source).ok());
+                    self.audio_id = audio
+                        .raw_source_at("/id")
+                        .and_then(|source| JsonPayload::parse(&source).ok());
                 } else if audio.is_root_object() && audio.raw_source_at("/id").is_none() {
-                    if let Some(id) = &self.audio_id { audio = audio.with_object_field("id", id)?; }
+                    if let Some(id) = &self.audio_id {
+                        audio = audio.with_object_field("id", id)?;
+                    }
                 }
-                native_fields.push(("audio".encode_utf16().collect(), audio.as_json_source().to_owned()));
+                native_fields.push((
+                    "audio".encode_utf16().collect(),
+                    audio.as_json_source().to_owned(),
+                ));
                 let native = JsonPayload::object_from_fields(&native_fields).map_err(|error| {
                     LlmError::InvalidRequest {
                         message: format!("OpenAI audio metadata is invalid JSON: {error}"),

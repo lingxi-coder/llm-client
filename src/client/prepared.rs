@@ -1037,10 +1037,18 @@ impl CollectedResponse {
     pub fn decode(&self) -> Result<ChatResponse, LlmError> {
         let request_authority = super::executor::request_authority(&self.call.prepared.http.url);
         let decoded = if !(200..300).contains(&self.response.status) {
-            Err(self.call.prepared.codec.decode_error_response(&self.response, &self.call.prepared.context))
+            Err(self
+                .call
+                .prepared
+                .codec
+                .decode_error_response(&self.response, &self.call.prepared.context))
         } else {
-            self.call.prepared.codec.decode_response(&self.response, &self.call.prepared.context)
-        }.map_err(|error| error.with_native_anthropic_request_authority(request_authority));
+            self.call
+                .prepared
+                .codec
+                .decode_response(&self.response, &self.call.prepared.context)
+        }
+        .map_err(|error| error.with_native_anthropic_request_authority(request_authority));
         let mut response = match decoded {
             Ok(response) => response,
             Err(error) => {

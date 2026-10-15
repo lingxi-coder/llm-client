@@ -133,7 +133,8 @@ pub(crate) fn replay(
     if protocol != ProtocolFamily::OpenAiChat {
         return Err(unsupported("Chat audio history cannot cross protocols"));
     }
-    let id_units = value.string_units_at("/audio/id")
+    let id_units = value
+        .string_units_at("/audio/id")
         .filter(|s| !s.is_empty())
         .ok_or_else(|| invalid("Chat audio history requires its provider audio id"))?;
     let id = String::from_utf16(&id_units)
