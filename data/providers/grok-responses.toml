@@ -20,10 +20,12 @@ description = "First-party Grok models over an OpenAI-compatible wire."
 console_url = "https://console.x.ai"
 api_key_url = "https://console.x.ai"
 docs_url = "https://docs.x.ai"
-connection = { group = "xai-responses", connection_id = "responses", order = 0 }
+connection = { group = "xai-responses", connection_id = "responses", order = 0, protocol_profiles = { open_ai_chat = "grok", anthropic_messages = "grok-anthropic" } }
 # catalog provenance: derived from the aggregator slice by stripping its x-ai/ qualifier; this vendor publishes no first-party slice, and the prices are the aggregator's
 
 [extra]
+web_search = "xai"
+supports_previous_response_id = true
 xai_remote_mcp = "xai_responses"
 
 [[model]]

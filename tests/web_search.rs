@@ -352,12 +352,15 @@ fn builtin_search_adapters_are_declared_only_on_verified_endpoints() {
     let expected = [
         ("anthropic", "anthropic"),
         ("gemini", "gemini"),
+        ("grok-responses", "xai"),
         ("deepseek-search", "deepseek"),
         ("glm", "glm"),
         ("kimi-search", "kimi"),
         ("kimi-search-intl", "kimi"),
         ("minimax", "minimax"),
         ("minimax-intl", "minimax"),
+        ("minimax-responses", "minimax"),
+        ("minimax-responses-intl", "minimax"),
         ("qwen-search", "qwen"),
         ("qwen-search-intl", "qwen"),
         ("qwen-search-us", "qwen"),
@@ -365,6 +368,8 @@ fn builtin_search_adapters_are_declared_only_on_verified_endpoints() {
         ("zai", "glm"),
         ("openai", "openai_responses"),
         ("openrouter", "openrouter"),
+        ("openrouter-responses", "openrouter"),
+        ("openrouter-anthropic", "openrouter"),
     ]
     .into_iter()
     .map(|(p, a)| (p.to_owned(), a.to_owned()))

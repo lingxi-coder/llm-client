@@ -358,6 +358,8 @@ async fn uncertain_foundry_mcp_replay_is_not_retried_or_failed_over() {
     let mut primary = foundry_profile(Value::Null);
     primary.profile_name = "foundry-primary".into();
     primary.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
         group: Some("foundry-mcp".into()),
         connection_id: Some("primary".into()),
         order: 0,
@@ -370,6 +372,8 @@ async fn uncertain_foundry_mcp_replay_is_not_retried_or_failed_over() {
     let mut secondary = foundry_profile(Value::Null);
     secondary.profile_name = "foundry-secondary".into();
     secondary.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
         group: Some("foundry-mcp".into()),
         connection_id: Some("secondary".into()),
         order: 1,

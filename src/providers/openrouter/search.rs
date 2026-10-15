@@ -12,12 +12,12 @@ pub(crate) fn apply(
         profile,
         body,
         &SearchPolicy {
-            protocols: &[ProtocolFamily::OpenAiChat],
+            protocols: &[ProtocolFamily::OpenAiChat, ProtocolFamily::OpenAiResponses, ProtocolFamily::AnthropicMessages],
             domains: DomainPolicy::Any,
             max_uses: false,
             choice: ChoicePolicy::Any,
             reserved_tool_name: true,
-            choice_wire: ChoiceWire::Chat,
+            choice_wire: if profile.protocol == ProtocolFamily::AnthropicMessages { ChoiceWire::Messages } else { ChoiceWire::Chat },
         },
         |search, body| {
             let _ = body;

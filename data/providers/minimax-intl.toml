@@ -1,7 +1,7 @@
 
 # Inference controls are endpoint contracts, separate from catalog model facts.
 inference = { reasoning = "anthropic", fast = "priority", enabled_requires_budget = false }
-features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unknown" }, fast = "supported", sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"] }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unsupported" }, fast = "supported", sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"] }
 pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens"], sources = ["https://platform.minimax.io/docs/guides/pricing-paygo"] }
 
 regions = ["international"]
@@ -17,14 +17,14 @@ description = "MiniMax Anthropic-compatible Messages API on the international pl
 console_url = "https://platform.minimax.io"
 api_key_url = "https://platform.minimax.io/user-center/basic-information/interface-key"
 docs_url = "https://platform.minimax.io/docs/api-reference/text-chat-anthropic"
-connection = { group = "minimax-intl", connection_id = "messages", order = 0 }
+connection = { group = "minimax-intl", connection_id = "messages", order = 0, protocol_profiles = { open_ai_responses = "minimax-responses-intl", open_ai_chat = "minimax-chat-intl" } }
 extra = { web_search = "minimax" }
 
 [[model]]
 id = "MiniMax-M2.7"
 application_output_tokens = 204800 # Application policy, not provider default.
 name = "MiniMax M2.7"
-context_window = 1000000
+context_window = 204800
 max_output = 204800
 input_modalities = ["text"]
 output_modalities = ["text"]
@@ -38,7 +38,7 @@ fast = "supported"
 sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
 modes = []
 budget = { support = "unsupported", dynamic = "unsupported" }
-effort = { support = "unknown" }
+effort = { support = "unsupported" }
 
 
 [model.pricing]
@@ -60,7 +60,7 @@ verified_at = "2026-09-24"
 id = "MiniMax-M2.7-highspeed"
 application_output_tokens = 204800 # Application policy, not provider default.
 name = "MiniMax M2.7 Highspeed"
-context_window = 1000000
+context_window = 204800
 max_output = 204800
 input_modalities = ["text"]
 output_modalities = ["text"]
@@ -74,7 +74,7 @@ fast = "supported"
 sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
 modes = []
 budget = { support = "unsupported", dynamic = "unsupported" }
-effort = { support = "unknown" }
+effort = { support = "unsupported" }
 
 
 [model.pricing]
@@ -110,7 +110,7 @@ fast = "supported"
 sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
 modes = ["adaptive", "disabled"]
 budget = { support = "unsupported", dynamic = "unsupported" }
-effort = { support = "unknown" }
+effort = { support = "unsupported" }
 
 
 [model.pricing]

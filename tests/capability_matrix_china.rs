@@ -110,10 +110,13 @@ fn check_record(record: &Value, matrix: &Value) {
 fn every_china_provider_profile_and_raw_model_row_is_covered_once() {
     let matrix = matrix();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/providers");
+    let alternate: Value = serde_json::from_str(include_str!("../data/capability-matrix-protocols.json")).unwrap();
+    let alternate_profiles = alternate["profiles"].as_array().unwrap().iter().map(|p| p["profile"].as_str().unwrap()).collect::<BTreeSet<_>>();
     let expected_profiles = fs::read_dir(root)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().and_then(|x| x.to_str()) == Some("toml"))
+        .filter(|path| !alternate_profiles.contains(path.file_stem().unwrap().to_str().unwrap()))
         .filter_map(|path| {
             let definition: toml::Value = fs::read_to_string(&path).unwrap().parse().unwrap();
             PROVIDERS

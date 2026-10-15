@@ -15,7 +15,7 @@ display_name = "Qwen US Virginia"
 description = "Qwen models in the US (Virginia) region."
 console_url = "https://bailian.console.aliyun.com/"
 api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
-connection = { group = "qwen-us", connection_id = "chat", order = 0 }
+connection = { group = "qwen-us", connection_id = "chat", order = 0, protocol_profiles = { open_ai_responses = "qwen-search-us" } }
 
 [[model]]
 id = "qwen3.8-flash"

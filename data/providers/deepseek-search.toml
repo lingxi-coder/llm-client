@@ -18,7 +18,7 @@ description = "DeepSeek native search over its Anthropic-compatible endpoint."
 console_url = "https://platform.deepseek.com"
 api_key_url = "https://platform.deepseek.com/api_keys"
 docs_url = "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/"
-connection = { group = "deepseek-search", connection_id = "anthropic", order = 0 }
+connection = { group = "deepseek-search", connection_id = "anthropic", order = 0, protocol_profiles = { open_ai_chat = "deepseek", open_ai_responses = "deepseek-responses" } }
 extra = { web_search = "deepseek", supports_unsigned_thinking = true }
 
 # Same model prices and schedule as the existing DeepSeek catalog snapshot.

@@ -39,10 +39,11 @@ impl ClientSnapshot {
         request: &ChatRequest,
         options: &RequestOptions,
     ) -> Result<Option<u64>, LlmError> {
-        let resolved = self
-            .state
-            .config
-            .resolve_request(&request.model, Some(profile))?;
+        let resolved = self.state.config.resolve_request_with_protocol(
+            &request.model,
+            Some(profile),
+            options.protocol,
+        )?;
         let selected = resolved.connections[0].profile;
         if !crate::providers::dispatch::chat(selected).supports_exact_count(selected) {
             return Ok(None);
@@ -85,17 +86,25 @@ impl ClientSnapshot {
         options: &RequestOptions,
         mode: RequestMode,
     ) -> Result<RequestDraft, LlmError> {
-        let resolved = self
-            .state
-            .config
-            .resolve_request(&request.model, Some(profile))?;
+        let resolved = self.state.config.resolve_request_with_protocol(
+            &request.model,
+            Some(profile),
+            options.protocol,
+        )?;
         let selected = resolved
             .connections
             .first()
             .ok_or_else(|| LlmError::ModelUnavailable {
                 message: "no connection selected".into(),
             })?;
-        if selected.profile.profile_name != profile {
+        if selected.profile.profile_name != profile
+            && options.protocol.is_none()
+            && self
+                .state
+                .config
+                .profile(profile)
+                .is_none_or(|p| p.connection.default_protocol.is_none())
+        {
             return Err(LlmError::InvalidRequest {
                 message: "prepare_on requires an exact connection name, not a group".into(),
             });
@@ -873,7 +882,7 @@ impl ReceivedCall {
                 body: crate::transport::collect_error_body(self.response.body).await,
             }
         };
-        if self.call.mode == RequestMode::Complete {
+        if self.call.mode == RequestMode::Complete && (200..300).contains(&response.status) {
             super::executor::normalize_codex_completion(
                 &mut response,
                 self.call.prepared.codec.as_ref(),
@@ -1027,12 +1036,11 @@ impl CollectedResponse {
     /// synchronous; malformed tool JSON cannot erase the retained observation.
     pub fn decode(&self) -> Result<ChatResponse, LlmError> {
         let request_authority = super::executor::request_authority(&self.call.prepared.http.url);
-        let decoded = self
-            .call
-            .prepared
-            .codec
-            .decode_response(&self.response, &self.call.prepared.context)
-            .map_err(|error| error.with_native_anthropic_request_authority(request_authority));
+        let decoded = if !(200..300).contains(&self.response.status) {
+            Err(self.call.prepared.codec.decode_error_response(&self.response, &self.call.prepared.context))
+        } else {
+            self.call.prepared.codec.decode_response(&self.response, &self.call.prepared.context)
+        }.map_err(|error| error.with_native_anthropic_request_authority(request_authority));
         let mut response = match decoded {
             Ok(response) => response,
             Err(error) => {

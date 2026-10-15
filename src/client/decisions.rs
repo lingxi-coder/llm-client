@@ -122,7 +122,7 @@ impl<'a> DecisionService<'a> {
         let mut route = snapshot
             .state
             .config
-            .resolve_request(&request.model, profile)
+            .resolve_request_with_protocol(&request.model, profile, options.protocol)
             .map_err(LlmError::from)?;
         let mut promoted_options = None;
         let scoped_to_connection = profile.is_some_and(|name| {

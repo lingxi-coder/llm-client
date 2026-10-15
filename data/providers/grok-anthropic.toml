@@ -21,7 +21,7 @@ description = "The same models and key as the sibling connection, over the Anthr
 console_url = "https://console.x.ai"
 api_key_url = "https://console.x.ai"
 docs_url = "https://docs.x.ai"
-connection = { group = "xai", connection_id = "anthropic", order = 1, hidden = true }
+connection = { group = "xai", connection_id = "anthropic", order = 1, hidden = true, protocol_profiles = { open_ai_chat = "grok", open_ai_responses = "grok-responses" } }
 # catalog provenance: same derivation as the sibling connection; the models are identical, only the wire differs
 
 [[model]]
