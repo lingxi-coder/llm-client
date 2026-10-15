@@ -332,6 +332,67 @@ async fn count_mode_does_not_apply_generation_auth_body_policy() {
 }
 
 #[tokio::test]
+async fn deferred_host_chatgpt_body_policy_keeps_budget_validation_locked() {
+    let transport = Arc::new(RecordingTransport::default());
+    let mut host_profile = profile();
+    host_profile.profile_name = "chatgpt-host-managed".into();
+    host_profile.auth = AuthStrategy::Bearer;
+    let mut builder = LlmClientBuilder::with_transport(transport.clone(), &[host_profile.clone()])
+        .with_region(Region::International);
+    builder.register_authenticator(AuthStrategy::Bearer, Arc::new(NoopChatGptAuth));
+    let client = builder.build().unwrap();
+
+    let mut request = request();
+    request.max_tokens = Some(96);
+    let mut valid_draft = client
+        .prepare_draft_on(
+            &host_profile.profile_name,
+            &request,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    valid_draft
+        .apply_request_body_auth_policy(AuthStrategy::ChatGptOAuth)
+        .unwrap();
+    assert!(!valid_draft
+        .semantic_body_source()
+        .unwrap()
+        .as_json_source()
+        .contains("\"max_output_tokens\""));
+    let sealed = valid_draft.seal().await.unwrap();
+    assert!(!String::from_utf8_lossy(&sealed.request().body).contains("max_output_tokens"));
+
+    let mut tampered_draft = client
+        .prepare_draft_on(
+            &host_profile.profile_name,
+            &request,
+            &RequestOptions::default(),
+            RequestMode::Complete,
+        )
+        .await
+        .unwrap();
+    tampered_draft
+        .apply_request_body_auth_policy(AuthStrategy::ChatGptOAuth)
+        .unwrap();
+    let body = tampered_draft
+        .semantic_body_source()
+        .unwrap()
+        .with_object_field("max_tokens", &JsonPayload::parse("97").unwrap())
+        .unwrap();
+    tampered_draft
+        .set_json_body(body, &std::collections::BTreeMap::new())
+        .unwrap();
+    assert!(matches!(
+        tampered_draft.seal().await,
+        Err(LlmError::InvalidRequest { message })
+            if message == "draft changed the resolved output budget before sealing"
+    ));
+    assert!(transport.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn raw_source_body_edits_preserve_utf16_while_auth_policy_removes_controls() {
     let transport = Arc::new(RecordingTransport::default());
     let client = client(transport);

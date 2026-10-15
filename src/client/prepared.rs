@@ -502,14 +502,14 @@ impl RequestDraft {
     pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
         self.settle_body()?;
         let mut expected_budget = self.call.prepared.output_budget_fields.clone();
-        // The authenticated ChatGPT Responses policy explicitly forbids this
-        // field. Its removal is SDK protocol projection, not a host override.
-        if matches!(
-            self.call.profile.auth,
-            crate::protocol::AuthStrategy::ChatGptOAuth
-                | crate::protocol::AuthStrategy::ChatGptPlan
-        ) && self.call.profile.protocol == ProtocolFamily::OpenAiResponses
-        {
+        // Match the strategy and route/mode qualifications that actually
+        // applied the body policy. Hosts may defer credentials by preparing
+        // with Bearer auth and then applying the selected route's body policy.
+        if chatgpt_body_policy_applies(
+            self.body_auth_strategy.unwrap_or(self.call.profile.auth),
+            self.call.profile.protocol,
+            self.call.mode,
+        ) {
             expected_budget.remove("max_output_tokens");
         }
         if self.call.mode != RequestMode::CountTokens
