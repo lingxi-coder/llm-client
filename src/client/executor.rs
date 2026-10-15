@@ -1071,11 +1071,7 @@ impl<'client> RequestExecutor<'client> {
                 body: collect_error_body(response.body).await,
             };
             let error = codec
-                .decode_response(&response, &context)
-                .err()
-                .unwrap_or_else(|| LlmError::ProviderInternal {
-                    message: format!("request failed with HTTP {}", response.status),
-                })
+                .decode_error_response(&response, &context)
                 .with_native_anthropic_request_authority(request_authority.clone());
             let error = match proxy_auth_helper_challenge {
                 Some(challenge) => error.with_proxy_auth_helper_challenge(challenge),

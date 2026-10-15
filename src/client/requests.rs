@@ -54,7 +54,7 @@ impl ClientSnapshot {
         req: &ChatRequest,
         opts: &RequestOptions,
     ) -> Result<ChatResponse, LlmError> {
-        let route = self.state.config.resolve_request(&req.model, None)?;
+        let route = self.state.config.resolve_request_with_protocol(&req.model, None, opts.protocol)?;
         self.complete_route(route, req, opts).await
     }
     pub(crate) async fn model_complete(
@@ -106,7 +106,7 @@ impl ClientSnapshot {
         let route = self
             .state
             .config
-            .resolve_request(&req.model, Some(profile))?;
+            .resolve_request_with_protocol(&req.model, Some(profile), opts.protocol)?;
         self.complete_route(route, req, opts).await
     }
     pub(crate) async fn complete_bound_in(
@@ -119,7 +119,7 @@ impl ClientSnapshot {
         let mut route = self
             .state
             .config
-            .resolve_request(&req.model, Some(profile))?;
+            .resolve_request_with_protocol(&req.model, Some(profile), opts.protocol)?;
         route.retain_provider(provider_id)?;
         self.complete_route(route, req, opts).await
     }
@@ -128,7 +128,7 @@ impl ClientSnapshot {
         req: &ChatRequest,
         opts: &RequestOptions,
     ) -> Result<ModelStream, LlmError> {
-        let route = self.state.config.resolve_request(&req.model, None)?;
+        let route = self.state.config.resolve_request_with_protocol(&req.model, None, opts.protocol)?;
         self.stream_route(route, req, opts).await
     }
     pub(crate) async fn stream_in(
@@ -140,7 +140,7 @@ impl ClientSnapshot {
         let route = self
             .state
             .config
-            .resolve_request(&req.model, Some(profile))?;
+            .resolve_request_with_protocol(&req.model, Some(profile), opts.protocol)?;
         self.stream_route(route, req, opts).await
     }
     pub(crate) async fn stream_bound_in(
@@ -153,7 +153,7 @@ impl ClientSnapshot {
         let mut route = self
             .state
             .config
-            .resolve_request(&req.model, Some(profile))?;
+            .resolve_request_with_protocol(&req.model, Some(profile), opts.protocol)?;
         route.retain_provider(provider_id)?;
         self.stream_route(route, req, opts).await
     }

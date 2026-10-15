@@ -925,6 +925,8 @@ async fn a_server_tool_request_is_not_retried_on_a_sibling_connection() {
             "https://openrouter.ai/api/v1",
         );
         profile.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
             group: Some("openrouter-server-tools".into()),
             connection_id: Some(name.into()),
             order,

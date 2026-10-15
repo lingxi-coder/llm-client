@@ -1,0 +1,693 @@
+gemini_file_search = { mode = "enabled", value = { endpoint = "https://generativelanguage.googleapis.com/v1beta/fileSearchStores", auth = { type = "api_key", header = "x-goog-api-key" } } }
+interactions = { mode = "enabled", value = { endpoint = "https://generativelanguage.googleapis.com/v1beta/interactions", auth = { type = "api_key", header = "x-goog-api-key" } } }
+embeddings = { mode = "enabled", value = { api = "gemini", endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents", models_endpoint = "https://generativelanguage.googleapis.com/v1beta/models", auth = { type = "api_key", header = "x-goog-api-key" }, max_inputs = 100 } }
+# Official protocol contract reviewed 2026-10-12. Alternate routes are opt-in.
+model_list = "open_ai_chat"
+connection = { group = "gemini-chat", connection_id = "open_ai_chat", order = 0, hidden = true, protocol_profiles = { gemini_generate_content = "gemini" } }
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "open_ai_chat", fast = "priority" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "supported", sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"], requirements = ["Priority inference requires a supported paid usage tier and model."] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = ["https://ai.google.dev/gemini-api/docs/pricing"] }
+
+regions = ["international"]
+provider_id = "google"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+protocol = "open_ai_chat"
+auth = "bearer"
+credential_env = "GEMINI_API_KEY"
+billing_mode = "per_token"
+
+display_name = "Google Gemini"
+description = "First-party Gemini models over the generateContent API."
+console_url = "https://aistudio.google.com"
+api_key_url = "https://aistudio.google.com/app/apikey"
+docs_url = "https://ai.google.dev/api"
+credential_hint = "AIza"
+
+extra = { stream_usage_opt_in = true }
+
+[[model]]
+id = "gemini-2.5-flash"
+name = "Gemini 2.5 Flash"
+description = "Fast Gemini workhorse for multimodal apps where latency and price matter"
+family = "gemini-flash"
+knowledge_cutoff = "2025-01"
+release_date = "2025-06-17"
+last_updated = "2025-06-17"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "audio", "video", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.3
+output_per_million = 2.5
+cache_read_per_million = 0.03
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unsupported", levels = [] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 0.3, output_per_million = 2.5, cache_read_per_million = 0.03 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 0.54, output_per_million = 4.5, cache_read_per_million = 0.054 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.15, output_per_million = 1.25, cache_read_per_million = 0.03 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+[[model]]
+id = "gemini-2.5-flash-lite"
+name = "Gemini 2.5 Flash-Lite"
+description = "Lean Gemini 2.5 lane for cheap multimodal traffic and quick agents"
+family = "gemini-flash-lite"
+knowledge_cutoff = "2025-01"
+release_date = "2025-06-17"
+last_updated = "2025-06-17"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "audio", "video", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.1
+output_per_million = 0.4
+cache_read_per_million = 0.01
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unsupported", levels = [] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 0.1, output_per_million = 0.4, cache_read_per_million = 0.01 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 0.18, output_per_million = 0.72, cache_read_per_million = 0.018 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.05, output_per_million = 0.2, cache_read_per_million = 0.01 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+[[model]]
+id = "gemini-2.5-pro"
+name = "Gemini 2.5 Pro"
+description = "Google's proven reasoning model for coding, math, and multimodal analysis"
+family = "gemini-pro"
+knowledge_cutoff = "2025-01"
+release_date = "2025-06-17"
+last_updated = "2025-06-17"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "audio", "video", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.25
+output_per_million = 10
+cache_read_per_million = 0.125
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unsupported", levels = [] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 1.25, output_per_million = 10.0, cache_read_per_million = 0.125 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+max_input_tokens = 200000
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 2.5, output_per_million = 15.0, cache_read_per_million = 0.25 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+min_input_tokens = 200001
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 2.25, output_per_million = 18.0, cache_read_per_million = 0.225 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+max_input_tokens = 200000
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 4.5, output_per_million = 27.0, cache_read_per_million = 0.45 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+min_input_tokens = 200001
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.625, output_per_million = 5.0, cache_read_per_million = 0.125 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+max_input_tokens = 200000
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 1.25, output_per_million = 7.5, cache_read_per_million = 0.25 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+min_input_tokens = 200001
+[[model]]
+id = "gemini-3.1-flash-lite"
+name = "Gemini 3.1 Flash Lite"
+description = "Low-latency Gemini model for high-volume multimodal and agent workloads"
+family = "gemini-flash-lite"
+knowledge_cutoff = "2025-01"
+release_date = "2026-05-07"
+last_updated = "2026-05-07"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.25
+output_per_million = 1.5
+cache_read_per_million = 0.025
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["minimal", "low", "medium", "high"] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 0.25, output_per_million = 1.5, cache_read_per_million = 0.025 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 0.45, output_per_million = 2.7, cache_read_per_million = 0.045 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.125, output_per_million = 0.75, cache_read_per_million = 0.0125 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+[[model]]
+id = "gemini-3.1-pro-preview"
+name = "Gemini 3.1 Pro Preview"
+description = "Reasoning-first Gemini preview for agentic coding and complex problem solving"
+family = "gemini-pro"
+knowledge_cutoff = "2025-01"
+release_date = "2026-02-19"
+last_updated = "2026-02-19"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 2
+output_per_million = 12
+cache_read_per_million = 0.2
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "medium", "high"] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 2.0, output_per_million = 12.0, cache_read_per_million = 0.2 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+max_input_tokens = 200000
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 4.0, output_per_million = 18.0, cache_read_per_million = 0.4 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+min_input_tokens = 200001
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 3.6, output_per_million = 21.6, cache_read_per_million = 0.36 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+max_input_tokens = 200000
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 7.2, output_per_million = 32.4, cache_read_per_million = 0.72 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+min_input_tokens = 200001
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 1.0, output_per_million = 6.0, cache_read_per_million = 0.2 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+max_input_tokens = 200000
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 2.0, output_per_million = 9.0, cache_read_per_million = 0.4 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+min_input_tokens = 200001
+[[model]]
+id = "gemini-3.5-flash"
+name = "Gemini 3.5 Flash"
+description = "Fast Gemini model balancing multimodal reasoning, tool use, and cost"
+family = "gemini-flash"
+knowledge_cutoff = "2025-01"
+release_date = "2026-05-19"
+last_updated = "2026-05-19"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1.5
+output_per_million = 9
+cache_read_per_million = 0.15
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["minimal", "low", "medium", "high"] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 1.5, output_per_million = 9.0, cache_read_per_million = 0.15 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 2.7, output_per_million = 16.2, cache_read_per_million = 0.27 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.75, output_per_million = 4.5, cache_read_per_million = 0.075 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+[[model]]
+id = "gemini-3.5-flash-lite"
+name = "Gemini 3.5 Flash Lite"
+description = "Fast Gemini model balancing multimodal reasoning, tool use, and cost"
+family = "gemini-flash-lite"
+knowledge_cutoff = "2026-03"
+release_date = "2026-07-21"
+last_updated = "2026-07-21"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.3
+output_per_million = 2.5
+cache_read_per_million = 0.03
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["minimal", "low", "medium", "high"] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 0.3, output_per_million = 2.5, cache_read_per_million = 0.03 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 0.54, output_per_million = 4.5, cache_read_per_million = 0.05 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.15, output_per_million = 1.25, cache_read_per_million = 0.02 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+[[model]]
+id = "gemini-3.6-flash"
+name = "Gemini 3.6 Flash"
+description = "Fast Gemini model balancing multimodal reasoning, tool use, and cost"
+family = "gemini-flash"
+knowledge_cutoff = "2026-03"
+release_date = "2026-07-21"
+last_updated = "2026-07-21"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 3.75
+cache_read_per_million = 0.075
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["minimal", "low", "medium", "high"] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 0.75, output_per_million = 3.75, cache_read_per_million = 0.075 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_until = { local = "2027-01-01T00:00:00" } # Official price page does not specify the billing time zone.
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 1.5, output_per_million = 7.5, cache_read_per_million = 0.15 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 1.35, output_per_million = 6.75, cache_read_per_million = 0.135 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_until = { local = "2027-01-01T00:00:00" } # Official price page does not specify the billing time zone.
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 2.7, output_per_million = 13.5, cache_read_per_million = 0.27 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.375, output_per_million = 1.875, cache_read_per_million = 0.0375 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_until = { local = "2027-01-01T00:00:00" } # Official price page does not specify the billing time zone.
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.75, output_per_million = 3.75, cache_read_per_million = 0.075 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
+[[model]]
+id = "gemini-3.7-flash"
+name = "Gemini 3.7 Flash"
+description = "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning"
+family = "gemini-flash"
+knowledge_cutoff = "2026-03"
+release_date = "2026-08-13"
+last_updated = "2026-08-13"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 3.75
+cache_read_per_million = 0.075
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "medium", "high"] }
+
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 0.75, output_per_million = 3.75, cache_read_per_million = 0.075 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_until = { local = "2027-01-01T00:00:00" } # Official price page does not specify the billing time zone.
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "interactive"
+rates = { input_per_million = 1.5, output_per_million = 7.5, cache_read_per_million = 0.15 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 1.35, output_per_million = 6.75, cache_read_per_million = 0.135 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_until = { local = "2027-01-01T00:00:00" } # Official price page does not specify the billing time zone.
+
+[[model.pricing.rules]]
+service_tier = "fast"
+submission = "interactive"
+rates = { input_per_million = 2.7, output_per_million = 13.5, cache_read_per_million = 0.27 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.375, output_per_million = 1.875, cache_read_per_million = 0.0375 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_until = { local = "2027-01-01T00:00:00" } # Official price page does not specify the billing time zone.
+
+[[model.pricing.rules]]
+service_tier = "standard"
+submission = "batch"
+rates = { input_per_million = 0.75, output_per_million = 3.75, cache_read_per_million = 0.075 }
+source = "https://ai.google.dev/gemini-api/docs/pricing"
+verified_at = "2026-09-24"
+valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
+[[model]]
+id = "gemini-flash-latest"
+name = "Gemini Flash Latest"
+description = "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning"
+family = "gemini-flash"
+knowledge_cutoff = "2026-03"
+release_date = "2026-08-13"
+last_updated = "2026-08-13"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 3.75
+cache_read_per_million = 0.075
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+
+[[model]]
+id = "gemini-flash-lite-latest"
+name = "Gemini Flash-Lite Latest"
+description = "Fast Gemini model balancing multimodal reasoning, tool use, and cost"
+family = "gemini-flash-lite"
+knowledge_cutoff = "2026-03"
+release_date = "2026-07-21"
+last_updated = "2026-07-21"
+context_window = 1048576
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.3
+output_per_million = 2.5
+cache_read_per_million = 0.03
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]

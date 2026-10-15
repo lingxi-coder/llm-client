@@ -133,6 +133,8 @@ fn every_remaining_raw_catalog_row_has_complete_operation_evidence() {
         "openai", "google", "deepseek", "kimi", "minimax", "qwen", "zhipu",
     ];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let alternate: serde_json::Value = serde_json::from_str(include_str!("../data/capability-matrix-protocols.json")).unwrap();
+    let alternate_profiles = alternate["profiles"].as_array().unwrap().iter().map(|p| p["profile"].as_str().unwrap()).collect::<BTreeSet<_>>();
     let mut expected_profiles = BTreeMap::new();
     for entry in std::fs::read_dir(root.join("data/providers")).unwrap() {
         let path = entry.unwrap().path();
@@ -142,7 +144,7 @@ fn every_remaining_raw_catalog_row_has_complete_operation_evidence() {
         let catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let provider = catalog["provider_id"].as_str().unwrap();
-        if !already_audited.contains(&provider) {
+        if !already_audited.contains(&provider) && !alternate_profiles.contains(path.file_stem().unwrap().to_str().unwrap()) {
             expected_profiles.insert(
                 path.file_stem().unwrap().to_str().unwrap().to_owned(),
                 catalog,

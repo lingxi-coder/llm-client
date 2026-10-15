@@ -1,0 +1,164 @@
+# Official endpoint reviewed 2026-10-12. Format selection keeps this account and billing product.
+model_list = "none"
+connection = { group = "minimax-responses-intl", connection_id = "open_ai_responses", order = 0, hidden = true, protocol_profiles = { open_ai_chat = "minimax-chat-intl", anthropic_messages = "minimax-intl" } }
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "open_ai_responses", fast = "priority", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unsupported" }, fast = "supported", sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens"], sources = ["https://platform.minimax.io/docs/guides/pricing-paygo"] }
+
+regions = ["international"]
+provider_id = "minimax"
+base_url = "https://api.minimax.io/v1"
+protocol = "open_ai_responses"
+auth = "bearer"
+credential_env = "MINIMAX_API_KEY"
+billing_mode = "per_token"
+display_name = "MiniMax International"
+description = "MiniMax Anthropic-compatible Messages API on the international platform."
+console_url = "https://platform.minimax.io"
+api_key_url = "https://platform.minimax.io/user-center/basic-information/interface-key"
+docs_url = "https://platform.minimax.io/docs/api-reference/text-chat-anthropic"
+
+extra = { web_search = "minimax", supports_previous_response_id = false }
+
+[[model]]
+id = "MiniMax-M2.7"
+name = "MiniMax M2.7"
+context_window = 204800
+max_output = 204800
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
+modes = []
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unsupported" }
+
+
+[model.pricing]
+currency = "USD"
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+input_per_million = 0.3
+output_per_million = 1.2
+cache_read_per_million = 0.06
+cache_write_per_million = 0.375
+
+[[model.pricing.rules]]
+service_tier = "fast"
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read", "cache_write", "cache_write_1h", "reasoning"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model]]
+id = "MiniMax-M2.7-highspeed"
+name = "MiniMax M2.7 Highspeed"
+context_window = 204800
+max_output = 204800
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+description = "Explicit highspeed model; independent from the priority admission tier."
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
+modes = []
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unsupported" }
+
+
+[model.pricing]
+currency = "USD"
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+input_per_million = 0.6
+output_per_million = 2.4
+cache_read_per_million = 0.06
+cache_write_per_million = 0.375
+
+[[model.pricing.rules]]
+service_tier = "fast"
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read", "cache_write", "cache_write_1h", "reasoning"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model]]
+id = "MiniMax-M3"
+name = "MiniMax M3"
+context_window = 1048576
+max_output = 524288
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://platform.minimax.io/docs/api-reference/text-anthropic-api"]
+modes = ["enabled", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "unsupported" }
+
+
+[model.pricing]
+currency = "USD"
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+input_per_million = 0.3
+output_per_million = 1.2
+cache_read_per_million = 0.06
+
+[[model.pricing.rules]]
+service_tier = "standard"
+max_input_tokens = 512000
+rates = { input_per_million = 0.3, output_per_million = 1.2, cache_read_per_million = 0.06 }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "standard"
+min_input_tokens = 512001
+rates = { input_per_million = 0.6, output_per_million = 2.4, cache_read_per_million = 0.12 }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+max_input_tokens = 512000
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[[model.pricing.rules]]
+service_tier = "fast"
+min_input_tokens = 512001
+multiplier = { factor = 1.5, buckets = ["input", "output", "cache_read"] }
+source = "https://platform.minimax.io/docs/guides/pricing-paygo"
+verified_at = "2026-09-24"
+
+[images.routes.primary]
+api = "minimax"
+base_url = "https://api.minimax.io/v1"
+
+[[images.models]]
+display_model = "image-01"
+request_model = "image-01"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+max_inputs = 1
+max_outputs = 9

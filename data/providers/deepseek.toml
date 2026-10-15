@@ -11,6 +11,7 @@ regions = ["china_mainland", "international"]
 provider_id = "deepseek"
 base_url = "https://api.deepseek.com"
 protocol = "open_ai_chat"
+connection = { group = "deepseek", connection_id = "chat", order = 0, protocol_profiles = { anthropic_messages = "deepseek-search", open_ai_responses = "deepseek-responses" } }
 auth = "api_key"
 credential_env = "DEEPSEEK_API_KEY"
 billing_mode = "per_token"
@@ -50,6 +51,7 @@ knowledge_cutoff = "2025-05"
 release_date = "2026-09-10"
 last_updated = "2026-09-10"
 context_window = 1000000
+# API integer ceiling verified 2026-10-14: https://api-docs.deepseek.com/api/create-chat-completion
 max_output = 393216
 input_modalities = ["text", "image"]
 output_modalities = ["text"]
@@ -84,6 +86,7 @@ family = "deepseek-thinking"
 release_date = "2026-08-12"
 last_updated = "2026-08-22"
 context_window = 1000000
+# API integer ceiling verified 2026-10-14: https://api-docs.deepseek.com/api/create-chat-completion
 max_output = 393216
 input_modalities = ["text"]
 output_modalities = ["text"]

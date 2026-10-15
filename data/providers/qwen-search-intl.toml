@@ -16,7 +16,7 @@ display_name = "Qwen Search Singapore"
 description = "Qwen Responses with hosted web and knowledge-base search."
 console_url = "https://bailian.console.aliyun.com/"
 api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
-connection = { group = "qwen-search-sg", connection_id = "responses", order = 0 }
+connection = { group = "qwen-search-sg", connection_id = "responses", order = 0, protocol_profiles = { anthropic_messages = "qwen-anthropic-intl", open_ai_chat = "qwen-intl" } }
 extra = { web_search = "qwen", file_search = "qwen" }
 
 [[model]]

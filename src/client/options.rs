@@ -51,6 +51,9 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Explicit wire format for this call. Overrides the configured default;
+    /// unsupported formats fail before encoding or network activity.
+    pub protocol: Option<crate::protocol::ProtocolFamily>,
     /// Host-supplied Native Anthropic request kind, used only by SDK request
     /// serialization policies that are specific to an exact request route.
     pub anthropic_request_kind: crate::providers::anthropic::request_policy::AnthropicRequestKind,

@@ -75,6 +75,9 @@ pub(crate) fn validate_audio_request(
     profile: &ProviderProfile,
     opts: &CodecContext,
 ) -> Result<(), LlmError> {
+    if crate::providers::openai::chat_audio::accepts(opts) {
+        return crate::providers::openai::chat_audio::validate(req, opts);
+    }
     let mut has_audio = false;
     for message in &req.messages {
         for block in &message.content {

@@ -1,0 +1,40 @@
+# Official endpoint reviewed 2026-10-12. Format selection keeps this account and billing product.
+model_list = "none"
+connection = { group = "zai-coding-responses", connection_id = "open_ai_responses", order = 0, hidden = true, protocol_profiles = { open_ai_chat = "zai-coding-chat", anthropic_messages = "zai-coding" } }
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "unavailable", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "unsupported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unsupported" }, fast = "unknown", sources = ["https://docs.z.ai/api-reference/llm/chat-completion"] }
+pricing_info = { currencies = [], units = ["subscription_quota"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
+regions = ["international"]
+provider_id = "zhipu"
+base_url = "https://api.z.ai/api/v1"
+protocol = "open_ai_responses"
+auth = "api_key"
+credential_env = "ZAI_CODING_API_KEY"
+billing_mode = "subscription"
+display_name = "GLM Coding Plan International"
+description = "GLM Coding Plan on Z.AI's international Anthropic-compatible API."
+console_url = "https://z.ai"
+api_key_url = "https://z.ai/manage-apikey/apikey-list"
+
+extra = { supports_previous_response_id = false }
+
+[[model]]
+id = "glm-4.7"
+name = "GLM-4.7"
+context_window = 204800
+max_output = 131072
+input_modalities = ["text"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+
+[model.features]
+thinking = "unsupported"
+fast = "unknown"
+sources = ["https://docs.z.ai/api-reference/llm/chat-completion"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = []
+effort = { support = "unsupported" }

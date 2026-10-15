@@ -230,6 +230,15 @@ pub(crate) fn validate(
 ) -> Result<(), LlmError> {
     let profile = context.profile();
     let model = context.request_model();
+    if profile.provider_id.as_str() == "minimax"
+        && profile.protocol == ProtocolFamily::OpenAiResponses
+        && matches!(req.tool_choice, ToolChoice::Any | ToolChoice::Tool { .. })
+    {
+        return Err(unsupported("MiniMax Responses supports only auto or none tool choice"));
+    }
+    if crate::providers::openai::chat_audio::has_output(req) {
+        crate::providers::openai::chat_audio::validate(req, context)?;
+    }
     let native_endpoint_admitted = context.native_anthropic_endpoint_admitted();
     let native_main_request = context.native_anthropic_main_request();
     let foundry_per_turn_effort =
@@ -299,6 +308,8 @@ pub(crate) fn validate(
     }
     if thinking.mode == Some(ThinkingMode::Adaptive)
         && !matches!(rw, ReasoningWire::Anthropic | ReasoningWire::Gemini)
+        && !(rw == ReasoningWire::ThinkingType
+            && profile.extra["supports_adaptive_thinking"] == true)
     {
         return Err(reject("adaptive thinking on this wire"));
     }
@@ -324,7 +335,15 @@ pub(crate) fn validate(
             .filter(|e| f.effort_mode_error(thinking.mode, *e).is_none())
     });
     if let Some(effort) = effort {
-        if f.supports_effort(thinking.mode, effort) == CapabilitySupport::Unsupported {
+        // MiniMax M3's Responses effort=none is an on/off mapping, not a
+        // claim that the model supports adjustable reasoning depth.
+        let minimax_disable = profile.provider_id.as_str() == "minimax"
+            && profile.protocol == ProtocolFamily::OpenAiResponses
+            && effort == ReasoningEffort::None
+            && f.supports_mode(ThinkingMode::Disabled) == CapabilitySupport::Supported;
+        if !minimax_disable
+            && f.supports_effort(thinking.mode, effort) == CapabilitySupport::Unsupported
+        {
             return Err(reject("the requested effort"));
         }
     }
@@ -392,6 +411,8 @@ pub(crate) fn validate(
     }
     if thinking.mode == Some(ThinkingMode::Enabled)
         && thinking.effort.is_none()
+        && !(profile.provider_id.as_str() == "minimax"
+            && profile.protocol == ProtocolFamily::OpenAiResponses)
         && matches!(
             rw,
             ReasoningWire::OpenAiChat | ReasoningWire::OpenAiResponses
@@ -454,6 +475,13 @@ pub(crate) fn apply(
         ReasoningWire::OpenAiChat | ReasoningWire::OpenAiResponses => {
             let effort = if mode == Some(ThinkingMode::Disabled) {
                 Some(ReasoningEffort::None)
+            } else if p.provider_id.as_str() == "minimax"
+                && rw == ReasoningWire::OpenAiResponses
+                && mode == Some(ThinkingMode::Enabled)
+            {
+                // M3 uses a non-none effort to switch thinking on; this does
+                // not claim adjustable thinking depth on that model.
+                t.effort.or(Some(ReasoningEffort::High))
             } else {
                 t.effort
             };

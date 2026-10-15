@@ -81,14 +81,14 @@ fn every_builtin_has_the_declared_policy_and_listed_models_resolve() {
     let profiles = builtin_providers().unwrap();
     for p in &profiles {
         let expected = match p.profile_name.as_str() {
-            "qwen" | "qwen-search" | "minimax" | "kimi" | "kimi-search" | "glm" | "glm-coding" => {
+            "qwen" | "qwen-search" | "qwen-anthropic" | "minimax-chat" | "minimax-responses" | "minimax" | "kimi" | "kimi-search" | "glm" | "glm-coding" => {
                 vec![Region::ChinaMainland]
             }
-            "deepseek" | "deepseek-search" | "kimi-code" => Region::all(),
+            "deepseek" | "deepseek-search" | "deepseek-responses" | "kimi-code" | "kimi-code-anthropic" | "kimi-code-responses" => Region::all(),
             "qwen-intl" | "qwen-us" | "qwen-hk" | "qwen-search-intl" | "qwen-search-us"
             | "qwen-search-hk" | "minimax-intl" | "kimi-intl" | "kimi-search-intl" | "zai"
             | "zai-coding" | "openai" | "anthropic" | "gemini" | "openrouter"
-            | "github-copilot" | "grok" | "grok-anthropic" | "grok-responses" => {
+            | "anthropic-chat" | "openai-chat" | "gemini-chat" | "minimax-chat-intl" | "minimax-responses-intl" | "kimi-anthropic-intl" | "zai-coding-chat" | "zai-coding-responses" | "qwen-anthropic-intl" | "openrouter-responses" | "openrouter-anthropic" | "github-copilot" | "grok" | "grok-anthropic" | "grok-responses" => {
                 vec![Region::International]
             }
             unknown => panic!("new preset needs a region-policy assertion: {unknown}"),

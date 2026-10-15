@@ -118,7 +118,8 @@ pub enum ContentBlock {
         source: VideoSource,
     },
 
-    /// Base64-encoded audio input for OpenRouter Chat or Gemini GenerateContent.
+    /// Base64-encoded audio input for supported OpenAI-compatible Chat profiles
+    /// or Gemini GenerateContent. Each provider validates formats and modalities.
     /// `format` is a provider-supported format such as `wav` or `mp3`;
     /// codecs validate their own formats and encode the appropriate wire part.
     /// This content part does not accept URLs.

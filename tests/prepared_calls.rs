@@ -1654,3 +1654,4 @@ async fn profile_extras_cannot_hide_non_integer_output_budgets() {
         assert_eq!(transport.sends.load(Ordering::SeqCst), 0);
     }
 }
+

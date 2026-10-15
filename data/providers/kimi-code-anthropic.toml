@@ -1,0 +1,155 @@
+# Official endpoint reviewed 2026-10-12. Format selection keeps this account and billing product.
+model_list = "none"
+connection = { group = "kimi-code-anthropic", connection_id = "anthropic_messages", order = 0, hidden = true, protocol_profiles = { open_ai_responses = "kimi-code-responses", open_ai_chat = "kimi-code" } }
+# A distinct membership-backed service: its keys, model ids, quotas and endpoint
+# are not interchangeable with the platform it is grouped with, which is why the
+# billing mode differs and the failover chain will not cross between them.
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported" }, fast = "unknown", sources = ["https://www.kimi.com/code/docs/en/kimi-code/models"] }
+pricing_info = { currencies = [], units = ["subscription_quota"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
+regions = ["china_mainland", "international"]
+provider_id = "kimi"
+base_url = "https://api.kimi.com/coding"
+protocol = "anthropic_messages"
+auth = "api_key"
+credential_env = "KIMI_API_KEY"
+billing_mode = "subscription"
+extra = { explicit_cache = "unsupported" }
+
+display_name = "Kimi Code"
+description = "Kimi models covered by a coding subscription."
+console_url = "https://www.kimi.com/code/console"
+api_key_url = "https://www.kimi.com/code/console"
+
+[[model]]
+id = "k3"
+application_output_tokens = 131072 # Preserved per-model application policy, not an API default.
+name = "Kimi K3"
+description = "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = false
+open_weights = true
+
+[model.pricing]
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://www.kimi.com/code/docs/en/kimi-code/models"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "supported", levels = ["none", "low", "high", "max"], default = "high" }
+
+[[model]]
+id = "k3-256k"
+application_output_tokens = 131072 # Preserved per-model application policy, not an API default.
+name = "Kimi K3-256K"
+description = "256K-context version of Kimi K3, reducing token consumption for shorter coding sessions"
+family = "kimi-k3"
+release_date = "2026-07-16"
+last_updated = "2026-07-16"
+context_window = 262144
+max_output = 131072
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = false
+open_weights = true
+
+[model.pricing]
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://www.kimi.com/code/docs/en/kimi-code/models"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+effort = { support = "supported", levels = ["none", "low", "high", "max"], default = "high" }
+
+[[model]]
+id = "kimi-for-coding"
+application_output_tokens = 32768 # Preserved per-model application policy, not an API default.
+name = "Kimi K2.8 Preview"
+description = "Kimi Code K2.8 Preview; context and model entitlement depend on membership."
+family = "kimi-k2.8"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 1048576
+max_output = 32768
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+source = "models.dev"
+
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://www.kimi.com/code/docs/en/kimi-code/models"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]
+
+[[model]]
+id = "kimi-for-coding-highspeed"
+application_output_tokens = 32768 # Preserved per-model application policy, not an API default.
+name = "Kimi For Coding HighSpeed"
+description = "Lower-latency Kimi Code variant for interactive edits and coding-agent loops"
+family = "kimi-k2"
+knowledge_cutoff = "2025-01"
+release_date = "2026-06-12"
+last_updated = "2026-06-12"
+context_window = 262144
+max_output = 32768
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = true
+
+[model.pricing]
+source = "models.dev"
+
+[[model.pricing.quota]]
+service_tier = "standard"
+multiplier = 3.0
+unit = "kimi_code_usage"
+source = "https://www.kimi.com/code/docs/en/kimi-code/models.html"
+verified_at = "2026-09-24"
+
+[model.features]
+thinking = "supported"
+fast = "unknown"
+sources = ["https://www.kimi.com/code/docs/en/kimi-code/models"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+modes = ["enabled", "disabled"]

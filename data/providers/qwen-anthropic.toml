@@ -1,0 +1,95 @@
+# Official protocol contract reviewed 2026-10-12. Alternate routes are opt-in.
+model_list = "none"
+
+# Inference controls are endpoint contracts, separate from catalog model facts.
+inference = { reasoning = "anthropic", fast = "unavailable", enabled_requires_budget = false }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "supported", levels = ["low", "medium", "xhigh"], default = "xhigh" }, fast = "unsupported", sources = ["https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages"] }
+pricing_info = { currencies = ["USD"], units = ["per_million_tokens"], dimensions = ["model", "service_tier", "submission", "input_tokens", "time"], sources = [] }
+
+regions = ["china_mainland"]
+provider_id = "qwen"
+base_url = "https://dashscope.aliyuncs.com/apps/anthropic"
+protocol = "anthropic_messages"
+auth = "bearer"
+credential_env = "DASHSCOPE_API_KEY"
+billing_mode = "per_token"
+display_name = "Qwen Beijing"
+description = "Qwen models in the China (Beijing) region."
+console_url = "https://bailian.console.aliyun.com/"
+api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
+connection = { group = "qwen-anthropic", connection_id = "anthropic_messages", order = 0, hidden = true, protocol_profiles = { open_ai_chat = "qwen", open_ai_responses = "qwen-search" } }
+extra = {}
+
+[[model]]
+id = "qwen3.8-flash"
+application_output_tokens = 131072 # Preserved per-model application policy, not an API default.
+name = "Qwen3.8 Flash"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
+
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+modes = ["enabled", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "medium", "xhigh"], default = "xhigh" }
+sources = ["https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages"]
+
+[[model]]
+id = "qwen3.8-max"
+application_output_tokens = 131072 # Preserved per-model application policy, not an API default.
+name = "Qwen3.8 Max"
+context_window = 1048576
+max_output = 131072
+input_modalities = ["text", "image", "video"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+attachment = true
+
+[model.features]
+thinking = "supported"
+fast = "unsupported"
+modes = ["enabled", "disabled"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "medium", "xhigh"], default = "xhigh" }
+sources = ["https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages"]
+
+[images.routes.primary]
+api = "qwen"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+task_base_url = "https://dashscope.aliyuncs.com/api/v1"
+
+[[images.models]]
+display_model = "qwen-image-3.0-pro"
+request_model = "qwen-image-3.0-pro"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+editing = true
+async_generate = true
+async_edit = true
+max_inputs = 3
+max_outputs = 6
+
+[[images.models]]
+display_model = "qwen-image-3.0"
+request_model = "qwen-image-3.0"
+route = "primary"
+
+[images.models.capabilities]
+text_to_image = true
+reference_generation = true
+editing = true
+async_generate = true
+async_edit = true
+max_inputs = 3
+max_outputs = 6
