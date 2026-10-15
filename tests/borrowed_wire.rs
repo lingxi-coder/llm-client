@@ -28,7 +28,18 @@ fn request() -> ChatRequest {
 fn encode(codec: &dyn WireCodec, req: &ChatRequest, extra: Value) -> HttpRequest {
     let profile: ProviderProfile = serde_json::from_value(json!({
         "provider_id":"test", "profile_name":"test", "base_url":"https://test.invalid",
-        "protocol":codec.family(), "auth":"none", "extra":extra,
+        "protocol":codec.family(), "auth":"none",
+        "models": if codec.family() == ProtocolFamily::AnthropicMessages {
+            json!([{
+                "display_model":"test",
+                "request_model":"test",
+                "billing_model":"test",
+                "metadata":{"applicationOutputTokens":4096}
+            }])
+        } else {
+            json!([])
+        },
+        "extra":extra,
     }))
     .unwrap();
     let context = CodecContext::new(&profile, "test", RequestMode::Complete);

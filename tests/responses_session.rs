@@ -710,7 +710,6 @@ fn generation_request() -> ChatRequest {
     serde_json::from_value(json!({
         "model":"test",
         "messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],
-        "max_tokens":128,
         "temperature":0.2
     }))
     .unwrap()

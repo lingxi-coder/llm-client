@@ -41,7 +41,11 @@ mod tests {
             .with_region(Region::International)
             .build()
             .unwrap();
-        let req: ChatRequest = serde_json::from_value(json!({"model":"m", "messages":[]})).unwrap();
+        let mut req: ChatRequest =
+            serde_json::from_value(json!({"model":"m", "messages":[]})).unwrap();
+        if protocol == "anthropic_messages" {
+            req.max_tokens = Some(256);
+        }
         client
             .chat()
             .stream(&req, &RequestOptions::default())

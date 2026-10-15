@@ -30,7 +30,8 @@ fn foundry_profile(extra: Value) -> ProviderProfile {
         "models": [{
             "display_model": "Claude Opus 5.5 deployment",
             "request_model": DEPLOYMENT,
-            "billing_model": "claude-opus-5-5"
+            "billing_model": "claude-opus-5-5",
+            "metadata": {"applicationOutputTokens": 128000}
         }],
         "extra": extra
     }))

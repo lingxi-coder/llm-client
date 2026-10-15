@@ -1127,7 +1127,7 @@ mod complete_response_validation_tests {
         );
         assert_eq!(target(400, "adaptive thinking is unsupported"), None);
 
-        let unnormalized = decode(422, "thinking_type:enabled");
+        let unnormalized = decode(422, "thinking.type: enabled is not supported");
         let facts = unnormalized.native_anthropic_error_facts().unwrap();
         assert_eq!(facts.native_thinking_type_rejection, None);
         assert_eq!(

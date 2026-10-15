@@ -11,6 +11,7 @@ use serde_json::json;
 fn request() -> ChatRequest {
     serde_json::from_value(json!({
         "model": "model",
+        "max_tokens": 4096,
         "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
         "tools": [{
             "name": "read",

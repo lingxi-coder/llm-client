@@ -282,7 +282,7 @@ fn anthropic_pause_turn_and_citations_replay_exact_native_blocks() {
         messages: vec![decoded.message],
         tools: vec![],
         tool_choice: ToolChoice::Auto,
-        max_tokens: None,
+        max_tokens: Some(4096),
         temperature: None,
         thinking: None,
         stop_sequences: vec![],

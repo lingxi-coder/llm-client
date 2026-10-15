@@ -44,7 +44,8 @@ fn profile(name: &str, protocol: ProtocolFamily, base_url: &str) -> ProviderProf
 fn request() -> ChatRequest {
     serde_json::from_value(json!({
         "model":"any/model",
-        "messages":[{"role":"user","content":[{"type":"text","text":"Use the right tool."}]}]
+        "messages":[{"role":"user","content":[{"type":"text","text":"Use the right tool."}]}],
+        "max_tokens":4096
     }))
     .unwrap()
 }

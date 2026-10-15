@@ -76,7 +76,7 @@ fn request(content: Vec<ContentBlock>) -> ChatRequest {
         }],
         tools: vec![],
         tool_choice: ToolChoice::Auto,
-        max_tokens: None,
+        max_tokens: Some(4096),
         temperature: None,
         thinking: None,
         stop_sequences: vec![],
@@ -370,7 +370,7 @@ fn the_system_prompt_is_a_top_level_array_and_keeps_its_cache_split() {
 }
 
 #[test]
-fn max_tokens_is_always_present_because_the_wire_requires_it() {
+fn explicit_output_budget_is_serialized_in_the_required_max_tokens_field() {
     let body = encode(&request(vec![]), Value::Null).unwrap();
     assert_eq!(body["max_tokens"], 4096);
 }

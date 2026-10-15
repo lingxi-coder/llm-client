@@ -26,6 +26,7 @@ fn profile(hosting: Option<&str>, model_id: Option<&str>, deployment: &str) -> P
 fn request(deployment: &str) -> ChatRequest {
     serde_json::from_value(json!({
         "model": deployment,
+        "max_tokens": 4096,
         "messages": [{"role":"user","content":[{"type":"text","text":"Find a tool"}]}],
         "hosted_tools": [{
             "type": "native", "config": {"format":"anthropic.hosted_tool.v1", "data":{"type":"tool_search", "config":{"strategy":"bm25"}}}

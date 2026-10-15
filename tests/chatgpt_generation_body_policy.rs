@@ -52,6 +52,26 @@ impl lingxi_llm_client::client::options::RequestFinalizer for ReintroduceChatGpt
     }
 }
 
+#[derive(Debug)]
+struct ReintroduceChatGptNonBudgetControls;
+
+impl lingxi_llm_client::client::options::RequestFinalizer for ReintroduceChatGptNonBudgetControls {
+    fn finalize(
+        &self,
+        request: &mut HttpRequest,
+        _profile: &ProviderProfile,
+    ) -> Result<(), LlmError> {
+        let mut body: Value = serde_json::from_slice(&request.body).unwrap();
+        body["temperature"] = json!(0.8);
+        body["top_p"] = json!(0.9);
+        body["stream"] = json!(false);
+        body["store"] = json!(true);
+        body.as_object_mut().unwrap().remove("instructions");
+        request.body = serde_json::to_vec(&body).unwrap().into();
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct RecordingTransport {
     requests: Mutex<Vec<HttpRequest>>,
@@ -151,7 +171,6 @@ fn request() -> ChatRequest {
     serde_json::from_value(json!({
         "model":"gpt-test",
         "messages":[{"role":"user","content":[{"type":"text","text":DISPLAY}]}],
-        "max_tokens":128,
         "temperature":0.2,
         "controls":{
             "top_p":0.4,
@@ -242,7 +261,7 @@ async fn normal_complete_applies_chatgpt_body_policy_before_exact_utf16_serializ
     let client = client(transport.clone());
     let request = request_with_exact_text();
     let options = RequestOptions {
-        finalizer: Some(Arc::new(ReintroduceChatGptControls)),
+        finalizer: Some(Arc::new(ReintroduceChatGptNonBudgetControls)),
         ..RequestOptions::default()
     };
     client
@@ -254,6 +273,27 @@ async fn normal_complete_applies_chatgpt_body_policy_before_exact_utf16_serializ
     let requests = transport.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_generation_wire(&requests[0].body, true);
+}
+
+#[tokio::test]
+async fn finalizer_cannot_change_resolved_budget_before_chatgpt_body_policy() {
+    let transport = Arc::new(RecordingTransport::default());
+    let client = client(transport.clone());
+    let options = RequestOptions {
+        finalizer: Some(Arc::new(ReintroduceChatGptControls)),
+        ..RequestOptions::default()
+    };
+
+    let result = client
+        .chat()
+        .complete_in("chatgpt", &request_with_exact_text(), &options)
+        .await;
+    assert!(matches!(
+        result,
+        Err(LlmError::InvalidRequest { message })
+            if message == "request hooks changed the resolved output budget"
+    ));
+    assert!(transport.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

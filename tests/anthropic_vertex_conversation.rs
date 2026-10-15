@@ -15,7 +15,11 @@ fn profile() -> ProviderProfile {
         "base_url": "https://us-central1-aiplatform.googleapis.com/v1/projects/test/locations/us-central1",
         "protocol": "vertex_claude",
         "auth": "none",
-        "models": [{"display_model": MODEL, "request_model": MODEL, "billing_model": MODEL}],
+        "models": [{
+            "display_model": MODEL,
+            "request_model": MODEL,
+            "billing_model": MODEL
+        }],
     }))
     .unwrap()
 }
@@ -23,6 +27,7 @@ fn profile() -> ProviderProfile {
 fn request() -> ChatRequest {
     serde_json::from_value(json!({
         "model": MODEL,
+        "max_tokens": 4096,
         "messages": [{"role":"user","content":[{"type":"text","text":"Hello"}]}]
     }))
     .unwrap()

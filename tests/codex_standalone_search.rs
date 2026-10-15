@@ -53,7 +53,6 @@ fn client(transport: Arc<SearchTransport>, profile: ProviderProfile) -> LlmClien
 }
 fn request() -> ChatRequest {
     let mut request = ChatRequest::new("m");
-    request.max_tokens = Some(4096);
     request.set_hosted_web_search(Some(WebSearchConfig {
         allowed_domains: vec!["example.com".into()],
         ..Default::default()
@@ -155,16 +154,16 @@ async fn standalone_search_keeps_native_wire_shape_auth_and_real_sources() {
             "https://chatgpt.com/backend-api/codex/alpha/search"
         );
         let expected_body = if deferred {
-            r#"{"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},"settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":{"blocked_domains":["blocked.example"]}},"max_output_tokens":4096}"#
+            r#"{"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},"settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":{"blocked_domains":["blocked.example"]}}}"#
         } else {
-            r#"{"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},"settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":{"allowed_domains":["example.com"]}},"max_output_tokens":4096}"#
+            r#"{"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},"settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":{"allowed_domains":["example.com"]}}}"#
         };
         assert_eq!(std::str::from_utf8(&wire.body).unwrap(), expected_body);
         let body: Value = serde_json::from_slice(&wire.body).unwrap();
         assert_eq!(
             body,
             json!({"id":"search-session","model":"m","commands":{"search_query":[{"q":"武汉 今日天气"}]},
-            "settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":if deferred {json!({"blocked_domains":["blocked.example"]})} else {json!({"allowed_domains":["example.com"]})}},"max_output_tokens":4096})
+            "settings":{"external_web_access":true,"allowed_callers":["direct"],"filters":if deferred {json!({"blocked_domains":["blocked.example"]})} else {json!({"allowed_domains":["example.com"]})}}})
         );
         if !deferred {
             assert!(wire

@@ -27,7 +27,8 @@ fn profile(adapter: &str, protocol: &str) -> ProviderProfile {
     serde_json::from_value(json!({
         "provider_id":"custom", "profile_name":"custom", "base_url":"https://custom.test/v1",
         "protocol":protocol, "auth":"none", "extra":{"web_search":adapter},
-        "models":[{"display_model":"m", "request_model":"m", "billing_model":"m"}]
+        "models":[{"display_model":"m", "request_model":"m", "billing_model":"m",
+            "metadata":{"applicationOutputTokens":4096}}]
     }))
     .unwrap()
 }

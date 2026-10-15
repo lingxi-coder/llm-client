@@ -31,6 +31,7 @@ fn profile(protocol: ProtocolFamily, provider_id: &str, model: &str) -> Provider
 fn request(model: &str) -> ChatRequest {
     serde_json::from_value(json!({
         "model": model,
+        "max_tokens": 4096,
         "messages": [{"role":"user","content":[{"type":"text","text":"Find a tool"}]}],
         "hosted_tools": [{
             "type": "native", "config": {"format":"anthropic.hosted_tool.v1", "data":{"type":"tool_search", "config":{"strategy":"regex"}}}

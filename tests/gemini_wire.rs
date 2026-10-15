@@ -526,7 +526,9 @@ fn vertex_claude_adds_its_body_version_and_retains_the_common_header() {
         "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1",
         Value::Null,
     );
-    let http = encode(&VertexClaudeCodec, &request(vec![user("hi")]), &p, true);
+    let mut request = request(vec![user("hi")]);
+    request.max_tokens = Some(256);
+    let http = encode(&VertexClaudeCodec, &request, &p, true);
     let b = body(&http);
 
     assert!(http
@@ -564,7 +566,9 @@ fn foundry_is_the_anthropic_wire_at_a_foundry_endpoint() {
         "https://res.services.ai.azure.com/anthropic",
         Value::Null,
     );
-    let http = encode(&FoundryClaudeCodec, &request(vec![user("hi")]), &p, false);
+    let mut request = request(vec![user("hi")]);
+    request.max_tokens = Some(256);
+    let http = encode(&FoundryClaudeCodec, &request, &p, false);
 
     assert_eq!(
         http.url,

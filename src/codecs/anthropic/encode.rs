@@ -1285,6 +1285,10 @@ mod native_lsn_manual_budget_tests {
     use crate::protocol::{ChatRequest, ThinkingBudget, ThinkingConfig, ThinkingMode};
 
     fn profile(provider_id: &str) -> ProviderProfile {
+        profile_with_metadata(provider_id, json!({}))
+    }
+
+    fn profile_with_metadata(provider_id: &str, metadata: Value) -> ProviderProfile {
         serde_json::from_value(json!({
             "provider_id": provider_id,
             "profile_name": "manual-budget-test",
@@ -1294,7 +1298,8 @@ mod native_lsn_manual_budget_tests {
             "models": [{
                 "display_model": "wire-model",
                 "request_model": "wire-model",
-                "billing_model": "wire-model"
+                "billing_model": "wire-model",
+                "metadata": metadata
             }]
         }))
         .expect("test provider profile")
@@ -1319,11 +1324,21 @@ mod native_lsn_manual_budget_tests {
         request: &ChatRequest,
         provenance: Option<NativeLsnManualBudget>,
     ) -> Result<Vec<u8>, LlmError> {
-        let context = CodecContext::new(profile, "wire-model", RequestMode::Complete)
-            .with_native_anthropic_context(NativeAnthropicContextInput {
+        encode_body_with_mode(profile, request, provenance, RequestMode::Complete)
+    }
+
+    fn encode_body_with_mode(
+        profile: &ProviderProfile,
+        request: &ChatRequest,
+        provenance: Option<NativeLsnManualBudget>,
+        mode: RequestMode,
+    ) -> Result<Vec<u8>, LlmError> {
+        let context = CodecContext::new(profile, "wire-model", mode).with_native_anthropic_context(
+            NativeAnthropicContextInput {
                 native_lsn_manual_budget: provenance,
                 ..Default::default()
-            });
+            },
+        );
         super::request(EncodeRequest::new(request), profile, &context)
             .and_then(|wire| wire.encode())
             .map(|wire| wire.body.to_vec())
@@ -1352,6 +1367,7 @@ mod native_lsn_manual_budget_tests {
         for provenance in [
             NativeLsnManualBudget::new(1023, Some(512)),
             NativeLsnManualBudget::new(1024, Some(513)),
+            NativeLsnManualBudget::new(1536, Some(512)),
         ] {
             assert!(matches!(
                 encode_body(&profile, &request, Some(provenance)),
@@ -1378,6 +1394,62 @@ mod native_lsn_manual_budget_tests {
             ),
             Err(LlmError::InvalidRequest { .. })
         ));
+    }
+
+    #[test]
+    fn floor_exception_requires_the_effective_resolved_output_limit() {
+        let capped = profile_with_metadata("anthropic", json!({"maxOutputTokens": 400}));
+        let request = request_with_budget(Some(512), 1024);
+        assert!(matches!(
+            encode_body(
+                &capped,
+                &request,
+                Some(NativeLsnManualBudget::new(1024, Some(512)))
+            ),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+
+        let body = encode_body(
+            &capped,
+            &request,
+            Some(NativeLsnManualBudget::new(1024, Some(400))),
+        )
+        .expect("the floor fact matches the actual metadata-capped output");
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["max_tokens"], 400);
+        assert_eq!(body["thinking"]["budget_tokens"], 1024);
+
+        let non_floor_request = request_with_budget(Some(512), 1536);
+        assert!(matches!(
+            encode_body(
+                &profile("anthropic"),
+                &non_floor_request,
+                Some(NativeLsnManualBudget::new(1536, Some(512)))
+            ),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+
+        let defaulted =
+            profile_with_metadata("anthropic", json!({"applicationOutputTokens": 32_000}));
+        let request = request_with_budget(None, 40_000);
+        assert!(matches!(
+            encode_body(
+                &defaulted,
+                &request,
+                Some(NativeLsnManualBudget::new(40_000, None))
+            ),
+            Err(LlmError::InvalidRequest { .. })
+        ));
+    }
+
+    #[test]
+    fn count_tokens_keeps_its_output_maximum_exemption() {
+        let profile = profile("anthropic");
+        let request = request_with_budget(Some(512), 1024);
+        let body = encode_body_with_mode(&profile, &request, None, RequestMode::CountTokens)
+            .expect("count-token requests do not apply the generation max-token comparison");
+        let body: Value = serde_json::from_slice(&body).expect("encoded request JSON");
+        assert!(body.get("max_tokens").is_none());
     }
 
     #[test]

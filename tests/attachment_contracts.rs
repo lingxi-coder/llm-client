@@ -137,7 +137,7 @@ async fn all_attachment_decisions_are_validated_before_the_first_upload() {
 fn anthropic_counting_and_serialization_share_escaped_titles_and_lazy_bytes() {
     let profile:ProviderProfile=serde_json::from_value(json!({"profile_name":"p","provider_id":"anthropic","base_url":"https://api.anthropic.com","protocol":"anthropic_messages","auth":"none","models":[]})).unwrap();
     let attachment = attachment("doc", "application/pdf");
-    let request:ChatRequest=serde_json::from_value(json!({"model":"m","messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment}}]}]})).unwrap();
+    let request:ChatRequest=serde_json::from_value(json!({"model":"m","max_tokens":4096,"messages":[{"role":"user","content":[{"type":"document","source":{"type":"attachment","attachment":attachment}}]}]})).unwrap();
     let media = [PreparedMedia {
         attachment: &attachment,
         bytes: b"data",

@@ -1211,7 +1211,8 @@ mod request_body_policy_tests {
             "models": [{
                 "display_model": "wire-model",
                 "request_model": "wire-model",
-                "billing_model": "wire-model"
+                "billing_model": "wire-model",
+                "metadata": {"applicationOutputTokens": 4096}
             }],
             "extra": {
                 "betas": ["configured-beta", beta, "context-1m-2025-08-07"],

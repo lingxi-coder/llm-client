@@ -319,6 +319,7 @@ fn five_nested_definition_breakpoints_are_rejected() {
 #[test]
 fn documented_wire_models_accept_system_messages_without_a_beta() {
     let mut req = request();
+    req.max_tokens = Some(4096);
     req.messages.push(system(vec![text("Reminder")]));
     for model in [
         "claude-fable-5-1",

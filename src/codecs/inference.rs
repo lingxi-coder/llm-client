@@ -353,10 +353,6 @@ pub(crate) fn validate(
                 if rw == ReasoningWire::Anthropic {
                     let interleaved = !req.tools.is_empty()
                         && beta_headers(profile).contains(&"interleaved-thinking-2025-05-14");
-                    let matches_native_lsn_budget =
-                        native_lsn_manual_budget.is_some_and(|native| {
-                            native.budget_tokens == n && native.request_max_tokens == req.max_tokens
-                        });
                     if req.temperature.is_some_and(|t| t != 1.0)
                         && profile.inference.enabled_requires_budget.unwrap_or(true)
                     {
@@ -364,11 +360,32 @@ pub(crate) fn validate(
                             "manual thinking requires temperature 1 when temperature is specified",
                         ));
                     }
+                    let required_output_tokens =
+                        if context.mode() == crate::RequestMode::CountTokens
+                            || interleaved
+                            || n
+                                < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
+                        {
+                            None
+                        } else {
+                            Some(super::input::required_output_tokens(profile, model, req)?)
+                        };
+                    let matches_native_lsn_budget =
+                        native_lsn_manual_budget.is_some_and(|native| {
+                            native.budget_tokens == n
+                                && native.request_max_tokens.map(u64::from) == required_output_tokens
+                                && n
+                                    == crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
+                                && required_output_tokens.is_some_and(|limit| {
+                                    limit
+                                        <= u64::from(
+                                            crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS,
+                                        )
+                                })
+                        });
                     if n < crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS
                         || (!interleaved
-                            && context.mode() != crate::RequestMode::CountTokens
-                            && u64::from(n)
-                                >= super::input::required_output_tokens(profile, model, req)?
+                            && required_output_tokens.is_some_and(|limit| u64::from(n) >= limit)
                             && !matches_native_lsn_budget)
                     {
                         return Err(invalid("manual thinking needs at least 1024 tokens and a budget below max_tokens (except enabled interleaved thinking)"));

@@ -1502,6 +1502,44 @@ pub(super) fn execution_options(
     }
 }
 
+/// Budget-only projection for hook validation. Never includes prompt or credentials.
+pub(super) fn generation_budget_fields(
+    body: &[u8],
+) -> Result<serde_json::Map<String, serde_json::Value>, LlmError> {
+    let source = std::str::from_utf8(body).map_err(|_| LlmError::InvalidRequest {
+        message: "request body is not UTF-8".into(),
+    })?;
+    let body =
+        crate::protocol::JsonPayload::parse(source).map_err(|_| LlmError::InvalidRequest {
+            message: "request body is not valid JSON".into(),
+        })?;
+    let mut fields = serde_json::Map::new();
+    for (pointer, key) in [
+        ("/max_tokens", "max_tokens"),
+        ("/max_completion_tokens", "max_completion_tokens"),
+        ("/max_output_tokens", "max_output_tokens"),
+        (
+            "/generationConfig/maxOutputTokens",
+            "generationConfig.maxOutputTokens",
+        ),
+        (
+            "/generation_config/max_output_tokens",
+            "generation_config.max_output_tokens",
+        ),
+    ] {
+        if let Some(value) = body.raw_source_at(pointer) {
+            let value = serde_json::from_str::<u64>(&value)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "output budget field must be a positive integer".into(),
+                })?;
+            fields.insert(key.into(), value.into());
+        }
+    }
+    Ok(fields)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1555,7 +1593,8 @@ mod tests {
             "models": [{
                 "display_model": "wire-model",
                 "request_model": "wire-model",
-                "billing_model": "wire-model"
+                "billing_model": "wire-model",
+                "metadata": {"applicationOutputTokens": 4096}
             }],
             "extra": extra
         }))
@@ -1855,42 +1894,4 @@ mod tests {
         assert_eq!(continued[0].profile.profile_name, "primary");
         assert_eq!(continued[0].model.request_model, "wire-m");
     }
-}
-
-/// Budget-only projection for hook validation. Never includes prompt or credentials.
-pub(super) fn generation_budget_fields(
-    body: &[u8],
-) -> Result<serde_json::Map<String, serde_json::Value>, LlmError> {
-    let source = std::str::from_utf8(body).map_err(|_| LlmError::InvalidRequest {
-        message: "request body is not UTF-8".into(),
-    })?;
-    let body =
-        crate::protocol::JsonPayload::parse(source).map_err(|_| LlmError::InvalidRequest {
-            message: "request body is not valid JSON".into(),
-        })?;
-    let mut fields = serde_json::Map::new();
-    for (pointer, key) in [
-        ("/max_tokens", "max_tokens"),
-        ("/max_completion_tokens", "max_completion_tokens"),
-        ("/max_output_tokens", "max_output_tokens"),
-        (
-            "/generationConfig/maxOutputTokens",
-            "generationConfig.maxOutputTokens",
-        ),
-        (
-            "/generation_config/max_output_tokens",
-            "generation_config.max_output_tokens",
-        ),
-    ] {
-        if let Some(value) = body.raw_source_at(pointer) {
-            let value = serde_json::from_str::<u64>(&value)
-                .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| LlmError::InvalidRequest {
-                    message: "output budget field must be a positive integer".into(),
-                })?;
-            fields.insert(key.into(), value.into());
-        }
-    }
-    Ok(fields)
 }

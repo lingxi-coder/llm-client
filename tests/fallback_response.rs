@@ -111,8 +111,12 @@ async fn sdk_collectors_preserve_controls_and_iterations_after_completion_or_int
             .with_region(Region::International)
             .build()
             .unwrap();
-        let request: ChatRequest =
-            serde_json::from_value(json!({"model":"m","messages":[]})).unwrap();
+        let request: ChatRequest = serde_json::from_value(json!({
+            "model":"m",
+            "messages":[],
+            "max_tokens":256
+        }))
+        .unwrap();
         let result = client
             .chat()
             .stream(&request, &RequestOptions::default())

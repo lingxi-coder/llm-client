@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 #[path = "support/json_payload_fixture.rs"]
 mod json_payload_fixture;
 fn req() -> ChatRequest {
-    serde_json::from_value(json!({"model":"test","system":[{"text":"system"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"name":"f","description":"f","input_schema":{"type":"object"}}]})).unwrap()
+    serde_json::from_value(json!({"model":"test","system":[{"text":"system"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"name":"f","description":"f","input_schema":{"type":"object"}}],"max_tokens":4096})).unwrap()
 }
 fn encode(request: &ChatRequest, provider: &str, codec: &dyn WireCodec) -> Result<Value, LlmError> {
     let p: ProviderProfile = serde_json::from_value(json!({"provider_id":provider,"profile_name":"test","base_url":"https://test.invalid","protocol":codec.family(),"auth":"none"})).unwrap();

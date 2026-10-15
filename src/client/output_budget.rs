@@ -167,34 +167,6 @@ fn invalid(message: &str) -> LlmError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn optional_defaults_are_omitted() {
-        let limits = OutputTokenLimits {
-            context_window: Some(100),
-            max_output_tokens: Some(80),
-        };
-        assert_eq!(limits.budget(None, 99, 10), None);
-        assert_eq!(limits.budget(Some(120), 0, 0), Some(80));
-        assert_eq!(
-            OutputTokenLimits::default().budget(Some(120), 0, 0),
-            Some(120)
-        );
-    }
-    #[test]
-    fn unknown_models_have_no_application_default() {
-        assert_eq!(claude_application_output_default("custom"), None);
-        assert_eq!(claude_application_output_default("claude-unknown"), None);
-        assert_eq!(claude_application_output_default("claude-opus-4-99"), None);
-        assert_eq!(
-            claude_application_output_default("claude-opus-4-6"),
-            Some(64000)
-        );
-    }
-}
-
 /// Compute, but never dispatch, an increase using complete canonical counters.
 /// Only documented first-party total-generation contracts are eligible.
 pub fn recovery_output_budget(
@@ -246,4 +218,32 @@ pub fn recovery_output_budget(
         next = next.min(window.saturating_sub(input).saturating_sub(1024));
     }
     (next > base && counts.output_tokens > 0).then_some(next as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn optional_defaults_are_omitted() {
+        let limits = OutputTokenLimits {
+            context_window: Some(100),
+            max_output_tokens: Some(80),
+        };
+        assert_eq!(limits.budget(None, 99, 10), None);
+        assert_eq!(limits.budget(Some(120), 0, 0), Some(80));
+        assert_eq!(
+            OutputTokenLimits::default().budget(Some(120), 0, 0),
+            Some(120)
+        );
+    }
+    #[test]
+    fn unknown_models_have_no_application_default() {
+        assert_eq!(claude_application_output_default("custom"), None);
+        assert_eq!(claude_application_output_default("claude-unknown"), None);
+        assert_eq!(claude_application_output_default("claude-opus-4-99"), None);
+        assert_eq!(
+            claude_application_output_default("claude-opus-4-6"),
+            Some(64000)
+        );
+    }
 }

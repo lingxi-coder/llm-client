@@ -27,7 +27,25 @@ fn schema() -> OutputFormat {
     }
 }
 fn profile(protocol: ProtocolFamily) -> ProviderProfile {
-    serde_json::from_value(json!({"provider_id":"test","profile_name":"test","base_url":"https://test.invalid/v1","protocol":protocol,"auth":"none"})).unwrap()
+    let models = if protocol == ProtocolFamily::AnthropicMessages {
+        json!([{
+            "display_model":"test",
+            "request_model":"test",
+            "billing_model":"test",
+            "metadata":{"applicationOutputTokens":4096}
+        }])
+    } else {
+        json!([])
+    };
+    serde_json::from_value(json!({
+        "provider_id":"test",
+        "profile_name":"test",
+        "base_url":"https://test.invalid/v1",
+        "protocol":protocol,
+        "auth":"none",
+        "models":models
+    }))
+    .unwrap()
 }
 fn qwen_chat_profile() -> ProviderProfile {
     serde_json::from_value(json!({
