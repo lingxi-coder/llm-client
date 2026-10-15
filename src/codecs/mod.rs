@@ -452,7 +452,7 @@ mod native_empty_error_body_tests {
 
     #[test]
     fn other_provider_empty_errors_keep_status_taxonomy_and_existing_fallback() {
-        let profile = profile("openai", "openai_chat");
+        let profile = profile("openai", "open_ai_chat");
         let context = CodecContext::new(&profile, "claude-sonnet-4-6", RequestMode::Complete);
         let codec = openai::chat::OpenAiChatCodec;
         let response = empty_error();
