@@ -6,6 +6,35 @@ use std::collections::BTreeMap;
 
 pub const MIN_MANUAL_THINKING_TOKENS: u32 = 1024;
 
+/// Whether `request_url` is the Messages endpoint rooted at `configured_base_url`.
+///
+/// The configured base must not contain a query or fragment. The request URL
+/// must share its scheme, authority, and credentials and use the exact
+/// `{base path}/v1/messages` path. Request query strings and fragments are
+/// accepted because they do not change that endpoint identity.
+#[must_use]
+pub fn messages_request_matches_base_url(configured_base_url: &str, request_url: &str) -> bool {
+    let (Ok(base), Ok(request)) = (
+        url::Url::parse(configured_base_url),
+        url::Url::parse(request_url),
+    ) else {
+        return false;
+    };
+    if base.query().is_some()
+        || base.fragment().is_some()
+        || request.scheme() != base.scheme()
+        || request.host_str() != base.host_str()
+        || request.port_or_known_default() != base.port_or_known_default()
+        || request.username() != base.username()
+        || request.password() != base.password()
+    {
+        return false;
+    }
+    let base_path = base.path().trim_end_matches('/');
+    let expected_path = format!("{base_path}/v1/messages");
+    request.path() == expected_path
+}
+
 /// Explicit caller identity; preserving an authenticator's identity is the
 /// default for providers that require their own User-Agent.
 #[derive(Debug, Clone, Copy)]
@@ -2060,6 +2089,80 @@ pub fn remove_fast_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn messages_request_matches_only_the_configured_base_endpoint() {
+        for (base, request, expected) in [
+            (
+                "https://api.anthropic.com",
+                "https://api.anthropic.com/v1/messages",
+                true,
+            ),
+            (
+                "https://proxy.example/api/",
+                "https://proxy.example/api/v1/messages?beta=true#fragment",
+                true,
+            ),
+            (
+                "https://proxy.example/api///",
+                "https://proxy.example/api/v1/messages",
+                true,
+            ),
+            (
+                "https://api.anthropic.com",
+                "https://api.anthropic.com:443/v1/messages",
+                true,
+            ),
+            (
+                "https://user:secret@proxy.example/api",
+                "https://user:secret@proxy.example/api/v1/messages",
+                true,
+            ),
+            (
+                "https://api.anthropic.com",
+                "https://api.anthropic.com/v1/messages/count_tokens",
+                false,
+            ),
+            (
+                "https://api.anthropic.com",
+                "https://api.anthropic.com.example.test/v1/messages",
+                false,
+            ),
+            (
+                "https://api.anthropic.com",
+                "http://api.anthropic.com/v1/messages",
+                false,
+            ),
+            (
+                "https://api.anthropic.com",
+                "https://api.anthropic.com:8443/v1/messages",
+                false,
+            ),
+            (
+                "https://user:secret@proxy.example/api",
+                "https://other:secret@proxy.example/api/v1/messages",
+                false,
+            ),
+            (
+                "https://api.anthropic.com?route=one",
+                "https://api.anthropic.com/v1/messages",
+                false,
+            ),
+            (
+                "https://api.anthropic.com#fragment",
+                "https://api.anthropic.com/v1/messages",
+                false,
+            ),
+            ("not a URL", "https://api.anthropic.com/v1/messages", false),
+            ("https://api.anthropic.com", "not a URL", false),
+        ] {
+            assert_eq!(
+                messages_request_matches_base_url(base, request),
+                expected,
+                "base={base:?}, request={request:?}"
+            );
+        }
+    }
 
     fn payload(value: &Value) -> JsonPayload {
         JsonPayload::from_generated_value(value).unwrap()
