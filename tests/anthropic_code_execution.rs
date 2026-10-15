@@ -1236,6 +1236,8 @@ fn failover_profiles() -> Vec<ProviderProfile> {
             let mut profile = profile();
             profile.profile_name = name.into();
             profile.connection = ConnectionSpec {
+            protocol_profiles: Default::default(),
+            default_protocol: None,
                 group: Some("anthropic-execution".into()),
                 connection_id: Some(name.into()),
                 order: index as u32,

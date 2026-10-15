@@ -942,12 +942,7 @@ impl<'client> RequestExecutor<'client> {
                 headers: response.headers,
                 body: collect_error_body(response.body).await,
             };
-            let error = codec
-                .decode_response(&response, &context)
-                .err()
-                .unwrap_or_else(|| LlmError::ProviderInternal {
-                    message: format!("request failed with HTTP {}", response.status),
-                });
+            let error = codec.decode_error_response(&response, &context);
             return Err(AttemptFailure::new(error, Some(response), files));
         }
         if mode == RequestMode::Stream {

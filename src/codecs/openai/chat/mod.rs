@@ -46,6 +46,8 @@ impl WireCodec for OpenAiChatCodec {
         crate::providers::openrouter::server_tools::validate(req, context.profile(), None, false)?;
         crate::providers::qwen::cache::validate(req, context)?;
         crate::providers::openrouter::prompt_cache::validate(req, context)?;
+        crate::providers::openai::chat_audio::validate(req, context)?;
+        crate::providers::kimi::chat::validate(req, context)?;
         crate::providers::openrouter::chat_audio::validate_audio_request(
             req,
             context.profile(),

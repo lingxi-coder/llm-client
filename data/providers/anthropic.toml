@@ -1,3 +1,4 @@
+connection = { protocol_profiles = { open_ai_chat = "anthropic-chat" } }
 # First-party Anthropic. Wire IDs are checked against the Claude API;
 # catalog metadata and prices retain their aggregator provenance.
 

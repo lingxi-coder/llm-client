@@ -271,7 +271,10 @@ fn unsupported_protocols_do_not_drop_anthropic_metadata() {
     }
     let mut p = profile();
     p.base_url = "https://gateway.example.test".into();
-    assert!(encode(&r, &p, MODEL).is_err());
+    // An explicitly declared Anthropic identity can use a configured proxy.
+    let (body, headers) = encode(&r, &p, MODEL).unwrap();
+    assert!(body["messages"].as_array().unwrap().iter().any(|m| m["clear_at"] == "next_user_message"));
+    assert!(has_beta(&headers, "mid-conversation-system-clear-at-2026-08-21"));
 }
 #[tokio::test]
 async fn invalid_message_controls_fail_before_transport() {

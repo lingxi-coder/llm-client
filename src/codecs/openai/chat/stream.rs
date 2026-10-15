@@ -23,6 +23,7 @@ pub struct OpenAiStreamDecoder {
     text_block: Option<usize>,
     reasoning_block: Option<usize>,
     audio_block: Option<usize>,
+    audio_id: Option<String>,
     native_reasoning: super::reasoning::ReasoningStream,
     /// Wire index → (block, id, name). A provider streams a tool call's
     /// arguments in fragments keyed by its own index, not by the call id, and
@@ -168,6 +169,9 @@ impl EventDecoder for OpenAiStreamDecoder {
                 }
             }
             if let Some(audio) = delta.get("audio").filter(|value| !value.is_null()) {
+                if let Some(id) = audio.get("id").and_then(Value::as_str) {
+                    self.audio_id = Some(id.to_owned());
+                }
                 let block = *self.audio_block.get_or_insert_with(|| {
                     let block = self.next_block;
                     self.next_block += 1;
@@ -183,7 +187,11 @@ impl EventDecoder for OpenAiStreamDecoder {
                 if let Some(index) = choice.get("index") {
                     native.insert("choice_index".into(), index.clone());
                 }
-                native.insert("audio".into(), audio.clone());
+                let mut audio = audio.clone();
+                if let (Some(id), Some(fields)) = (&self.audio_id, audio.as_object_mut()) {
+                    fields.entry("id").or_insert_with(|| Value::String(id.clone()));
+                }
+                native.insert("audio".into(), audio);
                 out.push(StreamEvent::ProviderContent {
                     block,
                     protocol: ProtocolFamily::OpenAiChat,

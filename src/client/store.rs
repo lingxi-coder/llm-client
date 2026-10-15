@@ -199,6 +199,34 @@ impl ClientConfigManager {
         .await
     }
 
+    /// Persist the default wire format without replacing model overrides.
+    /// None resets to the profile's original format. Explicit call options win.
+    pub async fn set_default_protocol(
+        &self,
+        profile_name: &str,
+        protocol: Option<crate::protocol::ProtocolFamily>,
+    ) -> Result<(), ProviderStoreError> {
+        let name = profile_name.to_owned();
+        self.update_configuration(Some(name.clone()), move |state, _| {
+            let saved = config::profile(state, &name)?;
+            if protocol.is_some_and(|format| {
+                format != saved.connection.protocol
+                    && !saved
+                        .connection
+                        .connection
+                        .protocol_profiles
+                        .contains_key(&format)
+            }) {
+                return Err(ProviderStoreError::InvalidModelOverride(
+                    "default format is not declared by this account".into(),
+                ));
+            }
+            saved.connection.connection.default_protocol = protocol;
+            Ok(())
+        })
+        .await
+    }
+
     /// Fully replace an account and its models. Supplied model fields become explicit overrides.
     pub async fn add_provider(&self, profile: ProviderProfile) -> Result<(), ProviderStoreError> {
         let name = profile.profile_name.clone();

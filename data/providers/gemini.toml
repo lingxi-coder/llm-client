@@ -1,3 +1,4 @@
+connection = { protocol_profiles = { open_ai_chat = "gemini-chat" } }
 embeddings = { mode = "enabled", value = { api = "gemini", endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents", models_endpoint = "https://generativelanguage.googleapis.com/v1beta/models", auth = { type = "api_key", header = "x-goog-api-key" }, max_inputs = 100 } }
 interactions = { mode = "enabled", value = { endpoint = "https://generativelanguage.googleapis.com/v1beta/interactions", auth = { type = "api_key", header = "x-goog-api-key" } } }
 gemini_file_search = { mode = "enabled", value = { endpoint = "https://generativelanguage.googleapis.com/v1beta/fileSearchStores", auth = { type = "api_key", header = "x-goog-api-key" } } }

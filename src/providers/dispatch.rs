@@ -35,6 +35,8 @@ pub(crate) trait ChatBackend: Send + Sync {
         // Typed native options must be validated even on another provider: a
         // compatible codec cannot silently drop options it does not support.
         super::google::chat::validate_host(req, context)?;
+        super::deepseek::chat::validate(req, context)?;
+        super::kimi::chat::validate(req, context)?;
         super::anthropic::chat::validate_host(req, context)?;
         crate::codecs::inference::validate(
             req,
@@ -44,6 +46,9 @@ pub(crate) trait ChatBackend: Send + Sync {
         )?;
         super::qwen::chat::validate_host(req, context)?;
         super::openrouter::chat::validate_host(req, context, opts)?;
+        if super::openai::chat_audio::has_output(req) {
+            super::openai::chat_audio::validate(req, context)?;
+        }
         validate_mcp_authorizations(&opts.mcp_authorizations, req, context.profile())?;
         let has_audio = req
             .messages
@@ -53,10 +58,11 @@ pub(crate) trait ChatBackend: Send + Sync {
             || req.metadata.get("openrouter_chat_audio").is_some();
         if has_audio {
             if !super::openrouter::chat::accepts_audio(context)
+                && !super::openai::chat_audio::accepts(context)
                 && (!super::google::chat::accepts_audio(context)
                     || req.metadata.get("openrouter_chat_audio").is_some())
             {
-                return Err(LlmError::UnsupportedCapability { message: "Chat audio requires OpenRouter Chat or Gemini GenerateContent; OpenRouter output settings require OpenRouter".into() });
+                return Err(LlmError::UnsupportedCapability { message: "Audio input requires an audio-capable OpenAI, Gemini or OpenRouter chat route; OpenRouter output settings require OpenRouter".into() });
             }
             codec.validate_request(req, context)?;
         }
@@ -91,6 +97,8 @@ pub(crate) trait ChatBackend: Send + Sync {
             });
         }
         super::google::chat::validate_host(req, context)?;
+        super::deepseek::chat::validate(req, context)?;
+        super::kimi::chat::validate(req, context)?;
         crate::providers::dispatch::validate_output_contract(
             req,
             context.profile(),
@@ -98,6 +106,9 @@ pub(crate) trait ChatBackend: Send + Sync {
         )?;
         super::anthropic::code_execution::validate(req, context)?;
         super::openrouter::chat::validate_host(req, context, opts)?;
+        if super::openai::chat_audio::has_output(req) {
+            super::openai::chat_audio::validate(req, context)?;
+        }
         validate_mcp_authorizations(&opts.mcp_authorizations, req, context.profile())
     }
 

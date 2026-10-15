@@ -1525,7 +1525,6 @@ pub fn validate_route(
     route: &GeminiFileSearchRoute,
 ) -> Result<(), LlmError> {
     if profile.provider_id.as_str() != "google"
-        || profile.protocol != ProtocolFamily::GeminiGenerateContent
         || route.auth
             != (ServiceAuth::ApiKey {
                 header: "x-goog-api-key".into(),

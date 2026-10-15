@@ -736,8 +736,8 @@ fn a_batch_rate_is_carried_as_published_not_assumed_to_be_a_discount() {
         }
     }
     assert_eq!(
-        carried, 110,
-        "the catalog ships 110 batch rate sets; a refresh that changes this \
+        carried, 280,
+        "the catalog ships 280 batch rate sets; a refresh that changes this \
          should change this number deliberately"
     );
 }

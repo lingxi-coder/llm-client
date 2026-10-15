@@ -15,7 +15,7 @@ display_name = "Qwen Hong Kong"
 description = "Qwen models in the China (Hong Kong) region."
 console_url = "https://bailian.console.aliyun.com/"
 api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
-connection = { group = "qwen-hk", connection_id = "chat", order = 0 }
+connection = { group = "qwen-hk", connection_id = "chat", order = 0, protocol_profiles = { open_ai_responses = "qwen-search-hk" } }
 
 [[model]]
 id = "qwen3.8-flash"

@@ -69,6 +69,7 @@ pub async fn discover_a_client_tool(
                 "properties":{"city":{"type":"string"}},
                 "required":["city"]
             }),
+            input_schema_json: None,
             strict: false,
             defer_loading: true,
             native_options: Vec::new(),

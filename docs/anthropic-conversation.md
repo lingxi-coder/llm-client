@@ -13,6 +13,7 @@ request.messages.push(ConversationMessage {
     content: vec![ContentBlock::Text {
         text: "后续回答请明确注明单位。".into(),
         thought_signature: None,
+        citations: None,
     }],
 });
 # }

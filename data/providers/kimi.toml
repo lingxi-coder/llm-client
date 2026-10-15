@@ -18,7 +18,7 @@ display_name = "Kimi"
 description = "First-party Kimi models over an OpenAI-compatible wire."
 console_url = "https://platform.kimi.com"
 api_key_url = "https://platform.kimi.com/console/api-keys"
-connection = { group = "kimi", connection_id = "open", order = 1 }
+connection = { group = "kimi", connection_id = "open", order = 1, protocol_profiles = { open_ai_responses = "kimi-search" } }
 
 # The terminal usage object is omitted from SSE unless it is asked for, which
 # would otherwise leave the transcript and every token counter at zero.
@@ -152,5 +152,5 @@ thinking = "supported"
 fast = "unknown"
 sources = ["https://platform.kimi.com/docs/guide/use-reasoning-effort"]
 budget = { support = "unsupported", dynamic = "unsupported" }
-modes = ["enabled"]
+modes = []
 effort = { support = "supported", levels = ["low", "high", "max"], default = "max" }

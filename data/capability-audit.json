@@ -4,7 +4,8 @@
   "evidence_matrices": [
     "capability-matrix-openai-gemini.json",
     "capability-matrix-china.json",
-    "capability-matrix-west.json"
+    "capability-matrix-west.json",
+    "capability-matrix-protocols.json"
   ],
   "capabilities": [
     "structured_output",
@@ -19,7 +20,8 @@
     {
       "provider_id": "anthropic",
       "profiles": [
-        "anthropic"
+        "anthropic",
+        "anthropic-chat"
       ],
       "sources": [
         "https://platform.claude.com/docs/en/build-with-claude/structured-outputs",
@@ -28,12 +30,17 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk"
+      ]
     },
     {
       "provider_id": "deepseek",
       "profiles": [
         "deepseek",
+        "deepseek-responses",
         "deepseek-search"
       ],
       "sources": [
@@ -42,7 +49,11 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://api-docs.deepseek.com/api/create-response"
+      ]
     },
     {
       "provider_id": "github-copilot",
@@ -54,12 +65,15 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": []
     },
     {
       "provider_id": "google",
       "profiles": [
-        "gemini"
+        "gemini",
+        "gemini-chat"
       ],
       "sources": [
         "https://ai.google.dev/gemini-api/docs/interactions-overview",
@@ -73,13 +87,20 @@
       ],
       "evidence_date": "2026-09-25",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://ai.google.dev/gemini-api/docs/openai"
+      ]
     },
     {
       "provider_id": "kimi",
       "profiles": [
         "kimi",
+        "kimi-anthropic-intl",
         "kimi-code",
+        "kimi-code-anthropic",
+        "kimi-code-responses",
         "kimi-intl",
         "kimi-search",
         "kimi-search-intl"
@@ -90,13 +111,23 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://platform.kimi.ai/docs/api/messages",
+        "https://www.kimi.com/code/docs/en/kimi-code/models",
+        "https://www.kimi.com/en/help/kimi-code/membership-guide"
+      ]
     },
     {
       "provider_id": "minimax",
       "profiles": [
         "minimax",
-        "minimax-intl"
+        "minimax-chat",
+        "minimax-chat-intl",
+        "minimax-intl",
+        "minimax-responses",
+        "minimax-responses-intl"
       ],
       "sources": [
         "https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache",
@@ -106,12 +137,21 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://platform.minimax.cn/docs/api-reference/responses-create",
+        "https://platform.minimax.cn/docs/api-reference/text-openai-api",
+        "https://platform.minimax.io/docs/api-reference/responses-create",
+        "https://platform.minimax.io/docs/api-reference/text-openai-api",
+        "https://platform.minimax.io/docs/guides/server-tools"
+      ]
     },
     {
       "provider_id": "openai",
       "profiles": [
-        "openai"
+        "openai",
+        "openai-chat"
       ],
       "sources": [
         "https://developers.openai.com/api/docs/guides/tools",
@@ -125,12 +165,20 @@
       ],
       "evidence_date": "2026-09-25",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://developers.openai.com/api/docs/guides/audio-chat-completions",
+        "https://developers.openai.com/api/docs/models/gpt-audio-1.5",
+        "https://developers.openai.com/api/reference/resources/chat"
+      ]
     },
     {
       "provider_id": "openrouter",
       "profiles": [
-        "openrouter"
+        "openrouter",
+        "openrouter-anthropic",
+        "openrouter-responses"
       ],
       "sources": [
         "https://openrouter.ai/docs/batch-quickstart",
@@ -140,12 +188,20 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://openrouter.ai/docs/api/api-reference/responses/create-responses",
+        "https://openrouter.ai/docs/guides/features/response-caching",
+        "https://openrouter.ai/tool/web-search/"
+      ]
     },
     {
       "provider_id": "qwen",
       "profiles": [
         "qwen",
+        "qwen-anthropic",
+        "qwen-anthropic-intl",
         "qwen-hk",
         "qwen-intl",
         "qwen-search",
@@ -161,7 +217,12 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages",
+        "https://www.alibabacloud.com/help/en/model-studio/web-search"
+      ]
     },
     {
       "provider_id": "xai",
@@ -178,7 +239,12 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://docs.x.ai/developers/model-capabilities/text/generate-text",
+        "https://docs.x.ai/developers/tools/web-search"
+      ]
     },
     {
       "provider_id": "zhipu",
@@ -186,7 +252,9 @@
         "glm",
         "glm-coding",
         "zai",
-        "zai-coding"
+        "zai-coding",
+        "zai-coding-chat",
+        "zai-coding-responses"
       ],
       "sources": [
         "https://docs.bigmodel.cn/cn/guide/capabilities/struct-output/",
@@ -195,7 +263,11 @@
       ],
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
-      "live_validation": "not_run"
+      "live_validation": "not_run",
+      "protocol_review_date": "2026-10-12",
+      "protocol_review_sources": [
+        "https://docs.z.ai/devpack/tool/others"
+      ]
     }
   ]
 }

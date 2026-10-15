@@ -71,6 +71,13 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
     if policy.automatic.is_none() && policy.breakpoints.is_empty() {
         return Ok(());
     }
+    if context.profile().provider_id.as_str() == "kimi"
+        && context.profile().extra["explicit_cache"] == "unsupported"
+    {
+        return Err(unsupported(
+            "Kimi Code explicit cache controls are not established by its API documentation",
+        ));
+    }
     if !matches!(
         context.profile().protocol,
         ProtocolFamily::AnthropicMessages
@@ -83,6 +90,12 @@ pub(crate) fn validate(req: &ChatRequest, context: &CodecContext) -> Result<(), 
         ));
     }
     crate::providers::minimax::cache::validate(req, context)?;
+    if context.profile().provider_id.as_str() == "kimi"
+        && context.profile().extra["explicit_cache"] == "top_level_only"
+        && !policy.breakpoints.is_empty()
+    {
+        return Err(unsupported("Kimi Messages cache writes require top-level automatic cache_control; content breakpoints are ignored by the provider"));
+    }
     if policy.breakpoints.len() + usize::from(policy.automatic.is_some()) > 4 {
         return Err(invalid(
             "at most four cache breakpoints including automatic caching are allowed",

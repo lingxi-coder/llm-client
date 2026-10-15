@@ -45,6 +45,12 @@ pub(super) fn response_with_usage_mode(
             value,
         });
     }
+    if let Some(audio) = message.get("audio").filter(|audio| !audio.is_null()) {
+        content.push(ContentBlock::ProviderContent {
+            protocol: ProtocolFamily::OpenAiChat,
+            value: serde_json::json!({"audio": audio}),
+        });
+    }
     let decoded_text = match message.get("content") {
         Some(Value::String(text)) => {
             Some(response_json.take_text("/choices/0/message/content", text)?)

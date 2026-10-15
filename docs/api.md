@@ -290,7 +290,8 @@ fn append_tool_results(
             Err(error) => (error, true),
         };
         ContentBlock::ToolResult {
-            tool_use_id: id.clone(), content, is_error, blocks: None,
+            tool_use_id: id.clone(), content, is_error: Some(is_error), blocks: None,
+            output_json: None, cache_reference: None,
             toolset_name: toolset_name.map(str::to_owned),
         }
     }).collect();
@@ -373,7 +374,8 @@ use lingxi_llm_client::protocol::{ChatRequest, ConversationMessage, LlmError, Se
 use lingxi_llm_client::{builtin_providers, LlmClientBuilder, RequestOptions};
 
 async fn search(api_key: String) -> Result<(), Box<dyn std::error::Error>> {
-    let profiles = builtin_providers()?;
+    let profiles = builtin_providers()?.into_iter()
+        .filter(|profile| profile.profile_name == "glm").collect::<Vec<_>>();
     let client = LlmClientBuilder::new(&profiles)?
         .with_region(lingxi_llm_client::protocol::Region::International)
         .build()?;

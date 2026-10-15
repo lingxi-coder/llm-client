@@ -158,6 +158,9 @@ fn validate_request_options(options: &[NativeExtension]) -> Result<(), LlmError>
             OpenAiComputerToolConfig::FORMAT => {
                 extension.decode::<OpenAiComputerToolConfig>()?;
             }
+            super::openai::chat_audio::ChatAudioOutput::FORMAT => {
+                extension.decode::<super::openai::chat_audio::ChatAudioOutput>()?;
+            }
             super::google::computer::GeminiComputerToolConfig::FORMAT => {
                 extension
                     .decode::<super::google::computer::GeminiComputerToolConfig>()?
