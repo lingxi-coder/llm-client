@@ -338,10 +338,9 @@ pub fn named_rejections(status: u16, body: &JsonPayload, sent: &[String]) -> Vec
             *beta != Beta::ThinkingBindingControls
                 && sent.iter().any(|h| h == beta.header())
                 && if *beta == Beta::AfkMode {
-                    // Native Kie is independent of the generic beta-header
-                    // classifier: any 400 containing the sent AFK token trips
-                    // its request/session circuit, even with other error text.
-                    message.contains(beta.header())
+                    // Native Kie precedes generic rejection guards, but still
+                    // uses Jw's exact beta-header/capability marker predicate.
+                    header_rejected(&message, *beta)
                 } else {
                     ordinary_beta_rejection
                         && (header_rejected(&message, *beta)
@@ -859,22 +858,39 @@ mod tests {
     }
 
     #[test]
-    fn native_295_afk_classifier_needs_only_status_400_and_the_sent_token() {
-        let body = JsonPayload::parse(
-            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Unsupported option afk-mode-2026-01-31 for this endpoint."}}"#,
-        )
-        .unwrap();
+    fn native_295_afk_classifier_requires_a_sent_token_and_native_header_marker() {
         let sent = vec![Beta::AfkMode.header().to_owned()];
-        assert_eq!(
-            named_rejections(400, &body, &sent),
-            [Rejection {
-                beta: Beta::AfkMode,
-                strong: false,
-            }],
-            "Native Kie matches the token even when the error omits the beta header name"
-        );
-        assert!(named_rejections(422, &body, &sent).is_empty());
-        assert!(named_rejections(400, &body, &[]).is_empty());
+        for message in [
+            "anthropic-beta afk-mode-2026-01-31 is unavailable",
+            "anthropic_beta afk-mode-2026-01-31 is unavailable",
+            "capability_rejected: beta_header:afk-mode-2026-01-31",
+        ] {
+            let body = JsonPayload::from_generated_value(&serde_json::json!({
+                "error": {"message": message}
+            }))
+            .unwrap();
+            assert_eq!(
+                named_rejections(400, &body, &sent),
+                [Rejection {
+                    beta: Beta::AfkMode,
+                    strong: false
+                }],
+                "Native Kie accepts Jw's exact header marker: {message}"
+            );
+            assert!(named_rejections(422, &body, &sent).is_empty());
+            assert!(named_rejections(400, &body, &[]).is_empty());
+        }
+        for message in [
+            "Unsupported option afk-mode-2026-01-31 for this endpoint.",
+            "ANTHROPIC-BETA afk-mode-2026-01-31 is unavailable",
+            "capability_rejected: beta_header:afk-mode-2026-01-31-extra",
+        ] {
+            let body = JsonPayload::from_generated_value(&serde_json::json!({
+                "error": {"message": message}
+            }))
+            .unwrap();
+            assert!(named_rejections(400, &body, &sent).is_empty(), "{message}");
+        }
     }
 
     #[test]
@@ -983,7 +999,7 @@ mod tests {
     #[test]
     fn native_295_afk_classifier_precedes_unrelated_rejection_guards() {
         let body = JsonPayload::parse(
-            r#"{"type":"error","error":{"type":"invalid_request_error","message":"The thinking signature is invalid; afk-mode-2026-01-31 is unavailable."}}"#,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"The thinking signature is invalid; anthropic-beta afk-mode-2026-01-31 is unavailable."}}"#,
         )
         .unwrap();
         assert_eq!(
