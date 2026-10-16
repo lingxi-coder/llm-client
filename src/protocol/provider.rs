@@ -366,6 +366,8 @@ impl ConnectionSpec {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<super::ContextMetadata>,
     /// Explicit application output default for this model on this connection.
     /// Missing optional budgets remain omitted; a configured default is capped
     /// by max_output_tokens and rejected on endpoints without hard-budget support.

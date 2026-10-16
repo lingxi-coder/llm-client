@@ -36,6 +36,8 @@ knowledge_cutoff = "2025-01"
 release_date = "2025-06-17"
 last_updated = "2025-06-17"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "audio", "video", "pdf"]
 output_modalities = ["text"]
@@ -91,6 +93,8 @@ knowledge_cutoff = "2025-01"
 release_date = "2025-06-17"
 last_updated = "2025-06-17"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "audio", "video", "pdf"]
 output_modalities = ["text"]
@@ -146,6 +150,8 @@ knowledge_cutoff = "2025-01"
 release_date = "2025-06-17"
 last_updated = "2025-06-17"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "audio", "video", "pdf"]
 output_modalities = ["text"]
@@ -228,6 +234,8 @@ knowledge_cutoff = "2025-01"
 release_date = "2026-05-07"
 last_updated = "2026-05-07"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -283,6 +291,8 @@ knowledge_cutoff = "2025-01"
 release_date = "2026-02-19"
 last_updated = "2026-02-19"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -365,6 +375,8 @@ knowledge_cutoff = "2025-01"
 release_date = "2026-05-19"
 last_updated = "2026-05-19"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -420,6 +432,8 @@ knowledge_cutoff = "2026-03"
 release_date = "2026-07-21"
 last_updated = "2026-07-21"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -475,6 +489,8 @@ knowledge_cutoff = "2026-03"
 release_date = "2026-07-21"
 last_updated = "2026-07-21"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -557,6 +573,8 @@ knowledge_cutoff = "2026-03"
 release_date = "2026-08-13"
 last_updated = "2026-08-13"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -639,6 +657,8 @@ knowledge_cutoff = "2026-03"
 release_date = "2026-08-13"
 last_updated = "2026-08-13"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]
@@ -670,6 +690,8 @@ knowledge_cutoff = "2026-03"
 release_date = "2026-07-21"
 last_updated = "2026-07-21"
 context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
 max_output = 65536
 input_modalities = ["text", "image", "video", "audio", "pdf"]
 output_modalities = ["text"]

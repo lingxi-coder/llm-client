@@ -50,6 +50,7 @@ pub enum ModelField {
     KnowledgeCutoff,
     InputModalities,
     OutputModalities,
+    Context,
     ContextWindowTokens,
     MaxInputTokens,
     MaxOutputTokens,
@@ -58,7 +59,7 @@ pub enum ModelField {
     TemperatureControl,
 }
 impl ModelField {
-    pub(crate) const ALL: [Self; 23] = [
+    pub(crate) const ALL: [Self; 24] = [
         Self::DisplayModel,
         Self::BillingModel,
         Self::Foundry,
@@ -76,6 +77,7 @@ impl ModelField {
         Self::KnowledgeCutoff,
         Self::InputModalities,
         Self::OutputModalities,
+        Self::Context,
         Self::ContextWindowTokens,
         Self::MaxInputTokens,
         Self::MaxOutputTokens,
@@ -103,6 +105,7 @@ impl ModelField {
             Self::KnowledgeCutoff => ("knowledgeCutoff", "metadata"),
             Self::InputModalities => ("inputModalities", "metadata"),
             Self::OutputModalities => ("outputModalities", "metadata"),
+            Self::Context => ("context", "metadata"),
             Self::ContextWindowTokens => ("contextWindowTokens", "metadata"),
             Self::MaxInputTokens => ("maxInputTokens", "metadata"),
             Self::MaxOutputTokens => ("maxOutputTokens", "metadata"),

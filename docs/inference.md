@@ -143,3 +143,23 @@ Client 和 prepared-call API 按每个实际连接重新解析预算，保留原
 
 移除自动 manual thinking 时保留独立的显式 effort，并继续按目标模型能力校验。
 调用方显式覆盖数字 thinking 预算后，应清除自动来源标记；仅设置 mode 或 effort 等级不改变预算来源。
+
+## 上下文策略
+
+`metadata.context` 保存当前连接的上下文事实和应用策略：
+
+```json
+{
+  "sharedWindow": true,
+  "thinkingMaxInputTokens": null,
+  "recommendation": null,
+  "application": { "mode": "auto" }
+}
+```
+
+`application` 可选 `auto`、`long` 或 `{ "mode": "custom", "input_tokens": 128000 }`。
+请求级 `RequestOptions.context.policy` 优先于模型配置。`auto` 采用有证据的建议输入值和当前服务档位下的第一处价格上涨边界；`long` 使用已知硬容量；`custom` 按指定输入预算计算并受硬限制约束。没有公开价格分档或容量时保持未知，不推断 Claude 默认值。
+
+官方建议必须包含 `inputTokens`、`source`、`verifiedAt`，计费边界不能填作官方建议。`sharedWindow` 只有官方文档确认输入输出共享窗口时才为 true；独立输入上限始终单独应用。`planning_output_tokens` 是本地预留，不会生成输出预算协议字段。
+
+`PreparedCall::resolved_context()` 返回精确模型行、连接、有效输入预算、价格边界和输出预留来源。SDK 每个 attempt 独立解析，不修改原始请求。`ClientSnapshot::resolve_context_for_route` 可用于主机预先规划；主机负责根据该快照压缩历史或提示用户，不能把本地 token 估算当成 provider 的精确拒绝依据。定价仍由现有 `FrozenPricing` 按实际 usage 和执行档位完成。

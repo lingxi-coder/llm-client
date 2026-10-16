@@ -53,6 +53,7 @@ pub use options::{
     NativeAnthropicContextInput, NativeAnthropicEndpointAdmission, NativeAnthropicRequestContext,
     NativeAnthropicServerClassifierContext, NativeLsnManualBudget, RequestOptions,
 };
+pub mod context;
 mod output_budget;
 pub use output_budget::{
     claude_application_output_default, recovery_output_budget, resolve_output_budget,

@@ -138,6 +138,7 @@ fn validate_prepared_file_expirations(
 /// The chain holds only the siblings, so the head is prepended here rather than
 /// special-cased inside the walk.
 pub(super) struct PreparedAttempt {
+    pub(super) resolved_context: super::context::ResolvedContext,
     pub(super) inference: crate::protocol::InferenceReport,
     pub(super) output_budget: Option<super::ResolvedOutputBudget>,
     pub(super) output_budget_fields: serde_json::Map<String, serde_json::Value>,
@@ -695,6 +696,27 @@ impl<'client> RequestExecutor<'client> {
             &policy_context,
             opts.automatic_thinking_budget,
         )?;
+        let mut context_request = opts.context.clone();
+        context_request.thinking = attempt_request
+            .thinking
+            .as_ref()
+            .is_some_and(|t| t.mode != Some(crate::protocol::ThinkingMode::Disabled));
+        let resolved_context = super::context::resolve_context(
+            profile,
+            attempt.model,
+            &context_request,
+            output_budget.as_ref().and_then(|b| b.value),
+            &crate::protocol::PricingContext {
+                service_tier: attempt_request.service_tier,
+                unix_seconds: self
+                    .clock
+                    .now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs()),
+                ..Default::default()
+            },
+        )?;
         let req = &ResolvedRequest {
             request: &attempt_request,
             attachments: req.attachments.clone(),
@@ -1032,6 +1054,7 @@ impl<'client> RequestExecutor<'client> {
             }
         }
         Ok(PreparedAttempt {
+            resolved_context,
             inference,
             output_budget,
             output_budget_fields: generation_budget_fields(&http.body)?,
@@ -1067,6 +1090,7 @@ impl<'client> RequestExecutor<'client> {
             backend,
             files,
             cleanup,
+            resolved_context: _,
             output_budget: _,
             output_budget_fields: _,
         } = prepared;

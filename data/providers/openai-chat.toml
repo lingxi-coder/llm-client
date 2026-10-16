@@ -46,6 +46,7 @@ knowledge_cutoff = "2021-09-01"
 release_date = "2023-03-01"
 last_updated = "2023-11-06"
 context_window = 16385
+context = { sharedWindow = true }
 max_output = 4096
 input_modalities = ["text"]
 output_modalities = ["text"]
@@ -79,6 +80,7 @@ knowledge_cutoff = "2023-11"
 release_date = "2023-11-06"
 last_updated = "2024-04-09"
 context_window = 8192
+context = { sharedWindow = true }
 max_output = 8192
 input_modalities = ["text"]
 output_modalities = ["text"]
@@ -112,6 +114,7 @@ knowledge_cutoff = "2023-12"
 release_date = "2023-11-06"
 last_updated = "2024-04-09"
 context_window = 128000
+context = { sharedWindow = true }
 max_output = 4096
 input_modalities = ["text", "image"]
 output_modalities = ["text"]
@@ -145,6 +148,7 @@ knowledge_cutoff = "2024-04"
 release_date = "2025-04-14"
 last_updated = "2025-04-14"
 context_window = 1047576
+context = { sharedWindow = true }
 max_output = 32768
 input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text"]
@@ -189,6 +193,7 @@ knowledge_cutoff = "2024-04"
 release_date = "2025-04-14"
 last_updated = "2025-04-14"
 context_window = 1047576
+context = { sharedWindow = true }
 max_output = 32768
 input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text"]
@@ -233,6 +238,7 @@ knowledge_cutoff = "2024-04"
 release_date = "2025-04-14"
 last_updated = "2025-04-14"
 context_window = 1047576
+context = { sharedWindow = true }
 max_output = 32768
 input_modalities = ["text", "image"]
 output_modalities = ["text"]
@@ -277,6 +283,7 @@ knowledge_cutoff = "2023-09"
 release_date = "2024-05-13"
 last_updated = "2024-08-06"
 context_window = 128000
+context = { sharedWindow = true }
 max_output = 16384
 input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text"]
@@ -321,6 +328,7 @@ knowledge_cutoff = "2023-09"
 release_date = "2024-07-18"
 last_updated = "2024-07-18"
 context_window = 128000
+context = { sharedWindow = true }
 max_output = 16384
 input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text"]
@@ -365,6 +373,7 @@ knowledge_cutoff = "2024-09-30"
 release_date = "2025-08-07"
 last_updated = "2025-08-07"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -411,6 +420,7 @@ knowledge_cutoff = "2024-05-30"
 release_date = "2025-08-07"
 last_updated = "2025-08-07"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -457,6 +467,7 @@ knowledge_cutoff = "2024-05-30"
 release_date = "2025-08-07"
 last_updated = "2025-08-07"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -497,6 +508,7 @@ knowledge_cutoff = "2024-09-30"
 release_date = "2025-11-13"
 last_updated = "2025-11-13"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -543,6 +555,7 @@ knowledge_cutoff = "2025-08-31"
 release_date = "2025-12-11"
 last_updated = "2025-12-11"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -589,6 +602,7 @@ knowledge_cutoff = "2025-08-31"
 release_date = "2026-03-05"
 last_updated = "2026-03-05"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image", "pdf"]
@@ -666,6 +680,7 @@ knowledge_cutoff = "2025-08-31"
 release_date = "2026-03-17"
 last_updated = "2026-03-17"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -712,6 +727,7 @@ knowledge_cutoff = "2025-08-31"
 release_date = "2026-03-17"
 last_updated = "2026-03-17"
 context_window = 400000
+context = { sharedWindow = true }
 max_input = 272000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -752,6 +768,7 @@ knowledge_cutoff = "2025-12-01"
 release_date = "2026-04-23"
 last_updated = "2026-04-23"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image", "pdf"]
@@ -829,6 +846,7 @@ knowledge_cutoff = "2026-02-16"
 release_date = "2026-07-09"
 last_updated = "2026-07-09"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image", "pdf"]
@@ -915,6 +933,7 @@ knowledge_cutoff = "2026-02-16"
 release_date = "2026-07-09"
 last_updated = "2026-07-09"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image", "pdf"]
@@ -1013,6 +1032,7 @@ knowledge_cutoff = "2026-02-16"
 release_date = "2026-07-09"
 last_updated = "2026-07-09"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image", "pdf"]
@@ -1099,6 +1119,7 @@ knowledge_cutoff = "2026-04-30"
 release_date = "2026-09-04"
 last_updated = "2026-09-04"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image", "pdf"]
@@ -1185,6 +1206,7 @@ knowledge_cutoff = "2026-05-18"
 release_date = "2026-09-22"
 last_updated = "2026-09-22"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -1271,6 +1293,7 @@ knowledge_cutoff = "2026-04-20"
 release_date = "2026-09-22"
 last_updated = "2026-09-22"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -1357,6 +1380,7 @@ knowledge_cutoff = "2026-04-30"
 release_date = "2026-09-29"
 last_updated = "2026-10-08"
 context_window = 1050000
+context = { sharedWindow = true }
 max_input = 922000
 max_output = 128000
 input_modalities = ["text", "image"]
@@ -1438,6 +1462,7 @@ verified_at = "2026-10-09"
 id = "gpt-audio-1.5"
 name = "GPT Audio 1.5"
 context_window = 128000
+context = { sharedWindow = true }
 max_output = 16384
 structured_output = false
 input_modalities = ["text", "audio"]
@@ -1458,6 +1483,7 @@ knowledge_cutoff = "2023-09"
 release_date = "2024-12-05"
 last_updated = "2024-12-05"
 context_window = 200000
+context = { sharedWindow = true }
 max_output = 100000
 input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text"]
@@ -1496,6 +1522,7 @@ knowledge_cutoff = "2024-05"
 release_date = "2025-04-16"
 last_updated = "2025-04-16"
 context_window = 200000
+context = { sharedWindow = true }
 max_output = 100000
 input_modalities = ["text", "image", "pdf"]
 output_modalities = ["text"]
@@ -1540,6 +1567,7 @@ knowledge_cutoff = "2024-05"
 release_date = "2024-12-20"
 last_updated = "2025-01-29"
 context_window = 200000
+context = { sharedWindow = true }
 max_output = 100000
 input_modalities = ["text"]
 output_modalities = ["text"]
@@ -1578,6 +1606,7 @@ knowledge_cutoff = "2024-05"
 release_date = "2025-04-16"
 last_updated = "2025-04-16"
 context_window = 200000
+context = { sharedWindow = true }
 max_output = 100000
 input_modalities = ["text", "image"]
 output_modalities = ["text"]

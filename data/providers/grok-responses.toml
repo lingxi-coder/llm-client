@@ -118,6 +118,19 @@ cache_read_per_million = 0.19999999999999998
 source = "models.dev via aggregator"
 
 
+
+[[model.pricing.rules]]
+max_input_tokens = 199999
+rates = { input_per_million = 1.25, output_per_million = 2.5, cache_read_per_million = 0.2 }
+source = "https://docs.x.ai/developers/pricing"
+verified_at = "2026-10-15"
+
+[[model.pricing.rules]]
+min_input_tokens = 200000
+rates = { input_per_million = 2.5, output_per_million = 5.0, cache_read_per_million = 0.4 }
+source = "https://docs.x.ai/developers/pricing"
+verified_at = "2026-10-15"
+
 [[model.pricing.rules]]
 service_tier = "fast"
 multiplier = { factor = 2.0, buckets = ["input", "output", "cache_read", "cache_write", "cache_write_1h", "reasoning"] }
