@@ -525,6 +525,20 @@ impl RoutingCatalog {
             .0
             .resolve_request_with_precedence(model, profile, true)?;
         let selected = resolved.connections[0].profile;
+        if selected
+            .connection
+            .default_protocol
+            .is_none_or(|protocol| protocol == selected.protocol)
+        {
+            // The resolved catalog row is already exact. Re-resolving its wire
+            // ID would lose identity when another display row shares that ID.
+            let mut resolved = resolved;
+            resolved
+                .connections
+                .retain(|connection| connection.profile.protocol == selected.protocol);
+            resolved.promote_head(0);
+            return Ok(resolved.route);
+        }
         self.0
             .resolve_request_with_protocol(
                 &resolved.route.request_model,
@@ -548,6 +562,15 @@ impl RoutingCatalog {
         let resolved = self
             .0
             .resolve_request_with_precedence(model, profile, true)?;
+        let head = resolved.connections[0].profile;
+        if head
+            .connection
+            .default_protocol
+            .is_none_or(|protocol| protocol == head.protocol)
+        {
+            // Keep both the exact head row and its mixed-protocol siblings.
+            return Ok(resolved.route);
+        }
         let selected = self.0.resolve_request_with_protocol(
             &resolved.route.request_model,
             Some(&resolved.connections[0].profile.profile_name),

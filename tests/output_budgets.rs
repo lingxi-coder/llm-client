@@ -371,6 +371,37 @@ fn duplicate_wire_ids_require_an_exact_model_row() {
     large.metadata.application_output_tokens = Some(48000);
     row.models.push(large);
     assert!(resolve_output_budget(&row, "shared", None).is_err());
+    for default_protocol in [None, Some(row.protocol)] {
+        let mut profile = row.clone();
+        profile.connection.default_protocol = default_protocol;
+        let catalog = RoutingCatalog::new(vec![profile], Region::International);
+        for (display, cap) in [("Small", 8192), ("Large", 64000)] {
+            assert_eq!(
+                catalog
+                    .resolve_in_prefer_native(display, Some("shared-wire"))
+                    .unwrap()
+                    .display_model,
+                display
+            );
+            assert_eq!(
+                catalog
+                    .resolve_in_for_connection_failover(display, Some("shared-wire"))
+                    .unwrap()
+                    .display_model,
+                display
+            );
+            assert_eq!(
+                catalog
+                    .output_token_limits_in(display, Some("shared-wire"))
+                    .unwrap()
+                    .max_output_tokens,
+                Some(cap)
+            );
+        }
+        assert!(catalog
+            .resolve_in_for_connection_failover("shared", Some("shared-wire"))
+            .is_err());
+    }
     for (model, expected) in row.models.iter().zip([8192, 48000]) {
         let selected = CodecContext::for_model(&row, model, RequestMode::Complete);
         assert_eq!(
