@@ -526,6 +526,14 @@ pub(super) fn validate_profiles(
             });
         }
         for model in &p.models {
+            if let Some(context) = &model.metadata.context {
+                context
+                    .validate()
+                    .map_err(|reason| BuildError::InvalidInference {
+                        profile_name: p.profile_name.clone(),
+                        reason,
+                    })?;
+            }
             if let Some(prices) = &model.pricing {
                 super::price_query::validate_prices(prices).map_err(|reason| {
                     BuildError::InvalidInference {

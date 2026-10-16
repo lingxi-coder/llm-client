@@ -631,6 +631,10 @@ fn request_client_id(headers: &[(String, String)]) -> Option<&str> {
 impl PreparedCall {
     /// Resolved attempt value and provenance. The caller-owned request retains
     /// its original explicit/automatic intent.
+    pub fn resolved_context(&self) -> &super::context::ResolvedContext {
+        &self.prepared.resolved_context
+    }
+
     pub fn output_budget(&self) -> Option<&super::ResolvedOutputBudget> {
         self.prepared.output_budget.as_ref()
     }

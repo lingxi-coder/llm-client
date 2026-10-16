@@ -141,6 +141,8 @@ struct RoutePricing {
 #[derive(Debug, Deserialize)]
 struct CatalogModel {
     #[serde(default)]
+    context: Option<crate::protocol::ContextMetadata>,
+    #[serde(default)]
     features: crate::protocol::InferenceFeatures,
     id: String,
     /// Local selectors retained when a catalog wire ID is corrected.
@@ -389,6 +391,7 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
         aliases: m.aliases.clone(),
         description: m.description.clone(),
         metadata: ModelMetadata {
+            context: m.context.clone(),
             application_output_tokens: m.application_output_tokens,
             family: m.family.clone(),
             status: None,

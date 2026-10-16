@@ -4,6 +4,8 @@
 //! the client. Callers own tool execution, conversation storage, permissions,
 //! credential refresh, and context-compaction decisions.
 
+mod context;
+pub use context::{ContextMetadata, ContextPolicy, ContextRecommendation};
 pub mod computer;
 mod continuation;
 pub use computer::{

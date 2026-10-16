@@ -51,6 +51,8 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// Local context planning; never serialized to the provider.
+    pub context: super::context::ContextRequest,
     /// The manual thinking budget was chosen automatically by the application.
     /// Re-bound it to each Claude-protocol attempt's effective output ceiling.
     /// Other protocol families use their own defaults instead of this Claude

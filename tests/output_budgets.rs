@@ -441,3 +441,64 @@ fn recovery_never_guesses_between_catalog_rows_with_shared_wire_ids() {
         Some(8192)
     );
 }
+
+#[test]
+fn recovery_respects_independent_input_window_and_output_ceiling() {
+    use lingxi_llm_client::protocol::{ContextMetadata, Usage, UsageReport, UsageState};
+    let mut selected = profile("deepseek", 16000);
+    selected.provider_id = "deepseek".into();
+    selected.base_url = "https://api.deepseek.com".into();
+    selected.models[0].metadata.context_window_tokens = Some(20000);
+    selected.models[0].metadata.context = Some(ContextMetadata {
+        shared_window: Some(false),
+        ..Default::default()
+    });
+    let usage = UsageReport::measured(
+        Usage {
+            input_tokens: 19000,
+            output_tokens: 8000,
+            ..Default::default()
+        },
+        UsageState::Complete,
+    );
+    let recover = |p: &ProviderProfile, issued| {
+        lingxi_llm_client::client::recovery_output_budget(p, "shared", &usage, Some(issued), None)
+    };
+    assert_eq!(recover(&selected, 8000), Some(16000));
+    assert_eq!(recover(&selected, 16000), None);
+    selected.models[0]
+        .metadata
+        .context
+        .as_mut()
+        .unwrap()
+        .shared_window = Some(true);
+    assert_eq!(recover(&selected, 8000), None);
+}
+
+#[test]
+fn recovery_of_custom_provider_requires_observed_budget_not_a_guessed_default() {
+    use lingxi_llm_client::protocol::{Usage, UsageReport, UsageState};
+    let selected = profile("proxy", 16000);
+    let usage = UsageReport::measured(
+        Usage {
+            input_tokens: 1000,
+            output_tokens: 8000,
+            ..Default::default()
+        },
+        UsageState::Complete,
+    );
+    assert_eq!(
+        lingxi_llm_client::client::recovery_output_budget(
+            &selected,
+            "shared",
+            &usage,
+            Some(8000),
+            None
+        ),
+        Some(16000)
+    );
+    assert_eq!(
+        lingxi_llm_client::client::recovery_output_budget(&selected, "shared", &usage, None, None),
+        None
+    );
+}
