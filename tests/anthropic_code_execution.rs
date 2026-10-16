@@ -428,11 +428,16 @@ fn skills_preflight_limits_versions_and_custom_scope_before_encoding() {
         );
     }
 
-    let skill = AnthropicSkillRef::custom("skill_01AbCdEfGhIjKlMnOpQrStUv", skill_scope())
-        .with_version("skill_version_legacy_id");
-    let persisted: AnthropicSkillRef =
-        serde_json::from_value(serde_json::to_value(&skill).unwrap()).unwrap();
-    assert_eq!(persisted, skill);
+    let mut legacy_version = request();
+    execution(&mut legacy_version).skills =
+        vec![
+            AnthropicSkillRef::custom("skill_01AbCdEfGhIjKlMnOpQrStUv", skill_scope())
+                .with_version("skill_version_legacy_id"),
+        ];
+    assert!(matches!(
+        encode(&legacy_version, &context),
+        Err(LlmError::InvalidRequest { .. })
+    ));
 
     let mut account_mismatch = request();
     execution(&mut account_mismatch).skills = vec![AnthropicSkillRef::custom(

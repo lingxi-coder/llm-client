@@ -154,14 +154,23 @@ mod tests {
     }
 
     #[test]
-    fn legacy_continuations_hosted_tools_and_message_extensions_are_not_stateless() {
+    fn scoped_continuations_hosted_tools_and_message_extensions_are_not_stateless() {
         let mut req = ChatRequest::new("model");
-        req.controls.responses.previous_response_id = Some("previous".into());
+        req.continuation = Some(crate::protocol::ContinuationRef {
+            response_id: crate::protocol::ResponseId::new("previous"),
+            protocol: ProtocolFamily::OpenAiResponses,
+            provider_id: "provider".into(),
+            profile_name: "profile".into(),
+            endpoint_fingerprint: "endpoint".into(),
+            account_scope: "account".into(),
+            request_model: "model".into(),
+            workspace_id: None,
+        });
         assert_eq!(
             request_replay_safety(&req),
             RequestReplaySafety::StatefulOrUnknown
         );
-        req.controls.responses.previous_response_id = None;
+        req.continuation = None;
         req.hosted_tools
             .push(HostedTool::WebSearch(WebSearchConfig::default()));
         assert_eq!(

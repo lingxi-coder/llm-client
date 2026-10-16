@@ -1756,9 +1756,9 @@ impl ChatRequest {
         }
     }
 
-    /// Both scoped and explicitly supplied legacy response IDs pin execution.
+    /// Whether this request carries a scoped response continuation.
     pub fn has_response_continuation(&self) -> bool {
-        self.continuation.is_some() || self.controls.responses.previous_response_id.is_some()
+        self.continuation.is_some()
     }
     pub fn hosted_web_search(&self) -> Option<&WebSearchConfig> {
         self.hosted_tools.iter().find_map(|tool| match tool {

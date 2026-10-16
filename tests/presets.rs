@@ -970,7 +970,7 @@ fn provider_metadata_survives_a_catalog_regeneration() {
 }
 
 #[test]
-fn first_party_anthropic_ids_use_official_names_and_keep_legacy_selectors() {
+fn first_party_anthropic_ids_use_official_names_and_reject_legacy_selectors() {
     let profile = builtin()
         .unwrap()
         .into_iter()
@@ -981,29 +981,37 @@ fn first_party_anthropic_ids_use_official_names_and_keep_legacy_selectors() {
             .with_region(lingxi_llm_client::protocol::Region::International)
             .build()
             .unwrap();
-    for (old, official) in [
-        ("claude-fable-5.1", "claude-fable-5-1"),
-        ("claude-haiku-4.5", "claude-haiku-4-5-20251001"),
-        ("claude-opus-4.5", "claude-opus-4-5-20251101"),
-        ("claude-opus-4.6", "claude-opus-4-6"),
-        ("claude-opus-4.7", "claude-opus-4-7"),
-        ("claude-opus-4.8", "claude-opus-4-8"),
-        ("claude-sonnet-4.5", "claude-sonnet-4-5-20250929"),
-        ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+    for official in [
+        "claude-fable-5-1",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-6",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-6",
     ] {
-        assert_eq!(
-            client
-                .resolve_in(old, Some("anthropic"))
-                .unwrap()
-                .request_model,
-            official
-        );
         assert_eq!(
             client
                 .resolve_in(official, Some("anthropic"))
                 .unwrap()
                 .request_model,
             official
+        );
+    }
+    for legacy in [
+        "claude-fable-5.1",
+        "claude-haiku-4.5",
+        "claude-opus-4.5",
+        "claude-opus-4.6",
+        "claude-opus-4.7",
+        "claude-opus-4.8",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4.6",
+    ] {
+        assert!(
+            client.resolve_in(legacy, Some("anthropic")).is_err(),
+            "legacy selector {legacy} should not resolve"
         );
     }
     assert!(profile

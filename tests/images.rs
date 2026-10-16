@@ -541,7 +541,7 @@ async fn openai_mask_rejects_nonfirst_target_before_dispatch() {
 }
 
 #[tokio::test]
-async fn image_response_preserves_media_type_and_legacy_mime_type() {
+async fn image_response_uses_current_media_type_and_ignores_legacy_mime_type() {
     let fixture = Fixture::new(vec![json!({"data":[
         {"b64_json":"AQID","media_type":"image/webp"},
         {"b64_json":"AQID","mime_type":"image/jpeg"},
@@ -554,7 +554,7 @@ async fn image_response_preserves_media_type_and_legacy_mime_type() {
         .await
         .unwrap();
     assert_eq!(response.images[0].media_type.as_deref(), Some("image/webp"));
-    assert_eq!(response.images[1].media_type.as_deref(), Some("image/jpeg"));
+    assert_eq!(response.images[1].media_type, None);
     assert_eq!(response.images[2].media_type, None);
 }
 

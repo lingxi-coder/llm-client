@@ -375,7 +375,7 @@ pub fn adapt_request(
         }
         return Ok(output);
     }
-    if request.continuation.is_some() || request.controls.responses.previous_response_id.is_some() {
+    if request.continuation.is_some() {
         return Err(LlmError::InvalidRequest {
             message: "a provider continuation cannot change protocol family".into(),
         });
@@ -743,7 +743,16 @@ mod request_tests {
     #[test]
     fn route_change_never_discards_explicit_continuation() {
         let mut request = ChatRequest::new("model");
-        request.controls.responses.previous_response_id = Some("resp_1".into());
+        request.continuation = Some(crate::protocol::ContinuationRef {
+            response_id: "resp_1".into(),
+            protocol: ProtocolFamily::OpenAiResponses,
+            provider_id: "provider".into(),
+            profile_name: "profile".into(),
+            endpoint_fingerprint: "endpoint".into(),
+            account_scope: "account".into(),
+            request_model: "model".into(),
+            workspace_id: None,
+        });
         assert!(adapt_request(
             &request,
             ProtocolFamily::OpenAiResponses,

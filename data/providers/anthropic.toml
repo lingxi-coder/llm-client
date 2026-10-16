@@ -71,7 +71,6 @@ effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "m
 
 [[model]]
 id = "claude-fable-5-1"
-aliases = ["claude-fable-5.1"]
 name = "Claude Fable 5.1"
 description = "Claude Fable 5.1 improves on Claude Fable 5 across the board, with the biggest gains in agentic coding, long-running agentic workflows, and knowledge work: long code refactors, front-end and visual..."
 release_date = "2026-09-01"
@@ -112,7 +111,7 @@ effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "m
 
 [[model]]
 id = "claude-haiku-4-5-20251001"
-aliases = ["claude-haiku-4.5", "claude-haiku-4-5"]
+aliases = ["claude-haiku-4-5"]
 name = "Claude Haiku 4.5"
 description = "Claude Haiku 4.5 is Anthropic’s fastest and most efficient model, delivering near-frontier intelligence at a fraction of the cost and latency of larger Claude models. Matching Claude Sonnet 4’s performance..."
 release_date = "2025-10-15"
@@ -223,7 +222,7 @@ effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "m
 
 [[model]]
 id = "claude-opus-4-5-20251101"
-aliases = ["claude-opus-4.5", "claude-opus-4-5"]
+aliases = ["claude-opus-4-5"]
 name = "Claude Opus 4.5"
 description = "Claude Opus 4.5 is Anthropic’s frontier reasoning model optimized for complex software engineering, agentic workflows, and long-horizon computer use. It offers strong multimodal capabilities, competitive performance across real-world coding and..."
 release_date = "2025-11-24"
@@ -264,7 +263,6 @@ effort = { support = "supported", levels = ["low", "medium", "high"], default = 
 
 [[model]]
 id = "claude-opus-4-6"
-aliases = ["claude-opus-4.6"]
 name = "Claude Opus 4.6"
 description = "Opus 4.6 is Anthropic’s strongest model for coding and long-running professional tasks. It is built for agents that operate across entire workflows rather than single prompts, making it especially effective..."
 release_date = "2026-02-04"
@@ -305,7 +303,6 @@ effort = { support = "supported", levels = ["low", "medium", "high", "max"], def
 
 [[model]]
 id = "claude-opus-4-7"
-aliases = ["claude-opus-4.7"]
 name = "Claude Opus 4.7"
 description = "Opus 4.7 is the next generation of Anthropic's Opus family, built for long-running, asynchronous agents. Building on the coding and agentic strengths of Opus 4.6, it delivers stronger performance on..."
 release_date = "2026-04-16"
@@ -346,7 +343,6 @@ effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "m
 
 [[model]]
 id = "claude-opus-4-8"
-aliases = ["claude-opus-4.8"]
 name = "Claude Opus 4.8"
 description = "Claude Opus 4.8 is Anthropic's most capable generally available model in the Opus family. It supports text, image, and file inputs with text output, with reasoning support and a 1M-token..."
 release_date = "2026-05-27"
@@ -483,7 +479,7 @@ budget = { support = "unsupported", dynamic = "unsupported", hard_limit = false 
 effort = { support = "supported", levels = ["low", "medium", "high", "xhigh", "max"], default = "medium" }
 [[model]]
 id = "claude-sonnet-4-5-20250929"
-aliases = ["claude-sonnet-4.5", "claude-sonnet-4-5"]
+aliases = ["claude-sonnet-4-5"]
 name = "Claude Sonnet 4.5"
 description = "Claude Sonnet 4.5 is Anthropic’s most advanced Sonnet model to date, optimized for real-world agents and coding workflows. It delivers state-of-the-art performance on coding benchmarks such as SWE-bench Verified, with..."
 release_date = "2025-09-29"
@@ -524,7 +520,6 @@ effort = { support = "unsupported", levels = [] }
 
 [[model]]
 id = "claude-sonnet-4-6"
-aliases = ["claude-sonnet-4.6"]
 name = "Claude Sonnet 4.6"
 description = "Sonnet 4.6 is Anthropic's most capable Sonnet-class model yet, with frontier performance across coding, agents, and professional work. It excels at iterative development, complex codebase navigation, end-to-end project management with..."
 release_date = "2026-02-17"

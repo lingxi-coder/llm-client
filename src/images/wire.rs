@@ -296,7 +296,6 @@ pub(crate) fn image_artifact(item: &Value) -> Option<ImageArtifact> {
         data,
         media_type: item
             .get("media_type")
-            .or_else(|| item.get("mime_type"))
             .and_then(Value::as_str)
             .map(str::to_owned),
         revised_prompt: item

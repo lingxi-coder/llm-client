@@ -135,7 +135,7 @@ request
 # }
 ```
 
-Anthropic 托管 Skill ID 包括 `pptx`、`xlsx`、`docx` 和 `pdf`；可指定 8 位目录版本或 `latest`。自定义 ID 必须先通过独立 [Skills 资源服务](anthropic-skills.md) 上传。第一方 API 使用 `AnthropicSkillScope::new`，Foundry 则使用 `AnthropicSkillScope::new_foundry`，且只接受显式 Anthropic hosting；自定义引用会校验对应 profile 和 account scope。Foundry 引用绑定 resource 与 account，不绑定单个 deployment。每个 resource 或 workspace 应使用不同且稳定的 `account_scope`，避免把自定义 ID 错发到其他身份。自定义版本接受当前 `skver_…` ID、旧版 `skill_version_…` ID 或 `latest`；省略 `version` 也受支持。Foundry 支持 Skills CRUD 和版本元数据，但不支持下载 version content。
+Anthropic 托管 Skill ID 包括 `pptx`、`xlsx`、`docx` 和 `pdf`；可指定 8 位目录版本或 `latest`。自定义 ID 必须先通过独立 [Skills 资源服务](anthropic-skills.md) 上传。第一方 API 使用 `AnthropicSkillScope::new`，Foundry 则使用 `AnthropicSkillScope::new_foundry`，且只接受显式 Anthropic hosting；自定义引用会校验对应 profile 和 account scope。Foundry 引用绑定 resource 与 account，不绑定单个 deployment。每个 resource 或 workspace 应使用不同且稳定的 `account_scope`，避免把自定义 ID 错发到其他身份。自定义版本接受 `skver_…` ID 或 `latest`；省略 `version` 也受支持。Foundry 支持 Skills CRUD 和版本元数据，但不支持下载 version content。
 
 续用已有容器并继续使用 Skills 时，每次请求都应再次提供需要的 Skills。带 scope 的 Skill 身份只在本地检查，不会序列化到提供方请求。参见 Anthropic [Agent Skills API 指南](https://platform.claude.com/docs/en/build-with-claude/skills-guide)、[Skills 快速入门](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/quickstart)和 [Code Execution 模型兼容性](https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool#compatibility)。
 

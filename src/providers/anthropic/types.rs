@@ -816,8 +816,7 @@ fn anthropic_profile_workspace_id(profile: &ProviderProfile) -> Result<Option<&s
 /// A Skill to make available in an Anthropic Code Execution container.
 ///
 /// `version` is optional; when supplied, Anthropic Skills accept a date such
-/// as `20251013` or `latest`, and custom Skills accept `skver_…`, the legacy
-/// `skill_version_…` form, or `latest`.
+/// as `20251013` or `latest`, and custom Skills accept `skver_…` or `latest`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnthropicSkillRef {
@@ -937,13 +936,9 @@ impl AnthropicSkillRef {
                     AnthropicSkillType::Anthropic => {
                         version.len() == 8 && version.bytes().all(|byte| byte.is_ascii_digit())
                     }
-                    AnthropicSkillType::Custom => {
-                        ["skver_", "skill_version_"].iter().any(|prefix| {
-                            version
-                                .strip_prefix(prefix)
-                                .is_some_and(|id| !id.is_empty())
-                        })
-                    }
+                    AnthropicSkillType::Custom => version
+                        .strip_prefix("skver_")
+                        .is_some_and(|id| !id.is_empty()),
                 }
             };
             if !valid_version {
