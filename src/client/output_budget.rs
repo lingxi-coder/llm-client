@@ -272,7 +272,8 @@ pub(super) fn resolve_request_budget(
 }
 
 /// Compute, but never dispatch, an increase using complete canonical counters.
-/// Only documented first-party total-generation contracts are eligible.
+/// An observed wire budget establishes the generation ceiling for supported
+/// codecs. Inferring an omitted provider default requires a documented route.
 pub fn recovery_output_budget(
     profile: &ProviderProfile,
     model: &str,
@@ -296,7 +297,8 @@ pub fn recovery_output_budget(
             )
             | ("minimax", "api.minimax.io" | "api.minimax.chat")
     );
-    if !documented_total
+    if (!documented_total && !issued.is_some_and(|value| value > 0))
+        || profile.protocol == ProtocolFamily::GeminiInteractions
         || matches!(
             profile.auth,
             crate::protocol::AuthStrategy::ChatGptOAuth

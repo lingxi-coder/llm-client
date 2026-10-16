@@ -474,3 +474,31 @@ fn recovery_respects_independent_input_window_and_output_ceiling() {
         .shared_window = Some(true);
     assert_eq!(recover(&selected, 8000), None);
 }
+
+#[test]
+fn recovery_of_custom_provider_requires_observed_budget_not_a_guessed_default() {
+    use lingxi_llm_client::protocol::{Usage, UsageReport, UsageState};
+    let selected = profile("proxy", 16000);
+    let usage = UsageReport::measured(
+        Usage {
+            input_tokens: 1000,
+            output_tokens: 8000,
+            ..Default::default()
+        },
+        UsageState::Complete,
+    );
+    assert_eq!(
+        lingxi_llm_client::client::recovery_output_budget(
+            &selected,
+            "shared",
+            &usage,
+            Some(8000),
+            None
+        ),
+        Some(16000)
+    );
+    assert_eq!(
+        lingxi_llm_client::client::recovery_output_budget(&selected, "shared", &usage, None, None),
+        None
+    );
+}
