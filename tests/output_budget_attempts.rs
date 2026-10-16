@@ -259,3 +259,87 @@ async fn claude_automatic_manual_thinking_does_not_leak_into_other_protocols() {
         Some(ThinkingBudget::Tokens(16384))
     );
 }
+
+#[tokio::test]
+async fn omitting_automatic_manual_thinking_preserves_explicit_effort() {
+    use lingxi_llm_client::{protocol::ProtocolFamily, RequestMode};
+    for (protocol, output, pointer) in [
+        (
+            ProtocolFamily::AnthropicMessages,
+            512,
+            "/output_config/effort",
+        ),
+        (ProtocolFamily::OpenAiChat, 8192, "/reasoning_effort"),
+        (ProtocolFamily::OpenAiResponses, 8192, "/reasoning/effort"),
+    ] {
+        let mut row = profiles().remove(1);
+        row.connection = Default::default();
+        row.protocol = protocol;
+        let client = LlmClientBuilder::with_transport(Arc::new(Capture::default()), &[row])
+            .with_region(lingxi_llm_client::protocol::Region::International)
+            .build()
+            .unwrap();
+        let request: ChatRequest = serde_json::from_value(json!({
+            "model":"Shared", "messages":[], "max_tokens":output,
+            "thinking":{"mode":"enabled","budget":{"tokens":16384},"effort":"high"}
+        }))
+        .unwrap();
+        let prepared = client
+            .prepare_on(
+                "backup",
+                &request,
+                &RequestOptions {
+                    automatic_thinking_budget: true,
+                    ..Default::default()
+                },
+                RequestMode::Complete,
+            )
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&prepared.request().body).unwrap();
+        assert_eq!(body.pointer(pointer), Some(&json!("high")), "{protocol:?}");
+        assert!(body.get("thinking").is_none(), "{protocol:?}");
+        assert_eq!(
+            request.thinking.as_ref().unwrap().budget,
+            Some(ThinkingBudget::Tokens(16384))
+        );
+    }
+}
+
+#[tokio::test]
+async fn preserved_explicit_effort_still_requires_selected_model_support() {
+    use lingxi_llm_client::{
+        protocol::{CapabilitySupport, ProtocolFamily},
+        RequestMode,
+    };
+    let mut row = profiles().remove(1);
+    row.connection = Default::default();
+    row.protocol = ProtocolFamily::OpenAiResponses;
+    row.models[0].info.features.effort.support = CapabilitySupport::Unsupported;
+    let capture = Arc::new(Capture::default());
+    let client = LlmClientBuilder::with_transport(capture.clone(), &[row])
+        .with_region(lingxi_llm_client::protocol::Region::International)
+        .build()
+        .unwrap();
+    let request: ChatRequest = serde_json::from_value(json!({
+        "model":"Shared", "messages":[],
+        "thinking":{"mode":"enabled","budget":{"tokens":16384},"effort":"high"}
+    }))
+    .unwrap();
+    let result = client
+        .prepare_on(
+            "backup",
+            &request,
+            &RequestOptions {
+                automatic_thinking_budget: true,
+                ..Default::default()
+            },
+            RequestMode::Complete,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(LlmError::UnsupportedCapability { .. })
+    ));
+    assert!(capture.0.lock().unwrap().is_empty());
+}

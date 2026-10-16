@@ -217,25 +217,27 @@ fn bound_automatic_thinking(request: &mut crate::protocol::ChatRequest, protocol
     }) {
         return;
     }
-    if !matches!(
+    let claude_protocol = matches!(
         protocol,
         ProtocolFamily::AnthropicMessages
             | ProtocolFamily::VertexClaude
             | ProtocolFamily::BedrockClaude
             | ProtocolFamily::FoundryClaude
-    ) {
-        // This budget came from the Claude application policy. Other wire
-        // families retain their own automatic reasoning defaults.
-        request.thinking = None;
-        return;
-    }
-    let Some(output) = request.max_tokens else {
-        return;
-    };
+    );
     let minimum = crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS;
-    if output <= minimum {
-        request.thinking = None;
-    } else if let Some(thinking) = request.thinking.as_mut() {
+    if !claude_protocol || request.max_tokens.is_some_and(|output| output <= minimum) {
+        // Only the manual mode/budget came from automatic Claude policy.
+        // Effort is an independent caller control and must still be validated
+        // and encoded by the selected protocol.
+        request.thinking = request
+            .thinking
+            .as_ref()
+            .and_then(|thinking| thinking.effort)
+            .map(|effort| crate::protocol::ThinkingConfig {
+                effort: Some(effort),
+                ..Default::default()
+            });
+    } else if let (Some(output), Some(thinking)) = (request.max_tokens, request.thinking.as_mut()) {
         thinking.budget = Some(ThinkingBudget::Tokens(tokens.min(output - 1)));
     }
 }

@@ -140,3 +140,6 @@ Client 和 prepared-call API 按每个实际连接重新解析预算，保留原
 标记。在每次 Claude 协议请求准备时，它会按实际输出预算重新约束；输出预算不足以
 容纳最低手动 thinking 预算时省略自动 thinking。显式 thinking 不使用该标记，继续
 执行协议校验。Native Lsn 的已绑定预算及其最小值例外仍使用独立的来源校验。
+
+移除自动 manual thinking 时保留独立的显式 effort，并继续按目标模型能力校验。
+调用方显式覆盖数字 thinking 预算后，应清除自动来源标记；仅设置 mode 或 effort 等级不改变预算来源。
