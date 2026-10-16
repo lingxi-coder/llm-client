@@ -297,7 +297,7 @@ pub fn recovery_output_budget(
             )
             | ("minimax", "api.minimax.io" | "api.minimax.chat")
     );
-    if (!documented_total && !issued.is_some_and(|value| value > 0))
+    if (!documented_total && issued.is_none_or(|value| value == 0))
         || profile.protocol == ProtocolFamily::GeminiInteractions
         || matches!(
             profile.auth,
