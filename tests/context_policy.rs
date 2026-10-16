@@ -204,6 +204,50 @@ fn official_catalog_price_boundaries_use_actual_inclusive_ranges() {
     }
 }
 #[test]
+fn context_price_boundaries_follow_effective_reasoning_rates() {
+    for (before, after, expected) in [
+        (Some(1.0), None, Some(1000)),
+        (None, Some(10.0), Some(1000)),
+        (Some(5.0), None, None),
+        (None, Some(5.0), None),
+        (Some(10.0), None, None),
+        (None, Some(1.0), None),
+    ] {
+        let mut p = profile(8192);
+        p.models[0].billing_mode = Some(BillingMode::PerToken);
+        let rates = |reasoning_per_million| TokenRates {
+            input_per_million: Some(1.0),
+            output_per_million: Some(5.0),
+            reasoning_per_million,
+            ..Default::default()
+        };
+        p.models[0].pricing = Some(TokenPricing {
+            rules: vec![
+                PriceRule {
+                    max_input_tokens: Some(1000),
+                    rates: rates(before),
+                    ..Default::default()
+                },
+                PriceRule {
+                    min_input_tokens: Some(1001),
+                    rates: rates(after),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let snapshot = resolved(&p, ContextPolicy::Auto, None);
+        assert_eq!(
+            snapshot.standard_price_input_tokens, expected,
+            "reasoning rate {before:?} -> {after:?} with output rate 5"
+        );
+        assert_eq!(
+            snapshot.effective_input_budget,
+            Some(expected.unwrap_or(8092))
+        );
+    }
+}
+#[test]
 fn unpriced_and_subscription_models_do_not_acquire_price_ceiling() {
     let profiles = lingxi_llm_client::builtin_providers().unwrap();
     let p = profiles

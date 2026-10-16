@@ -59,7 +59,11 @@ fn increased(a: &TokenRates, b: &TokenRates) -> bool {
         (a.cache_read_per_million, b.cache_read_per_million),
         (a.cache_write_per_million, b.cache_write_per_million),
         (a.cache_write_1h_per_million, b.cache_write_1h_per_million),
-        (a.reasoning_per_million, b.reasoning_per_million),
+        // Billing includes reasoning at the output rate when no separate rate exists.
+        (
+            a.reasoning_per_million.or(a.output_per_million),
+            b.reasoning_per_million.or(b.output_per_million),
+        ),
     ]
     .into_iter()
     .any(|(a, b)| matches!((a,b),(Some(a),Some(b)) if b > a))
