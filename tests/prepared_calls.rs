@@ -46,7 +46,7 @@ fn profiles(protocol: &str) -> Vec<ProviderProfile> {
                 "profile_name":name, "provider_id":"test", "base_url":"https://example.test",
                 "protocol":protocol, "auth":"none",
                 "connection":{"group":"test", "connection_id":name},
-                "models":[{"request_model":"wire", "display_model":"test", "billing_model":"wire", "metadata":{"applicationOutputTokens":4096}}]
+                "models":[{"request_model":"wire", "display_model":"test", "billing_model":"wire", "metadata":if matches!(protocol, "anthropic_messages" | "vertex_claude" | "bedrock_claude" | "foundry_claude") { json!({"applicationOutputTokens":4096}) } else { json!({}) }}]
             }))
             .unwrap()
         })
@@ -1633,6 +1633,7 @@ async fn profile_extras_cannot_hide_non_integer_output_budgets() {
     ] {
         let transport = http(200, "{}", false);
         let mut rows = profiles("open_ai_chat");
+        rows[0].models[0].metadata.application_output_tokens = Some(4096);
         rows[0].extra["body"] = json!({"max_tokens":value});
         let client = LlmClientBuilder::with_transport(transport.clone(), &rows)
             .with_region(Region::International)

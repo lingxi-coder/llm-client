@@ -51,6 +51,11 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request options.
 #[derive(Debug, Clone, Default)]
 pub struct RequestOptions {
+    /// The manual thinking budget was chosen automatically by the application.
+    /// Re-bound it to each Claude-protocol attempt's effective output ceiling.
+    /// Other protocol families use their own defaults instead of this Claude
+    /// policy. Explicit thinking keeps the selected codec's normal validation.
+    pub automatic_thinking_budget: bool,
     /// Explicit wire format for this call. Overrides the configured default;
     /// unsupported formats fail before encoding or network activity.
     pub protocol: Option<crate::protocol::ProtocolFamily>,

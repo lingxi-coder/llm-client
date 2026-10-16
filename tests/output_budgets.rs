@@ -264,6 +264,8 @@ fn native_chatgpt_does_not_silently_ignore_explicit_hard_budget() {
             .value,
         None
     );
+    selected.models[0].metadata.application_output_tokens = Some(4096);
+    assert!(lingxi_llm_client::client::resolve_output_budget(&selected, "shared", None).is_err());
 }
 
 #[test]
@@ -292,4 +294,119 @@ fn every_builtin_mandatory_budget_model_has_an_explicit_application_policy() {
                 .is_none_or(|cap| u64::from(budget.value.unwrap()) <= cap));
         }
     }
+}
+
+#[test]
+fn application_defaults_are_capped_without_inventing_optional_defaults() {
+    use lingxi_llm_client::client::{resolve_output_budget, OutputBudgetSource};
+    use lingxi_llm_client::protocol::ProtocolFamily;
+    for protocol in [
+        ProtocolFamily::AnthropicMessages,
+        ProtocolFamily::VertexClaude,
+        ProtocolFamily::BedrockClaude,
+        ProtocolFamily::FoundryClaude,
+        ProtocolFamily::OpenAiChat,
+        ProtocolFamily::OpenAiResponses,
+        ProtocolFamily::GeminiGenerateContent,
+    ] {
+        let mut row = profile("selected", 8192);
+        row.protocol = protocol;
+        row.models[0].metadata.application_output_tokens = Some(32768);
+        let resolved = resolve_output_budget(&row, "shared", None).unwrap();
+        assert_eq!(resolved.value, Some(8192));
+        assert_eq!(
+            resolved.source,
+            OutputBudgetSource::ClampedApplicationDefault
+        );
+        let explicit = resolve_output_budget(&row, "shared", Some(4096)).unwrap();
+        assert_eq!(explicit.value, Some(4096));
+        assert_eq!(explicit.source, OutputBudgetSource::Explicit);
+        row.models[0].metadata.application_output_tokens = Some(0);
+        assert!(resolve_output_budget(&row, "shared", None).is_err());
+        assert!(resolve_output_budget(&row, "shared", Some(0)).is_err());
+    }
+    for protocol in [
+        ProtocolFamily::OpenAiChat,
+        ProtocolFamily::OpenAiResponses,
+        ProtocolFamily::GeminiGenerateContent,
+    ] {
+        let mut row = profile("selected", 8192);
+        row.protocol = protocol;
+        row.models[0].request_model = "claude-sonnet-4-5".into();
+        assert_eq!(
+            resolve_output_budget(&row, "claude-sonnet-4-5", None)
+                .unwrap()
+                .value,
+            None
+        );
+    }
+    let mut row = profile("proxy", 8192);
+    row.protocol = ProtocolFamily::AnthropicMessages;
+    row.models[0].request_model = "claude-sonnet-4-5".into();
+    assert_eq!(
+        resolve_output_budget(&row, "claude-sonnet-4-5", None)
+            .unwrap()
+            .value,
+        Some(8192)
+    );
+    row.models[0].metadata.max_output_tokens = None;
+    assert_eq!(
+        resolve_output_budget(&row, "claude-sonnet-4-5", None)
+            .unwrap()
+            .value,
+        Some(32000)
+    );
+}
+
+#[test]
+fn duplicate_wire_ids_require_an_exact_model_row() {
+    use lingxi_llm_client::client::resolve_output_budget;
+    let mut row = profile("shared-wire", 8192);
+    row.protocol = lingxi_llm_client::protocol::ProtocolFamily::AnthropicMessages;
+    row.models[0].display_model = "Small".into();
+    row.models[0].metadata.application_output_tokens = Some(32000);
+    let mut large = row.models[0].clone();
+    large.display_model = "Large".into();
+    large.metadata.max_output_tokens = Some(64000);
+    large.metadata.application_output_tokens = Some(48000);
+    row.models.push(large);
+    assert!(resolve_output_budget(&row, "shared", None).is_err());
+    for (model, expected) in row.models.iter().zip([8192, 48000]) {
+        let selected = CodecContext::for_model(&row, model, RequestMode::Complete);
+        assert_eq!(
+            resolve_output_budget(selected.profile(), "shared", None)
+                .unwrap()
+                .value,
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn recovery_never_guesses_between_catalog_rows_with_shared_wire_ids() {
+    use lingxi_llm_client::client::recovery_output_budget;
+    use lingxi_llm_client::protocol::{Usage, UsageReport, UsageState};
+    let mut row = profile("ambiguous", 8192);
+    row.provider_id = "anthropic".into();
+    row.base_url = "https://api.anthropic.com".into();
+    row.models.push(row.models[0].clone());
+    row.models[1].display_model = "Large".into();
+    row.models[1].metadata.max_output_tokens = Some(65536);
+    let usage = UsageReport::measured(
+        Usage {
+            input_tokens: 1,
+            output_tokens: 4096,
+            ..Default::default()
+        },
+        UsageState::Complete,
+    );
+    assert_eq!(
+        recovery_output_budget(&row, "shared", &usage, Some(4096), None),
+        None
+    );
+    let selected = CodecContext::for_model(&row, &row.models[1], RequestMode::Complete);
+    assert_eq!(
+        recovery_output_budget(selected.profile(), "shared", &usage, Some(4096), None),
+        Some(8192)
+    );
 }

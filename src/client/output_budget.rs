@@ -14,8 +14,8 @@ impl OutputTokenLimits {
             max_output_tokens: metadata.max_output_tokens.filter(|n| *n > 0),
         }
     }
-    /// Automatic generation uses the provider default. Context metadata alone
-    /// does not establish that input and output share a window.
+    /// This limit-only helper does not select application defaults. Context
+    /// metadata alone does not establish a shared input/output window.
     pub fn budget(self, requested: Option<u32>, _input_tokens: u64, _headroom: u64) -> Option<u32> {
         requested.map(|n| {
             self.max_output_tokens.map_or(n, |cap| {
@@ -29,6 +29,7 @@ impl OutputTokenLimits {
 pub enum OutputBudgetSource {
     ProviderDefault,
     ApplicationDefault,
+    ClampedApplicationDefault,
     Explicit,
     ClampedExplicit,
 }
@@ -98,7 +99,16 @@ pub fn resolve_output_budget(
     model: &str,
     requested: Option<u32>,
 ) -> Result<ResolvedOutputBudget, LlmError> {
-    let selected = profile.models.iter().find(|row| row.request_model == model);
+    let mut matches = profile
+        .models
+        .iter()
+        .filter(|row| row.request_model == model);
+    let selected = matches.next();
+    if matches.next().is_some() {
+        return Err(invalid(
+            "output budget requires one exact selected model catalog row",
+        ));
+    }
     let maximum = selected
         .and_then(|row| row.metadata.max_output_tokens)
         .filter(|n| *n > 0);
@@ -130,41 +140,133 @@ pub fn resolve_output_budget(
             },
         });
     }
-    if !matches!(
+    let application_default = selected.and_then(|row| row.metadata.application_output_tokens);
+    let required = matches!(
         profile.protocol,
         ProtocolFamily::AnthropicMessages
             | ProtocolFamily::VertexClaude
             | ProtocolFamily::BedrockClaude
             | ProtocolFamily::FoundryClaude
-    ) {
+    );
+    if !required && application_default.is_none() {
         return Ok(ResolvedOutputBudget {
             value: None,
             maximum,
             source: OutputBudgetSource::ProviderDefault,
         });
     }
+    if profile.protocol == ProtocolFamily::OpenAiResponses
+        && matches!(
+            profile.auth,
+            crate::protocol::AuthStrategy::ChatGptOAuth
+                | crate::protocol::AuthStrategy::ChatGptPlan
+        )
+    {
+        return Err(LlmError::UnsupportedCapability {
+            message:
+                "the native ChatGPT Responses endpoint does not accept an application output budget"
+                    .into(),
+        });
+    }
     let identity = selected
         .and_then(|row| row.foundry.as_ref())
         .map(|deployment| deployment.model_id.as_str())
         .unwrap_or(model);
-    let value = selected.and_then(|row| row.metadata.application_output_tokens)
-        .or_else(|| claude_application_output_default(identity))
+    let value = application_default
+        .or_else(|| required.then(|| claude_application_output_default(identity)).flatten())
         .ok_or_else(|| invalid("this Messages model requires an explicit output budget or metadata.applicationOutputTokens"))?;
-    if value == 0 || maximum.is_some_and(|cap| u64::from(value) > cap) {
-        return Err(invalid(
-            "application output default must be positive and within the selected model ceiling",
-        ));
+    if value == 0 {
+        return Err(invalid("application output default must be positive"));
     }
+    let bounded = maximum.map_or(value, |cap| u64::from(value).min(cap) as u32);
     Ok(ResolvedOutputBudget {
-        value: Some(value),
+        value: Some(bounded),
         maximum,
-        source: OutputBudgetSource::ApplicationDefault,
+        source: if bounded == value {
+            OutputBudgetSource::ApplicationDefault
+        } else {
+            OutputBudgetSource::ClampedApplicationDefault
+        },
     })
 }
 fn invalid(message: &str) -> LlmError {
     LlmError::InvalidRequest {
         message: message.into(),
     }
+}
+
+/// Bound application-chosen manual thinking after resolving this attempt's
+/// output budget. The caller's request is never modified by preparation.
+fn bound_automatic_thinking(request: &mut crate::protocol::ChatRequest, protocol: ProtocolFamily) {
+    use crate::protocol::ThinkingBudget;
+    let Some(ThinkingBudget::Tokens(tokens)) = request
+        .thinking
+        .as_ref()
+        .and_then(|thinking| thinking.budget)
+    else {
+        return;
+    };
+    if tokens == 0 {
+        return;
+    }
+    if request.thinking.as_ref().is_some_and(|thinking| {
+        matches!(
+            thinking.mode,
+            Some(crate::protocol::ThinkingMode::Adaptive | crate::protocol::ThinkingMode::Disabled)
+        )
+    }) {
+        return;
+    }
+    if !matches!(
+        protocol,
+        ProtocolFamily::AnthropicMessages
+            | ProtocolFamily::VertexClaude
+            | ProtocolFamily::BedrockClaude
+            | ProtocolFamily::FoundryClaude
+    ) {
+        // This budget came from the Claude application policy. Other wire
+        // families retain their own automatic reasoning defaults.
+        request.thinking = None;
+        return;
+    }
+    let Some(output) = request.max_tokens else {
+        return;
+    };
+    let minimum = crate::providers::anthropic::request_policy::MIN_MANUAL_THINKING_TOKENS;
+    if output <= minimum {
+        request.thinking = None;
+    } else if let Some(thinking) = request.thinking.as_mut() {
+        thinking.budget = Some(ThinkingBudget::Tokens(tokens.min(output - 1)));
+    }
+}
+
+/// Share the same policy between preflight validation and actual preparation.
+pub(super) fn resolve_request_budget(
+    request: &crate::protocol::ChatRequest,
+    context: &crate::codecs::CodecContext,
+    automatic_thinking: bool,
+) -> Result<(crate::protocol::ChatRequest, Option<ResolvedOutputBudget>), LlmError> {
+    let mut request = request.clone();
+    if context.mode() == crate::RequestMode::CountTokens {
+        return Ok((request, None));
+    }
+    // A configured default must not overwrite and thereby hide a malformed
+    // raw profile budget before the final wire-budget validator can see it.
+    if let Some(body) = context.profile().extra.get("body") {
+        let body =
+            serde_json::to_vec(body).map_err(|_| invalid("invalid profile output budget body"))?;
+        super::executor::generation_budget_fields(&body)?;
+    }
+    let budget = resolve_output_budget(
+        context.profile(),
+        context.request_model(),
+        request.max_tokens,
+    )?;
+    request.max_tokens = budget.value;
+    if automatic_thinking {
+        bound_automatic_thinking(&mut request, context.profile().protocol);
+    }
+    Ok((request, Some(budget)))
 }
 
 /// Compute, but never dispatch, an increase using complete canonical counters.
@@ -201,10 +303,14 @@ pub fn recovery_output_budget(
     {
         return None;
     }
-    let selected = profile
+    let mut matches = profile
         .models
         .iter()
-        .find(|row| row.request_model == model)?;
+        .filter(|row| row.request_model == model);
+    let selected = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
     let cap = selected.metadata.max_output_tokens.filter(|n| *n > 0)?;
     let base = issued
         .unwrap_or(counts.output_tokens)

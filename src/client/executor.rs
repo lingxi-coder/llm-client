@@ -689,18 +689,12 @@ impl<'client> RequestExecutor<'client> {
         let profile = attempt.profile;
         // Resolve against this exact connection before thinking validation and
         // encoding. Preserve the caller's None/explicit intent across failover.
-        let mut attempt_request = req.request.clone();
-        let mut output_budget = None;
-        if mode != RequestMode::CountTokens {
-            let policy_profile = CodecContext::for_model(profile, attempt.model, mode);
-            let budget = super::resolve_output_budget(
-                policy_profile.profile(),
-                &attempt.model.request_model,
-                attempt_request.max_tokens,
-            )?;
-            attempt_request.max_tokens = budget.value;
-            output_budget = Some(budget);
-        }
+        let policy_context = CodecContext::for_model(profile, attempt.model, mode);
+        let (attempt_request, output_budget) = super::output_budget::resolve_request_budget(
+            req.request,
+            &policy_context,
+            opts.automatic_thinking_budget,
+        )?;
         let req = &ResolvedRequest {
             request: &attempt_request,
             attachments: req.attachments.clone(),
@@ -1243,7 +1237,12 @@ impl<'client> RequestExecutor<'client> {
                 .with_file_validation_time(self.clock.now());
             let backend = dispatch::chat(head.profile);
             let codec = backend.codec(head.profile, self.codecs)?;
-            backend.validate_host(req, &context, opts, codec.as_ref())?;
+            let (validation_request, _) = super::output_budget::resolve_request_budget(
+                req,
+                &context,
+                opts.automatic_thinking_budget,
+            )?;
+            backend.validate_host(&validation_request, &context, opts, codec.as_ref())?;
         }
         if opts
             .account_scope

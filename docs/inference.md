@@ -121,3 +121,22 @@ fn report(snapshot: &ClientSnapshot, route: &ResolvedRoute, response: &ChatRespo
 - 旧布尔 `capabilities` 已删除；模型、列表和路由统一使用三态 `capability_support`。
 
 - `TokenPricing::at` 和公开的 `pricing::estimate` 已移除。请使用客户端的价格查询和估算方法，通过 `PricingContext` 统一选择上下文、档位、提交方式与时段规则。
+
+### 输出上限与请求预算
+
+`metadata.maxOutputTokens` 是所选连接和模型声明的输出上限，不会单独触发发送预算字段。
+未指定 `max_tokens` 且未配置应用默认值时，允许省略预算的协议沿用服务端默认值。
+需要输出预算的 Claude 协议使用该模型的 `metadata.applicationOutputTokens`，或适用的
+Claude 应用策略；显式配置应用默认值也可以为其他支持硬预算的协议启用请求预算。
+显式预算和应用默认值都会限制到已知输出上限，默认值超限不再导致本地请求失败。
+未知的必填预算仍需配置；原生 ChatGPT Responses 不接受显式或配置的硬预算。
+
+Client 和 prepared-call API 按每个实际连接重新解析预算，保留原请求未指定／显式指定
+的意图。直接使用 `WireCodec` 的调用方应先通过 `resolve_output_budget` 解析预算；
+不能假定所有编码器都会注入应用默认值。若 profile 中多个目录项共享 wire model ID，
+应使用 `CodecContext::for_model` 传入精确选中的模型行。
+
+应用自动选择的手动 thinking 预算可通过 `RequestOptions.automatic_thinking_budget`
+标记。在每次 Claude 协议请求准备时，它会按实际输出预算重新约束；输出预算不足以
+容纳最低手动 thinking 预算时省略自动 thinking。显式 thinking 不使用该标记，继续
+执行协议校验。Native Lsn 的已绑定预算及其最小值例外仍使用独立的来源校验。
