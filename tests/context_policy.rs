@@ -40,6 +40,11 @@ fn a_direct_model_window_is_reported_as_explicit_caller_input() {
     let context = resolved(&p, ContextPolicy::Long, None);
     assert_eq!(context.context_window_tokens, Some(8192));
     assert_eq!(context.context_window_source, ContextWindowSource::Explicit);
+    assert!(!serde_json::to_value(&p.models[0].metadata)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .contains_key("contextWindowSource"));
 }
 #[test]
 fn output_planning_does_not_become_a_hard_output_reservation() {
