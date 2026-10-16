@@ -1606,6 +1606,7 @@ pub(crate) fn validate(request: &ChatRequest, context: &CodecContext) -> Result<
 #[cfg(test)]
 mod per_message_effort_identity_tests {
     use super::*;
+    use crate::client::NativeAnthropicRequestContext;
 
     fn profile() -> ProviderProfile {
         serde_json::from_value(serde_json::json!({
