@@ -318,7 +318,15 @@ pub fn recovery_output_budget(
         .unwrap_or(counts.output_tokens)
         .max(counts.output_tokens);
     let mut next = base.saturating_mul(2).min(cap).min(u64::from(u32::MAX));
-    if let Some(window) = effective_context.or(selected.metadata.context_window_tokens) {
+    let shared_window = selected
+        .metadata
+        .context
+        .as_ref()
+        .and_then(|c| c.shared_window);
+    if let Some(window) = effective_context
+        .or(selected.metadata.context_window_tokens)
+        .filter(|_| shared_window != Some(false))
+    {
         let input = counts
             .input_tokens
             .saturating_add(counts.cache_read_tokens)
