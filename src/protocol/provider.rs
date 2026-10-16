@@ -361,8 +361,8 @@ impl ConnectionSpec {
     }
 }
 
-/// Provider-published display metadata. Informational: it never participates in
-/// routing.
+/// Provider-published facts and application defaults for one exact model row.
+/// Context/output policies use these facts after selecting the route.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelMetadata {

@@ -12,7 +12,8 @@ pub struct ContextRequest {
     /// Planning only. Never serialized as an output limit or used as an exact count.
     pub planning_output_tokens: Option<u64>,
     pub safety_tokens: u64,
-    pub thinking: bool,
+    /// None conservatively retains a published thinking-mode input ceiling.
+    pub thinking: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,7 +135,7 @@ pub fn resolve_context(
     }
     let window = positive(metadata.context_window_tokens);
     let mut input = positive(metadata.max_input_tokens);
-    if request.thinking {
+    if request.thinking != Some(false) {
         input = minimum(
             input,
             context.and_then(|c| positive(c.thinking_max_input_tokens)),

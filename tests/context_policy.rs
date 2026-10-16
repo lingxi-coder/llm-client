@@ -77,7 +77,7 @@ fn thinking_limit_and_custom_policy_are_bounded_by_connection() {
             policy: Some(ContextPolicy::Custom {
                 input_tokens: 1000000,
             }),
-            thinking: true,
+            thinking: Some(true),
             ..Default::default()
         },
         Some(1024),

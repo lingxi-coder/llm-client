@@ -700,7 +700,7 @@ impl<'client> RequestExecutor<'client> {
         context_request.thinking = attempt_request
             .thinking
             .as_ref()
-            .is_some_and(|t| t.mode != Some(crate::protocol::ThinkingMode::Disabled));
+            .map(|t| t.mode != Some(crate::protocol::ThinkingMode::Disabled));
         let resolved_context = super::context::resolve_context(
             profile,
             attempt.model,
