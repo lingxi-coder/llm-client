@@ -361,6 +361,21 @@ impl ConnectionSpec {
     }
 }
 
+/// Origin of a selected model's raw context-window value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextWindowSource {
+    /// The value came from the SDK's built-in provider catalog.
+    Catalog,
+    /// The value was observed from the selected provider's live model directory.
+    Observation,
+    /// The caller or an explicit model setting supplied the value.
+    Explicit,
+    /// The available configuration did not identify the value's source.
+    #[default]
+    Unknown,
+}
+
 /// Provider-published facts and application defaults for one exact model row.
 /// Context/output policies use these facts after selecting the route.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -389,6 +404,10 @@ pub struct ModelMetadata {
     pub output_modalities: Vec<String>,
     #[serde(default)]
     pub context_window_tokens: Option<u64>,
+    /// In-memory provenance for `context_window_tokens`. This is derived from
+    /// catalog/configuration merge state and is not a provider metadata field.
+    #[serde(skip)]
+    pub context_window_source: ContextWindowSource,
     #[serde(default)]
     pub max_input_tokens: Option<u64>,
     #[serde(default)]

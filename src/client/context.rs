@@ -1,7 +1,7 @@
 //! Resolve context against the selected attempt. Never consult a global model-name cache.
 use crate::protocol::{
-    BillingMode, ContextPolicy, ContextRecommendation, LlmError, ModelProfile, PricingContext,
-    ProviderProfile, TokenRates,
+    BillingMode, ContextPolicy, ContextRecommendation, ContextWindowSource, LlmError, ModelProfile,
+    PricingContext, ProviderProfile, TokenRates,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,8 @@ pub struct ResolvedContext {
     pub display_model: String,
     pub billing_model: String,
     pub context_window_tokens: Option<u64>,
+    /// Provenance of the selected model's raw context-window value.
+    pub context_window_source: ContextWindowSource,
     pub max_input_tokens: Option<u64>,
     pub max_output_tokens: Option<u64>,
     pub shared_window: Option<bool>,
@@ -138,6 +140,10 @@ pub fn resolve_context(
         return Err(invalid("custom context input budget must be positive"));
     }
     let window = positive(metadata.context_window_tokens);
+    let context_window_source = match metadata.context_window_source {
+        ContextWindowSource::Unknown if window.is_some() => ContextWindowSource::Explicit,
+        source => source,
+    };
     let mut input = positive(metadata.max_input_tokens);
     if request.thinking != Some(false) {
         input = minimum(
@@ -184,6 +190,7 @@ pub fn resolve_context(
         display_model: model.display_model.clone(),
         billing_model: model.billing_model.clone(),
         context_window_tokens: window,
+        context_window_source,
         max_input_tokens: input,
         max_output_tokens: positive(metadata.max_output_tokens),
         shared_window: shared,

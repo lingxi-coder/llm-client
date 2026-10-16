@@ -411,7 +411,7 @@ async fn unsupported_configuration_versions_are_rejected_without_writes() {
 async fn explicit_overrides_outrank_observations_and_reset_keeps_observations() {
     let d = Dir::new();
     let http = Arc::new(Http(Mutex::new(
-        json!({"data":[{"id":"m","description":"observed"}]}),
+        json!({"data":[{"id":"m","description":"observed","context_length":200}]}),
     )));
     let (c, c_config) = client(&[profile(vec![model("m", 1.)])], http);
     c_config.set_config_dir(&d.0).await.unwrap();
@@ -430,11 +430,39 @@ async fn explicit_overrides_outrank_observations_and_reset_keeps_observations() 
         .await
         .unwrap();
     c_config.sync_provider("p", None).await.unwrap();
+    let observed_snapshot = c.snapshot();
+    let observed = &observed_snapshot.profile("p").unwrap().models[0];
+    assert_eq!(observed.description.as_deref(), Some("user"));
+    assert_eq!(observed.metadata.context_window_tokens, Some(200));
+    assert_eq!(
+        observed.metadata.context_window_source,
+        ContextWindowSource::Observation
+    );
+    c_config
+        .set_model_override(
+            "p",
+            &id,
+            ModelField::ContextWindowTokens,
+            FieldOverride::Set(json!(300)),
+        )
+        .await
+        .unwrap();
+    let explicit_snapshot = c.snapshot();
+    let explicit = &explicit_snapshot.profile("p").unwrap().models[0];
+    assert_eq!(explicit.metadata.context_window_tokens, Some(300));
+    assert_eq!(
+        explicit.metadata.context_window_source,
+        ContextWindowSource::Explicit
+    );
+    c_config
+        .clear_model_override("p", &id, ModelField::ContextWindowTokens)
+        .await
+        .unwrap();
     assert_eq!(
         c.snapshot().profile("p").unwrap().models[0]
-            .description
-            .as_deref(),
-        Some("user")
+            .metadata
+            .context_window_source,
+        ContextWindowSource::Observation
     );
     c_config
         .clear_model_override("p", &id, ModelField::Description)

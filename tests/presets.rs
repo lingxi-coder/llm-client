@@ -6,7 +6,9 @@
 use lingxi_llm_client::protocol::PricingContext;
 
 use lingxi_llm_client::presets::{builtin, merge};
-use lingxi_llm_client::protocol::{BillingMode, ProtocolFamily, ProviderProfile, Usage};
+use lingxi_llm_client::protocol::{
+    BillingMode, ContextWindowSource, ProtocolFamily, ProviderProfile, Usage,
+};
 use lingxi_llm_client::LlmClientBuilder;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -173,6 +175,21 @@ fn the_catalog_supplies_context_windows_rather_than_this_repo_guessing_them() {
         with_window * 2 > total,
         "most models should carry a published context window ({with_window} of \
          {total}); a hand-written list is what this replaced"
+    );
+    let opus = presets
+        .iter()
+        .find(|profile| profile.profile_name == "anthropic")
+        .and_then(|profile| {
+            profile
+                .models
+                .iter()
+                .find(|model| model.request_model == "claude-opus-4-6")
+        })
+        .expect("the Anthropic catalog includes Opus 4.6");
+    assert_eq!(opus.metadata.context_window_tokens, Some(1_000_000));
+    assert_eq!(
+        opus.metadata.context_window_source,
+        ContextWindowSource::Catalog
     );
 }
 

@@ -35,9 +35,10 @@
 //!   identity and of whether individual models support search.
 
 use crate::protocol::{
-    AuthStrategy, BillingMode, CapabilitySupport, ConnectionSpec, CredentialConfig, DirectoryRoute,
-    ModelCapabilitySupport, ModelMetadata, ModelProfile, PeakSchedule, PricingConfig,
-    ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, Region, TokenPricing,
+    AuthStrategy, BillingMode, CapabilitySupport, ConnectionSpec, ContextWindowSource,
+    CredentialConfig, DirectoryRoute, ModelCapabilitySupport, ModelMetadata, ModelProfile,
+    PeakSchedule, PricingConfig, ProtocolFamily, ProviderId, ProviderInfo, ProviderProfile, Region,
+    TokenPricing,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -401,6 +402,11 @@ fn model_profile(m: &CatalogModel) -> ModelProfile {
             input_modalities: m.input_modalities.clone(),
             output_modalities: m.output_modalities.clone(),
             context_window_tokens: m.context_window,
+            context_window_source: if m.context_window.is_some() {
+                ContextWindowSource::Catalog
+            } else {
+                ContextWindowSource::Unknown
+            },
             max_input_tokens: m.max_input,
             max_output_tokens: m.max_output,
             open_weights: m.open_weights,

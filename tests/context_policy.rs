@@ -33,6 +33,14 @@ fn same_name_connections_never_share_limits() {
         assert_eq!(snapshot.profile_name, format!("connection-{n}"));
     }
 }
+
+#[test]
+fn a_direct_model_window_is_reported_as_explicit_caller_input() {
+    let p = profile(8192);
+    let context = resolved(&p, ContextPolicy::Long, None);
+    assert_eq!(context.context_window_tokens, Some(8192));
+    assert_eq!(context.context_window_source, ContextWindowSource::Explicit);
+}
 #[test]
 fn output_planning_does_not_become_a_hard_output_reservation() {
     let p = profile(8192);

@@ -218,12 +218,14 @@ impl SavedProfile {
                 continue;
             };
             let mut model = base.clone();
+            let mut context_window_source = model.metadata.context_window_source;
             if let Some(observation) = self.observations.get(&model.request_model) {
                 if let Some(description) = &observation.description {
                     model.description = Some(description.clone());
                 }
                 if let Some(context) = observation.context_window {
                     model.metadata.context_window_tokens = Some(context);
+                    context_window_source = crate::protocol::ContextWindowSource::Observation;
                 }
                 if let Some(features) = &observation.inference_features {
                     model.info.features.overlay(features);
@@ -233,6 +235,10 @@ impl SavedProfile {
                 }
             }
             apply(&mut model, &row.overrides)?;
+            if row.overrides.contains_key(&ModelField::ContextWindowTokens) {
+                context_window_source = crate::protocol::ContextWindowSource::Explicit;
+            }
+            model.metadata.context_window_source = context_window_source;
             model.info.pricing = model.pricing.clone();
             model.info.features = model.info.features.on_connection(&connection_features);
             let compatible = !self.incompatible_models.contains(&model.request_model);

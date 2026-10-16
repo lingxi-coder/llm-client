@@ -70,10 +70,10 @@ pub use model_suggestion::{
     native_model_suggestion, native_static_model_suggestion_defaults, NativeModelSuggestionFacts,
 };
 pub use provider::{
-    AuthStrategy, AzureConfig, BatchPricing, BillingMode, ConnectionSpec, CredentialConfig,
-    DirectoryRoute, FailoverTriggers, FoundryDeployment, FoundryHosting, ModelMetadata,
-    ModelProfile, PeakSchedule, PricingConfig, ProtocolFamily, ProviderInfo, ProviderProfile,
-    Region, SigningConfig, Submission, TokenPricing,
+    AuthStrategy, AzureConfig, BatchPricing, BillingMode, ConnectionSpec, ContextWindowSource,
+    CredentialConfig, DirectoryRoute, FailoverTriggers, FoundryDeployment, FoundryHosting,
+    ModelMetadata, ModelProfile, PeakSchedule, PricingConfig, ProtocolFamily, ProviderInfo,
+    ProviderProfile, Region, SigningConfig, Submission, TokenPricing,
 };
 pub use secret::Secret;
 
