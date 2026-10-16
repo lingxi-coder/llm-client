@@ -234,7 +234,15 @@ pub(crate) fn apply_beta_header(
         && contains_only_per_message_effort_system_rows(request))
         || foundry_per_turn_effort;
     let has_output_config = has_effort && !native_per_turn_effort;
-    let has_tool_changes = supports_profile(profile) && has_tool_changes(request);
+    // Native main requests receive the admitted MCTC/inline beta set from the
+    // host's request-local gate snapshot. Do not infer those Native-only betas
+    // from replayed system-message history here. Standalone SDK callers retain
+    // the provider-profile behavior below.
+    let native_tool_change_betas_are_host_owned =
+        context.native_anthropic_main_request() || context.native_foundry_main_request();
+    let has_tool_changes = !native_tool_change_betas_are_host_owned
+        && supports_profile(profile)
+        && has_tool_changes(request);
     if !(has_tool_changes || has_clear_at || has_effort) {
         return;
     }
@@ -1613,6 +1621,111 @@ mod per_message_effort_identity_tests {
             }]
         }))
         .expect("fixture profile")
+    }
+
+    fn request_with_tool_addition() -> ChatRequest {
+        let mut request = ChatRequest::new("claude-opus-5-5");
+        request.messages.push(ConversationMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::ProviderContent {
+                protocol: ProtocolFamily::AnthropicMessages,
+                value: JsonPayload::parse(
+                    r#"{"type":"tool_addition","tool":{"type":"tool_reference","name":"example"}}"#,
+                )
+                .expect("tool addition source"),
+            }],
+            native_options: Vec::new(),
+        });
+        request
+    }
+
+    fn native_main_context(
+        profile: &ProviderProfile,
+        gates: NativeAnthropicRequestContext,
+    ) -> CodecContext {
+        let admission =
+            crate::client::NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+                &profile.profile_name,
+                &profile.base_url,
+            );
+        CodecContext::for_model(
+            profile,
+            &profile.models[0],
+            crate::codecs::RequestMode::Complete,
+        )
+        .with_native_anthropic_endpoint_admission(Some(&admission))
+        .with_native_anthropic_request_context(Some(gates))
+    }
+
+    #[test]
+    fn native_main_tool_change_betas_are_host_gated_while_standalone_inference_remains() {
+        let profile = profile();
+        let request = request_with_tool_addition();
+        let admission =
+            crate::client::NativeAnthropicEndpointAdmission::selected_first_party_messages_endpoint(
+                &profile.profile_name,
+                &profile.base_url,
+            );
+        let native_without_snapshot = CodecContext::for_model(
+            &profile,
+            &profile.models[0],
+            crate::codecs::RequestMode::Complete,
+        )
+        .with_native_anthropic_endpoint_admission(Some(&admission));
+        let mut headers = Vec::new();
+        apply_beta_header(&request, &native_without_snapshot, &mut headers);
+        assert!(
+            headers.is_empty(),
+            "a Native main request without its required gate snapshot fails closed"
+        );
+
+        let native = native_main_context(
+            &profile,
+            NativeAnthropicRequestContext {
+                mid_conversation_tool_changes: true,
+                mid_conversation_tool_changes_feature_gate: false,
+                inline_tools_feature_gate: false,
+                ..Default::default()
+            },
+        );
+
+        headers.clear();
+        apply_beta_header(&request, &native, &mut headers);
+        assert!(
+            headers.is_empty(),
+            "Native message history cannot bypass host gates"
+        );
+
+        let standalone = CodecContext::for_model(
+            &profile,
+            &profile.models[0],
+            crate::codecs::RequestMode::Complete,
+        );
+        apply_beta_header(&request, &standalone, &mut headers);
+        assert!(headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("anthropic-beta") && value.contains(INLINE_TOOLS_BETA)
+        }));
+    }
+
+    #[test]
+    fn native_main_preserves_host_emitted_mctc_and_inline_betas_without_reinferring_them() {
+        let profile = profile();
+        let request = request_with_tool_addition();
+        let native = native_main_context(
+            &profile,
+            NativeAnthropicRequestContext {
+                mid_conversation_tool_changes: true,
+                mid_conversation_tool_changes_feature_gate: true,
+                inline_tools_feature_gate: true,
+                ..Default::default()
+            },
+        );
+        let expected = format!("{TOOL_CHANGE_REFERENCES_BETA},{INLINE_TOOLS_BETA}");
+        let mut headers = vec![("anthropic-beta".into(), expected.clone())];
+
+        apply_beta_header(&request, &native, &mut headers);
+
+        assert_eq!(headers, vec![("anthropic-beta".into(), expected)]);
     }
 
     #[test]

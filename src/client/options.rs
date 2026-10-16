@@ -234,6 +234,11 @@ pub struct NativeAnthropicRequestContext {
     pub afk_mode: bool,
     /// Whether Native admitted mid-conversation tool changes for this request.
     pub mid_conversation_tool_changes: bool,
+    /// Host-sampled B6 and `tengu_foamy_spring` gate for the MCTC beta.
+    /// Route/model capability and refusal decisions are carried separately.
+    pub mid_conversation_tool_changes_feature_gate: bool,
+    /// Host-sampled additional Native `wPt()` gate for inline tool definitions.
+    pub inline_tools_feature_gate: bool,
     /// Host-observed intent to resume an incomplete thinking block. This is
     /// execution context only and is never serialized into the provider body.
     pub resume_incomplete_thinking: bool,
