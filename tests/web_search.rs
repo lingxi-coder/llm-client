@@ -354,6 +354,7 @@ fn builtin_search_adapters_are_declared_only_on_verified_endpoints() {
         ("gemini", "gemini"),
         ("grok-responses", "xai"),
         ("deepseek-search", "deepseek"),
+        ("deepseek-responses", "deepseek"),
         ("glm", "glm"),
         ("kimi-search", "kimi"),
         ("kimi-search-intl", "kimi"),

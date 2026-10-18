@@ -29,7 +29,7 @@ credential_hint = "sk-"
 # omits that turn's reasoning. With thinking on it also answers 400 to a forced
 # tool choice — `required` or a named function — while `none`, `auto` and the
 # tools themselves are all accepted. Incompatible forced choices are rejected.
-extra = { supports_previous_response_id = false }
+extra = { supports_previous_response_id = false, web_search = "deepseek" }
 
 # This vendor charges half rate outside published peak hours, which is most of
 # the week. The prices on each model below are the peak rates, because that is

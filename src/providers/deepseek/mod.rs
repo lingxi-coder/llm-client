@@ -7,3 +7,5 @@ pub use client::DeepSeekClient;
 pub(crate) mod search;
 pub(crate) mod structured;
 pub(crate) mod token_count;
+
+pub mod web;

@@ -214,8 +214,37 @@ pub fn supports_with_config(
     if crate::providers::openai::codex_search::supports(profile) {
         return crate::providers::openai::codex_search::validate_config(config).is_ok();
     }
+    let model = if profile.protocol == crate::protocol::ProtocolFamily::OpenAiResponses
+        && profile
+            .extra
+            .get("web_search")
+            .and_then(serde_json::Value::as_str)
+            == Some("deepseek")
+    {
+        if !profile
+            .models
+            .iter()
+            .any(|model| model.request_model == "deepseek-v4-pro")
+        {
+            return false;
+        }
+        "deepseek-v4-pro"
+    } else {
+        "capability-probe"
+    };
+    supports_model_with_config(profile, model, config)
+}
+/// Check hosted search on an actual wire model; some adapters are model-specific.
+pub fn supports_model_with_config(
+    profile: &crate::protocol::ProviderProfile,
+    model: &str,
+    config: &crate::protocol::WebSearchConfig,
+) -> bool {
+    if crate::providers::openai::codex_search::supports(profile) {
+        return crate::providers::openai::codex_search::validate_config(config).is_ok();
+    }
     let mut request = serde_json::from_value::<crate::protocol::ChatRequest>(
-        json!({"model":"capability-probe", "messages":[]}),
+        json!({"model":model, "messages":[]}),
     )
     .expect("static search request");
     request.set_hosted_web_search(Some(config.clone()));

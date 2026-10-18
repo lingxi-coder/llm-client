@@ -40,6 +40,7 @@ let search = WebSearchConfig {
 | `glm` | `open_ai_chat` | `tools: [{type: "web_search", web_search: {...}}]` | One `allowed_domains` domain; engine specified by the profile |
 | `kimi` | `open_ai_responses` | `web_search`, also requesting `action.sources` | `allowed_domains`, up to 100 |
 | `deepseek` | `anthropic_messages` | Basic Anthropic-compatible search format | None; unconfirmed filtering and usage limits are rejected |
+| `deepseek` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `deepseek-v4-pro` only; no extra controls |
 | `xai` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains` or `blocked_domains`, up to 5 |
 
 Codex OAuth at `https://chatgpt.com/backend-api/codex` uses the standalone `alpha/search` HTTP endpoint. Attach provider-native `CodexSearchRequest { id, query }` and `HostedTool::WebSearch` configuration, then execute with `complete_in()` through normal authentication and request policy. Its text and native `results` become search output and citations; absent token usage stays `Missing`. Responses Lite accepts client-executed tool declarations, not hosted Responses search tools, so generation cannot substitute for standalone search. This follows [Codex SearchClient](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/search.rs) and the [standalone search tool](https://github.com/openai/codex/blob/main/codex-rs/ext/web-search/src/tool.rs).
@@ -88,7 +89,7 @@ request.messages.push(ConversationMessage::user_text("搜索今天的科技新�
 request.set_hosted_web_search(Some(WebSearchConfig::default()));
 ```
 
-DeepSeek's official [Claude Code integration documentation](https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/claude_code/) states that its Anthropic endpoint supports native search, while its [Responses compatibility table](https://api-docs.deepseek.com/guides/responses_api/) explicitly lists `web_search` as ignored. Therefore, search is integrated only through a separate Anthropic connection here. Sending `web_search_20250305` is an inference based on Claude tool compatibility: DeepSeek does not separately document a tool version or advanced options, and this has not yet been verified with real credentials. The existing `deepseek` Chat connection continues to reject common search options. The DeepSeek search connection permits replay of unsigned thinking blocks; other Anthropic connections still require the original signatures.
+The `deepseek-search` connection supports hosted search through Anthropic Messages. `deepseek-responses` supports Responses hosted search only with `deepseek-v4-pro`; the client rejects `deepseek-flash`, undocumented domain filters, and `max_uses`. Messages search allows unsigned thinking replay while other Anthropic connections still require signatures. Independent Search/Fetch uses `DeepSeekClient::web()` below and does not require model generation.
 
 ## China and international profiles
 
@@ -162,3 +163,29 @@ This implementation follows the official interface documentation below and uses 
 - [OpenRouter Web Search Server Tool](https://openrouter.ai/docs/guides/features/server-tools/web-search)
 
 Verification used local fixtures in official formats and simulated transport, without real API keys. It does not establish account permissions, model availability, or actual charges.
+
+## Independent DeepSeek Search / Fetch
+
+```rust,no_run
+# async fn example(client: &lingxi_llm_client::LlmClient, options: &lingxi_llm_client::RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+use lingxi_llm_client::providers::{DeepSeekClient, deepseek::web::{DeepSeekSearchRequest, DeepSeekFetchRequest}};
+let provider = client.provider::<DeepSeekClient>("deepseek")?;
+let mut query = DeepSeekSearchRequest::new("DeepSeek release site:github.com");
+query.count = 5;
+query.need_content = true;
+let results = provider.web().search(&query, options).await?;
+for result in &results.results {
+    println!("{} {}\n{}", result.title, result.url, result.summary);
+}
+let page = provider.web().fetch(&DeepSeekFetchRequest::new("https://example.com/article"), options).await?;
+println!("{}\n{}", page.title, page.content);
+# Ok(()) }
+```
+
+Independent operations accept only exact first-party DeepSeek profiles (`deepseek`, `deepseek-search`, or `deepseek-responses`); custom gateways are never redirected. Supply an API key through per-operation `RequestOptions.credential` or a registered authenticator. Search query / ori_question allow 1–128 Unicode characters and count allows 1–50. `with_domains()` encodes documented `site:` / `-site:` operators and checks the resulting query length. Fetch accepts HTTP(S) URLs without credentials, up to 8192 characters.
+
+Each call sends one request, with a default 60-second total deadline and a 16 MiB response limit. Errors retain status, request ID, classification and numeric Retry-After. HTTP 402 means insufficient balance; 429 means rate limited. Hosts own retries and account-level pacing: Search and Fetch each allow 5 QPS.
+
+Successful responses expose `billable_requests()` and `cost_usd()`: $0.00075 per successful nonempty request, zero for empty results/content. Costs are estimates from the published price, not account invoices. These operations consume no generation tokens and do not automatically enter model-generation cost accounting.
+
+[DeepSeek Search/Fetch guide](https://api-docs.deepseek.com/guides/search/) · [DeepSeek Responses support](https://api-docs.deepseek.com/guides/responses_api/)

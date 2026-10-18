@@ -40,6 +40,7 @@ let search = WebSearchConfig {
 | `glm` | `open_ai_chat` | `tools: [{type: "web_search", web_search: {...}}]` | 一个 `allowed_domains` 域名；引擎由 profile 指定 |
 | `kimi` | `open_ai_responses` | `web_search`，同时请求 `action.sources` | `allowed_domains`，最多 100 个 |
 | `deepseek` | `anthropic_messages` | 基础 Anthropic 搜索兼容格式 | 无；未确认的过滤及次数控制均拒绝 |
+| `deepseek` | `open_ai_responses` | `tools: [{type: "web_search"}]` | 仅 `deepseek-v4-pro`；不支持额外选项 |
 | `xai` | `open_ai_responses` | `tools: [{type: "web_search"}]` | `allowed_domains` 或 `blocked_domains`，最多 5 个 |
 
 Codex OAuth 的 `https://chatgpt.com/backend-api/codex` 使用独立的 `alpha/search` HTTP 接口。请求携带 provider-native `CodexSearchRequest { id, query }` 和 `HostedTool::WebSearch` 配置，并通过 `complete_in()` 执行；原有认证和请求策略仍适用。该接口返回搜索文本和真实 `results` 来源，缺失 token usage 时保持 `Missing`。Responses Lite 只接受客户端工具声明，不能执行 hosted Responses 搜索；普通生成请求不能代替独立搜索。实现依据 [Codex SearchClient](https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/search.rs) 和 [独立搜索工具](https://github.com/openai/codex/blob/main/codex-rs/ext/web-search/src/tool.rs)。
@@ -88,7 +89,7 @@ request.messages.push(ConversationMessage::user_text("搜索今天的科技新�
 request.set_hosted_web_search(Some(WebSearchConfig::default()));
 ```
 
-DeepSeek 官方 [Claude Code 接入文档](https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/claude_code/) 声明其 Anthropic 端点支持原生搜索，而 [Responses 兼容表](https://api-docs.deepseek.com/guides/responses_api/) 明确将 `web_search` 列为忽略。故此处只在单独的 Anthropic 连接接入。发送 `web_search_20250305` 是依据 Claude 工具兼容性的推断：DeepSeek 未在文档中单独给出工具版本或高级选项，也尚未用真实凭证验证。原有 `deepseek` Chat 连接继续拒绝统一搜索选项。DeepSeek 搜索连接允许重放无签名 thinking 块，其他 Anthropic 连接仍要求原有签名。
+DeepSeek 的 `deepseek-search` 连接通过 Anthropic Messages 提供模型内托管搜索。`deepseek-responses` 通过 Responses 提供托管搜索，仅支持 `deepseek-v4-pro`；`deepseek-flash` 会被客户端明确拒绝。未文档化的域名过滤和 `max_uses` 同样拒绝。Messages 搜索连接允许重放无签名 thinking 块；其他 Anthropic 连接仍要求原有签名。独立 Search/Fetch 使用下面的 `DeepSeekClient::web()`，不依赖模型触发搜索。
 
 ## 中国区与国际区 Profile
 
@@ -162,3 +163,29 @@ Claude 的普通响应把需要原样重放的搜索块和带搜索引用的文�
 - [OpenRouter Web Search Server Tool](https://openrouter.ai/docs/guides/features/server-tools/web-search)
 
 验证使用官方格式的本地 fixture 和模拟传输，不依赖真实 API key；不代表已验证账户权限、模型可用性或实际收费。
+
+## Independent DeepSeek Search / Fetch
+
+```rust,no_run
+# async fn example(client: &lingxi_llm_client::LlmClient, options: &lingxi_llm_client::RequestOptions) -> Result<(), Box<dyn std::error::Error>> {
+use lingxi_llm_client::providers::{DeepSeekClient, deepseek::web::{DeepSeekSearchRequest, DeepSeekFetchRequest}};
+let provider = client.provider::<DeepSeekClient>("deepseek")?;
+let mut query = DeepSeekSearchRequest::new("DeepSeek release site:github.com");
+query.count = 5;
+query.need_content = true;
+let results = provider.web().search(&query, options).await?;
+for result in &results.results {
+    println!("{} {}\n{}", result.title, result.url, result.summary);
+}
+let page = provider.web().fetch(&DeepSeekFetchRequest::new("https://example.com/article"), options).await?;
+println!("{}\n{}", page.title, page.content);
+# Ok(()) }
+```
+
+独立接口仅使用精确的 DeepSeek 官方连接，支持 `deepseek`、`deepseek-search` 和 `deepseek-responses`，不会把自定义网关重定向到官方域名。API Key 通过每次操作的 `RequestOptions.credential` 或已注册的 authenticator 提供。Search 的 query / ori_question 为 1–128 个 Unicode 字符，count 为 1–50；`with_domains()` 将域名约束编码为官方 `site:` / `-site:` 语法，并检查编码后的查询长度。Fetch 只接受无用户名密码的 HTTP(S) URL，最多 8192 个字符。
+
+每次调用只发一次请求，默认总超时 60 秒，响应上限 16 MiB。错误保留 HTTP 状态、request ID、分类和数字形式的 Retry-After；402 表示余额不足，429 表示限流。宿主负责重试和账户级节流，Search / Fetch 各自限制为 5 QPS。
+
+成功响应提供 `billable_requests()` 和 `cost_usd()`：每个成功且有结果的请求 $0.00075，空搜索结果或空正文为 0；费用依据官方公开单价估算，不代表账户账单。它们不产生模型 token 用量，也不自动进入模型生成的费用流水。
+
+[DeepSeek Search/Fetch guide](https://api-docs.deepseek.com/guides/search/) · [DeepSeek Responses support](https://api-docs.deepseek.com/guides/responses_api/)

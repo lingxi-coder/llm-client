@@ -65,6 +65,7 @@ Remote 设备间共享图片、附件引用和 provider 文件生命周期的说
 | JSON 与 Schema 输出 | 约束输出格式，并校验 JSON/schema 或反序列化为 Rust 类型 | OpenAI、Anthropic、Gemini；OpenRouter 按上游模型；其他兼容服务须核实 JSON Object / Schema 各自支持 | [输出契约](docs/services.md) |
 | 有限选项 Decision | 一次请求回答多个单选题；返回答案、执行连接与用量 | OpenAI Responses、Anthropic、Gemini、xAI；北京 Qwen 严格模式模型限文本。首版使用结构化输出，并非 OpenAI 原生 Decisions | [Decision API](docs/api.md#decision-api) |
 | 联网搜索与引用 | 由服务端搜索网页，返回来源与引用 | OpenAI、Anthropic、Gemini、OpenRouter、GLM/Z.AI、MiniMax、Kimi Search、Qwen Search、DeepSeek Search；xAI 需自定义 Responses 搜索 profile | [搜索矩阵](docs/web-search.md) |
+| 独立网页搜索与抓取 | 直接返回结构化搜索结果或 Markdown 正文，无需模型生成 | DeepSeek 官方 Search/Fetch API | [搜索与抓取](docs/web-search.md#independent-deepseek-search--fetch) |
 | 显式提示缓存 | 复用工具、system 或消息前缀，减少重复输入开销 | OpenAI Responses（GPT-5.6+ 原生 options 与独立 retention）；Anthropic / Messages；MiniMax 仅五分钟断点。服务端自动缓存另计 | [OpenAI Responses](docs/openai-responses-prompt-cache.md) · [提示缓存总览](docs/services.md) |
 | 远端上下文缓存 | 创建、读取、更新和删除可复用的上下文缓存资源 | Gemini（独立 cachedContents 服务） | [Gemini Cache](docs/gemini-context-cache.md) |
 | 网关响应缓存 | 复用完整响应，读取服务端明确返回的 HIT/MISS | OpenRouter Chat、Responses、Messages、Embeddings | [OpenRouter Cache](docs/services.md) |

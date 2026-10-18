@@ -1,5 +1,9 @@
 # Provider protocol and feature review — 2026-10-12
 
+Update (2026-10-18): the DeepSeek row below describes the original audit snapshot.
+Current support includes independent Search/Fetch and Responses hosted search on
+`deepseek-v4-pro`; see [current web-search documentation](web-search.en.md).
+
 The SDK separates provider identity, account, wire format, and feature support.
 Changing the conversation format does not grant a different account's tools,
 audio services, model entitlement, region, or billing product.
