@@ -238,11 +238,47 @@ pub(crate) fn is_builtin_profile(profile_name: &str) -> bool {
     PRESETS.iter().any(|(name, _)| *name == profile_name)
 }
 
-fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError> {
+/// A complete provider definition plus all declared model identities, including
+/// service-only models that the connection does not expose for chat.
+pub struct ParsedProviderDefinition {
+    pub profile: ProviderProfile,
+    pub declared_models: Vec<String>,
+}
+
+/// Resolve an embedded definition without consulting user configuration.
+pub fn builtin_provider_definition(
+    profile_name: &str,
+) -> Result<Option<ParsedProviderDefinition>, PresetError> {
+    PRESETS
+        .iter()
+        .find(|(name, _)| *name == profile_name)
+        .map(|(_, text)| parse_provider_definition(profile_name, text))
+        .transpose()
+}
+
+/// Parse a published catalog definition with the same lowering rules as the
+/// embedded catalog. This reads no files, environment variables or credentials.
+pub fn parse_provider_definition(
+    profile_name: &str,
+    text: &str,
+) -> Result<ParsedProviderDefinition, PresetError> {
     let p: Preset = ::toml::from_str(text).map_err(|e| PresetError::Invalid {
         profile_name: profile_name.to_owned(),
         message: e.to_string(),
     })?;
+    let declared_models = p.model.iter().map(|model| model.id.clone()).collect();
+    let profile = lower_definition(profile_name, p)?;
+    Ok(ParsedProviderDefinition {
+        profile,
+        declared_models,
+    })
+}
+
+fn parse(profile_name: &str, text: &str) -> Result<ProviderProfile, PresetError> {
+    parse_provider_definition(profile_name, text).map(|definition| definition.profile)
+}
+
+fn lower_definition(profile_name: &str, p: Preset) -> Result<ProviderProfile, PresetError> {
     if p.model.is_empty() {
         return Err(PresetError::NoModels {
             profile_name: profile_name.to_owned(),
@@ -424,5 +460,50 @@ fn catalog_support(value: Option<bool>) -> CapabilitySupport {
         Some(true) => CapabilitySupport::Supported,
         Some(false) => CapabilitySupport::Unsupported,
         None => CapabilitySupport::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod published_definition_tests {
+    use super::*;
+
+    #[test]
+    fn standalone_definition_keeps_execution_facts_and_source_model_identity() {
+        let source = PRESETS
+            .iter()
+            .find(|(name, _)| *name == "deepseek")
+            .unwrap()
+            .1;
+        let parsed = parse_provider_definition("published-deepseek", source).unwrap();
+        assert_eq!(parsed.profile.profile_name, "published-deepseek");
+        assert_eq!(parsed.profile.base_url, "https://api.deepseek.com");
+        assert!(parsed.profile.pricing.peak.is_some());
+        assert!(parsed
+            .declared_models
+            .contains(&"deepseek-flash".to_owned()));
+        assert_eq!(
+            serde_json::to_value(&parsed.profile.inference).unwrap()["reasoning"],
+            "thinking_type"
+        );
+        assert!(!parsed.profile.connection.protocol_profiles.is_empty());
+    }
+
+    #[test]
+    fn standalone_definition_rejects_invalid_source_and_keeps_service_only_ids() {
+        assert!(parse_provider_definition("broken", "not valid TOML = [").is_err());
+        assert!(builtin_provider_definition("not-a-provider")
+            .unwrap()
+            .is_none());
+        let definition = builtin_provider_definition("google").unwrap();
+        // Every parsed embedded profile agrees with its complete declared set.
+        for (name, source) in PRESETS {
+            let parsed = parse_provider_definition(name, source).unwrap();
+            assert!(parsed
+                .profile
+                .models
+                .iter()
+                .all(|m| parsed.declared_models.contains(&m.request_model)));
+        }
+        let _ = definition;
     }
 }
