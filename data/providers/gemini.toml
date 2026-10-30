@@ -1171,6 +1171,43 @@ source = "https://ai.google.dev/gemini-api/docs/pricing"
 verified_at = "2026-09-24"
 valid_from = { local = "2027-01-01T00:00:00" } # Unconfirmed zone: do not assume UTC or Pacific.
 [[model]]
+id = "gemini-3.8-flash"
+name = "Gemini 3.8 Flash"
+description = "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning"
+family = "gemini-flash"
+release_date = "2026-09-02"
+last_updated = "2026-09-02"
+context_window = 1048576
+max_input = 1048576
+context = { sharedWindow = false }
+max_output = 65536
+input_modalities = ["text", "image", "video", "audio", "pdf"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = true
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 0.75
+output_per_million = 3.75
+cache_read_per_million = 0.075
+source = "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash"
+
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+modes = ["enabled", "adaptive"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["low", "medium", "high"], default = "medium" }
+
+
+
+[[model]]
 id = "gemini-embedding-001"
 name = "Gemini Embedding 001"
 description = "Embedding model for semantic search, retrieval, clustering, and ranking pipelines"
