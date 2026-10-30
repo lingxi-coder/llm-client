@@ -725,6 +725,50 @@ fn failed_parse_retains_response_and_terminal_status_is_required() {
         Some(json!("ok"))
     );
 }
+
+#[test]
+fn schema_regex_uses_ecmascript_whitespace() {
+    let whitespace = [
+        '\u{0009}', '\u{000a}', '\u{000b}', '\u{000c}', '\u{000d}', '\u{0020}', '\u{00a0}',
+        '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}',
+        '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}', '\u{200a}', '\u{2028}', '\u{2029}',
+        '\u{202f}', '\u{205f}', '\u{3000}', '\u{feff}',
+    ];
+    let non_whitespace = ['a', '0', '\u{0085}', '\u{180e}', '\u{200b}'];
+    for (pattern, whitespace_matches) in [
+        (r"^\s+$", true),
+        (r"^\S+$", false),
+        (r"^[\s]+$", true),
+        (r"^[\S]+$", false),
+    ] {
+        let format = OutputFormat::JsonSchema {
+            name: "whitespace".into(),
+            strict: false,
+            schema: JsonPayload::from_generated_value(&json!({
+                "type": "object",
+                "properties": {"answer": {"type": "string", "pattern": pattern}},
+                "required": ["answer"]
+            }))
+            .unwrap(),
+        };
+        for (characters, expected) in [
+            (whitespace.as_slice(), whitespace_matches),
+            (non_whitespace.as_slice(), !whitespace_matches),
+        ] {
+            for &character in characters {
+                let text = json!({"answer": character.to_string()}).to_string();
+                let valid = response(&text, StopReason::EndTurn)
+                    .structured_json(&format)
+                    .is_ok();
+                assert_eq!(
+                    valid, expected,
+                    "pattern {pattern}, U+{:04X}",
+                    character as u32
+                );
+            }
+        }
+    }
+}
 #[test]
 fn json_mode_is_not_schema_mode() {
     let r = request(OutputFormat::JsonObject);
