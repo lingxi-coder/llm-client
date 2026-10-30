@@ -1875,6 +1875,43 @@ source = "https://developers.openai.com/api/docs/models/gpt-6-luna"
 verified_at = "2026-09-24"
 
 [[model]]
+id = "gpt-6.1-terra"
+name = "GPT-6.1 Terra"
+description = "OpenAI's fast, efficient model for visual reasoning, computer use, and writing."
+family = "gpt-terra"
+knowledge_cutoff = "2026-06-01"
+release_date = "2026-10-26"
+last_updated = "2026-10-26"
+context_window = 1050000
+context = { sharedWindow = true }
+max_input = 922000
+max_output = 128000
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+structured_output = true
+temperature = false
+attachment = true
+open_weights = false
+
+[model.pricing]
+input_per_million = 1
+cache_read_per_million = 0.05
+cache_write_per_million = 1.25
+output_per_million = 5
+source = "https://developers.openai.com/api/docs/models/gpt-6.1-terra"
+verified_at = "2026-10-29"
+
+[model.features]
+thinking = "supported"
+fast = "supported"
+sources = ["https://developers.openai.com/api/docs/models/gpt-6.1-terra"]
+budget = { support = "unsupported", dynamic = "unsupported" }
+effort = { support = "supported", levels = ["none", "low", "medium", "high", "xhigh", "max"], default = "medium" }
+modes = ["enabled", "disabled"]
+
+[[model]]
 id = "gpt-6-sol"
 name = "GPT-6 Sol"
 description = "OpenAI's model for complex coding and agentic workflows."
