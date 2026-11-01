@@ -224,6 +224,11 @@ async fn request_json(transport: &dyn Transport, request: HttpRequest) -> Result
             mapped.with_optional_provider_error_text(provider_text)
         })?;
     if !(200..300).contains(&response.status) {
+        if response.status == 401 {
+            return Err(LlmError::Authentication {
+                message: "GitHub rejected the Copilot credential".into(),
+            });
+        }
         if response.status == 404 {
             return Err(invalid(
                 "GitHub Copilot is not available for this account: no active Copilot subscription, or your organization has not authorized this app for Copilot. Check github.com/settings/copilot.",
@@ -459,6 +464,38 @@ mod tests {
         .await;
         assert!(!format!("{result:?}").contains("gho-secret"));
         assert_eq!(mock.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn exchange_rejection_preserves_authentication_and_entitlement_classification() {
+        for status in [401, 404] {
+            let mock = Mock::new(vec![(status, json!({"message":"gho-private-test"}))]);
+            let error = exchange_copilot_token(
+                mock.as_ref(),
+                "gho-private-test",
+                ExchangeIdentity {
+                    user_agent: "ua",
+                    editor_version: "editor",
+                    plugin_version: "plugin",
+                    integration_id: "id",
+                },
+            )
+            .await
+            .unwrap_err();
+            match status {
+                401 => assert!(matches!(
+                    error.classification_source(),
+                    LlmError::Authentication { .. }
+                )),
+                404 => assert!(matches!(
+                    error.classification_source(),
+                    LlmError::InvalidRequest { .. }
+                )),
+                _ => unreachable!(),
+            }
+            assert!(!format!("{error:?}").contains("gho-private-test"));
+            assert_eq!(mock.requests.lock().unwrap().len(), 1);
+        }
     }
 
     #[tokio::test]
