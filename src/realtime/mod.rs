@@ -34,6 +34,10 @@ const MAX_QUEUE_CAPACITY: usize = 65_536;
 /// A local upper bound for one queued batch of function outputs. This is a
 /// memory/latency guard, not a provider limit.
 pub const MAX_REALTIME_TOOL_RESULTS: usize = 128;
+/// Maximum immediately ready provider frames drained before one local input.
+pub const MAX_REALTIME_INPUT_FENCE_FRAMES: usize = 1024;
+/// Maximum combined size of those frames, independent of event queue capacity.
+pub const MAX_REALTIME_INPUT_FENCE_BYTES: usize = 16 * 1024 * 1024;
 
 // HttpTransport implements RealtimeTransport with this feature enabled.
 
@@ -450,6 +454,7 @@ pub trait RealtimeCodec: Send + Sync + 'static {
 
 enum Command {
     Frames(Vec<RealtimeFrame>),
+    FencedFrames { frames: Vec<RealtimeFrame>, id: u64 },
     Close(RealtimeClose, oneshot::Sender<Result<(), RealtimeError>>),
 }
 
@@ -503,7 +508,10 @@ impl RealtimeSession {
         Ok((
             Self {
                 control,
-                events: RealtimeEvents { receiver: event_rx },
+                events: RealtimeEvents {
+                    receiver: event_rx,
+                    wrong_receiver: false,
+                },
             },
             driver,
         ))
@@ -575,6 +583,40 @@ impl RealtimeControl {
     /// Encode and enqueue one logical input without waiting. Returns
     /// [`RealtimeError::QueueFull`] when the bounded queue cannot accept it.
     pub fn send(&self, input: RealtimeInput) -> Result<(), RealtimeError> {
+        self.send_inner(input, None)
+    }
+
+    /// Queue a local input behind a driver-observed inbound boundary.
+    ///
+    /// The driver first decodes inbound frames immediately ready at its
+    /// transport stream, then sends every frame for this input. After the send
+    /// succeeds it emits [`RealtimeOrderedEvent::InputSent`] on the same
+    /// ordered channel as the previously decoded provider events. `id` must be
+    /// unique among this session's outstanding fenced inputs. The caller must
+    /// consume [`RealtimeEvents::into_ordered`] continuously, including while
+    /// waiting for the marker, so provider backpressure cannot deadlock the
+    /// driver. An enqueue, decode, transport, or backlog error emits no marker.
+    /// The ready backlog is bounded by [`MAX_REALTIME_INPUT_FENCE_FRAMES`] and
+    /// [`MAX_REALTIME_INPUT_FENCE_BYTES`]; exceeding either closes the driver.
+    ///
+    /// The boundary covers only frames immediately observable by the driver;
+    /// it cannot order data still in flight in the network or provider. The
+    /// marker confirms a local send, not provider acknowledgement or ownership
+    /// of any provider event. Only audio, audio commits, and text can establish
+    /// such a local input boundary.
+    pub fn send_with_fence(&self, input: RealtimeInput, id: u64) -> Result<(), RealtimeError> {
+        if !matches!(
+            input,
+            RealtimeInput::Audio { .. } | RealtimeInput::CommitAudio | RealtimeInput::Text(_)
+        ) {
+            return Err(RealtimeError::InvalidInput {
+                message: "input fence requires audio, an audio commit, or text".into(),
+            });
+        }
+        self.send_inner(input, Some(id))
+    }
+
+    fn send_inner(&self, input: RealtimeInput, fence_id: Option<u64>) -> Result<(), RealtimeError> {
         let mut outbound = self.outbound.lock().unwrap();
         if outbound.is_closed() {
             return Err(RealtimeError::Closed);
@@ -602,15 +644,17 @@ impl RealtimeControl {
                 max: self.limits.max_frame_bytes,
             });
         }
-        outbound
-            .try_send(Command::Frames(frames))
-            .map_err(|error| {
-                if error.is_full() {
-                    RealtimeError::QueueFull
-                } else {
-                    RealtimeError::Closed
-                }
-            })?;
+        let command = match fence_id {
+            Some(id) => Command::FencedFrames { frames, id },
+            None => Command::Frames(frames),
+        };
+        outbound.try_send(command).map_err(|error| {
+            if error.is_full() {
+                RealtimeError::QueueFull
+            } else {
+                RealtimeError::Closed
+            }
+        })?;
         self.codec.input_queued(&input);
         Ok(())
     }
@@ -648,11 +692,51 @@ impl RealtimeControl {
 
 /// Bounded stream of normalized provider events.
 pub struct RealtimeEvents {
-    receiver: mpsc::Receiver<RealtimeEvent>,
+    receiver: mpsc::Receiver<RealtimeOrderedEvent>,
+    wrong_receiver: bool,
 }
 
 impl RealtimeEvents {
     pub async fn next(&mut self) -> Option<RealtimeEvent> {
+        if self.wrong_receiver {
+            return None;
+        }
+        match self.receiver.next().await? {
+            RealtimeOrderedEvent::Provider(event) => Some(event),
+            RealtimeOrderedEvent::InputSent { .. } => {
+                self.wrong_receiver = true;
+                self.receiver.close();
+                Some(RealtimeEvent::ConnectionInterrupted {
+                    message: "fenced inputs require an ordered realtime event receiver".into(),
+                })
+            }
+        }
+    }
+
+    /// Consume this receiver to observe driver-owned input fences alongside
+    /// provider events, without allowing the two receiver modes to be mixed.
+    pub fn into_ordered(self) -> RealtimeOrderedEvents {
+        RealtimeOrderedEvents {
+            receiver: self.receiver,
+        }
+    }
+}
+
+/// An event from the driver. Providers can produce only `Provider` values;
+/// `InputSent` is generated by the local driver after a fenced send succeeds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RealtimeOrderedEvent {
+    Provider(RealtimeEvent),
+    InputSent { id: u64 },
+}
+
+/// Exclusive receiver for provider events and local input-sent markers.
+pub struct RealtimeOrderedEvents {
+    receiver: mpsc::Receiver<RealtimeOrderedEvent>,
+}
+
+impl RealtimeOrderedEvents {
+    pub async fn next(&mut self) -> Option<RealtimeOrderedEvent> {
         self.receiver.next().await
     }
 }
@@ -662,7 +746,7 @@ impl RealtimeEvents {
 pub struct RealtimeDriver {
     abort: Option<oneshot::Receiver<CloseRequest>>,
     outbound: mpsc::Receiver<Command>,
-    events: mpsc::Sender<RealtimeEvent>,
+    events: mpsc::Sender<RealtimeOrderedEvent>,
     codec: Arc<dyn RealtimeCodec>,
     connection: RealtimeConnection,
     max_frame_bytes: usize,
@@ -689,41 +773,41 @@ impl RealtimeDriver {
         while self.outbound.try_recv().is_ok() {}
         self.connection.outbound.abort();
         let _ = ack.send(Ok(()));
-        let _ = self.events.try_send(RealtimeEvent::Closed {
-            code: close.code,
-            reason: close.reason,
-        });
+        let _ = self
+            .events
+            .try_send(RealtimeOrderedEvent::Provider(RealtimeEvent::Closed {
+                code: close.code,
+                reason: close.reason,
+            }));
         Ok(())
     }
 
     async fn run_loop(&mut self) -> Result<(), RealtimeError> {
         loop {
-            let outbound = self.outbound.next().fuse();
-            let inbound = self.connection.inbound.next().fuse();
-            futures::pin_mut!(outbound, inbound);
-            match select(outbound, inbound).await {
-                Either::Left((Some(Command::Frames(frames)), _)) => {
-                    for frame in frames {
-                        if let Err(error) = validate_frame(&frame, self.max_frame_bytes) {
-                            let _ = self
-                                .emit(RealtimeEvent::ProviderError {
-                                    code: Some("frame_too_large".into()),
-                                    message: error.to_string(),
-                                })
-                                .await;
-                            return Err(error);
-                        }
-                        if let Err(error) = self.connection.outbound.send(frame).await {
-                            let _ = self
-                                .emit(RealtimeEvent::ConnectionInterrupted {
-                                    message: error.to_string(),
-                                })
-                                .await;
-                            return Err(error);
-                        }
-                    }
+            // Drop the unselected borrowed future before a fenced command
+            // drains the same inbound stream.
+            let selected = {
+                let outbound = self.outbound.next().fuse();
+                let inbound = self.connection.inbound.next().fuse();
+                futures::pin_mut!(outbound, inbound);
+                match select(outbound, inbound).await {
+                    Either::Left((command, _)) => Either::Left(command),
+                    Either::Right((event, _)) => Either::Right(event),
                 }
-                Either::Left((Some(Command::Close(close, ack)), _)) => {
+            };
+            match selected {
+                Either::Left(Some(Command::Frames(frames))) => {
+                    self.send_frames(frames).await?;
+                }
+                Either::Left(Some(Command::FencedFrames { frames, id })) => {
+                    self.drain_ready_inbound().await?;
+                    self.send_frames(frames).await?;
+                    self.events
+                        .send(RealtimeOrderedEvent::InputSent { id })
+                        .await
+                        .map_err(|_| RealtimeError::EventReceiverDropped)?;
+                }
+                Either::Left(Some(Command::Close(close, ack))) => {
                     let result = self.connection.outbound.close(close.clone()).await;
                     let _ = ack.send(result.clone());
                     if result.is_ok() {
@@ -735,7 +819,7 @@ impl RealtimeDriver {
                     }
                     return result;
                 }
-                Either::Left((None, _)) => {
+                Either::Left(None) => {
                     let close = RealtimeClose::normal("realtime control dropped");
                     self.connection.outbound.close(close.clone()).await?;
                     self.emit(RealtimeEvent::Closed {
@@ -745,56 +829,116 @@ impl RealtimeDriver {
                     .await?;
                     return Ok(());
                 }
-                Either::Right((Some(Ok(frame)), _)) => {
-                    if let Err(error) = validate_frame(&frame, self.max_frame_bytes) {
-                        let _ = self
-                            .emit(RealtimeEvent::ProviderError {
-                                code: Some("frame_too_large".into()),
-                                message: error.to_string(),
-                            })
-                            .await;
-                        return Err(error);
-                    }
-                    let events = match self.codec.decode(frame) {
-                        Ok(events) => events,
-                        Err(error) => {
-                            let _ = self
-                                .emit(RealtimeEvent::ProviderError {
-                                    code: Some("invalid_provider_frame".into()),
-                                    message: error.to_string(),
-                                })
-                                .await;
-                            return Err(error);
-                        }
+                Either::Right(event) => self.process_inbound(event).await?,
+            }
+        }
+    }
+
+    async fn send_frames(&mut self, frames: Vec<RealtimeFrame>) -> Result<(), RealtimeError> {
+        for frame in frames {
+            if let Err(error) = validate_frame(&frame, self.max_frame_bytes) {
+                let _ = self
+                    .emit(RealtimeEvent::ProviderError {
+                        code: Some("frame_too_large".into()),
+                        message: error.to_string(),
+                    })
+                    .await;
+                return Err(error);
+            }
+            if let Err(error) = self.connection.outbound.send(frame).await {
+                let _ = self
+                    .emit(RealtimeEvent::ConnectionInterrupted {
+                        message: error.to_string(),
+                    })
+                    .await;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    async fn drain_ready_inbound(&mut self) -> Result<(), RealtimeError> {
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        loop {
+            let Some(event) = self.connection.inbound.next().now_or_never() else {
+                return Ok(());
+            };
+            if let Some(Ok(frame)) = &event {
+                count = count.saturating_add(1);
+                bytes = bytes.saturating_add(frame.len());
+                if count > MAX_REALTIME_INPUT_FENCE_FRAMES || bytes > MAX_REALTIME_INPUT_FENCE_BYTES
+                {
+                    let error = RealtimeError::Codec {
+                        message: "realtime input fence inbound backlog exceeds its limit".into(),
                     };
-                    for event in events {
-                        self.emit(event).await?;
-                    }
-                }
-                Either::Right((Some(Err(error)), _)) => {
                     let _ = self
-                        .emit(RealtimeEvent::ConnectionInterrupted {
-                            message: error.to_string(),
-                        })
-                        .await;
-                    return Err(error);
-                }
-                Either::Right((None, _)) => {
-                    let error = RealtimeError::UnexpectedRemoteClose;
-                    let _ = self
-                        .emit(RealtimeEvent::ConnectionInterrupted {
+                        .emit(RealtimeEvent::ProviderError {
+                            code: Some("input_fence_backlog_full".into()),
                             message: error.to_string(),
                         })
                         .await;
                     return Err(error);
                 }
             }
+            self.process_inbound(event).await?;
         }
+    }
+
+    async fn process_inbound(
+        &mut self,
+        incoming: Option<Result<RealtimeFrame, RealtimeError>>,
+    ) -> Result<(), RealtimeError> {
+        let frame = match incoming {
+            Some(Ok(frame)) => frame,
+            Some(Err(error)) => {
+                let _ = self
+                    .emit(RealtimeEvent::ConnectionInterrupted {
+                        message: error.to_string(),
+                    })
+                    .await;
+                return Err(error);
+            }
+            None => {
+                let error = RealtimeError::UnexpectedRemoteClose;
+                let _ = self
+                    .emit(RealtimeEvent::ConnectionInterrupted {
+                        message: error.to_string(),
+                    })
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_frame(&frame, self.max_frame_bytes) {
+            let _ = self
+                .emit(RealtimeEvent::ProviderError {
+                    code: Some("frame_too_large".into()),
+                    message: error.to_string(),
+                })
+                .await;
+            return Err(error);
+        }
+        let events = match self.codec.decode(frame) {
+            Ok(events) => events,
+            Err(error) => {
+                let _ = self
+                    .emit(RealtimeEvent::ProviderError {
+                        code: Some("invalid_provider_frame".into()),
+                        message: error.to_string(),
+                    })
+                    .await;
+                return Err(error);
+            }
+        };
+        for event in events {
+            self.emit(event).await?;
+        }
+        Ok(())
     }
 
     async fn emit(&mut self, event: RealtimeEvent) -> Result<(), RealtimeError> {
         self.events
-            .send(event)
+            .send(RealtimeOrderedEvent::Provider(event))
             .await
             .map_err(|_| RealtimeError::EventReceiverDropped)
     }

@@ -11,7 +11,8 @@ use lingxi_llm_client::providers::google::live::GeminiLiveEvent;
 use lingxi_llm_client::providers::google::live::GeminiLiveSession;
 use lingxi_llm_client::realtime::{
     RealtimeAudioFormat, RealtimeClose, RealtimeConnectRequest, RealtimeConnection, RealtimeError,
-    RealtimeEvent, RealtimeFrame, RealtimeInput, RealtimeLimits, RealtimeSink, RealtimeTransport,
+    RealtimeEvent, RealtimeFrame, RealtimeInput, RealtimeLimits, RealtimeOrderedEvent,
+    RealtimeSink, RealtimeTransport,
 };
 use serde_json::{json, Value};
 use std::sync::{
@@ -277,6 +278,73 @@ fn manual_activity_config_brackets_text_and_maps_interrupt_and_commit() {
         assert_eq!(sent[3], json!({ "realtimeInput": { "activityEnd": {} } }));
         assert_eq!(sent[4], json!({ "realtimeInput": { "activityStart": {} } }));
         assert_eq!(sent[5], json!({ "realtimeInput": { "activityEnd": {} } }));
+    });
+}
+
+#[test]
+fn fenced_audio_preserves_gemini_activity_boundaries_across_chunks() {
+    block_on(async {
+        let (transport, peer) = fake_transport(&[r#"{"setupComplete":{}}"#]);
+        let mut setup = config();
+        setup.realtime_input_config =
+            Some(json!({ "automaticActivityDetection": { "disabled": true } }));
+        let (session, driver) =
+            GeminiLiveSession::connect(transport_trait(transport), request(), setup, limits())
+                .await
+                .unwrap();
+        let (control, events) = session.into_realtime_parts();
+        let mut events = events.into_ordered();
+        let session_task = async move {
+            assert!(matches!(
+                events.next().await,
+                Some(RealtimeOrderedEvent::Provider(RealtimeEvent::SessionReady))
+            ));
+            for (id, data) in [
+                (1, Bytes::from_static(&[1, 2])),
+                (2, Bytes::from_static(&[3, 4])),
+            ] {
+                control
+                    .send_with_fence(
+                        RealtimeInput::Audio {
+                            data,
+                            format: RealtimeAudioFormat::Pcm16 {
+                                sample_rate_hz: 16_000,
+                            },
+                        },
+                        id,
+                    )
+                    .unwrap();
+                loop {
+                    match events.next().await {
+                        Some(RealtimeOrderedEvent::InputSent { id: received }) => {
+                            assert_eq!(received, id);
+                            break;
+                        }
+                        Some(RealtimeOrderedEvent::Provider(RealtimeEvent::ProviderEvent {
+                            name,
+                            ..
+                        })) if name == "setupComplete" => {}
+                        other => panic!("unexpected event before input marker: {other:?}"),
+                    }
+                }
+            }
+            control
+                .send_with_fence(RealtimeInput::CommitAudio, 3)
+                .unwrap();
+            assert_eq!(
+                events.next().await,
+                Some(RealtimeOrderedEvent::InputSent { id: 3 })
+            );
+            control.close(RealtimeClose::normal("done")).await.unwrap();
+        };
+        let ((), driver_result) = futures::join!(session_task, driver.run());
+        driver_result.unwrap();
+        let sent = sent_json(&peer.sent);
+        assert_eq!(sent.len(), 5);
+        assert_eq!(sent[1], json!({ "realtimeInput": { "activityStart": {} } }));
+        assert_eq!(sent[2]["realtimeInput"]["audio"]["data"], "AQI=");
+        assert_eq!(sent[3]["realtimeInput"]["audio"]["data"], "AwQ=");
+        assert_eq!(sent[4], json!({ "realtimeInput": { "activityEnd": {} } }));
     });
 }
 

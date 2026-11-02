@@ -8,8 +8,8 @@ use lingxi_llm_client::providers::openai::realtime::OpenAiRealtimeConfig;
 use lingxi_llm_client::realtime;
 use lingxi_llm_client::realtime::{
     RealtimeClose, RealtimeCodec, RealtimeConnectRequest, RealtimeConnection, RealtimeControl,
-    RealtimeDriver, RealtimeError, RealtimeEvent, RealtimeFrame, RealtimeLimits, RealtimeSession,
-    RealtimeSink, RealtimeTransport,
+    RealtimeDriver, RealtimeError, RealtimeEvent, RealtimeFrame, RealtimeLimits,
+    RealtimeOrderedEvent, RealtimeSession, RealtimeSink, RealtimeTransport,
 };
 use std::sync::{Arc, Mutex};
 
@@ -154,6 +154,322 @@ fn limits(capacity: usize, max_frame_bytes: usize) -> RealtimeLimits {
         outbound_capacity: capacity,
         event_capacity: 8,
         max_frame_bytes,
+    }
+}
+
+#[tokio::test]
+async fn input_fence_orders_raw_frames_queued_before_the_driver_starts() {
+    let (control, events, driver, peer) = connected(limits(4, 4096)).await;
+    peer.incoming.unbounded_send(Ok(RealtimeFrame::text(
+        r#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"old","delta":"unowned"}"#,
+    ))).unwrap();
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("new input".into()), 17)
+        .unwrap();
+    let task = tokio::spawn(driver.run());
+    let mut events = events.into_ordered();
+
+    assert!(
+        matches!(events.next().await, Some(RealtimeOrderedEvent::Provider(
+        RealtimeEvent::Transcript { item_id: Some(id), .. }
+    )) if id == "old")
+    );
+    assert!(
+        matches!(events.next().await, Some(RealtimeOrderedEvent::Provider(
+        RealtimeEvent::ProviderEvent { name, .. }
+    )) if name == "conversation.item.input_audio_transcription.delta")
+    );
+    assert_eq!(
+        events.next().await,
+        Some(RealtimeOrderedEvent::InputSent { id: 17 })
+    );
+    assert!(
+        peer.sent.lock().unwrap().iter().any(|frame| match frame {
+            RealtimeFrame::Text(bytes) => String::from_utf8_lossy(bytes).contains("new input"),
+            _ => false,
+        }),
+        "the driver must send the input before emitting the marker"
+    );
+
+    control
+        .abort(RealtimeClose::normal("test finished"))
+        .await
+        .unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn input_fence_drains_under_backpressure_and_fails_closed_on_backlog_limit() {
+    let mut bounded = limits(4, 4096);
+    bounded.event_capacity = 2;
+    let (control, events, driver, peer) = connected(bounded).await;
+    let initial_sends = peer.sent.lock().unwrap().len();
+    for _ in 0..=realtime::MAX_REALTIME_INPUT_FENCE_FRAMES {
+        peer.incoming
+            .unbounded_send(Ok(RealtimeFrame::text(r#"{"type":"session.updated"}"#)))
+            .unwrap();
+    }
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("must not send".into()), 18)
+        .unwrap();
+    let task = tokio::spawn(driver.run());
+    let mut events = events.into_ordered();
+    let mut ready_count = 0;
+    let mut saw_limit = false;
+    while let Some(event) = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+        .await
+        .unwrap()
+    {
+        match event {
+            RealtimeOrderedEvent::Provider(RealtimeEvent::SessionReady) => ready_count += 1,
+            RealtimeOrderedEvent::Provider(RealtimeEvent::ProviderError {
+                code: Some(code),
+                ..
+            }) if code == "input_fence_backlog_full" => saw_limit = true,
+            RealtimeOrderedEvent::InputSent { .. } => {
+                panic!("overflow must not acknowledge the input")
+            }
+            _ => {}
+        }
+    }
+    let error = task
+        .await
+        .unwrap()
+        .expect_err("the fence must reject an unbounded ready stream");
+    assert!(error.to_string().contains("input fence inbound backlog"));
+    assert_eq!(
+        ready_count,
+        realtime::MAX_REALTIME_INPUT_FENCE_FRAMES,
+        "previous frames must drain while the receiver keeps reading"
+    );
+    assert!(saw_limit);
+    assert_eq!(
+        peer.sent.lock().unwrap().len(),
+        initial_sends,
+        "the input must not reach the transport"
+    );
+}
+
+#[tokio::test]
+async fn input_fence_accepts_backlog_larger_than_event_queue() {
+    let mut bounded = limits(4, 4096);
+    bounded.event_capacity = 2;
+    let (control, events, driver, peer) = connected(bounded).await;
+    for _ in 0..3 {
+        peer.incoming
+            .unbounded_send(Ok(RealtimeFrame::text(r#"{"type":"session.updated"}"#)))
+            .unwrap();
+    }
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("input".into()), 19)
+        .unwrap();
+    let task = tokio::spawn(driver.run());
+    let mut events = events.into_ordered();
+    let mut ready_count = 0;
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+            .await
+            .unwrap()
+        {
+            Some(RealtimeOrderedEvent::Provider(RealtimeEvent::SessionReady)) => ready_count += 1,
+            Some(RealtimeOrderedEvent::InputSent { id: 19 }) => break,
+            Some(_) => {}
+            None => panic!("driver closed before its input marker"),
+        }
+    }
+    assert_eq!(ready_count, 3);
+    control
+        .abort(RealtimeClose::normal("test finished"))
+        .await
+        .unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn input_fence_rejects_invalid_and_full_queue_without_extra_markers() {
+    let (control, events, driver, _peer) = connected(limits(1, 4096)).await;
+    assert!(matches!(
+        control.send_with_fence(realtime::RealtimeInput::Interrupt, 1),
+        Err(RealtimeError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        control.send_with_fence(realtime::RealtimeInput::Text("x".repeat(5000)), 2),
+        Err(RealtimeError::FrameTooLarge { .. })
+    ));
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("accepted".into()), 3)
+        .unwrap();
+    assert_eq!(
+        control.send_with_fence(realtime::RealtimeInput::Text("full".into()), 4),
+        Err(RealtimeError::QueueFull)
+    );
+    let task = tokio::spawn(driver.run());
+    let mut events = events.into_ordered();
+    assert_eq!(
+        events.next().await,
+        Some(RealtimeOrderedEvent::InputSent { id: 3 })
+    );
+    control
+        .abort(RealtimeClose::normal("test finished"))
+        .await
+        .unwrap();
+    while let Some(event) = events.next().await {
+        assert!(!matches!(event, RealtimeOrderedEvent::InputSent { .. }));
+    }
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn plain_receiver_rejects_fenced_input_instead_of_silently_losing_marker() {
+    let (control, mut events, driver, _peer) = connected(limits(2, 4096)).await;
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("input".into()), 5)
+        .unwrap();
+    let task = tokio::spawn(driver.run());
+    assert!(
+        matches!(events.next().await, Some(RealtimeEvent::ConnectionInterrupted { message })
+        if message.contains("ordered realtime event receiver"))
+    );
+    assert_eq!(events.next().await, None);
+    control
+        .abort(RealtimeClose::normal("test finished"))
+        .await
+        .unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn input_fence_send_failure_reports_interruption_without_marker() {
+    struct FailingSink;
+    #[async_trait]
+    impl RealtimeSink for FailingSink {
+        async fn send(&mut self, _: RealtimeFrame) -> Result<(), RealtimeError> {
+            Err(RealtimeError::Transport {
+                message: "fixture send failed".into(),
+            })
+        }
+        async fn ping(&mut self, _: Bytes) -> Result<(), RealtimeError> {
+            Ok(())
+        }
+        fn abort(&mut self) {}
+        async fn close(&mut self, _: RealtimeClose) -> Result<(), RealtimeError> {
+            Ok(())
+        }
+    }
+    struct FailingTransport(Mutex<Option<IncomingReceiver>>);
+    #[async_trait]
+    impl RealtimeTransport for FailingTransport {
+        async fn connect(
+            &self,
+            _: RealtimeConnectRequest,
+        ) -> Result<RealtimeConnection, RealtimeError> {
+            Ok(RealtimeConnection {
+                outbound: Box::new(FailingSink),
+                inbound: self.0.lock().unwrap().take().unwrap().boxed(),
+            })
+        }
+    }
+    struct SimpleCodec;
+    impl RealtimeCodec for SimpleCodec {
+        fn encode(&self, _: &realtime::RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+            Ok(vec![RealtimeFrame::text("input")])
+        }
+        fn decode(&self, _: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
+            Ok(Vec::new())
+        }
+    }
+    let (_peer, incoming) = mpsc::unbounded();
+    let (session, driver) = RealtimeSession::connect(
+        &FailingTransport(Mutex::new(Some(incoming))),
+        request(),
+        Arc::new(SimpleCodec),
+        limits(2, 4096),
+    )
+    .await
+    .unwrap();
+    let (control, events) = session.into_parts();
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("input".into()), 6)
+        .unwrap();
+    let task = tokio::spawn(driver.run());
+    let mut events = events.into_ordered();
+    assert!(
+        matches!(events.next().await, Some(RealtimeOrderedEvent::Provider(
+        RealtimeEvent::ConnectionInterrupted { message }
+    )) if message.contains("fixture send failed"))
+    );
+    assert_eq!(
+        events.next().await,
+        None,
+        "failed transport sends must never produce an input marker"
+    );
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(RealtimeError::Transport { .. })
+    ));
+}
+
+#[tokio::test]
+async fn abort_preempts_a_fence_blocked_by_event_backpressure() {
+    struct CountingCodec(Arc<std::sync::atomic::AtomicUsize>);
+    impl RealtimeCodec for CountingCodec {
+        fn encode(&self, _: &realtime::RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+            Ok(vec![RealtimeFrame::text("input")])
+        }
+        fn decode(&self, _: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![RealtimeEvent::SessionReady])
+        }
+    }
+    let decoded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (transport, peer) = FakeTransport::new();
+    let mut bounded = limits(2, 4096);
+    bounded.event_capacity = 2;
+    let (session, driver) = RealtimeSession::connect(
+        &transport,
+        request(),
+        Arc::new(CountingCodec(decoded.clone())),
+        bounded,
+    )
+    .await
+    .unwrap();
+    let (control, events) = session.into_parts();
+    for _ in 0..4 {
+        peer.incoming
+            .unbounded_send(Ok(RealtimeFrame::text("old")))
+            .unwrap();
+    }
+    control
+        .send_with_fence(realtime::RealtimeInput::Text("input".into()), 7)
+        .unwrap();
+    let task = tokio::spawn(driver.run());
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while decoded.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("driver must reach the full event queue");
+    tokio::task::yield_now().await;
+    assert!(
+        decoded.load(std::sync::atomic::Ordering::SeqCst) < 4,
+        "the driver must be blocked while emitting queued old events"
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        control.abort(RealtimeClose::normal("abort")),
+    )
+    .await
+    .expect("abort must preempt a blocked event send")
+    .unwrap();
+    task.await.unwrap().unwrap();
+    assert!(
+        peer.sent.lock().unwrap().is_empty(),
+        "fenced input must not be sent after abort"
+    );
+    let mut events = events.into_ordered();
+    while let Some(event) = events.next().await {
+        assert!(!matches!(event, RealtimeOrderedEvent::InputSent { .. }));
     }
 }
 
