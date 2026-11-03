@@ -142,6 +142,28 @@ impl ConversationSession {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Transport-only preconnect/prewarm access for hosts that manage admission.
+    /// Call `prepare` again before dispatching a normal conversation request.
+    pub fn responses_transport_mut(&mut self) -> &mut super::ResponsesSession {
+        self.pending = None;
+        self.binding = None;
+        self.websocket_prepared = false;
+        &mut self.websocket
+    }
+
+    /// Inspect a first-event rejection without losing response bytes. Hosts must
+    /// account for the received attempt before calling `recover`, and bound their
+    /// own recovery loop to one replay per logical call.
+    pub async fn preflight_rejection(
+        &mut self,
+        received: &mut ReceivedCall,
+    ) -> Result<Option<crate::HttpResponse>, LlmError> {
+        if self.snapshot.mode != ConversationRequestMode::Continue {
+            return Ok(None);
+        }
+        peek_rejection(received).await
+    }
+
     pub fn last_request(&self) -> &ConversationRequestSnapshot {
         &self.snapshot
     }
@@ -150,8 +172,21 @@ impl ConversationSession {
         self.reset();
         result
     }
+    /// Forget all conversational history while retaining an idle, authenticated
+    /// transport. Intended for connection pools between independent queries.
+    /// Observers from a prior query cannot seed the next query's state.
+    pub fn clear_history_preserving_transport(&mut self) {
+        self.websocket.clear_history();
+        self.clear_history();
+        self.recovery = false;
+        self.last_capability = None;
+        self.last_identity = None;
+    }
     pub fn reset(&mut self) {
         self.websocket.invalidate();
+        self.clear_history();
+    }
+    fn clear_history(&mut self) {
         self.websocket_prepared = false;
         self.last_reference = None;
         let mut state = self.state.lock().expect("conversation state");
@@ -191,6 +226,7 @@ impl ConversationSession {
             .iter()
             .filter(|(name, _)| {
                 !name.eq_ignore_ascii_case("x-request-id")
+                    && !name.eq_ignore_ascii_case("x-client-request-id")
                     && !name.eq_ignore_ascii_case("traceparent")
             })
             .map(|(name, value)| (name.to_ascii_lowercase(), value))
@@ -296,7 +332,12 @@ impl ConversationSession {
             state.epoch = state.epoch.wrapping_add(1);
             state.epoch
         };
-        let body = wire.as_json_source().as_bytes().to_vec().into();
+        let source = wire.as_json_source().as_bytes();
+        let body = if draft.request().body.as_ref() == source {
+            draft.request().body.clone()
+        } else {
+            source.to_vec().into()
+        };
         draft.set_session_wire_body(body);
         let binding = Arc::new(());
         draft.bind_session(binding.clone());
@@ -485,7 +526,7 @@ impl ConversationSession {
             self.prepare(&mut draft).await?;
             let mut received = self.dispatch(draft.seal().await?, &mut on_dispatch).await?;
             if self.snapshot.mode == ConversationRequestMode::Continue {
-                if let Some(rejection) = peek_rejection(&mut received).await? {
+                if let Some(rejection) = self.preflight_rejection(&mut received).await? {
                     let recover = attempt == 0 && self.recover(&rejection);
                     let collected = received.collect().await?;
                     on_response(&collected);

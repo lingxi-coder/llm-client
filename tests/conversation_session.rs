@@ -1046,3 +1046,108 @@ async fn prepared_deltas_update_content_length_and_reject_caller_edits() {
     assert!(session.dispatch(call, || Ok(())).await.is_err());
     assert_eq!(mock.bodies().len(), 1);
 }
+
+#[tokio::test]
+async fn pooled_transport_reuse_never_inherits_another_querys_history() {
+    let inner = Arc::new(Mock::default());
+    let ws = Arc::new(WsMock {
+        inner: inner.clone(),
+        connects: Default::default(),
+    });
+    let mut p = profile("open_ai_responses");
+    p.supports_websockets = true;
+    let client = LlmClientBuilder::with_transport(ws.clone(), &[p])
+        .with_region(Region::International)
+        .build()
+        .unwrap();
+    let mut session = ConversationSession::new();
+    let mut request = request();
+    request.controls.responses.store = Some(false);
+    for id in ["one", "two"] {
+        inner.json(200,json!([
+            {"type":"response.created","response":{"id":id,"model":"m"}},
+            {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"4921"},
+            {"type":"response.completed","response":response("open_ai_responses",id,"4921")}
+        ]));
+        let mut stream = session
+            .stream_in(
+                &client.snapshot(),
+                "one",
+                &request,
+                &options(),
+                || Ok(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let mut accumulator = StreamAccumulator::new();
+        while let Some(event) = stream.next().await {
+            accumulator.observe(&event.unwrap());
+        }
+        followup(&mut request, accumulator.snapshot().response);
+        drop(stream);
+        session.clear_history_preserving_transport();
+    }
+    assert_eq!(ws.connects.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(inner.bodies()[1].get("previous_response_id").is_none());
+    assert_eq!(inner.bodies()[1]["input"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn per_request_correlation_headers_do_not_invalidate_http_history() {
+    let mock = Arc::new(Mock::default());
+    mock.json(200, response("open_ai_responses", "first", "4921"));
+    let client = client(&mock, profile("open_ai_responses"));
+    let mut session = ConversationSession::new();
+    let mut request = request();
+    let mut draft = client
+        .snapshot()
+        .prepare_draft_on("one", &request, &options(), RequestMode::Complete)
+        .await
+        .unwrap();
+    draft
+        .request_mut()
+        .headers
+        .push(("x-client-request-id".into(), "request-a".into()));
+    session.prepare(&mut draft).await.unwrap();
+    let collected = session
+        .dispatch(draft.seal().await.unwrap(), || Ok(()))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let first = collected.decode().unwrap();
+    collected.finish().await;
+    followup(&mut request, first);
+    let mut draft = client
+        .snapshot()
+        .prepare_draft_on("one", &request, &options(), RequestMode::Complete)
+        .await
+        .unwrap();
+    draft
+        .request_mut()
+        .headers
+        .push(("x-client-request-id".into(), "request-b".into()));
+    session.prepare(&mut draft).await.unwrap();
+    assert_eq!(
+        session.last_request().mode,
+        ConversationRequestMode::Continue
+    );
+}
+
+#[tokio::test]
+async fn unchanged_full_request_reuses_its_existing_wire_buffer() {
+    let mock = Arc::new(Mock::default());
+    let client = client(&mock, profile("open_ai_responses"));
+    let mut draft = client
+        .snapshot()
+        .prepare_draft_on("one", &request(), &options(), RequestMode::Complete)
+        .await
+        .unwrap();
+    let original = draft.request().body.clone();
+    let mut session = ConversationSession::new();
+    session.prepare(&mut draft).await.unwrap();
+    assert_eq!(original.as_ptr(), draft.request().body.as_ptr());
+    assert_eq!(session.last_request().mode, ConversationRequestMode::Full);
+}
