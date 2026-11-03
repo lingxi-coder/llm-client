@@ -91,6 +91,7 @@ fn parse_argument_string(
 
 #[derive(Debug, Default)]
 pub struct ResponsesStreamDecoder {
+    continuation_response: Option<JsonPayload>,
     inference: crate::codecs::inference::StreamInference,
     started: bool,
     created_response_id: Option<ResponseId>,
@@ -127,6 +128,9 @@ pub struct ResponsesStreamDecoder {
 }
 
 impl EventDecoder for ResponsesStreamDecoder {
+    fn continuation_response(&self) -> Option<&JsonPayload> {
+        self.continuation_response.as_ref()
+    }
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         if self.done {
             return Ok(Vec::new());
@@ -724,6 +728,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                         }
                     }
                 }
+                self.continuation_response = response_payload.clone();
                 if let Some(response_payload) = &response_payload {
                     self.file_search.emit_payload(response_payload, &mut out);
                     let usage_payload = response_payload

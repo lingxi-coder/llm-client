@@ -26,6 +26,8 @@ connection = { group = "xai-responses", connection_id = "responses", order = 0, 
 [extra]
 web_search = "xai"
 supports_previous_response_id = true
+# https://docs.x.ai/developers/advanced-api-usage/websocket-mode
+supports_responses_websocket = true
 xai_remote_mcp = "xai_responses"
 
 [[model]]

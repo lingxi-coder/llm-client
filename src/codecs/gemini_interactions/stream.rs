@@ -153,6 +153,7 @@ fn append_text_delta(step: &mut Step, delta: &JsonPayload) -> Result<(), LlmErro
 }
 
 pub(super) struct InteractionsDecoder {
+    continuation_response: Option<JsonPayload>,
     context: CodecContext,
     steps: BTreeMap<usize, Step>,
     id: Option<String>,
@@ -165,6 +166,7 @@ pub(super) struct InteractionsDecoder {
 impl InteractionsDecoder {
     pub(super) fn new(context: &CodecContext) -> Self {
         Self {
+            continuation_response: None,
             context: context.clone(),
             steps: BTreeMap::new(),
             id: None,
@@ -190,6 +192,9 @@ impl InteractionsDecoder {
 }
 
 impl EventDecoder for InteractionsDecoder {
+    fn continuation_response(&self) -> Option<&JsonPayload> {
+        self.continuation_response.as_ref()
+    }
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         if self.ended {
             return Ok(vec![]);
@@ -493,6 +498,7 @@ impl EventDecoder for InteractionsDecoder {
                 // Validation is atomic: no function/native call escapes if a later
                 // member, duplicate ID or terminal status is malformed.
                 let response = super::decode::response(&body_source, &self.context)?;
+                self.continuation_response = Some(body_source.clone());
                 let mut events = vec![];
                 for (block, content) in response.message.content.into_iter().enumerate() {
                     events.push(match content {

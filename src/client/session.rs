@@ -27,6 +27,12 @@ impl Default for ResponsesSession {
     }
 }
 impl ResponsesSession {
+    pub(super) fn preparation_binding(&self) -> Option<Arc<()>> {
+        self.prepared_binding.clone()
+    }
+    pub(super) fn invalidate(&mut self) {
+        self.detach_connection();
+    }
     pub fn new() -> Self {
         Self {
             connection: None,
@@ -211,6 +217,11 @@ impl ResponsesSession {
                     } else {
                         Err(error)
                     };
+                }
+                Err(LlmError::UnsupportedCapability { .. }) if allow_http => {
+                    self.fail_to_http();
+                    self.bind_draft(draft);
+                    return Ok(());
                 }
                 Err(error) => return Err(error),
             }

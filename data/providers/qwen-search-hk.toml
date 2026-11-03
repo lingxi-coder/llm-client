@@ -17,7 +17,7 @@ description = "Qwen Responses with hosted web and knowledge-base search."
 console_url = "https://bailian.console.aliyun.com/"
 api_key_url = "https://bailian.console.aliyun.com/?tab=model#/api-key"
 connection = { group = "qwen-search-hk", connection_id = "responses", order = 0, protocol_profiles = { open_ai_chat = "qwen-hk" } }
-extra = { web_search = "qwen", file_search = "qwen" }
+extra = { web_search = "qwen", file_search = "qwen", supports_previous_response_id = true }
 
 [[model]]
 id = "qwen3.8-flash"

@@ -27,7 +27,7 @@ credential_hint = "sk-ant-"
 # Prices and descriptive metadata: models.dev via aggregator.
 # Old aggregator IDs are local aliases, never sent to the first-party endpoint.
 
-extra = { web_search = "anthropic" }
+extra = { web_search = "anthropic", supports_message_threads = true }
 
 [[model]]
 id = "claude-fable-5"

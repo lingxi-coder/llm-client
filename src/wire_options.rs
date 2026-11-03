@@ -38,7 +38,14 @@ const RESERVED_HEADERS: &[&str] = &[
 /// Body fields that must come from typed request data rather than profile
 /// configuration. Unlike ordinary additive extras, these change request
 /// identity or bind it to provider-side state.
-const RESERVED_BODY_KEYS: &[&str] = &["model", "previous_response_id", "stream"];
+const RESERVED_BODY_KEYS: &[&str] = &[
+    "model",
+    "previous_response_id",
+    "previous_interaction_id",
+    "thread",
+    "conversation",
+    "stream",
+];
 
 /// Whether an extra header name can carry a credential owned by the caller.
 /// The explicit per-profile header is supported by the authenticator, so a

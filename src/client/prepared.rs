@@ -14,6 +14,7 @@ use std::time::{Instant, UNIX_EPOCH};
 /// Preparing may upload attachments, but never sends a generation request.
 /// This object deliberately cannot be cloned: dispatch consumes it.
 pub struct PreparedCall {
+    pub(super) conversation_observation: Option<super::conversation_session::Observation>,
     pub(super) prepared: PreparedAttempt,
     http: Arc<dyn Transport>,
     clock: Arc<dyn crate::transport::Clock>,
@@ -184,6 +185,7 @@ impl ClientSnapshot {
             credential: options.credential.clone(),
             account_scope: options.account_scope.clone(),
             call: PreparedCall {
+                conversation_observation: None,
                 prepared,
                 continuation,
                 file_expirations,
@@ -309,10 +311,18 @@ impl RequestDraft {
     pub(super) fn account_scope(&self) -> Option<&str> {
         self.account_scope.as_deref()
     }
+    pub(super) fn request_mode(&self) -> RequestMode {
+        self.call.mode
+    }
     pub(super) async fn websocket_handshake(&self) -> Result<HttpRequest, LlmError> {
         let mut handshake = self.call.prepared.http.clone();
         handshake.method = "GET".into();
         handshake.body = Default::default();
+        // Body framing is request-local, not authenticated connection identity.
+        handshake.headers.retain(|(name, _)| {
+            !name.eq_ignore_ascii_case("content-length")
+                && !name.eq_ignore_ascii_case("transfer-encoding")
+        });
         if self.call.profile.auth != crate::protocol::AuthStrategy::None {
             if let Some(auth) = &self.authenticator {
                 crate::runtime::Deadline::at(self.call.deadline)
@@ -349,6 +359,9 @@ impl RequestDraft {
     }
     pub(super) fn bind_session(&mut self, binding: Arc<()>) {
         self.call.session_binding = Some(binding);
+    }
+    pub(super) fn session_headers_mut(&mut self) -> &mut Vec<(String, String)> {
+        &mut self.call.prepared.http.headers
     }
     /// Replace the current request using exact source JSON and string overrides.
     /// This creates a draft image; Native sanitation occurs only when sealing.
@@ -497,6 +510,11 @@ impl RequestDraft {
     /// its incremental continuation. Unlike `request_mut` this is not a caller
     /// edit: it leaves the settled state alone and the session binds afterwards.
     pub(super) fn set_session_wire_body(&mut self, body: bytes::Bytes) {
+        for (name, value) in &mut self.call.prepared.http.headers {
+            if name.eq_ignore_ascii_case("content-length") {
+                *value = body.len().to_string();
+            }
+        }
         self.call.prepared.http.body = body;
     }
     pub async fn seal(mut self) -> Result<PreparedCall, LlmError> {
@@ -850,7 +868,7 @@ impl PreparedCall {
 /// The host must observe usage before interpreting content or deciding to retry.
 pub struct ReceivedCall {
     call: PreparedCall,
-    response: StreamResponse,
+    pub(super) response: StreamResponse,
     proxy_auth_helper_challenge: Option<crate::protocol::ProxyAuthHelperChallenge>,
 }
 impl ReceivedCall {
@@ -923,11 +941,15 @@ impl ReceivedCall {
 
     /// Enter streaming only after checking the response status. Error responses
     /// remain collectable, preserving any usage carried by their JSON envelope.
-    pub fn into_stream(self) -> Result<ModelStream, Box<Self>> {
+    pub fn into_stream(mut self) -> Result<ModelStream, Box<Self>> {
         if self.call.mode != RequestMode::Stream || !(200..300).contains(&self.response.status) {
             return Err(Box::new(self));
         }
         let pricing = self.call.pricing_snapshot();
+        let conversation_observation = self.call.conversation_observation.take();
+        if let Some(observation) = &conversation_observation {
+            observation.frames(&mut self.response);
+        }
         let observation = self
             .call
             .prepared
@@ -955,6 +977,7 @@ impl ReceivedCall {
         )
         .with_provider_observation(observation);
         stream.pricing = Some(pricing);
+        stream.conversation_observation = conversation_observation;
         Ok(stream)
     }
 }
@@ -1063,6 +1086,9 @@ impl CollectedResponse {
             }
         };
         response.executed_profile = Some(self.call.profile.profile_name.clone());
+        if let Some(observation) = &self.call.conversation_observation {
+            observation.complete(&self.response);
+        }
         response.response_cache = self.call.prepared.backend.response_cache(
             &self.call.profile,
             &self.call.prepared.http.url,
@@ -1071,8 +1097,12 @@ impl CollectedResponse {
         if let (Some(mut reference), Some(id)) =
             (self.call.continuation.clone(), response.response_id.clone())
         {
-            reference.response_id = id;
-            response.continuation = Some(reference);
+            if super::executor::reusable_response(&response)
+                && !super::executor::response_storage_disabled(&self.response)
+            {
+                reference.response_id = id;
+                response.continuation = Some(reference);
+            }
         }
         response.inference.executed_at = self.call.prepared.inference.executed_at;
         response.inference.requested_effort = self.call.prepared.inference.requested_effort;

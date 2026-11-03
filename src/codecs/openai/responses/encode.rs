@@ -24,6 +24,7 @@ pub fn request<'a>(
     opts: &CodecContext,
 ) -> Result<WireRequest<'a>, LlmError> {
     let req = wire.request();
+    crate::providers::zhipu::responses::validate(req, profile)?;
     crate::codecs::validate_tool_wire_shapes(req)?;
     if let Some(request) = crate::providers::openai::codex_search::encode(req, profile, opts)? {
         return Ok(request);

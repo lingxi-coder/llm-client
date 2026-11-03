@@ -331,6 +331,10 @@ pub trait WireCodec: Send + Sync + 'static {
 /// Stateful decoder for arbitrary transport byte chunks. A batch may contain
 /// successful events followed by one error; consumers must preserve that order.
 pub trait StreamDecoder: Send {
+    /// Validated terminal provider response, including replayable native items.
+    fn continuation_response(&self) -> Option<&crate::protocol::JsonPayload> {
+        None
+    }
     fn inference_report(&self) -> crate::protocol::InferenceReport {
         Default::default()
     }
@@ -348,6 +352,9 @@ pub trait StreamDecoder: Send {
 
 /// Protocol event parsing is internal; framing belongs to the codec.
 pub(crate) trait EventDecoder: Send {
+    fn continuation_response(&self) -> Option<&crate::protocol::JsonPayload> {
+        None
+    }
     fn inference_report(&self) -> crate::protocol::InferenceReport {
         Default::default()
     }

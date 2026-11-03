@@ -331,7 +331,11 @@ fn lower_definition(profile_name: &str, p: Preset) -> Result<ProviderProfile, Pr
         },
         signing: None,
         azure: None,
-        supports_websockets: false,
+        supports_websockets: p
+            .extra
+            .get("supports_responses_websocket")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         supports_websocket_compression: false,
         websocket_connect_timeout_ms: None,
         connection: p.connection,

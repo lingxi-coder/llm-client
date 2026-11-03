@@ -388,12 +388,43 @@ fn supports_continuation(profile: &ProviderProfile) -> bool {
                 == Some(true)
 }
 
+pub(super) fn reusable_response(response: &ChatResponse) -> bool {
+    response.tool_input_issues.is_empty()
+        && !matches!(
+            response.stop_reason,
+            crate::protocol::StopReason::MaxTokens | crate::protocol::StopReason::Refusal
+        )
+}
+
+pub(super) fn response_storage_disabled(response: &crate::HttpResponse) -> bool {
+    crate::response_json::ResponseJsonScanner::parse(&response.body, "response storage policy")
+        .is_ok_and(|source| source.raw_source_at("/store") == Some("false"))
+}
+
 pub(super) fn continuation_template(
     req: &ChatRequest,
     attempt: &Attempt<'_>,
     opts: &RequestOptions,
 ) -> Option<ContinuationRef> {
     if !supports_continuation(attempt.profile) {
+        return None;
+    }
+    if req.controls.responses.store.or_else(|| {
+        attempt
+            .profile
+            .extra
+            .get("body")
+            .and_then(|v| v.get("store"))
+            .and_then(serde_json::Value::as_bool)
+    }) == Some(false)
+        || (attempt
+            .profile
+            .extra
+            .get("response_store_default")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+            && req.controls.responses.store != Some(true))
+    {
         return None;
     }
     let scope = opts.account_scope.as_deref()?;
@@ -1220,8 +1251,10 @@ impl<'client> RequestExecutor<'client> {
             continuation_template(req.request, attempt, opts),
             decoded.response_id.clone(),
         ) {
-            reference.response_id = id;
-            decoded.continuation = Some(reference);
+            if reusable_response(&decoded) && !response_storage_disabled(&response) {
+                reference.response_id = id;
+                decoded.continuation = Some(reference);
+            }
         }
         decoded.inference.executed_at = requested.executed_at;
         decoded.inference.requested_effort = requested.requested_effort;
