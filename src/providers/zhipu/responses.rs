@@ -1,10 +1,11 @@
 //! Mainland metered GLM Responses; not the international Coding Plan shim.
-use crate::protocol::{ChatRequest, LlmError, ProviderProfile, ToolChoice};
+use crate::protocol::{ChatRequest, JsonPayload, LlmError, ProviderProfile, ToolChoice};
+use crate::HttpResponse;
 
 pub(crate) fn normalize_response(
-    response: &crate::HttpResponse,
+    response: &HttpResponse,
     profile: &ProviderProfile,
-) -> Result<Option<crate::HttpResponse>, LlmError> {
+) -> Result<Option<HttpResponse>, LlmError> {
     if profile
         .extra
         .get("responses_contract")
@@ -16,7 +17,7 @@ pub(crate) fn normalize_response(
     }
     let Some(body) = std::str::from_utf8(&response.body)
         .ok()
-        .and_then(|s| crate::protocol::JsonPayload::parse(s).ok())
+        .and_then(|s| JsonPayload::parse(s).ok())
     else {
         return Ok(None);
     };
@@ -29,11 +30,8 @@ pub(crate) fn normalize_response(
             continue;
         }
         if let Some(content) = item.payload_at("/content").filter(|v| v.is_root_object()) {
-            let content =
-                crate::protocol::JsonPayload::parse(&format!("[{}]", content.as_json_source()))
-                    .map_err(|e| LlmError::InvalidRequest {
-                        message: e.to_string(),
-                    })?;
+            let content = JsonPayload::parse(&format!("[{}]", content.as_json_source()))
+                .map_err(invalid_json)?;
             *item = with_field(item, "content", content)?;
             changed = true;
         }
@@ -41,27 +39,20 @@ pub(crate) fn normalize_response(
     if !changed {
         return Ok(None);
     }
-    let output =
-        crate::protocol::JsonPayload::parse(&serde_json::to_string(&output).map_err(|e| {
-            LlmError::InvalidRequest {
-                message: e.to_string(),
-            }
-        })?)
-        .map_err(|e| LlmError::InvalidRequest {
-            message: e.to_string(),
-        })?;
+    let output = serde_json::to_string(&output).map_err(invalid_json)?;
+    let output = JsonPayload::parse(&output).map_err(invalid_json)?;
     let source = with_field(&body, "output", output)?;
-    Ok(Some(crate::HttpResponse {
+    Ok(Some(HttpResponse {
         status: response.status,
         headers: response.headers.clone(),
         body: source.as_json_source().as_bytes().to_vec().into(),
     }))
 }
 fn with_field(
-    source: &crate::protocol::JsonPayload,
+    source: &JsonPayload,
     key: &str,
-    value: crate::protocol::JsonPayload,
-) -> Result<crate::protocol::JsonPayload, LlmError> {
+    value: JsonPayload,
+) -> Result<JsonPayload, LlmError> {
     let scanner = source.scanner()?;
     let key: Vec<_> = key.encode_utf16().collect();
     let mut fields = Vec::new();
@@ -77,11 +68,13 @@ fn with_field(
         }
     }
     fields.push((key, value.as_json_source().to_owned()));
-    crate::protocol::JsonPayload::object_from_fields(&fields).map_err(|e| {
-        LlmError::InvalidRequest {
-            message: e.to_string(),
-        }
-    })
+    JsonPayload::object_from_fields(&fields).map_err(invalid_json)
+}
+
+fn invalid_json(error: impl std::fmt::Display) -> LlmError {
+    LlmError::InvalidRequest {
+        message: error.to_string(),
+    }
 }
 
 pub(crate) fn validate(request: &ChatRequest, profile: &ProviderProfile) -> Result<(), LlmError> {

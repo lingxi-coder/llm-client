@@ -63,14 +63,12 @@ impl ContinuationCapability {
         }
     }
     fn items(self, body: &JsonPayload) -> Option<Vec<JsonPayload>> {
-        body.payload_at(if self == Self::GeminiInteraction {
-            "/input/steps"
-        } else if self == Self::AnthropicThread {
-            "/messages"
-        } else {
-            "/input"
-        })?
-        .array_items()
+        let path = match self {
+            Self::GeminiInteraction => "/input/steps",
+            Self::AnthropicThread => "/messages",
+            _ => "/input",
+        };
+        body.payload_at(path)?.array_items()
     }
     fn replace_input(
         self,
@@ -211,10 +209,14 @@ impl ConversationSession {
         let input = capability.items(&logical);
         let mut wire = logical.clone();
         let mut mode = ConversationRequestMode::Full;
-        let explicit = logical.payload_at("/previous_response_id").is_some()
-            || logical.payload_at("/previous_interaction_id").is_some()
-            || logical.payload_at("/conversation").is_some()
-            || logical.payload_at("/thread").is_some();
+        let explicit = [
+            "/previous_response_id",
+            "/previous_interaction_id",
+            "/conversation",
+            "/thread",
+        ]
+        .iter()
+        .any(|path| logical.payload_at(path).is_some());
         let eligible = capability != ContinuationCapability::Unsupported
             && !(capability == ContinuationCapability::AnthropicThread
                 && self.disabled_thread == Some(identity))
@@ -280,13 +282,7 @@ impl ConversationSession {
                         "thread",
                         Some(generated(serde_json::json!({"type":"create"}))?),
                     )?;
-                    mode = if self.recovery {
-                        ConversationRequestMode::Recreate
-                    } else {
-                        ConversationRequestMode::Create
-                    };
-                } else if self.recovery && mode != ConversationRequestMode::Continue {
-                    mode = ConversationRequestMode::Recreate;
+                    mode = ConversationRequestMode::Create;
                 }
                 if capability == ContinuationCapability::AnthropicThread {
                     add_beta(draft, "message-threads-2026-08-12");
@@ -294,7 +290,7 @@ impl ConversationSession {
             } else {
                 state.completed = None;
             }
-            if self.recovery && mode == ConversationRequestMode::Full {
+            if self.recovery && mode != ConversationRequestMode::Continue {
                 mode = ConversationRequestMode::Recreate;
             }
             state.epoch = state.epoch.wrapping_add(1);
@@ -867,20 +863,27 @@ impl Observation {
         event: &Result<StreamEvent, LlmError>,
         terminal: Option<&JsonPayload>,
     ) {
-        if matches!(event, Err(_)) {
+        if event.is_err() {
             self.invalidate();
+            return;
         }
-        if matches!(event, Ok(StreamEvent::End { .. })) {
-            if let Some(terminal) = terminal {
-                self.commit(terminal);
-                return;
-            }
+        if !matches!(event, Ok(StreamEvent::End { .. })) {
+            return;
+        }
+        if let Some(terminal) = terminal {
+            self.commit(terminal);
+            return;
+        }
+        let candidate = {
             let wire = self.wire.lock().expect("wire observation");
-            let candidate = (!wire.invalid).then(|| wire.candidate.clone()).flatten();
-            drop(wire);
-            if let Some(candidate) = candidate {
-                self.commit(&candidate);
+            if wire.invalid {
+                None
+            } else {
+                wire.candidate.clone()
             }
+        };
+        if let Some(candidate) = candidate {
+            self.commit(&candidate);
         }
     }
     fn invalidate(&self) {
