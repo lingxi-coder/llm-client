@@ -136,6 +136,366 @@ fn followup(request: &mut ChatRequest, response: ChatResponse) {
         .push(ConversationMessage::user_text("what was the number?"));
 }
 
+fn model_switch_profile(family: &str, input_modalities: &[&str]) -> ProviderProfile {
+    let mut profile = profile(family);
+    let mut next = profile.models[0].clone();
+    next.display_model = "next".into();
+    next.request_model = match family {
+        "gemini_interactions" => "gemini-3.6-flash",
+        "anthropic_messages" => "claude-haiku-4-5",
+        _ => "next-wire",
+    }
+    .into();
+    next.billing_model = next.request_model.clone();
+    next.metadata.input_modalities = input_modalities.iter().map(|v| (*v).into()).collect();
+    profile.models.push(next);
+    profile
+}
+
+#[tokio::test]
+async fn gemini_model_switch_continues_and_preserves_request_scoped_settings() {
+    let family = "gemini_interactions";
+    let mock = Arc::new(Mock::default());
+    for id in ["first", "second", "third"] {
+        mock.json(200, response(family, id, "4921"));
+    }
+    let client = client(&mock, model_switch_profile(family, &["text"]));
+    let mut session = ConversationSession::new();
+    let mut request = request();
+    request.system.push(SystemBlock::new("support assistant"));
+    request.max_tokens = Some(900);
+    request.tools = serde_json::from_value(
+        json!([{"name":"lookup","description":"lookup","input_schema":{"type":"object"}}]),
+    )
+    .unwrap();
+    let first = complete(&mut session, &client, &request, &options()).await;
+    followup(&mut request, first);
+    request.model = "next".into();
+    let second = complete(&mut session, &client, &request, &options()).await;
+    assert_eq!(
+        session.last_request().mode,
+        ConversationRequestMode::Continue
+    );
+    followup(&mut request, second);
+    complete(&mut session, &client, &request, &options()).await;
+    let bodies = mock.bodies();
+    assert_eq!(bodies[1]["model"], "gemini-3.6-flash");
+    assert_eq!(bodies[1]["previous_interaction_id"], "first");
+    assert_eq!(bodies[2]["previous_interaction_id"], "second");
+    for body in &bodies[1..] {
+        assert_eq!(body["input"]["steps"].as_array().unwrap().len(), 1);
+        for field in ["system_instruction", "tools", "generation_config"] {
+            assert!(bodies[0].get(field).is_some(), "{field}");
+            assert_eq!(body[field], bodies[0][field], "{field}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn other_protocols_rebuild_on_model_switch() {
+    for family in ["open_ai_responses", "anthropic_messages"] {
+        let mock = Arc::new(Mock::default());
+        for id in ["first", "second"] {
+            mock.json(200, response(family, id, "4921"));
+        }
+        let client = client(&mock, model_switch_profile(family, &["text"]));
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let first = complete(&mut session, &client, &request, &options()).await;
+        followup(&mut request, first);
+        request.model = "next".into();
+        complete(&mut session, &client, &request, &options()).await;
+        let bodies = mock.bodies();
+        assert_ne!(
+            session.last_request().mode,
+            ConversationRequestMode::Continue
+        );
+        if family == "anthropic_messages" {
+            assert_eq!(bodies[1]["thread"]["type"], "create");
+            assert_eq!(bodies[1]["messages"].as_array().unwrap().len(), 3);
+        } else {
+            assert!(bodies[1].get("previous_response_id").is_none());
+            assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 3);
+        }
+    }
+}
+
+#[tokio::test]
+async fn gemini_model_switch_checks_older_output_modalities_and_unknown_content() {
+    let family = "gemini_interactions";
+    for (part, accepted, continues) in [
+        (json!({"type":"text","text":"4921"}), vec!["text"], true),
+        (json!({"type":"text","text":"4921"}), vec![], false),
+        (
+            json!({"type":"image","uri":"https://fixture.test/image.png"}),
+            vec!["text", "image"],
+            true,
+        ),
+        (
+            json!({"type":"image","uri":"https://fixture.test/image.png"}),
+            vec!["text"],
+            false,
+        ),
+        (
+            json!({"type":"audio","uri":"https://fixture.test/audio.wav"}),
+            vec!["text", "audio"],
+            true,
+        ),
+        (
+            json!({"type":"video","uri":"https://fixture.test/video.mp4"}),
+            vec!["text", "video"],
+            true,
+        ),
+        (
+            json!({"type":"document","mime_type":"application/pdf","uri":"https://fixture.test/doc.pdf"}),
+            vec!["text", "pdf"],
+            true,
+        ),
+        (
+            json!({"type":"future_media","data":"opaque"}),
+            vec!["text", "image", "audio", "video", "pdf"],
+            false,
+        ),
+    ] {
+        let mock = Arc::new(Mock::default());
+        let mut first = response(family, "first", "4921");
+        first["steps"][0]["content"] = json!([part]);
+        mock.json(200, first);
+        mock.json(200, response(family, "second", "4921"));
+        mock.json(200, response(family, "third", "4921"));
+        let client = client(&mock, model_switch_profile(family, &accepted));
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let first = complete(&mut session, &client, &request, &options()).await;
+        followup(&mut request, first);
+        let second = complete(&mut session, &client, &request, &options()).await;
+        followup(&mut request, second);
+        request.model = "next".into();
+        complete(&mut session, &client, &request, &options()).await;
+        let body = &mock.bodies()[2];
+        assert_eq!(
+            body.get("previous_interaction_id").is_some(),
+            continues,
+            "{part} {accepted:?}"
+        );
+        assert_eq!(
+            body["input"]["steps"].as_array().unwrap().len(),
+            if continues { 1 } else { 5 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn gemini_model_switch_still_rebuilds_on_scope_history_or_setting_changes() {
+    let family = "gemini_interactions";
+    for change in ["account", "history", "system", "generation", "reset"] {
+        let mock = Arc::new(Mock::default());
+        for id in ["first", "second"] {
+            mock.json(200, response(family, id, "4921"));
+        }
+        let client = client(&mock, model_switch_profile(family, &["text"]));
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let mut opts = options();
+        let first = complete(&mut session, &client, &request, &opts).await;
+        followup(&mut request, first);
+        request.model = "next".into();
+        match change {
+            "account" => opts.account_scope = Some("account-b".into()),
+            "history" => request.messages[0] = ConversationMessage::user_text("edited"),
+            "system" => request.system.push(SystemBlock::new("changed")),
+            "generation" => request.max_tokens = Some(900),
+            _ => session.reset(),
+        }
+        complete(&mut session, &client, &request, &opts).await;
+        assert_eq!(
+            session.last_request().mode,
+            ConversationRequestMode::Full,
+            "{change}"
+        );
+        assert!(mock.bodies()[1].get("previous_interaction_id").is_none());
+    }
+}
+
+#[tokio::test]
+async fn gemini_model_switch_rejection_replays_new_model_history_once() {
+    let family = "gemini_interactions";
+    let mock = Arc::new(Mock::default());
+    mock.json(200, response(family, "first", "4921"));
+    mock.json(
+        404,
+        json!({"error":{"code":"interaction_not_found","message":"expired"}}),
+    );
+    mock.json(200, response(family, "recovered", "4921"));
+    mock.json(200, response(family, "next", "4921"));
+    let client = client(&mock, model_switch_profile(family, &["text"]));
+    let mut session = ConversationSession::new();
+    let mut request = request();
+    let first = complete(&mut session, &client, &request, &options()).await;
+    followup(&mut request, first);
+    request.model = "next".into();
+    let mut admissions = 0;
+    let mut statuses = Vec::new();
+    let recovered = session
+        .complete_in(
+            &client.snapshot(),
+            "one",
+            &request,
+            &options(),
+            || {
+                admissions += 1;
+                Ok(())
+            },
+            |r| statuses.push(r.response().status),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admissions, 2);
+    assert_eq!(statuses, [404, 200]);
+    assert_eq!(
+        session.last_request().mode,
+        ConversationRequestMode::Recreate
+    );
+    followup(&mut request, recovered);
+    complete(&mut session, &client, &request, &options()).await;
+    let bodies = mock.bodies();
+    assert_eq!(bodies[1]["previous_interaction_id"], "first");
+    assert!(bodies[2].get("previous_interaction_id").is_none());
+    assert_eq!(bodies[2]["model"], "gemini-3.6-flash");
+    assert_eq!(bodies[2]["input"]["steps"].as_array().unwrap().len(), 3);
+    assert_eq!(bodies[3]["previous_interaction_id"], "recovered");
+}
+
+#[tokio::test]
+async fn gemini_explicit_reference_remains_model_bound() {
+    let family = "gemini_interactions";
+    let mock = Arc::new(Mock::default());
+    mock.json(200, response(family, "first", "4921"));
+    let client = client(&mock, model_switch_profile(family, &["text"]));
+    let mut session = ConversationSession::new();
+    let mut request = request();
+    let first = complete(&mut session, &client, &request, &options()).await;
+    request.continuation = Some(first.continuation.unwrap());
+    request.model = "next".into();
+    assert!(matches!(
+        client.chat().complete_in("one", &request, &options()).await,
+        Err(LlmError::InvalidRequest { .. })
+    ));
+    assert_eq!(mock.bodies().len(), 1);
+}
+
+#[tokio::test]
+async fn gemini_model_switch_requires_verified_provider_and_endpoint() {
+    let family = "gemini_interactions";
+    for (provider, endpoint) in [
+        (
+            "gateway",
+            "https://generativelanguage.googleapis.com/v1beta",
+        ),
+        ("google", "https://gateway.test/v1beta"),
+        (
+            "google",
+            "https://generativelanguage.googleapis.com.evil.test/v1beta",
+        ),
+    ] {
+        let mock = Arc::new(Mock::default());
+        for id in ["first", "second"] {
+            mock.json(200, response(family, id, "4921"));
+        }
+        let mut profile = model_switch_profile(family, &["text"]);
+        profile.provider_id = provider.into();
+        profile.base_url = endpoint.into();
+        let client = client(&mock, profile);
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let first = complete(&mut session, &client, &request, &options()).await;
+        followup(&mut request, first);
+        request.model = "next".into();
+        complete(&mut session, &client, &request, &options()).await;
+        assert_eq!(session.last_request().mode, ConversationRequestMode::Full);
+        assert!(mock.bodies()[1].get("previous_interaction_id").is_none());
+    }
+}
+
+#[tokio::test]
+async fn openrouter_keeps_full_history_with_or_without_model_switch() {
+    let builtin = builtin_providers()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.profile_name == "openrouter-responses")
+        .unwrap();
+    assert_eq!(
+        ContinuationCapability::for_profile(&builtin),
+        ContinuationCapability::Unsupported
+    );
+    let mut profile = model_switch_profile("open_ai_responses", &["text"]);
+    profile.provider_id = builtin.provider_id;
+    profile.base_url = builtin.base_url;
+    profile.extra = builtin.extra;
+    for switch_model in [false, true] {
+        let mock = Arc::new(Mock::default());
+        for id in ["first", "second"] {
+            mock.json(200, response("open_ai_responses", id, "4921"));
+        }
+        let client = client(&mock, profile.clone());
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let first = complete(&mut session, &client, &request, &options()).await;
+        assert!(first.continuation.is_none());
+        followup(&mut request, first);
+        if switch_model {
+            request.model = "next".into();
+        }
+        complete(&mut session, &client, &request, &options()).await;
+        let bodies = mock.bodies();
+        assert_eq!(session.last_request().mode, ConversationRequestMode::Full);
+        assert!(bodies[1].get("previous_response_id").is_none());
+        assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            bodies[1]["model"],
+            if switch_model { "next-wire" } else { "m" }
+        );
+    }
+}
+
+#[tokio::test]
+async fn gemini_model_switch_checks_function_result_media() {
+    let family = "gemini_interactions";
+    for (accepted, continues) in [(vec!["text"], false), (vec!["text", "image"], true)] {
+        let mock = Arc::new(Mock::default());
+        let mut first = response(family, "first", "4921");
+        first["status"] = json!("requires_action");
+        first["steps"] =
+            json!([{"type":"function_call","id":"lookup-1","name":"lookup","arguments":{}}]);
+        mock.json(200, first);
+        mock.json(200, response(family, "second", "4921"));
+        let client = client(&mock, model_switch_profile(family, &accepted));
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        request.tools = serde_json::from_value(
+            json!([{"name":"lookup","description":"lookup","input_schema":{"type":"object"}}]),
+        )
+        .unwrap();
+        let first = complete(&mut session, &client, &request, &options()).await;
+        request.messages.push(first.message);
+        request.messages.push(serde_json::from_value(json!({"role":"user","content":[{
+            "type":"tool_result","tool_use_id":"lookup-1","content":"image result",
+            "blocks":[{"type":"image","source":{"type":"url","url":"https://fixture.test/result.png"}}]
+        }]})).unwrap());
+        request.model = "next".into();
+        complete(&mut session, &client, &request, &options()).await;
+        let bodies = mock.bodies();
+        assert_eq!(
+            bodies[1].get("previous_interaction_id").is_some(),
+            continues
+        );
+        let steps = bodies[1]["input"]["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), if continues { 1 } else { 3 });
+        assert_eq!(steps.last().unwrap()["type"], "function_result");
+        assert_eq!(steps.last().unwrap()["result"][0]["type"], "image");
+    }
+}
+
 #[tokio::test]
 async fn three_turns_use_only_new_input_on_supported_protocols() {
     for family in [
@@ -607,42 +967,50 @@ async fn anthropic_streaming_tool_results_and_automatic_cache_continue() {
 
 #[tokio::test]
 async fn gemini_streaming_terminal_without_steps_retains_exact_decoder_steps() {
-    let mock = Arc::new(Mock::default());
-    mock.raw(200,sse(&[
+    for switch_model in [false, true] {
+        let mock = Arc::new(Mock::default());
+        mock.raw(200,sse(&[
         json!({"event_type":"interaction.created","interaction":{"id":"first"}}),
         json!({"event_type":"step.start","index":0,"step":{"type":"model_output","content":[]}}),
         json!({"event_type":"step.delta","index":0,"delta":{"type":"text","text":"4921"}}),
         json!({"event_type":"step.stop","index":0}),
         json!({"event_type":"interaction.completed","interaction":{"id":"first","status":"completed","model":"gemini-3.8-flash","usage":{"total_input_tokens":5,"total_output_tokens":2,"total_tokens":7}}})]));
-    mock.json(200, response("gemini_interactions", "second", "4921"));
-    let client = client(&mock, profile("gemini_interactions"));
-    let mut session = ConversationSession::new();
-    let mut request = request();
-    let mut stream = session
-        .stream_in(
-            &client.snapshot(),
-            "one",
-            &request,
-            &options(),
-            || Ok(()),
-            |_| {},
-        )
-        .await
-        .unwrap();
-    let mut accumulator = StreamAccumulator::new();
-    while let Some(event) = stream.next().await {
-        accumulator.observe(&event.unwrap());
+        mock.json(200, response("gemini_interactions", "second", "4921"));
+        let client = client(
+            &mock,
+            model_switch_profile("gemini_interactions", &["text"]),
+        );
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let mut stream = session
+            .stream_in(
+                &client.snapshot(),
+                "one",
+                &request,
+                &options(),
+                || Ok(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let mut accumulator = StreamAccumulator::new();
+        while let Some(event) = stream.next().await {
+            accumulator.observe(&event.unwrap());
+        }
+        followup(&mut request, accumulator.snapshot().response);
+        if switch_model {
+            request.model = "next".into();
+        }
+        complete(&mut session, &client, &request, &options()).await;
+        assert_eq!(
+            session.last_request().mode,
+            ConversationRequestMode::Continue
+        );
+        assert_eq!(
+            mock.bodies()[1]["input"]["steps"].as_array().unwrap().len(),
+            1
+        );
     }
-    followup(&mut request, accumulator.snapshot().response);
-    complete(&mut session, &client, &request, &options()).await;
-    assert_eq!(
-        session.last_request().mode,
-        ConversationRequestMode::Continue
-    );
-    assert_eq!(
-        mock.bodies()[1]["input"]["steps"].as_array().unwrap().len(),
-        1
-    );
 }
 
 struct WsMock {

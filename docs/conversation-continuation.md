@@ -51,10 +51,17 @@ async fn example(client: &LlmClient, options: &RequestOptions) -> Result<(), Llm
 - **Anthropic**：仅在已声明能力的第一方端点使用 `message-threads-2026-08-12`。create 发送完整输入；continue 省略 system/tools。自动缓存、工具结果、固定字段变化、refusal/fallback 和流式工具 JSON 均有独立处理。线程空闲五分钟后重建。`thread_unsupported_request` 会在本轮最多降级一次，并为相同身份停用 thread；不删除原请求的其他设置。当前 context-management/compaction 请求使用全量模式。工具与 MCP 配置仍经过现有完整请求校验。
 - **OpenAI / Qwen**：显式 `store=false` 不产生持久续接引用；服务端返回的存储关闭也会被尊重。instructions 保留在每轮请求中。Qwen 的 session-cache header 是额外可选优化。
 - **xAI**：预设声明 Responses WS 能力；有 WebSocket transport 时复用连接，`store=false` 只使用连接内状态。无 WS transport 或握手要求 HTTP 时可在生成前回退 HTTP。重连后缺少持久引用时发送完整历史。无法无损进入现有 WS JSON 表示的输入使用 HTTP。
-- **Gemini**：统一 codec 的输入是 `input.steps`。每轮重发 tools、system_instruction 和 generation_config。终止帧省略 steps 时，使用 decoder 已验证、完整装配的原始步骤；不会从显示文本猜测历史。
+- **Gemini**：统一 codec 的输入是 `input.steps`。每轮重发 tools、system_instruction 和 generation_config。终止帧省略 steps 时，使用 decoder 已验证、完整装配的原始步骤；不会从显示文本猜测历史。`ConversationSession` 仅为 `provider_id = "google"` 且 base URL 为 `https://generativelanguage.googleapis.com/v1beta` 的官方端点启用跨模型续接。同一连接与账户内切换模型后，完整历史前缀必须一致，且目标模型的 `metadata.inputModalities` 必须明确支持历史内容的全部模态（包括旧输出和工具结果）。当前识别 text、image、audio、video 和 PDF；能力未知、其他原生步骤或内容类型会保守地发送完整历史。除模型名外的请求设置变化仍触发全量请求。参见官方[跨模型兼容要求](https://aistudio.google.com/docs/interactions-overview#limitations)。
+- **OpenRouter**：预设不启用远端续接，不论是否切换模型都发送完整历史。其官方 [Responses API 文档](https://openrouter.ai/docs/api_reference/responses/overview) 明确声明无状态；`store=true` 或非空 `previous_response_id` 会返回 400。API schema 出现同名参数并不代表支持存储或引用历史，上游模型厂商的能力也不能直接继承。
 - **智谱国内**：`glm-responses` 是隐藏、显式选择的国内计量路由，使用平台 API Key，初始模型为 `glm-5.3`。必须设置 `request.controls.responses.store = Some(true)` 才启用续接；不会替用户开启存储。初始适配范围是文本、多模态基础输入、普通 function 工具及续接；可调 effort 与 hosted tools 没有从 OpenAI 路由直接继承。国际 Z.AI/Coding Plan 不受此开关影响。
 
 首轮输出和后续历史必须保留 reasoning、signature、provider-native items、工具调用/结果及 phase 等原始语义。helper 遇到无法确认的前缀会发送全量，而不会猜测裁剪边界。
+
+## 切换模型与缓存
+
+切换模型不删除宿主持有的完整历史。Anthropic thread 绑定模型，OpenAI/xAI/Qwen/GLM 的跨模型引用兼容性未获明确保证，因此仍从完整历史开始新的续接起点。Gemini 按上述兼容检查决定是否续接。引用被明确拒绝时，仍最多以新模型和完整历史恢复一次；账户准入、签名与记账照常执行。
+
+这里的跨模型优化仅适用于提供完整可重放历史的 `ConversationSession`。显式 `ChatRequest.continuation` / `ContinuationRef` 没有完整历史可供验证，仍要求模型一致，不会放宽其账户、端点或 workspace 绑定。服务端 prompt/KV cache 是否命中不由 interaction/response ID 保证；本地消息投影缓存也应按协议与实际内容判断能否复用，不应仅因模型名改变就清空。
 
 官方来源与核查矩阵见[实施准备文档](conversation-continuation-plan-2026-11-02.md)。合同测试位于 `tests/conversation_session.rs`，另复用 `continuation`、`responses_session`、`gemini_interactions_codec`、`interactions`、`presets` 等回归。离线 mock 通过不代表真实账户、生产发布或性能验收。
 

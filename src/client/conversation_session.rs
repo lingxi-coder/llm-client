@@ -4,7 +4,8 @@ use super::{
     ClientSnapshot, ModelStream, PreparedCall, ReceivedCall, RequestDraft, RequestOptions,
 };
 use crate::protocol::{
-    ChatRequest, ChatResponse, JsonPayload, LlmError, ProtocolFamily, ProviderProfile, StreamEvent,
+    ChatRequest, ChatResponse, JsonPayload, LlmError, ModelProfile, ProtocolFamily,
+    ProviderProfile, StreamEvent,
 };
 use crate::RequestMode;
 use futures::StreamExt;
@@ -305,7 +306,13 @@ impl ConversationSession {
                         && (capability != ContinuationCapability::AnthropicThread
                             || previous.at.elapsed() < Duration::from_secs(300))
                 }) {
-                    if compatible(&previous.logical, &logical, capability)? {
+                    if compatible(
+                        &previous.logical,
+                        &logical,
+                        capability,
+                        draft.profile(),
+                        draft.model(),
+                    )? {
                         let mut prefix = capability.items(&previous.logical).unwrap_or_default();
                         prefix.extend(previous.output);
                         let current = input.as_ref().expect("eligible input");
@@ -666,13 +673,27 @@ fn compatible(
     previous: &JsonPayload,
     current: &JsonPayload,
     capability: ContinuationCapability,
+    profile: &ProviderProfile,
+    model: &ModelProfile,
 ) -> Result<bool, LlmError> {
+    let cross_model = previous.string_at("/model") != current.string_at("/model");
+    let gemini_model_switch = cross_model
+        && capability == ContinuationCapability::GeminiInteraction
+        && profile.provider_id.as_str() == "google"
+        && profile.base_url.trim_end_matches('/')
+            == "https://generativelanguage.googleapis.com/v1beta"
+        && gemini_history_supported(current, model);
     let mut previous = replace(previous, capability.input(), None)?;
     let mut current = replace(current, capability.input(), None)?;
     previous = replace(&previous, "stream", None)?;
     current = replace(&current, "stream", None)?;
+    if gemini_model_switch {
+        previous = replace(&previous, "model", None)?;
+        current = replace(&current, "model", None)?;
+    }
     // These fields are explicitly free to vary in an Anthropic thread. Other
-    // providers conservatively rebuild when any non-input parameter changes.
+    // non-input changes conservatively rebuild, apart from the checked Gemini
+    // model switch above. Request-scoped Gemini settings are still sent in full.
     if capability == ContinuationCapability::AnthropicThread {
         for key in ["max_tokens", "stop_sequences", "metadata", "service_tier"] {
             previous = replace(&previous, key, None)?;
@@ -682,6 +703,53 @@ fn compatible(
         current = thread_fingerprint(&current)?;
     }
     previous.semantically_eq(&current)
+}
+
+/// Interactions permits cross-model history only when the next model accepts
+/// prior output modalities. Inspect the whole replay, including older turns and
+/// tool results; unknown native steps or missing capability facts stay full.
+fn gemini_history_supported(body: &JsonPayload, model: &ModelProfile) -> bool {
+    let accepts = |modality: &str| {
+        model
+            .metadata
+            .input_modalities
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(modality))
+    };
+    if !accepts("text") {
+        return false;
+    }
+    let Some(steps) = body
+        .payload_at("/input/steps")
+        .and_then(|v| v.array_items())
+    else {
+        return false;
+    };
+    steps.iter().all(|step| {
+        let path = match step.string_at("/type").as_deref() {
+            Some("function_call") => return true,
+            Some("user_input" | "model_output") => "/content",
+            Some("function_result") => "/result",
+            _ => return false,
+        };
+        let Some(content) = step.payload_at(path).and_then(|v| v.array_items()) else {
+            return false;
+        };
+        content
+            .iter()
+            .all(|part| match part.string_at("/type").as_deref() {
+                Some("text") => accepts("text"),
+                Some("image") => accepts("image"),
+                Some("audio") => accepts("audio"),
+                Some("video") => accepts("video"),
+                Some("document")
+                    if part.string_at("/mime_type").as_deref() == Some("application/pdf") =>
+                {
+                    accepts("pdf")
+                }
+                _ => false,
+            })
+    })
 }
 fn prefix_matches(
     prefix: &[JsonPayload],
