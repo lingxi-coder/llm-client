@@ -220,6 +220,32 @@ impl ConversationSession {
         self.transport = Some(transport);
         let logical = draft.semantic_body_source()?;
         let capability = ContinuationCapability::for_profile(draft.profile());
+        if capability == ContinuationCapability::Unsupported
+            && !(draft.profile().supports_websockets
+                && draft.profile().protocol == ProtocolFamily::OpenAiResponses)
+        {
+            // Stateless routes need no authenticated connection fingerprint or
+            // speculative GET signing. Preserve the settled request verbatim.
+            self.reset();
+            let binding = Arc::new(());
+            draft.set_session_wire_body(draft.request().body.clone());
+            draft.bind_session(binding.clone());
+            self.binding = Some(binding);
+            self.snapshot = ConversationRequestSnapshot {
+                mode: if self.recovery {
+                    ConversationRequestMode::Recreate
+                } else {
+                    ConversationRequestMode::Full
+                },
+                logical_bytes: logical.as_json_source().len(),
+                wire_bytes: draft.request().body.len(),
+                new_items: capability.items(&logical).map_or(0, |items| items.len()),
+            };
+            self.last_capability = Some(capability);
+            self.last_identity = None;
+            self.recovery = false;
+            return Ok(());
+        }
         let authenticated = draft.websocket_handshake().await?;
         let mut headers: Vec<_> = authenticated
             .headers

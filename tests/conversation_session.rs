@@ -1151,3 +1151,36 @@ async fn unchanged_full_request_reuses_its_existing_wire_buffer() {
     assert_eq!(original.as_ptr(), draft.request().body.as_ptr());
     assert_eq!(session.last_request().mode, ConversationRequestMode::Full);
 }
+
+struct PostOnlyAuthenticator;
+#[async_trait]
+impl Authenticator for PostOnlyAuthenticator {
+    async fn apply(
+        &self,
+        request: &mut HttpRequest,
+        _: &ProviderProfile,
+        _: Option<&Secret<String>>,
+    ) -> Result<(), LlmError> {
+        assert_eq!(
+            request.method, "POST",
+            "stateless route must not sign a speculative handshake"
+        );
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn unsupported_routes_do_not_authenticate_a_speculative_handshake() {
+    let mock = Arc::new(Mock::default());
+    mock.json(200, response("open_ai_responses", "first", "ok"));
+    let mut profile = profile("open_ai_responses");
+    profile.extra = json!({});
+    profile.auth = AuthStrategy::Bearer;
+    let client = client(&mock, profile);
+    let mut opts = options();
+    opts.authenticator = Some(client::options::RequestAuthenticator(Arc::new(
+        PostOnlyAuthenticator,
+    )));
+    let mut session = ConversationSession::new();
+    complete(&mut session, &client, &request(), &opts).await;
+    assert_eq!(session.last_request().mode, ConversationRequestMode::Full);
+}
