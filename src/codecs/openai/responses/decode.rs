@@ -349,6 +349,20 @@ fn decode_item_with_json(
                 }
             }
         }
+        if item.get("phase").is_some() {
+            let source = response_json
+                .take_raw_json_source_at(&format!("/output/{item_index}/phase"))?
+                .ok_or_else(|| LlmError::InvalidRequest {
+                    message: "Responses message phase source was not retained".into(),
+                })?;
+            let phase = JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                message: error.to_string(),
+            })?;
+            out.push(ContentBlock::ProviderContent {
+                protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                value: super::message_phase(phase)?,
+            });
+        }
         return Ok(());
     }
     if item.get("type").and_then(Value::as_str) == Some("function_call") {

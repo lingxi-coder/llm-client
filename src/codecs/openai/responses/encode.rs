@@ -378,6 +378,28 @@ fn encode_message<'a>(
                             .to_owned(),
                     });
                 }
+                if value.string_is("/type", super::MESSAGE_PHASE) {
+                    if m.role != MessageRole::Assistant
+                        || !value.has_only_fields_at("", &["type", "phase"])
+                    {
+                        return Err(LlmError::InvalidRequest {
+                            message: "Responses phase metadata requires an assistant message"
+                                .into(),
+                        });
+                    }
+                    let phase =
+                        value
+                            .payload_at("/phase")
+                            .ok_or_else(|| LlmError::InvalidRequest {
+                                message: "Responses phase metadata is missing phase".into(),
+                            })?;
+                    input.push(
+                        WireValue::from(json!({"type":"message", "role":role}))
+                            .with("phase", WireValue::owned_raw_json(phase))
+                            .with("content", WireValue::array(std::mem::take(&mut parts))),
+                    );
+                    continue;
+                }
                 if matches!(
                     value.string_at("/type").as_deref(),
                     Some("computer_call" | "computer_call_output")

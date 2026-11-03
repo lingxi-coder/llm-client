@@ -18,6 +18,19 @@ pub(crate) mod decode;
 pub(crate) mod encode;
 mod stream;
 
+pub(crate) const MESSAGE_PHASE: &str = "responses_message_phase";
+
+pub(crate) fn message_phase(
+    phase: crate::protocol::JsonPayload,
+) -> Result<crate::protocol::JsonPayload, crate::protocol::LlmError> {
+    crate::protocol::JsonPayload::parse(r#"{"type":"responses_message_phase"}"#)
+        .expect("static phase carrier is JSON")
+        .with_object_field("phase", &phase)
+        .map_err(|error| crate::protocol::LlmError::InvalidRequest {
+            message: error.to_string(),
+        })
+}
+
 pub use decode::classify_error;
 
 use crate::codecs::{CodecContext, EncodeRequest};

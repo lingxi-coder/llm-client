@@ -1020,6 +1020,18 @@ struct WsMock {
 struct WsConnection {
     inner: Arc<Mock>,
 }
+struct NoopChatGptAuth;
+#[async_trait]
+impl Authenticator for NoopChatGptAuth {
+    async fn apply(
+        &self,
+        _: &mut HttpRequest,
+        _: &ProviderProfile,
+        _: Option<&Secret<String>>,
+    ) -> Result<(), LlmError> {
+        Ok(())
+    }
+}
 #[async_trait]
 impl Transport for WsMock {
     async fn send(&self, request: HttpRequest) -> Result<StreamResponse, LlmError> {
@@ -1062,6 +1074,247 @@ impl transport::WebSocketConnection for WsConnection {
     }
     async fn close(&mut self) -> Result<(), LlmError> {
         Ok(())
+    }
+}
+
+fn phased_response(id: &str) -> Value {
+    let mut body = response("open_ai_responses", id, "4921");
+    body["output"] = json!([
+        {"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"checking","annotations":[]}]},
+        {"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"4921","annotations":[]}]}
+    ]);
+    body
+}
+
+#[tokio::test]
+async fn responses_phases_survive_full_recovery_without_disabling_prefix_validation() {
+    for preserve_phase in [false, true] {
+        let mock = Arc::new(Mock::default());
+        mock.json(200, phased_response("first"));
+        if preserve_phase {
+            mock.json(
+                404,
+                json!({"error":{"code":"previous_response_not_found","message":"expired"}}),
+            );
+        }
+        mock.json(200, phased_response("next"));
+        let client = client(&mock, profile("open_ai_responses"));
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let mut first = complete(&mut session, &client, &request, &options()).await;
+        assert_eq!(first.message.content.len(), 4);
+        if !preserve_phase {
+            first
+                .message
+                .content
+                .retain(|block| !matches!(block, ContentBlock::ProviderContent { .. }));
+        }
+        followup(&mut request, first);
+        complete(&mut session, &client, &request, &options()).await;
+        let bodies = mock.bodies();
+        if preserve_phase {
+            assert_eq!(bodies.len(), 3);
+            assert_eq!(bodies[1]["previous_response_id"], "first");
+            assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
+            assert!(bodies[2].get("previous_response_id").is_none());
+            assert_eq!(bodies[2]["input"][1]["phase"], "commentary");
+            assert_eq!(bodies[2]["input"][1]["content"][0]["text"], "checking");
+            assert_eq!(bodies[2]["input"][2]["phase"], "final_answer");
+            assert_eq!(bodies[2]["input"][2]["content"][0]["text"], "4921");
+        } else {
+            assert_eq!(bodies.len(), 2);
+            assert!(
+                bodies[1].get("previous_response_id").is_none(),
+                "a caller edit must still require full history"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn websocket_phases_preserve_visible_text_order_and_enable_delta_requests() {
+    for terminal_only in [false, true] {
+        let inner = Arc::new(Mock::default());
+        let first = phased_response("first");
+        let mut events =
+            vec![json!({"type":"response.created","response":{"id":"first","model":"m"}})];
+        for (index, item) in first["output"].as_array().unwrap().iter().enumerate() {
+            events.push(json!({"type":"response.output_text.delta","output_index":index,"content_index":0,"delta":item["content"][0]["text"]}));
+            if !terminal_only {
+                events.push(
+                    json!({"type":"response.output_item.done","output_index":index,"item":item}),
+                );
+            }
+        }
+        events.push(json!({"type":"response.completed","response":first}));
+        inner.json(200, Value::Array(events));
+        inner.json(
+            200,
+            json!([{"type":"response.completed","response":phased_response("second")}]),
+        );
+        let ws = Arc::new(WsMock {
+            inner: inner.clone(),
+            connects: Default::default(),
+        });
+        let mut profile = profile("open_ai_responses");
+        profile.supports_websockets = true;
+        let client = LlmClientBuilder::with_transport(ws, &[profile])
+            .with_region(Region::International)
+            .build()
+            .unwrap();
+        let mut session = ConversationSession::new();
+        let mut request = request();
+        let mut stream = session
+            .stream_in(
+                &client.snapshot(),
+                "one",
+                &request,
+                &options(),
+                || Ok(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let mut accumulator = StreamAccumulator::new();
+        while let Some(event) = stream.next().await {
+            accumulator.observe(&event.unwrap());
+        }
+        let snapshot = accumulator.snapshot();
+        assert_eq!(snapshot.events.iter().filter(|event| matches!(event, StreamEvent::ProviderContent { value, .. } if value.string_at("/type").as_deref() == Some("responses_message_phase"))).count(), 2);
+        let first = snapshot.response;
+        assert_eq!(first.message.content.len(), 4);
+        assert!(
+            matches!(&first.message.content[0], ContentBlock::Text { text, .. } if text == "checking")
+        );
+        assert!(
+            matches!(&first.message.content[1], ContentBlock::ProviderContent { value, .. } if value.string_at("/phase").as_deref() == Some("commentary"))
+        );
+        assert!(
+            matches!(&first.message.content[2], ContentBlock::Text { text, .. } if text == "4921")
+        );
+        assert!(
+            matches!(&first.message.content[3], ContentBlock::ProviderContent { value, .. } if value.string_at("/phase").as_deref() == Some("final_answer"))
+        );
+        followup(&mut request, first);
+        let mut stream = session
+            .stream_in(
+                &client.snapshot(),
+                "one",
+                &request,
+                &options(),
+                || Ok(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        assert_eq!(
+            session.last_request().mode,
+            ConversationRequestMode::Continue
+        );
+        let bodies = inner.bodies();
+        assert_eq!(bodies[1]["previous_response_id"], "first");
+        assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn chatgpt_oauth_completion_stays_http_when_body_policy_forces_streaming() {
+    let inner = Arc::new(Mock::default());
+    inner.raw(
+        200,
+        sse(&[json!({
+            "type":"response.completed", "response":response("open_ai_responses", "first", "4921")
+        })]),
+    );
+    let ws = Arc::new(WsMock {
+        inner: inner.clone(),
+        connects: Default::default(),
+    });
+    let mut profile = profile("open_ai_responses");
+    profile.auth = AuthStrategy::ChatGptOAuth;
+    profile.supports_websockets = true;
+    let mut builder =
+        LlmClientBuilder::with_transport(ws.clone(), &[profile]).with_region(Region::International);
+    builder.register_authenticator(AuthStrategy::ChatGptOAuth, Arc::new(NoopChatGptAuth));
+    let client = builder.build().unwrap();
+    let mut session = ConversationSession::new();
+    let mut admissions = 0;
+    let mut statuses = Vec::new();
+    let result = session
+        .complete_in(
+            &client.snapshot(),
+            "one",
+            &request(),
+            &options(),
+            || {
+                admissions += 1;
+                Ok(())
+            },
+            |received| statuses.push(received.response().status),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(result.message.content.as_slice(), [ContentBlock::Text { text, .. }] if text == "4921")
+    );
+    assert_eq!(admissions, 1);
+    assert_eq!(statuses, [200]);
+    assert_eq!(ws.connects.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(session.responses_transport().is_none());
+    let bodies = inner.bodies();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["store"], false);
+    assert_eq!(bodies[0]["stream"], true);
+    assert!(bodies[0].get("previous_response_id").is_none());
+}
+
+#[tokio::test]
+async fn transport_diagnostics_preserve_prepared_websocket_and_http_fallback_dispatch() {
+    for fallback in [false, true] {
+        let inner = Arc::new(Mock::default());
+        let event = json!({"type":"response.completed","response":response("open_ai_responses", "first", "4921")});
+        let transport: Arc<dyn Transport> = if fallback {
+            inner.raw(200, sse(&[event]));
+            inner.clone()
+        } else {
+            inner.json(200, json!([event]));
+            Arc::new(WsMock {
+                inner: inner.clone(),
+                connects: Default::default(),
+            })
+        };
+        let mut profile = profile("open_ai_responses");
+        profile.supports_websockets = true;
+        let client = LlmClientBuilder::with_transport(transport, &[profile])
+            .with_region(Region::International)
+            .build()
+            .unwrap();
+        let mut session = ConversationSession::new();
+        assert!(session.responses_transport().is_none());
+        let mut draft = client
+            .snapshot()
+            .prepare_draft_on("one", &request(), &options(), RequestMode::Stream)
+            .await
+            .unwrap();
+        session.prepare(&mut draft).await.unwrap();
+        assert_eq!(
+            session.responses_transport().unwrap().fallback_to_http(),
+            fallback
+        );
+        let received = session
+            .dispatch(draft.seal().await.unwrap(), || Ok(()))
+            .await
+            .unwrap();
+        let mut stream = received.into_stream().ok().unwrap();
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+        assert_eq!(inner.bodies().len(), 1);
+        session.reset();
+        assert!(session.responses_transport().is_none());
     }
 }
 

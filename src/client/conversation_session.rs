@@ -168,6 +168,11 @@ impl ConversationSession {
     pub fn last_request(&self) -> &ConversationRequestSnapshot {
         &self.snapshot
     }
+    /// Read-only transport diagnostics for the latest prepared Responses call.
+    /// Unlike `responses_transport_mut`, this does not invalidate preparation.
+    pub fn responses_transport(&self) -> Option<&super::ResponsesSession> {
+        self.websocket_prepared.then_some(&self.websocket)
+    }
     pub async fn close(&mut self) -> Result<(), LlmError> {
         let result = self.websocket.close().await;
         self.reset();
@@ -396,6 +401,7 @@ impl ConversationSession {
         self.last_capability = Some(capability);
         if draft.profile().supports_websockets
             && draft.profile().protocol == ProtocolFamily::OpenAiResponses
+            && draft.request_mode() == RequestMode::Stream
             && logical_streaming(&draft.semantic_body_source()?)
             && websocket_representable(&draft.semantic_body_source()?)
         {
