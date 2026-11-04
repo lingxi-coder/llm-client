@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6.1.0
       - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt clippy
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
       - name: Test
         run: cargo test --locked ${{ matrix.args }}
       - name: Check formatting
