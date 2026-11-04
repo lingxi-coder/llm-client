@@ -1,0 +1,14 @@
+{
+  "purpose": "unintegrated recovery artifact, not a release",
+  "base_commit": "78aca5108489e18c628aef6299f039f8d412deaa",
+  "candidate_head": "4667773f06cc7f70b81dc02ee9f8d25d9d61fce9",
+  "candidate_tree": "9a0d31922f8fbf30031378cb7296d08cf8918007",
+  "reconstructed_tree": "9a0d31922f8fbf30031378cb7296d08cf8918007",
+  "patch_sha256": "6d47507cfd74d4140e569bd98891457f780bafa0f0fe6db0030241d7c5b4279b",
+  "files": [
+    "M\tsrc/providers/openai/realtime.rs",
+    "M\tsrc/realtime/mod.rs",
+    "M\ttests/realtime.rs"
+  ],
+  "does_not_preserve_original_commit_dag": true
+}

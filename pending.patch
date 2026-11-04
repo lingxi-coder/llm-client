@@ -1,0 +1,710 @@
+diff --git a/src/providers/openai/realtime.rs b/src/providers/openai/realtime.rs
+index 3fef98baab961facd498adebbf8fa3eecdc24ab3..9e84c511b8fc8c8a0f9eb5689aabfba72b673941 100644
+--- a/src/providers/openai/realtime.rs
++++ b/src/providers/openai/realtime.rs
+@@ -2,8 +2,8 @@
+ 
+ use crate::realtime::{
+     RealtimeAudioFormat, RealtimeCapabilities, RealtimeCodec, RealtimeError, RealtimeEvent,
+-    RealtimeFrame, RealtimeHistoryItem, RealtimeInput, RealtimeRole, RealtimeToolResult,
+-    MAX_REALTIME_TOOL_RESULTS,
++    RealtimeFrame, RealtimeHistoryItem, RealtimeInput, RealtimeResponseOrigin, RealtimeRole,
++    RealtimeToolResult, MAX_REALTIME_TOOL_RESULTS,
+ };
+ use base64::{engine::general_purpose::STANDARD, Engine as _};
+ use bytes::Bytes;
+@@ -205,6 +205,9 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
+             session_resumption: false,
+         }
+     }
++    fn supports_response_attribution(&self) -> bool {
++        self.config.manual_turns
++    }
+     fn initial_frames(&self) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+         if let Some(voice) = &self.config.voice {
+             voice.validate()?;
+@@ -350,6 +353,77 @@ impl RealtimeCodec for OpenAiRealtimeCodec {
+             .collect()
+     }
+ 
++    fn encode_with_response_tag(
++        &self,
++        input: &RealtimeInput,
++        tag: &str,
++    ) -> Result<Vec<RealtimeFrame>, RealtimeError> {
++        if !self.config.manual_turns
++            || !matches!(
++                input,
++                RealtimeInput::Text(_) | RealtimeInput::ContinueResponse
++            )
++            || tag.is_empty()
++            || tag.len() > 128
++            || !tag
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
++        {
++            return Err(RealtimeError::InvalidInput {
++                message: "OpenAI response attribution requires a manual response and valid tag"
++                    .into(),
++            });
++        }
++        let mut frames = self.encode(input)?;
++        let Some(RealtimeFrame::Text(last)) = frames.last_mut() else {
++            return Err(RealtimeError::Codec {
++                message: "OpenAI response request has no JSON frame".into(),
++            });
++        };
++        let mut request: Value =
++            serde_json::from_slice(last).map_err(|_| RealtimeError::Codec {
++                message: "OpenAI response request is not valid JSON".into(),
++            })?;
++        if request.get("type").and_then(Value::as_str) != Some("response.create") {
++            return Err(RealtimeError::Codec {
++                message: "OpenAI response request does not end in response.create".into(),
++            });
++        }
++        request["response"] = json!({ "metadata": { "lingxi_request": tag } });
++        *last = match self.json_frame(request)? {
++            RealtimeFrame::Text(bytes) => bytes,
++            RealtimeFrame::Binary(_) => unreachable!("JSON encoding returns a text frame"),
++        };
++        Ok(frames)
++    }
++
++    fn response_origin(&self, frame: &RealtimeFrame) -> Option<RealtimeResponseOrigin> {
++        let RealtimeFrame::Text(bytes) = frame else {
++            return None;
++        };
++        let value: Value = serde_json::from_slice(bytes).ok()?;
++        let event_type = value.get("type")?.as_str()?;
++        if !event_type.starts_with("response.") {
++            return None;
++        }
++        let response_id = value
++            .get("response_id")
++            .or_else(|| value.pointer("/response/id"))?
++            .as_str()?
++            .to_owned();
++        if response_id.is_empty() {
++            return None;
++        }
++        let request_tag = (event_type == "response.created")
++            .then(|| value.pointer("/response/metadata/lingxi_request")?.as_str())
++            .flatten()
++            .map(str::to_owned);
++        Some(RealtimeResponseOrigin {
++            response_id,
++            request_tag,
++        })
++    }
++
+     fn decode(&self, frame: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
+         crate::realtime::decode_json_events(frame, self.config.output_audio_format.core_format())
+     }
+diff --git a/src/realtime/mod.rs b/src/realtime/mod.rs
+index 84933f1b9c6b127b8bfaaa7785ee3521f76b019f..a6b2c592caec7713c9c3d703e311f3c0c98b49d7 100644
+--- a/src/realtime/mod.rs
++++ b/src/realtime/mod.rs
+@@ -26,7 +26,10 @@ use serde_json::Value;
+ use std::{
+     fmt,
+     pin::Pin,
+-    sync::{Arc, Mutex},
++    sync::{
++        atomic::{AtomicBool, Ordering},
++        Arc, Mutex, Weak,
++    },
+     task::Poll,
+ };
+ 
+@@ -437,12 +440,38 @@ pub trait RealtimeCodec: Send + Sync + 'static {
+     fn continuation_is_automatic(&self) -> bool {
+         false
+     }
++
++    /// Whether explicitly requested responses can carry a host-provided tag
++    /// and provider events expose their response identity. This is an adapter
++    /// protocol capability, not a claim that a provider is trustworthy.
++    fn supports_response_attribution(&self) -> bool {
++        false
++    }
+     fn initial_frames(&self) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+         Ok(Vec::new())
+     }
+ 
+     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError>;
+ 
++    /// Encode a response-producing input with an opaque host-provided tag.
++    /// Adapters must reject this if their protocol cannot echo the tag on the
++    /// resulting response, or if an automatic response may bypass the tag.
++    fn encode_with_response_tag(
++        &self,
++        _input: &RealtimeInput,
++        _tag: &str,
++    ) -> Result<Vec<RealtimeFrame>, RealtimeError> {
++        Err(RealtimeError::InvalidInput {
++            message: "realtime provider cannot attribute responses to requests".into(),
++        })
++    }
++
++    /// Extract the provider's response identity from this exact raw frame.
++    /// A response-created frame may additionally echo a host request tag.
++    fn response_origin(&self, _frame: &RealtimeFrame) -> Option<RealtimeResponseOrigin> {
++        None
++    }
++
+     /// Called after a fully encoded input passes frame bounds and is accepted
+     /// by the outbound queue. This is not a provider acknowledgement. Codecs
+     /// may release local lookup state already captured in the queued frames.
+@@ -491,11 +520,13 @@ impl RealtimeSession {
+         let (outbound_tx, outbound_rx) = mpsc::channel(limits.outbound_capacity - 1);
+         let (event_tx, event_rx) = mpsc::channel(limits.event_capacity - 1);
+         let (abort_tx, abort_rx) = oneshot::channel();
++        let ordered_receiver = Arc::new(AtomicBool::new(false));
+         let control = RealtimeControl {
+             abort: Arc::new(Mutex::new(Some(abort_tx))),
+             outbound: Arc::new(Mutex::new(outbound_tx)),
+             codec: codec.clone(),
+             limits,
++            ordered_receiver: ordered_receiver.clone(),
+         };
+         let driver = RealtimeDriver {
+             abort: Some(abort_rx),
+@@ -505,16 +536,14 @@ impl RealtimeSession {
+             connection,
+             max_frame_bytes: limits.max_frame_bytes,
+         };
+-        Ok((
+-            Self {
+-                control,
+-                events: RealtimeEvents {
+-                    receiver: event_rx,
+-                    wrong_receiver: false,
+-                },
+-            },
+-            driver,
+-        ))
++        let events = RealtimeEvents {
++            receiver: event_rx,
++            wrong_receiver: false,
++            outbound: Arc::downgrade(&control.outbound),
++            abort: control.abort.clone(),
++            ordered_receiver,
++        };
++        Ok((Self { control, events }, driver))
+     }
+ 
+     pub fn into_parts(self) -> (RealtimeControl, RealtimeEvents) {
+@@ -531,12 +560,17 @@ pub struct RealtimeControl {
+     outbound: Arc<Mutex<mpsc::Sender<Command>>>,
+     codec: Arc<dyn RealtimeCodec>,
+     limits: RealtimeLimits,
++    ordered_receiver: Arc<AtomicBool>,
+ }
+ 
+ impl RealtimeControl {
+     pub fn capabilities(&self) -> RealtimeCapabilities {
+         self.codec.capabilities()
+     }
++    /// Whether the provider adapter supports explicit response attribution.
++    pub fn supports_response_attribution(&self) -> bool {
++        self.codec.supports_response_attribution()
++    }
+     pub fn import_history(&self, items: Vec<RealtimeHistoryItem>) -> Result<(), RealtimeError> {
+         self.send(RealtimeInput::ImportHistory { items })
+     }
+@@ -583,7 +617,7 @@ impl RealtimeControl {
+     /// Encode and enqueue one logical input without waiting. Returns
+     /// [`RealtimeError::QueueFull`] when the bounded queue cannot accept it.
+     pub fn send(&self, input: RealtimeInput) -> Result<(), RealtimeError> {
+-        self.send_inner(input, None)
++        self.send_inner(input, None, None)
+     }
+ 
+     /// Queue a local input behind a driver-observed inbound boundary.
+@@ -613,10 +647,47 @@ impl RealtimeControl {
+                 message: "input fence requires audio, an audio commit, or text".into(),
+             });
+         }
+-        self.send_inner(input, Some(id))
++        self.send_inner(input, Some(id), None)
++    }
++
++    /// Send a response-producing input with a host-generated, unguessable,
++    /// single-use tag. `fence_id` controls the separate local-send marker and
++    /// must not be treated as provider response ownership. The caller verifies
++    /// that the provider echoes `tag` and binds its response ID before using
++    /// any attributed output. Unsupported providers reject this operation.
++    pub fn send_with_response_tag(
++        &self,
++        input: RealtimeInput,
++        tag: &str,
++        fence_id: Option<u64>,
++    ) -> Result<(), RealtimeError> {
++        if !matches!(
++            input,
++            RealtimeInput::Text(_) | RealtimeInput::ContinueResponse
++        ) || tag.is_empty()
++            || tag.len() > 128
++            || !tag
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
++        {
++            return Err(RealtimeError::InvalidInput {
++                message: "invalid realtime response attribution request".into(),
++            });
++        }
++        if !self.ordered_receiver.load(Ordering::Acquire) {
++            return Err(RealtimeError::InvalidInput {
++                message: "response attribution requires an ordered realtime event receiver".into(),
++            });
++        }
++        self.send_inner(input, fence_id, Some(tag))
+     }
+ 
+-    fn send_inner(&self, input: RealtimeInput, fence_id: Option<u64>) -> Result<(), RealtimeError> {
++    fn send_inner(
++        &self,
++        input: RealtimeInput,
++        fence_id: Option<u64>,
++        response_tag: Option<&str>,
++    ) -> Result<(), RealtimeError> {
+         let mut outbound = self.outbound.lock().unwrap();
+         if outbound.is_closed() {
+             return Err(RealtimeError::Closed);
+@@ -625,9 +696,18 @@ impl RealtimeControl {
+         if matches!(input, RealtimeInput::ContinueResponse)
+             && self.codec.continuation_is_automatic()
+         {
+-            return Ok(());
++            return if response_tag.is_some() {
++                Err(RealtimeError::InvalidInput {
++                    message: "automatic realtime continuation cannot carry a response tag".into(),
++                })
++            } else {
++                Ok(())
++            };
+         }
+-        let frames = self.codec.encode(&input)?;
++        let frames = match response_tag {
++            Some(tag) => self.codec.encode_with_response_tag(&input, tag)?,
++            None => self.codec.encode(&input)?,
++        };
+         if frames.is_empty() {
+             return Err(RealtimeError::InvalidInput {
+                 message: "codec encoded input to no frames".into(),
+@@ -694,6 +774,12 @@ impl RealtimeControl {
+ pub struct RealtimeEvents {
+     receiver: mpsc::Receiver<RealtimeOrderedEvent>,
+     wrong_receiver: bool,
++    // Keep only a weak handle to the sender, so the receiver does not prevent
++    // normal close after the last control is dropped. The independent abort
++    // signal is kept alive to cancel queued work even after that last drop.
++    outbound: Weak<Mutex<mpsc::Sender<Command>>>,
++    abort: Arc<Mutex<Option<oneshot::Sender<CloseRequest>>>>,
++    ordered_receiver: Arc<AtomicBool>,
+ }
+ 
+ impl RealtimeEvents {
+@@ -702,10 +788,22 @@ impl RealtimeEvents {
+             return None;
+         }
+         match self.receiver.next().await? {
+-            RealtimeOrderedEvent::Provider(event) => Some(event),
++            RealtimeOrderedEvent::Provider(event)
++            | RealtimeOrderedEvent::AttributedProvider { event, .. } => Some(event),
+             RealtimeOrderedEvent::InputSent { .. } => {
+                 self.wrong_receiver = true;
+                 self.receiver.close();
++                // Match RealtimeControl::abort's lock order. Closing first
++                // also rejects sends before the driver observes the abort.
++                let outbound = self.outbound.upgrade();
++                let mut outbound = outbound.as_ref().map(|sender| sender.lock().unwrap());
++                if let Some(outbound) = outbound.as_mut() {
++                    outbound.close_channel();
++                }
++                if let Some(abort) = self.abort.lock().unwrap().take() {
++                    let (ack, _) = oneshot::channel();
++                    let _ = abort.send((RealtimeClose::normal("ordered receiver required"), ack));
++                }
+                 Some(RealtimeEvent::ConnectionInterrupted {
+                     message: "fenced inputs require an ordered realtime event receiver".into(),
+                 })
+@@ -716,28 +814,63 @@ impl RealtimeEvents {
+     /// Consume this receiver to observe driver-owned input fences alongside
+     /// provider events, without allowing the two receiver modes to be mixed.
+     pub fn into_ordered(self) -> RealtimeOrderedEvents {
++        if !self.wrong_receiver {
++            self.ordered_receiver.store(true, Ordering::Release);
++        }
+         RealtimeOrderedEvents {
+             receiver: self.receiver,
++            terminated: self.wrong_receiver,
++            ordered_receiver: self.ordered_receiver,
+         }
+     }
+ }
+ 
+-/// An event from the driver. Providers can produce only `Provider` values;
+-/// `InputSent` is generated by the local driver after a fenced send succeeds.
++/// An event from the driver. `InputSent` is generated locally after a fenced
++/// send; provider events carry origin information only when the adapter can
++/// extract it from the same raw frame.
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum RealtimeOrderedEvent {
+     Provider(RealtimeEvent),
+-    InputSent { id: u64 },
++    /// Provider event with the response identity extracted from the same raw
++    /// frame. A tag is only populated when the provider echoes it on creation.
++    AttributedProvider {
++        event: RealtimeEvent,
++        origin: RealtimeResponseOrigin,
++    },
++    InputSent {
++        id: u64,
++    },
++}
++
++/// Provider-supplied response identity and, when present, echoed request tag.
++/// Hosts must compare these with their own outstanding requests and lifecycle;
++/// a provider-supplied value alone does not authorize a tool or a turn.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct RealtimeResponseOrigin {
++    pub response_id: String,
++    pub request_tag: Option<String>,
+ }
+ 
+ /// Exclusive receiver for provider events and local input-sent markers.
+ pub struct RealtimeOrderedEvents {
+     receiver: mpsc::Receiver<RealtimeOrderedEvent>,
++    terminated: bool,
++    ordered_receiver: Arc<AtomicBool>,
+ }
+ 
+ impl RealtimeOrderedEvents {
+     pub async fn next(&mut self) -> Option<RealtimeOrderedEvent> {
+-        self.receiver.next().await
++        if self.terminated {
++            None
++        } else {
++            self.receiver.next().await
++        }
++    }
++}
++
++impl Drop for RealtimeOrderedEvents {
++    fn drop(&mut self) {
++        self.ordered_receiver.store(false, Ordering::Release);
+     }
+ }
+ 
+@@ -918,6 +1051,7 @@ impl RealtimeDriver {
+                 .await;
+             return Err(error);
+         }
++        let origin = self.codec.response_origin(&frame);
+         let events = match self.codec.decode(frame) {
+             Ok(events) => events,
+             Err(error) => {
+@@ -931,7 +1065,17 @@ impl RealtimeDriver {
+             }
+         };
+         for event in events {
+-            self.emit(event).await?;
++            let event = match &origin {
++                Some(origin) => RealtimeOrderedEvent::AttributedProvider {
++                    event,
++                    origin: origin.clone(),
++                },
++                None => RealtimeOrderedEvent::Provider(event),
++            };
++            self.events
++                .send(event)
++                .await
++                .map_err(|_| RealtimeError::EventReceiverDropped)?;
+         }
+         Ok(())
+     }
+@@ -1046,6 +1190,9 @@ impl RealtimeCodec for SeededCodec {
+     fn capabilities(&self) -> RealtimeCapabilities {
+         self.inner.capabilities()
+     }
++    fn supports_response_attribution(&self) -> bool {
++        self.inner.supports_response_attribution()
++    }
+     fn initial_frames(&self) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+         let mut frames = self.inner.initial_frames()?;
+         frames.extend(self.history.clone());
+@@ -1054,6 +1201,16 @@ impl RealtimeCodec for SeededCodec {
+     fn encode(&self, input: &RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+         self.inner.encode(input)
+     }
++    fn encode_with_response_tag(
++        &self,
++        input: &RealtimeInput,
++        tag: &str,
++    ) -> Result<Vec<RealtimeFrame>, RealtimeError> {
++        self.inner.encode_with_response_tag(input, tag)
++    }
++    fn response_origin(&self, frame: &RealtimeFrame) -> Option<RealtimeResponseOrigin> {
++        self.inner.response_origin(frame)
++    }
+     fn input_queued(&self, input: &RealtimeInput) {
+         self.inner.input_queued(input)
+     }
+diff --git a/tests/realtime.rs b/tests/realtime.rs
+index 9b67948644ac15e1b4d79ba0af2c00d250b661a1..2b5ba93eca427ede56c5b90c570a0e8c5899fe8f 100644
+--- a/tests/realtime.rs
++++ b/tests/realtime.rs
+@@ -157,6 +157,115 @@ fn limits(capacity: usize, max_frame_bytes: usize) -> RealtimeLimits {
+     }
+ }
+ 
++#[tokio::test]
++async fn tagged_openai_response_exposes_identity_of_each_provider_frame() {
++    let (transport, peer) = FakeTransport::new();
++    let codec = OpenAiRealtimeCodec::new(OpenAiRealtimeConfig {
++        manual_turns: true,
++        ..Default::default()
++    });
++    let (session, driver) =
++        RealtimeSession::connect(&transport, request(), Arc::new(codec), limits(4, 4096))
++            .await
++            .unwrap();
++    let (control, events) = session.into_parts();
++    assert!(control.supports_response_attribution());
++    assert!(matches!(
++        control.send_with_response_tag(
++            realtime::RealtimeInput::Text("hello".into()),
++            "token-1",
++            Some(7)
++        ),
++        Err(RealtimeError::InvalidInput { .. })
++    ));
++    let mut events = events.into_ordered();
++    control
++        .send_with_response_tag(
++            realtime::RealtimeInput::Text("hello".into()),
++            "token-1",
++            Some(7),
++        )
++        .unwrap();
++    let task = tokio::spawn(driver.run());
++    assert_eq!(
++        events.next().await,
++        Some(RealtimeOrderedEvent::InputSent { id: 7 })
++    );
++    {
++        let sent = peer.sent.lock().unwrap();
++        let RealtimeFrame::Text(frame) = &sent[2] else {
++            panic!("response.create must be JSON text");
++        };
++        let request: serde_json::Value = serde_json::from_slice(frame).unwrap();
++        assert_eq!(request["type"], "response.create");
++        assert_eq!(request["response"]["metadata"]["lingxi_request"], "token-1");
++    }
++    for frame in [
++        serde_json::json!({"type":"response.created","response":{"id":"response-1","metadata":{"lingxi_request":"token-1"}}}),
++        serde_json::json!({"type":"response.output_item.done","response_id":"response-1","item":{"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"}}),
++    ] {
++        peer.incoming
++            .unbounded_send(Ok(RealtimeFrame::text(frame.to_string())))
++            .unwrap();
++    }
++    assert!(matches!(
++        events.next().await,
++        Some(RealtimeOrderedEvent::AttributedProvider {
++            event: RealtimeEvent::TurnStarted { .. },
++            origin,
++        }) if origin.response_id == "response-1" && origin.request_tag.as_deref() == Some("token-1")
++    ));
++    assert!(matches!(
++        events.next().await,
++        Some(RealtimeOrderedEvent::AttributedProvider {
++            event: RealtimeEvent::ProviderEvent { .. },
++            ..
++        })
++    ));
++    assert!(matches!(
++        events.next().await,
++        Some(RealtimeOrderedEvent::AttributedProvider {
++            event: RealtimeEvent::ToolCall { .. }, origin,
++        }) if origin.response_id == "response-1" && origin.request_tag.is_none()
++    ));
++    assert!(matches!(
++        events.next().await,
++        Some(RealtimeOrderedEvent::AttributedProvider {
++            event: RealtimeEvent::ProviderEvent { .. },
++            ..
++        })
++    ));
++    control.abort(RealtimeClose::normal("done")).await.unwrap();
++    task.await.unwrap().unwrap();
++}
++
++#[test]
++fn response_tagging_refuses_automatic_openai_and_other_inputs() {
++    let codec = OpenAiRealtimeCodec::default();
++    assert!(!codec.supports_response_attribution());
++    assert!(codec
++        .encode_with_response_tag(&realtime::RealtimeInput::Text("hello".into()), "tag")
++        .is_err());
++    let codec = OpenAiRealtimeCodec::new(OpenAiRealtimeConfig {
++        manual_turns: true,
++        ..Default::default()
++    });
++    assert!(codec
++        .encode_with_response_tag(&realtime::RealtimeInput::CommitAudio, "tag")
++        .is_err());
++    assert!(codec
++        .encode_with_response_tag(&realtime::RealtimeInput::ContinueResponse, "")
++        .is_err());
++    let frames = codec
++        .encode_with_response_tag(&realtime::RealtimeInput::ContinueResponse, "tag-2")
++        .unwrap();
++    let RealtimeFrame::Text(frame) = &frames[0] else {
++        panic!("response.create must be JSON text");
++    };
++    let request: serde_json::Value = serde_json::from_slice(frame).unwrap();
++    assert_eq!(request["response"]["metadata"]["lingxi_request"], "tag-2");
++}
++
+ #[tokio::test]
+ async fn input_fence_orders_raw_frames_queued_before_the_driver_starts() {
+     let (control, events, driver, peer) = connected(limits(4, 4096)).await;
+@@ -321,7 +430,7 @@ async fn input_fence_rejects_invalid_and_full_queue_without_extra_markers() {
+ 
+ #[tokio::test]
+ async fn plain_receiver_rejects_fenced_input_instead_of_silently_losing_marker() {
+-    let (control, mut events, driver, _peer) = connected(limits(2, 4096)).await;
++    let (control, mut events, driver, peer) = connected(limits(2, 4096)).await;
+     control
+         .send_with_fence(realtime::RealtimeInput::Text("input".into()), 5)
+         .unwrap();
+@@ -331,11 +440,123 @@ async fn plain_receiver_rejects_fenced_input_instead_of_silently_losing_marker()
+         if message.contains("ordered realtime event receiver"))
+     );
+     assert_eq!(events.next().await, None);
+-    control
+-        .abort(RealtimeClose::normal("test finished"))
++    let sent_before = peer.sent.lock().unwrap().len();
++    assert_eq!(
++        control.send(realtime::RealtimeInput::Text("after interruption".into())),
++        Err(RealtimeError::Closed)
++    );
++    tokio::time::timeout(std::time::Duration::from_secs(1), task)
+         .await
++        .expect("misused receiver must abort the idle driver")
++        .unwrap()
+         .unwrap();
+-    task.await.unwrap().unwrap();
++    assert_eq!(peer.sent.lock().unwrap().len(), sent_before);
++}
++
++#[tokio::test]
++async fn plain_receiver_misuse_aborts_a_pending_followup_send() {
++    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
++
++    struct StalledSink {
++        attempts: Arc<AtomicUsize>,
++        started: Option<futures::channel::oneshot::Sender<()>>,
++        aborted: Arc<AtomicBool>,
++    }
++    #[async_trait]
++    impl RealtimeSink for StalledSink {
++        async fn send(&mut self, _: RealtimeFrame) -> Result<(), RealtimeError> {
++            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
++                return Ok(());
++            }
++            let _ = self.started.take().unwrap().send(());
++            futures::future::pending().await
++        }
++        async fn ping(&mut self, _: Bytes) -> Result<(), RealtimeError> {
++            Ok(())
++        }
++        fn abort(&mut self) {
++            self.aborted.store(true, Ordering::SeqCst);
++        }
++        async fn close(&mut self, _: RealtimeClose) -> Result<(), RealtimeError> {
++            panic!("misused receiver must abort, not gracefully flush")
++        }
++    }
++    struct StalledTransport(Mutex<Option<StalledSink>>);
++    #[async_trait]
++    impl RealtimeTransport for StalledTransport {
++        async fn connect(
++            &self,
++            _: RealtimeConnectRequest,
++        ) -> Result<RealtimeConnection, RealtimeError> {
++            Ok(RealtimeConnection {
++                outbound: Box::new(self.0.lock().unwrap().take().unwrap()),
++                inbound: futures::stream::pending().boxed(),
++            })
++        }
++    }
++    struct SimpleCodec;
++    impl RealtimeCodec for SimpleCodec {
++        fn encode(&self, _: &realtime::RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
++            Ok(vec![RealtimeFrame::text("input")])
++        }
++        fn decode(&self, _: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
++            unreachable!()
++        }
++    }
++
++    for drop_control in [false, true] {
++        let attempts = Arc::new(AtomicUsize::new(0));
++        let aborted = Arc::new(AtomicBool::new(false));
++        let (started, started_rx) = futures::channel::oneshot::channel();
++        let transport = StalledTransport(Mutex::new(Some(StalledSink {
++            attempts: attempts.clone(),
++            started: Some(started),
++            aborted: aborted.clone(),
++        })));
++        let (session, driver) = RealtimeSession::connect(
++            &transport,
++            request(),
++            Arc::new(SimpleCodec),
++            limits(2, 4096),
++        )
++        .await
++        .unwrap();
++        let (control, mut events) = session.into_parts();
++        control
++            .send_with_fence(realtime::RealtimeInput::Text("first".into()), 5)
++            .unwrap();
++        control
++            .send(realtime::RealtimeInput::Text("already queued".into()))
++            .unwrap();
++        let control = if drop_control {
++            drop(control);
++            None
++        } else {
++            Some(control)
++        };
++        let task = tokio::spawn(driver.run());
++        tokio::time::timeout(std::time::Duration::from_secs(1), started_rx)
++            .await
++            .expect("followup send should be pending")
++            .unwrap();
++        assert!(matches!(
++            events.next().await,
++            Some(RealtimeEvent::ConnectionInterrupted { .. })
++        ));
++        if let Some(control) = control {
++            assert_eq!(
++                control.send(realtime::RealtimeInput::Text("late".into())),
++                Err(RealtimeError::Closed)
++            );
++        }
++        tokio::time::timeout(std::time::Duration::from_secs(1), task)
++            .await
++            .expect("receiver misuse must preempt the pending send")
++            .unwrap()
++            .unwrap();
++        assert!(aborted.load(Ordering::SeqCst));
++        assert_eq!(attempts.load(Ordering::SeqCst), 2);
++    }
+ }
+ 
+ #[tokio::test]
