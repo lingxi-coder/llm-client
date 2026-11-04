@@ -179,6 +179,26 @@ async fn bounded<T>(future: impl Future<Output = T>) -> T {
         .expect("cache operation or test barrier did not complete")
 }
 
+#[test]
+fn chat_futures_keep_execution_state_off_the_task_stack() {
+    let client = builder(Arc::new(FileTransport::default())).build().unwrap();
+    let req = request();
+    let opts = options();
+    let sizes = [
+        (
+            "complete",
+            std::mem::size_of_val(&client.chat().complete(&req, &opts)),
+        ),
+        (
+            "stream",
+            std::mem::size_of_val(&client.chat().stream(&req, &opts)),
+        ),
+    ];
+    for (operation, bytes) in sizes {
+        assert!(bytes <= 16 * 1024, "{operation} future is {bytes} bytes");
+    }
+}
+
 struct ConfigDir(PathBuf);
 
 impl ConfigDir {

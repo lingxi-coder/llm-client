@@ -1354,7 +1354,9 @@ impl<'client> RequestExecutor<'client> {
         opts: &RequestOptions,
         mode: RequestMode,
     ) -> Result<RequestOutput, LlmError> {
-        self.run_inner(resolved, req, opts, mode, false)
+        // Keep the large per-request state machine off callers' task stacks.
+        // In particular, callers may keep several completion futures live.
+        Box::pin(self.run_inner(resolved, req, opts, mode, false))
             .await
             .map(|(output, _)| output)
             .map_err(DecisionExecutionError::into_provider)
@@ -1366,8 +1368,7 @@ impl<'client> RequestExecutor<'client> {
         req: &ChatRequest,
         opts: &RequestOptions,
     ) -> Result<(RequestOutput, Vec<DecisionAttemptReport>), DecisionExecutionError> {
-        self.run_inner(resolved, req, opts, RequestMode::Complete, true)
-            .await
+        Box::pin(self.run_inner(resolved, req, opts, RequestMode::Complete, true)).await
     }
 
     async fn run_inner(
