@@ -82,7 +82,7 @@ fn every_builtin_has_the_declared_policy_and_listed_models_resolve() {
     for p in &profiles {
         let expected = match p.profile_name.as_str() {
             "qwen" | "qwen-search" | "qwen-anthropic" | "minimax-chat" | "minimax-responses"
-            | "minimax" | "kimi" | "kimi-search" | "glm" | "glm-coding" => {
+            | "minimax" | "kimi" | "kimi-search" | "glm" | "glm-coding" | "glm-responses" => {
                 vec![Region::ChinaMainland]
             }
             "deepseek"
