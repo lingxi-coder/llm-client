@@ -35,6 +35,9 @@ jobs:
         run: cargo clippy --all-targets --locked ${{ matrix.args }} -- --no-deps -D warnings
       - name: Check Rustdoc
         run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked ${{ matrix.args }}
+      - name: Fetch locked downstream documentation dependencies
+        if: matrix.features == 'default'
+        run: cargo fetch --manifest-path tests/downstream-docs/Cargo.toml --locked
       - name: Compile bilingual documentation and extension APIs downstream
         if: matrix.features == 'default'
         run: cargo test --manifest-path tests/downstream-docs/Cargo.toml --locked --offline --target-dir target
