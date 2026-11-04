@@ -544,11 +544,9 @@ async fn three_turns_use_only_new_input_on_supported_protocols() {
             1,
             "{family}"
         );
-        assert!(
-            !serde_json::to_string(&(*bodies[1].pointer(input).unwrap()))
-                .unwrap()
-                .contains("remember")
-        );
+        assert!(!serde_json::to_string(bodies[1].pointer(input).unwrap())
+            .unwrap()
+            .contains("remember"));
         if family == "anthropic_messages" {
             assert_eq!(bodies[0]["thread"]["type"], "create");
             assert_eq!(bodies[2]["thread"]["previous_message_id"], "second");
