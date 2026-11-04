@@ -321,7 +321,7 @@ async fn input_fence_rejects_invalid_and_full_queue_without_extra_markers() {
 
 #[tokio::test]
 async fn plain_receiver_rejects_fenced_input_instead_of_silently_losing_marker() {
-    let (control, mut events, driver, _peer) = connected(limits(2, 4096)).await;
+    let (control, mut events, driver, peer) = connected(limits(2, 4096)).await;
     control
         .send_with_fence(realtime::RealtimeInput::Text("input".into()), 5)
         .unwrap();
@@ -331,11 +331,123 @@ async fn plain_receiver_rejects_fenced_input_instead_of_silently_losing_marker()
         if message.contains("ordered realtime event receiver"))
     );
     assert_eq!(events.next().await, None);
-    control
-        .abort(RealtimeClose::normal("test finished"))
+    let sent_before = peer.sent.lock().unwrap().len();
+    assert_eq!(
+        control.send(realtime::RealtimeInput::Text("after interruption".into())),
+        Err(RealtimeError::Closed)
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .expect("misused receiver must abort the idle driver")
+        .unwrap()
+        .unwrap();
+    assert_eq!(peer.sent.lock().unwrap().len(), sent_before);
+}
+
+#[tokio::test]
+async fn plain_receiver_misuse_aborts_a_pending_followup_send() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct StalledSink {
+        attempts: Arc<AtomicUsize>,
+        started: Option<futures::channel::oneshot::Sender<()>>,
+        aborted: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl RealtimeSink for StalledSink {
+        async fn send(&mut self, _: RealtimeFrame) -> Result<(), RealtimeError> {
+            if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(());
+            }
+            let _ = self.started.take().unwrap().send(());
+            futures::future::pending().await
+        }
+        async fn ping(&mut self, _: Bytes) -> Result<(), RealtimeError> {
+            Ok(())
+        }
+        fn abort(&mut self) {
+            self.aborted.store(true, Ordering::SeqCst);
+        }
+        async fn close(&mut self, _: RealtimeClose) -> Result<(), RealtimeError> {
+            panic!("misused receiver must abort, not gracefully flush")
+        }
+    }
+    struct StalledTransport(Mutex<Option<StalledSink>>);
+    #[async_trait]
+    impl RealtimeTransport for StalledTransport {
+        async fn connect(
+            &self,
+            _: RealtimeConnectRequest,
+        ) -> Result<RealtimeConnection, RealtimeError> {
+            Ok(RealtimeConnection {
+                outbound: Box::new(self.0.lock().unwrap().take().unwrap()),
+                inbound: futures::stream::pending().boxed(),
+            })
+        }
+    }
+    struct SimpleCodec;
+    impl RealtimeCodec for SimpleCodec {
+        fn encode(&self, _: &realtime::RealtimeInput) -> Result<Vec<RealtimeFrame>, RealtimeError> {
+            Ok(vec![RealtimeFrame::text("input")])
+        }
+        fn decode(&self, _: RealtimeFrame) -> Result<Vec<RealtimeEvent>, RealtimeError> {
+            unreachable!()
+        }
+    }
+
+    for drop_control in [false, true] {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let (started, started_rx) = futures::channel::oneshot::channel();
+        let transport = StalledTransport(Mutex::new(Some(StalledSink {
+            attempts: attempts.clone(),
+            started: Some(started),
+            aborted: aborted.clone(),
+        })));
+        let (session, driver) = RealtimeSession::connect(
+            &transport,
+            request(),
+            Arc::new(SimpleCodec),
+            limits(2, 4096),
+        )
         .await
         .unwrap();
-    task.await.unwrap().unwrap();
+        let (control, mut events) = session.into_parts();
+        control
+            .send_with_fence(realtime::RealtimeInput::Text("first".into()), 5)
+            .unwrap();
+        control
+            .send(realtime::RealtimeInput::Text("already queued".into()))
+            .unwrap();
+        let control = if drop_control {
+            drop(control);
+            None
+        } else {
+            Some(control)
+        };
+        let task = tokio::spawn(driver.run());
+        tokio::time::timeout(std::time::Duration::from_secs(1), started_rx)
+            .await
+            .expect("followup send should be pending")
+            .unwrap();
+        assert!(matches!(
+            events.next().await,
+            Some(RealtimeEvent::ConnectionInterrupted { .. })
+        ));
+        if let Some(control) = control {
+            assert_eq!(
+                control.send(realtime::RealtimeInput::Text("late".into())),
+                Err(RealtimeError::Closed)
+            );
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("receiver misuse must preempt the pending send")
+            .unwrap()
+            .unwrap();
+        assert!(aborted.load(Ordering::SeqCst));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
 }
 
 #[tokio::test]

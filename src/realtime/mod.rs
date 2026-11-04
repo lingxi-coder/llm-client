@@ -26,7 +26,7 @@ use serde_json::Value;
 use std::{
     fmt,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     task::Poll,
 };
 
@@ -505,16 +505,13 @@ impl RealtimeSession {
             connection,
             max_frame_bytes: limits.max_frame_bytes,
         };
-        Ok((
-            Self {
-                control,
-                events: RealtimeEvents {
-                    receiver: event_rx,
-                    wrong_receiver: false,
-                },
-            },
-            driver,
-        ))
+        let events = RealtimeEvents {
+            receiver: event_rx,
+            wrong_receiver: false,
+            outbound: Arc::downgrade(&control.outbound),
+            abort: control.abort.clone(),
+        };
+        Ok((Self { control, events }, driver))
     }
 
     pub fn into_parts(self) -> (RealtimeControl, RealtimeEvents) {
@@ -694,6 +691,11 @@ impl RealtimeControl {
 pub struct RealtimeEvents {
     receiver: mpsc::Receiver<RealtimeOrderedEvent>,
     wrong_receiver: bool,
+    // Keep only a weak handle to the sender, so the receiver does not prevent
+    // normal close after the last control is dropped. The independent abort
+    // signal is kept alive to cancel queued work even after that last drop.
+    outbound: Weak<Mutex<mpsc::Sender<Command>>>,
+    abort: Arc<Mutex<Option<oneshot::Sender<CloseRequest>>>>,
 }
 
 impl RealtimeEvents {
@@ -706,6 +708,17 @@ impl RealtimeEvents {
             RealtimeOrderedEvent::InputSent { .. } => {
                 self.wrong_receiver = true;
                 self.receiver.close();
+                // Match RealtimeControl::abort's lock order. Closing first
+                // also rejects sends before the driver observes the abort.
+                let outbound = self.outbound.upgrade();
+                let mut outbound = outbound.as_ref().map(|sender| sender.lock().unwrap());
+                if let Some(outbound) = outbound.as_mut() {
+                    outbound.close_channel();
+                }
+                if let Some(abort) = self.abort.lock().unwrap().take() {
+                    let (ack, _) = oneshot::channel();
+                    let _ = abort.send((RealtimeClose::normal("ordered receiver required"), ack));
+                }
                 Some(RealtimeEvent::ConnectionInterrupted {
                     message: "fenced inputs require an ordered realtime event receiver".into(),
                 })
