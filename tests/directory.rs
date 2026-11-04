@@ -517,6 +517,7 @@ fn every_preset_either_publishes_a_directory_or_says_it_does_not() {
             "anthropic-chat",
             "deepseek-search",
             "glm-coding",
+            "glm-responses",
             "kimi-anthropic-intl",
             "kimi-code-anthropic",
             "kimi-code-responses",
