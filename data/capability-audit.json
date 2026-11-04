@@ -251,6 +251,7 @@
       "profiles": [
         "glm",
         "glm-coding",
+        "glm-responses",
         "zai",
         "zai-coding",
         "zai-coding-chat",
@@ -264,9 +265,11 @@
       "evidence_date": "2026-09-24",
       "model_region_account_audit": "pending",
       "live_validation": "not_run",
-      "protocol_review_date": "2026-10-12",
+      "protocol_review_date": "2026-11-03",
+      "protocol_review_note": "Reviewed the mainland GLM Responses route and Z.AI Coding Plan protocol endpoints; earlier capability evidence retains its original date.",
       "protocol_review_sources": [
-        "https://docs.z.ai/devpack/tool/others"
+        "https://docs.z.ai/devpack/tool/others",
+        "https://docs.bigmodel.cn/cn/guide/develop/responses/introduction"
       ]
     }
   ]

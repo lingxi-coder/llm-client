@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "documentation_evidence_matrix_not_runtime_configuration",
-  "evidence_date": "2026-10-09",
+  "evidence_date": "2026-11-03",
   "live_validation": "not_run",
   "scope": {
     "catalog_profiles": ["openai","gemini"],
@@ -2192,6 +2192,40 @@
           }
         },
         {
+          "model_id": "gpt-6.1-terra",
+          "evidence_date": "2026-11-03",
+          "live_validation": "not_run",
+          "account_region_validation": "unknown",
+          "availability": {
+            "state": "unknown",
+            "source_ids": ["openai.models"],
+            "note": "Exact-model capabilities have not been reviewed in this matrix; account and regional availability remain unverified."
+          },
+          "cells": {
+            "responses.create": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.json_schema": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "prompt_cache.implicit": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.cache_breakpoints": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.cache_ttl_30m": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.cache_retention_24h": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.web_search": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.code_interpreter": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.remote_mcp": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.tool_search": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.hosted_shell": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.computer_use": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.file_search": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "embeddings.create": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "batch.submit": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "responses.background": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "audio.input": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "audio.output": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "audio.transcriptions": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "audio.speech": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"},
+            "realtime.connect": {"status":"unknown","source_ids":["openai.models"],"basis":"not_established"}
+          }
+        },
+        {
           "model_id": "gpt-image-1",
           "evidence_date": "2026-09-26",
           "live_validation": "not_run",
@@ -3421,6 +3455,40 @@
             "interactions.remote_mcp": {"status":"unsupported","source_ids":["google.interactions"],"basis":"explicit_limitation","note":"Interactions explicitly excludes Remote MCP for Gemini 3; this is not applied to Deep Research agents."},
             "interactions.explicit_cache": {"status":"unsupported","source_ids":["google.interactions"],"basis":"explicit_limitation","note":"The endpoint limitation is independent of whether this model is available through Interactions."},
             "interactions.batch": {"status":"unsupported","source_ids":["google.interactions"],"basis":"explicit_limitation","note":"The endpoint limitation is independent of whether this model is available through Interactions."}
+          }
+        },
+        {
+          "model_id": "gemini-3.8-flash",
+          "evidence_date": "2026-11-03",
+          "live_validation": "not_run",
+          "account_region_validation": "unknown",
+          "availability": {
+            "state": "unknown",
+            "source_ids": ["google.models"],
+            "note": "Exact-model capabilities have not been reviewed in this matrix; account and regional availability remain unverified."
+          },
+          "cells": {
+            "generate_content.json_schema": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "prompt_cache.implicit": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.cached_content": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.web_search": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.code_execution": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.file_search": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.url_context": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.maps_grounding": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "generate_content.computer_use": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "embeddings.create": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "gemini.batch.generate_content.submit": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "gemini.batch.embed_content.submit": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "audio.input": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "audio.output": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "audio.speech": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "realtime.connect": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "interactions.create": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "interactions.background": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "interactions.remote_mcp": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "interactions.explicit_cache": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"},
+            "interactions.batch": {"status":"unknown","source_ids":["google.models"],"basis":"not_established"}
           }
         },
         {
