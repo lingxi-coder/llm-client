@@ -50,6 +50,54 @@ impl<'a> FileService<'a> {
         }
     }
 
+    /// Bind file operations to an exact SDK snapshot and request credential.
+    /// Authenticator lookup follows the SDK's registered strategy for this
+    /// profile; no profile or credential fallback is performed.
+    pub fn from_snapshot(
+        snapshot: &'a crate::ClientSnapshot,
+        profile_name: &str,
+        options: &'a crate::RequestOptions,
+    ) -> Result<Self, LlmError> {
+        let profile = snapshot
+            .profile(profile_name)
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "file profile is unavailable in the selected snapshot".into(),
+            })?;
+        let scope = options
+            .file_account_scope
+            .as_deref()
+            .or(options.account_scope.as_deref())
+            .filter(|scope| !scope.trim().is_empty())
+            .ok_or_else(|| LlmError::InvalidRequest {
+                message: "file operations require an explicit account scope".into(),
+            })?;
+        let authenticator = options
+            .authenticator
+            .as_ref()
+            .map(|value| value.0.as_ref())
+            .or_else(|| {
+                snapshot
+                    .runtime
+                    .authenticators
+                    .get(&profile.auth)
+                    .map(|value| value.as_ref())
+            });
+        let mut service = Self::new(
+            snapshot.runtime.http.as_ref(),
+            profile,
+            authenticator,
+            options.credential.as_ref(),
+            Some(scope),
+        );
+        if let Some(timeout) = options.total_timeout {
+            if timeout.is_zero() {
+                return Err(crate::runtime::timeout_error());
+            }
+            service = service.with_timeout(timeout)?;
+        }
+        Ok(service)
+    }
+
     /// Bind the Anthropic Files API to a Microsoft Foundry resource explicitly
     /// marked as Anthropic-hosted. Files are resource/account scoped; this
     /// constructor intentionally does not require a chat model catalog row.
@@ -1137,6 +1185,12 @@ impl<'a> FileService<'a> {
         Ok(request)
     }
 
+    /// Validate a returned resource against this exact profile, endpoint,
+    /// protocol and account scope without reading credentials or sending I/O.
+    pub fn validate_reference(&self, file: &ProviderFileRef) -> Result<(), LlmError> {
+        self.check_ref(file)
+    }
+
     pub(crate) fn check_ref(&self, file: &ProviderFileRef) -> Result<(), LlmError> {
         if file.profile_name != self.profile.profile_name
             || file.provider_id != self.profile.provider_id
@@ -1241,4 +1295,71 @@ fn stream_batch_body(
         },
     )
     .boxed()
+}
+
+#[cfg(test)]
+mod scoped_reference_tests {
+    use super::*;
+    struct NoNetwork;
+    #[async_trait::async_trait]
+    impl Transport for NoNetwork {
+        async fn send(&self, _: HttpRequest) -> Result<crate::transport::StreamResponse, LlmError> {
+            panic!("reference validation must not dispatch a provider request")
+        }
+    }
+    #[tokio::test]
+    async fn scoped_reference_json_and_pure_validation_preserve_all_identity_dimensions() {
+        let profile = crate::builtin_providers()
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.profile_name == "openai")
+            .unwrap();
+        let transport = NoNetwork;
+        let service = FileService::new(&transport, &profile, None, None, Some("fixture-scope"));
+        let resource = ProviderFileRef {
+            provider_id: profile.provider_id.clone(),
+            profile_name: profile.profile_name.clone(),
+            endpoint_fingerprint: provider_file_endpoint_fingerprint(&profile.base_url),
+            account_scope: Some("fixture-scope".into()),
+            protocol: profile.protocol,
+            file_id: "file-fixture".into(),
+            uri: None,
+            filename: None,
+            media_type: None,
+            size_bytes: None,
+            expires_at: None,
+            processing_status: None,
+            downloadable: None,
+            purpose: None,
+        };
+        let json = serde_json::to_value(&resource).unwrap();
+        assert_eq!(json["accountScope"], "fixture-scope");
+        let decoded: ProviderFileRef = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(decoded, resource);
+        service.validate_reference(&decoded).unwrap();
+        assert!(
+            serde_json::from_value::<ProviderFileRef>(serde_json::json!("file-fixture")).is_err()
+        );
+        let mut unknown = json;
+        unknown["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ProviderFileRef>(unknown).is_err());
+        for dimension in ["profile", "endpoint", "scope", "protocol"] {
+            let mut changed = resource.clone();
+            match dimension {
+                "profile" => changed.profile_name = "other".into(),
+                "endpoint" => changed.endpoint_fingerprint = "other".into(),
+                "scope" => changed.account_scope = Some("other".into()),
+                "protocol" => changed.protocol = ProtocolFamily::AnthropicMessages,
+                _ => unreachable!(),
+            }
+            assert!(matches!(
+                service.validate_reference(&changed),
+                Err(LlmError::PermissionDenied { .. })
+            ));
+            assert!(matches!(
+                service.download(&changed).await,
+                Err(LlmError::PermissionDenied { .. })
+            ));
+        }
+    }
 }

@@ -17,7 +17,12 @@ pub use frozen_pricing::{
     AnthropicFallbackCostComponentKind, AnthropicFallbackCostQuote, AnthropicFallbackCostUsage,
     FrozenPricing,
 };
+mod conversation_session;
 mod prepared;
+pub use conversation_session::{
+    ContinuationCapability, ConversationRequestMode, ConversationRequestSnapshot,
+    ConversationSession,
+};
 pub use prepared::{CollectedResponse, PreparedCall, ReceivedCall, RequestDraft};
 mod requests;
 pub use crate::files;

@@ -1,0 +1,31 @@
+# Mainland metered Responses is a separate opt-in route. Coding Plan and
+# international Z.AI credentials/products do not inherit this capability.
+# Contract: https://docs.bigmodel.cn/cn/guide/develop/responses/introduction
+inference = { reasoning = "unavailable", fast = "unavailable" }
+features = { thinking = "supported", budget = { support = "unsupported", dynamic = "unsupported" }, effort = { support = "unsupported" }, fast = "unsupported", sources = ["https://docs.bigmodel.cn/cn/guide/develop/responses/introduction"] }
+regions = ["china_mainland"]
+provider_id = "zhipu"
+base_url = "https://open.bigmodel.cn/api/v1"
+protocol = "open_ai_responses"
+model_list = "none"
+auth = "bearer"
+credential_env = "ZHIPU_API_KEY"
+billing_mode = "per_token"
+display_name = "GLM Responses"
+console_url = "https://bigmodel.cn"
+api_key_url = "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"
+description = "Mainland metered GLM Responses with opt-in stored continuation."
+docs_url = "https://docs.bigmodel.cn/cn/guide/develop/responses/introduction"
+connection = { group = "glm-api-responses", connection_id = "responses", hidden = true }
+extra = { supports_previous_response_id = true, response_store_default = false, responses_contract = "glm" }
+
+[[model]]
+id = "glm-5.3"
+name = "GLM-5.3"
+max_output = 131072
+input_modalities = ["text", "image", "file"]
+output_modalities = ["text"]
+tool_call = true
+reasoning = true
+# Tunable effort and hosted tools require their own provider-specific mapping;
+# this route initially supports text, ordinary function tools and continuation.

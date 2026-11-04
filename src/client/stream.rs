@@ -79,6 +79,7 @@ pub struct StreamBatch {
 /// codec's decoder. Dropping it drops the underlying byte stream, which is how
 /// a cancelled turn disconnects (§15).
 pub struct ModelStream {
+    pub(super) conversation_observation: Option<super::conversation_session::Observation>,
     frames: BoxStream<'static, Result<Bytes, LlmError>>,
     decoder: Box<dyn StreamDecoder>,
     requested_inference: crate::protocol::InferenceReport,
@@ -113,6 +114,7 @@ impl ModelStream {
             ready.push_back(Ok(StreamEvent::Inference { report: initial }));
         }
         Self {
+            conversation_observation: None,
             pricing: None,
             requested_inference,
             frames: resp.body,
@@ -300,6 +302,14 @@ impl ModelStream {
     /// A terminal outcome releases network resources even when the caller
     /// retains this handle to inspect usage and response headers.
     fn observe_event(&mut self, event: &mut Result<StreamEvent, LlmError>) {
+        if let Some(observation) = &self.conversation_observation {
+            let terminal = if matches!(event, Ok(StreamEvent::End { .. })) {
+                self.decoder.continuation_response()
+            } else {
+                None
+            };
+            observation.event(event, terminal);
+        }
         if let Ok(event) = event {
             // Progress is carried by events and usage. Keep a terminal error's
             // original cause so the host can distinguish network recovery from
@@ -322,7 +332,16 @@ impl ModelStream {
                     reference.response_id = id.clone();
                 }
             }
-            Ok(StreamEvent::End { .. }) => self.continuation_completed = true,
+            Ok(StreamEvent::End { stop_reason, .. }) => {
+                self.continuation_completed = !matches!(
+                    stop_reason,
+                    crate::protocol::StopReason::MaxTokens | crate::protocol::StopReason::Refusal
+                ) && self
+                    .decoder
+                    .continuation_response()
+                    .is_none_or(|body| body.raw_source_at("/store").as_deref() != Some("false"))
+            }
+            Err(_) => self.continuation_completed = false,
             _ => {}
         }
         if matches!(&*event, Ok(StreamEvent::End { .. }) | Err(_)) {

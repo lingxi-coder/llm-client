@@ -91,6 +91,7 @@ fn parse_argument_string(
 
 #[derive(Debug, Default)]
 pub struct ResponsesStreamDecoder {
+    continuation_response: Option<JsonPayload>,
     inference: crate::codecs::inference::StreamInference,
     started: bool,
     created_response_id: Option<ResponseId>,
@@ -127,6 +128,9 @@ pub struct ResponsesStreamDecoder {
 }
 
 impl EventDecoder for ResponsesStreamDecoder {
+    fn continuation_response(&self) -> Option<&JsonPayload> {
+        self.continuation_response.as_ref()
+    }
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Vec<StreamEvent>, LlmError> {
         if self.done {
             return Ok(Vec::new());
@@ -724,6 +728,7 @@ impl EventDecoder for ResponsesStreamDecoder {
                         }
                     }
                 }
+                self.continuation_response = response_payload.clone();
                 if let Some(response_payload) = &response_payload {
                     self.file_search.emit_payload(response_payload, &mut out);
                     let usage_payload = response_payload
@@ -971,6 +976,18 @@ impl ResponsesStreamDecoder {
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), LlmError> {
         let kind = item.string_at("/type").unwrap_or_default();
+        if kind == "message" {
+            if let Some(phase) = item.payload_at("/phase") {
+                if self.native_items.insert(block) {
+                    out.push(StreamEvent::ProviderContent {
+                        block,
+                        protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                        value: super::message_phase(phase)?,
+                    });
+                }
+            }
+            return Ok(());
+        }
         self.requires_action |= self.openai_approval_semantics && kind == "mcp_approval_request"
             || self.openai_tool_search_semantics
                 && kind == "tool_search_call"
@@ -1001,6 +1018,25 @@ impl ResponsesStreamDecoder {
         response_json: &mut ResponseJson,
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), LlmError> {
+        if item["type"] == "message" {
+            if item.get("phase").is_some() && self.native_items.insert(block) {
+                let source = response_json
+                    .take_raw_json_source_at(&format!("{pointer}/phase"))?
+                    .ok_or_else(|| LlmError::InvalidRequest {
+                        message: "Responses message phase source was not retained".into(),
+                    })?;
+                let phase =
+                    JsonPayload::parse(source).map_err(|error| LlmError::InvalidRequest {
+                        message: error.to_string(),
+                    })?;
+                out.push(StreamEvent::ProviderContent {
+                    block,
+                    protocol: crate::protocol::ProtocolFamily::OpenAiResponses,
+                    value: super::message_phase(phase)?,
+                });
+            }
+            return Ok(());
+        }
         self.requires_action |= self.openai_approval_semantics
             && item["type"] == "mcp_approval_request"
             || self.openai_tool_search_semantics && decode::is_client_tool_search_call(item);

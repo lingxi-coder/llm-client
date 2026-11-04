@@ -199,7 +199,8 @@ impl FileCapabilities {
 
 /// Provider-owned file identity and metadata. The profile name, endpoint
 /// fingerprint, and account scope make accidental cross-connection reuse detectable.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderFileRef {
     pub provider_id: ProviderId,
     pub profile_name: String,
