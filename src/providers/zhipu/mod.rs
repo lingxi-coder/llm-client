@@ -9,6 +9,7 @@ pub(crate) mod files;
 pub(crate) mod images;
 pub mod knowledge;
 pub mod realtime;
+pub(crate) mod responses;
 pub use client::ZhipuClient;
 pub mod embeddings;
 pub(crate) mod token_count;

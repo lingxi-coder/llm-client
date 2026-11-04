@@ -26,6 +26,7 @@ pub enum ContentBlock {
     /// Native content required to replay reasoning or a hosted tool's turn unchanged.
     /// Kept separate from client tools, which the caller must execute.
     /// Replaying onto a different protocol is rejected by the built-in codecs.
+    /// Responses `responses_message_phase` envelopes follow the text they annotate.
     /// Chat reasoning uses a `chat_reasoning` envelope whose fields belong to
     /// the enclosing assistant message, rather than to its wire content array.
     ProviderContent {

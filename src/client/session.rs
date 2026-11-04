@@ -27,6 +27,15 @@ impl Default for ResponsesSession {
     }
 }
 impl ResponsesSession {
+    pub(super) fn preparation_binding(&self) -> Option<Arc<()>> {
+        self.prepared_binding.clone()
+    }
+    pub(super) fn invalidate(&mut self) {
+        self.detach_connection();
+    }
+    pub(super) fn clear_history(&mut self) {
+        self.reset_state(self.fallback_to_http());
+    }
     pub fn new() -> Self {
         Self {
             connection: None,
@@ -212,6 +221,11 @@ impl ResponsesSession {
                         Err(error)
                     };
                 }
+                Err(LlmError::UnsupportedCapability { .. }) if allow_http => {
+                    self.fail_to_http();
+                    self.bind_draft(draft);
+                    return Ok(());
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -323,7 +337,11 @@ fn session_identity(draft: &RequestDraft, handshake: &crate::HttpRequest) -> [u8
         .iter()
         // Request tracing changes each turn; it is not connection identity.
         // Keep all other headers so credential and custom policy changes rebind.
-        .filter(|(name, _)| !name.eq_ignore_ascii_case("x-request-id"))
+        .filter(|(name, _)| {
+            !name.eq_ignore_ascii_case("x-request-id")
+                && !name.eq_ignore_ascii_case("x-client-request-id")
+                && !name.eq_ignore_ascii_case("traceparent")
+        })
         .map(|(name, value)| (name.to_ascii_lowercase(), value))
         .collect();
     headers.sort_unstable();

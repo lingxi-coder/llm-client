@@ -42,6 +42,9 @@ impl<D: EventDecoder> SseDecoder<D> {
     }
 }
 impl<D: EventDecoder> StreamDecoder for SseDecoder<D> {
+    fn continuation_response(&self) -> Option<&crate::protocol::JsonPayload> {
+        self.inner.continuation_response()
+    }
     fn inference_report(&self) -> crate::protocol::InferenceReport {
         self.inner.inference_report()
     }

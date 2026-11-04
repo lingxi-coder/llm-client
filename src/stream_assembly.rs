@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone)]
 pub struct StreamAssembly {
     pub response: ChatResponse,
-    /// Replayable and display content keyed by the original sparse block index.
+    /// Primary content keyed by the original sparse block index. Phase metadata
+    /// companions remain adjacent to their text in `response.message.content`.
     pub indexed_content: BTreeMap<usize, ContentBlock>,
     /// Original events preserve native annotations, raw provider frames and
     /// unfinished tool argument fragments, none of which are replayable blocks.
@@ -62,6 +63,8 @@ struct Block {
     signature: Option<String>,
     tool: Option<Tool>,
     native: Option<ContentBlock>,
+    // Phase metadata accompanies visible text instead of replacing it.
+    replay_companion: Option<ContentBlock>,
     ended: bool,
 }
 impl Block {
@@ -269,7 +272,14 @@ impl StreamAccumulator {
                 } else {
                     None
                 };
-                if let Some((text, units, citations)) = text_projection {
+                if *protocol == crate::protocol::ProtocolFamily::OpenAiResponses
+                    && value.string_is("/type", crate::codecs::openai::responses::MESSAGE_PHASE)
+                {
+                    current.replay_companion = Some(ContentBlock::ProviderContent {
+                        protocol: *protocol,
+                        value: value.clone(),
+                    });
+                } else if let Some((text, units, citations)) = text_projection {
                     current.text = Some(text);
                     current.utf16_code_units = String::from_utf16(&units).is_err().then_some(units);
                     current.citations = citations;
@@ -488,7 +498,15 @@ impl StreamAccumulator {
         StreamAssembly {
             response: ChatResponse {
                 message: ConversationMessage::assistant(
-                    indexed_content.values().cloned().collect(),
+                    self.blocks
+                        .values()
+                        .flat_map(|block| {
+                            block
+                                .content(terminal, self.native_terminal())
+                                .into_iter()
+                                .chain(block.replay_companion.clone())
+                        })
+                        .collect(),
                 ),
                 inference: self.inference.clone(),
                 response_cache: None,

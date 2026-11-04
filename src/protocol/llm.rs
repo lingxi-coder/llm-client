@@ -901,6 +901,7 @@ pub enum StreamEvent {
     /// `ContentBlock::ProviderContent` in the assistant transcript. Reasoning
     /// deltas at the same index are display text, not a replacement for this
     /// payload. Replaying on another protocol is rejected.
+    /// Responses message-phase envelopes accompany the text at the same index.
     /// Chat reasoning envelopes carry metadata for the enclosing assistant
     /// message and are emitted once before the terminal event.
     ProviderContent {

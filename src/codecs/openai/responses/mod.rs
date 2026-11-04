@@ -18,6 +18,19 @@ pub(crate) mod decode;
 pub(crate) mod encode;
 mod stream;
 
+pub(crate) const MESSAGE_PHASE: &str = "responses_message_phase";
+
+pub(crate) fn message_phase(
+    phase: crate::protocol::JsonPayload,
+) -> Result<crate::protocol::JsonPayload, crate::protocol::LlmError> {
+    crate::protocol::JsonPayload::parse(r#"{"type":"responses_message_phase"}"#)
+        .expect("static phase carrier is JSON")
+        .with_object_field("phase", &phase)
+        .map_err(|error| crate::protocol::LlmError::InvalidRequest {
+            message: error.to_string(),
+        })
+}
+
 pub use decode::classify_error;
 
 use crate::codecs::{CodecContext, EncodeRequest};
@@ -42,6 +55,7 @@ impl WireCodec for OpenAiResponsesCodec {
         context: &CodecContext,
     ) -> Result<(), LlmError> {
         crate::codecs::validate_tool_wire_shapes(req)?;
+        crate::providers::zhipu::responses::validate(req, context.profile())?;
         if context.profile().auth == crate::protocol::AuthStrategy::ChatGptPlan {
             crate::auth::chatgpt_plan::validate_chat_request(req)?;
         }
@@ -99,8 +113,10 @@ impl WireCodec for OpenAiResponsesCodec {
                 response
             });
         }
+        let normalized =
+            crate::providers::zhipu::responses::normalize_response(resp, context.profile())?;
         decode::response_with_approval_support(
-            resp,
+            normalized.as_ref().unwrap_or(resp),
             crate::providers::xai::responses_policy::uses_openai_approval_semantics(
                 context.profile(),
             ),
