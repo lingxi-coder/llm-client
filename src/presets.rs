@@ -105,8 +105,6 @@ struct Preset {
     #[serde(default)]
     embeddings: crate::protocol::ServiceSetting<crate::embeddings::EmbeddingRoute>,
     #[serde(default)]
-    decisions: Option<crate::protocol::DecisionSupport>,
-    #[serde(default)]
     retrieval: crate::protocol::ServiceSetting<crate::providers::openai::retrieval::RetrievalRoute>,
     #[serde(default)]
     batches: crate::protocol::ServiceSetting<crate::providers::openai::batches::BatchRoute>,
@@ -316,7 +314,6 @@ fn lower_definition(profile_name: &str, p: Preset) -> Result<ProviderProfile, Pr
         ),
         images: p.images,
         embeddings: p.embeddings,
-        decisions: p.decisions,
         retrieval: p.retrieval,
         batches: p.batches,
         deferred: p.deferred,

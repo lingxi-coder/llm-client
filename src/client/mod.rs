@@ -32,8 +32,6 @@ pub(crate) use attachments::*;
 use builder::validate_profiles;
 pub use builder::{BuildError, LlmClientBuilder};
 pub mod chat;
-pub mod decisions;
-pub use decisions::{DecisionError, DecisionService};
 pub mod options;
 mod price_bounds;
 mod price_query;
@@ -128,10 +126,6 @@ impl ClientSnapshot {
     /// The conversation service. All chat requests enter through this facade.
     pub fn chat(&self) -> ChatService<'_> {
         ChatService::new(ClientSource::fixed(self))
-    }
-
-    pub fn decisions(&self) -> DecisionService<'_> {
-        DecisionService::new(ClientSource::fixed(self))
     }
 
     pub fn embeddings(&self) -> crate::embeddings::EmbeddingService<'_> {

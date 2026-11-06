@@ -37,7 +37,8 @@ impl Repository {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SavedConfig::default()),
             Err(e) => return Err(e.into()),
         };
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        remove_obsolete_decisions(&mut value);
         let version = value
             .get("version")
             .and_then(serde_json::Value::as_u64)
@@ -121,4 +122,29 @@ fn validate(config: &SavedConfig) -> Result<(), ProviderStoreError> {
         }
     }
     Ok(())
+}
+
+fn remove_obsolete_decisions(value: &mut serde_json::Value) {
+    if let Some(providers) = value
+        .get_mut("providers")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for profile in providers {
+            for key in ["connection", "fallback"] {
+                if let Some(row) = profile
+                    .get_mut(key)
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    if row
+                        .get("decisions")
+                        .and_then(|v| v.get("implementation"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("structured_output")
+                    {
+                        row.remove("decisions");
+                    }
+                }
+            }
+        }
+    }
 }

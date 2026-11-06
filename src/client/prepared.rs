@@ -124,7 +124,7 @@ impl ClientSnapshot {
                 &request,
                 &options,
                 started,
-                (mode, false, false),
+                (mode, false),
             )
             .await?;
         let continuation =

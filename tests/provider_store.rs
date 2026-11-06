@@ -1669,3 +1669,45 @@ async fn untracking_an_unavailable_model_removes_its_persisted_metadata() {
         .is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn obsolete_structured_decision_metadata_does_not_break_saved_accounts() {
+    let dir = std::env::temp_dir().join(format!(
+        "decision-upgrade-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    let p = profile("decision-account", 0, false);
+    let build = || {
+        LlmClientBuilder::with_transport(Arc::new(AccountDirectory), std::slice::from_ref(&p))
+            .with_region(lingxi_llm_client::protocol::Region::International)
+            .build_managed()
+            .unwrap()
+    };
+    let (_, manager) = build();
+    manager.set_config_dir(&dir).await.unwrap();
+    manager.add_provider(p.clone()).await.unwrap();
+    let file = dir.join("providers.json");
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    for key in ["connection", "fallback"] {
+        saved["providers"][0][key]["decisions"] =
+            json!({"implementation":"structured_output","text":true,"image":false});
+    }
+    std::fs::write(&file, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let (restored, manager) = build();
+    manager.set_config_dir(&dir).await.unwrap();
+    assert!(restored
+        .providers()
+        .iter()
+        .any(|row| row.profile_name == "decision-account"));
+    manager.add_provider(p).await.unwrap();
+    let upgraded: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    assert!(upgraded["providers"][0]["connection"]
+        .get("decisions")
+        .is_none());
+    assert_eq!(
+        upgraded["providers"][0]["connection"]["credential"]["var"],
+        "DECISION-ACCOUNT_KEY"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

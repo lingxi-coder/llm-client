@@ -4,7 +4,7 @@ Local contract tests, first-party documentation evidence and live account accept
 
 ## Decision API
 
-The first `client.decisions()` implementation uses each provider's strict JSON Schema output, not OpenAI's preview native Decisions endpoint. Mock transports cover encoding, answer validation, refusals, usage, and capability gates for OpenAI Responses, Anthropic Messages, Gemini GenerateContent, xAI Chat, and Beijing Qwen Chat. No live account request, entitlement, latency, or decision-accuracy test has passed. Native OpenAI integration awaits a [published wire contract](https://openai.com/index/devday-2026-recap/); DeepSeek Responses and strict OpenRouter routing are outside this initial set. A live pass must name the account, region, model, input modality, and actual request outcome.
+Provider-native OpenAI Decisions and TypeSafe System One now have separate resources. Encoding, auth, cancellation and result validation are covered by mock-transport tests. Live account access and decision quality require separate acceptance; no live pass is claimed. The old Structured Outputs facade has been removed. See [Native Decisions](decisions.md).
 
 ## xAI built-in voice catalog
 

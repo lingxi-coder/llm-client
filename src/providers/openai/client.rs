@@ -14,6 +14,15 @@ impl ProviderClient for OpenAiClient {
 }
 
 impl OpenAiClient {
+    /// Native Decisions at an explicitly configured resource endpoint.
+    pub fn decisions(
+        &self,
+        endpoint: impl Into<String>,
+    ) -> crate::providers::openai::decisions::Decisions<'_> {
+        crate::providers::openai::decisions::Decisions::new(self.binding.transport(), endpoint)
+            .with_binding(&self.binding)
+    }
+
     pub fn profile_name(&self) -> &str {
         self.binding.profile_name()
     }

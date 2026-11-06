@@ -4,7 +4,7 @@
 
 ## Decision API
 
-首版 `client.decisions()` 使用各 provider 的严格 JSON Schema 输出，不调用 OpenAI 预览中的原生 Decisions 端点。Mock transport 覆盖 OpenAI Responses、Anthropic Messages、Gemini GenerateContent、xAI Chat 和北京 Qwen Chat 的编码、答案校验、拒答、用量及能力门控；真实账户请求、权限、延迟和决策正确率均未验收。原生 OpenAI 适配仍等待[公开协议](https://openai.com/index/devday-2026-recap/)；DeepSeek Responses 和 OpenRouter 的严格路由亦未纳入首批。只有在明确记录账号、区域、模型、输入模态和实际调用结果后，才能将相应路径标为 live 通过。
+Provider-native OpenAI Decisions and TypeSafe System One now have separate resources. Encoding, auth, cancellation and result validation are covered by mock-transport tests. Live account access and decision quality require separate acceptance; no live pass is claimed. The old Structured Outputs facade has been removed. See [Native Decisions](decisions.md).
 
 ## xAI 内置音色目录
 

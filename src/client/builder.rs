@@ -56,7 +56,6 @@ pub struct LlmClientBuilder {
     http: Arc<dyn Transport>,
     clock: Arc<dyn Clock>,
     pub(super) codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
-    builtin_codec_families: BTreeSet<ProtocolFamily>,
     image_adapters: BTreeMap<crate::protocol::ImageApi, Arc<dyn crate::images::ImageAdapter>>,
     image_authenticators: BTreeMap<String, Arc<dyn crate::images::ImageAuthenticator>>,
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
@@ -86,10 +85,8 @@ impl LlmClientBuilder {
     /// just like [`Self::new`]. This constructor does not create a network client.
     pub fn with_transport(http: Arc<dyn Transport>, profiles: &[ProviderProfile]) -> Self {
         let mut codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>> = BTreeMap::new();
-        let mut builtin_codec_families = BTreeSet::new();
         for codec in crate::codecs::builtin() {
             let family = codec.family();
-            builtin_codec_families.insert(family);
             codecs.insert(family, codec);
         }
         let mut directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>> = BTreeMap::new();
@@ -103,7 +100,6 @@ impl LlmClientBuilder {
             http,
             clock: Arc::new(SystemClock),
             codecs,
-            builtin_codec_families,
             image_adapters: crate::images::builtin_adapters(),
             image_authenticators: BTreeMap::new(),
             directories,
@@ -138,7 +134,6 @@ impl LlmClientBuilder {
     /// Later registrations for the same family replace earlier ones; the
     /// composition root decides the order.
     pub fn register_codec(&mut self, codec: Arc<dyn WireCodec>) -> &mut Self {
-        self.builtin_codec_families.remove(&codec.family());
         self.codecs.insert(codec.family(), codec);
         self
     }
@@ -337,7 +332,6 @@ impl LlmClientBuilder {
             http: self.http,
             clock: self.clock,
             codecs: self.codecs,
-            builtin_codec_families: self.builtin_codec_families,
             image_adapters: self.image_adapters,
             image_authenticators: self.image_authenticators,
             directories: self.directories,

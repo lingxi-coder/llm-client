@@ -32,3 +32,8 @@ pub(crate) mod native;
 mod account_resources;
 
 pub(crate) mod attachment_policy;
+
+mod native_decision;
+pub mod typesafe;
+
+pub use typesafe::TypeSafeClient;

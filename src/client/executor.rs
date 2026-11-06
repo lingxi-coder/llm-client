@@ -11,8 +11,8 @@ use super::{
 };
 use crate::codecs::{CodecContext, EncodeRequest, RequestMode, WireCodec};
 use crate::protocol::{
-    AuthStrategy, ChatRequest, ChatResponse, ContentBlock, ContinuationRef, DecisionAttemptReport,
-    LlmError, ProtocolFamily, ProviderProfile, ResponseId, UsageState,
+    AuthStrategy, ChatRequest, ChatResponse, ContentBlock, ContinuationRef, LlmError,
+    ProtocolFamily, ProviderProfile, ResponseId,
 };
 use crate::transport::{collect_error_body, HttpExecutor, HttpRequest, HttpResponse, Transport};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -453,25 +453,10 @@ pub(super) enum RequestOutput {
     Stream(Box<ModelStream>),
 }
 
-pub(super) enum DecisionExecutionError {
-    Provider(LlmError),
-    ReportedProvider {
-        error: LlmError,
-        final_attempt: Box<DecisionAttemptReport>,
-        final_attempt_dispatched: bool,
-        prior_attempts: Vec<DecisionAttemptReport>,
-    },
-    ProviderResponse(Box<DecisionDecodeFailure>),
-    IncompleteResponse(Box<DecisionDecodeFailure>),
-    InvalidResponse(Box<DecisionDecodeFailure>),
-}
-
 struct AttemptFailure {
     error: LlmError,
     response: Option<HttpResponse>,
     files: Vec<PreparedProviderFileUse>,
-    incomplete_response: bool,
-    transport_attempted: bool,
 }
 
 impl AttemptFailure {
@@ -480,175 +465,26 @@ impl AttemptFailure {
         response: Option<HttpResponse>,
         files: Vec<PreparedProviderFileUse>,
     ) -> Self {
-        let transport_attempted = response.is_some();
         Self {
             error,
             response,
             files,
-            incomplete_response: false,
-            transport_attempted,
         }
     }
 
     fn transport(
         error: LlmError,
         files: Vec<PreparedProviderFileUse>,
-        transport_attempted: bool,
+        _transport_attempted: bool,
     ) -> Self {
         Self {
             error,
             response: None,
             files,
-            incomplete_response: false,
-            transport_attempted,
-        }
-    }
-
-    fn incomplete(
-        error: LlmError,
-        response: HttpResponse,
-        files: Vec<PreparedProviderFileUse>,
-    ) -> Self {
-        Self {
-            error,
-            response: Some(response),
-            files,
-            incomplete_response: true,
-            transport_attempted: true,
         }
     }
 }
 
-pub(super) struct DecisionDecodeFailure {
-    pub error: LlmError,
-    pub response: HttpResponse,
-    pub usage: crate::protocol::UsageReport,
-    pub profile_name: String,
-    pub request_model: String,
-    pub prior_attempts: Vec<DecisionAttemptReport>,
-}
-
-impl DecisionExecutionError {
-    fn into_provider(self) -> LlmError {
-        match self {
-            Self::Provider(error) => error,
-            Self::ReportedProvider { error, .. } => error,
-            Self::ProviderResponse(failure) | Self::IncompleteResponse(failure) => failure.error,
-            Self::InvalidResponse(failure) => failure.error,
-        }
-    }
-}
-
-fn decision_attempt_report(
-    response: Option<&HttpResponse>,
-    attempt: &Attempt<'_>,
-    mode: RequestMode,
-    model_source: Option<&crate::protocol::JsonPayload>,
-) -> DecisionAttemptReport {
-    let usage = response.map_or_else(Default::default, |response| {
-        let context = CodecContext::for_model(attempt.profile, attempt.model, mode)
-            .with_model_source(model_source, attempt.profile)
-            .expect("model source was validated before attempt execution");
-        crate::codecs::usage::response_report(response, &context)
-    });
-    let context = CodecContext::for_model(attempt.profile, attempt.model, mode)
-        .with_model_source(model_source, attempt.profile)
-        .expect("model source was validated before attempt execution");
-    let model = response
-        .and_then(|response| serde_json::from_slice::<serde_json::Value>(&response.body).ok())
-        .and_then(|body| {
-            body.get("model")
-                .or_else(|| body.get("modelVersion"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| context.request_model().to_owned());
-    DecisionAttemptReport {
-        model,
-        executed_profile: attempt.profile.profile_name.clone(),
-        usage,
-    }
-}
-
-fn decision_terminal_confirmed(response: &HttpResponse, protocol: ProtocolFamily) -> bool {
-    let Ok(body) = serde_json::from_slice::<serde_json::Value>(&response.body) else {
-        return false;
-    };
-    match protocol {
-        ProtocolFamily::OpenAiResponses => body["status"] == "completed",
-        ProtocolFamily::AnthropicMessages => {
-            matches!(
-                body["stop_reason"].as_str(),
-                Some("end_turn" | "stop_sequence")
-            )
-        }
-        ProtocolFamily::GeminiGenerateContent => body["candidates"][0]["finishReason"] == "STOP",
-        ProtocolFamily::OpenAiChat => body["choices"][0]["finish_reason"] == "stop",
-        _ => false,
-    }
-}
-
-fn responses_provider_failed(response: &HttpResponse, protocol: ProtocolFamily) -> bool {
-    protocol == ProtocolFamily::OpenAiResponses
-        && serde_json::from_slice::<serde_json::Value>(&response.body)
-            .ok()
-            .is_some_and(|body| body["status"] == "failed")
-}
-
-fn decision_failure(
-    failure: AttemptFailure,
-    attempt: &Attempt<'_>,
-    mode: RequestMode,
-    decision: bool,
-    model_source: Option<&crate::protocol::JsonPayload>,
-    prior_attempts: Vec<DecisionAttemptReport>,
-) -> DecisionExecutionError {
-    let AttemptFailure {
-        error,
-        response,
-        incomplete_response,
-        transport_attempted,
-        ..
-    } = failure;
-    if decision {
-        if response
-            .as_ref()
-            .is_some_and(|response| (200..300).contains(&response.status))
-        {
-            let response = response.expect("successful status checked above");
-            let usage = decision_attempt_report(Some(&response), attempt, mode, model_source).usage;
-            let reported = Box::new(DecisionDecodeFailure {
-                error,
-                response,
-                usage,
-                profile_name: attempt.profile.profile_name.clone(),
-                request_model: CodecContext::for_model(attempt.profile, attempt.model, mode)
-                    .with_model_source(model_source, attempt.profile)
-                    .expect("model source was validated before attempt execution")
-                    .request_model()
-                    .to_owned(),
-                prior_attempts,
-            });
-            return if incomplete_response {
-                DecisionExecutionError::IncompleteResponse(reported)
-            } else if responses_provider_failed(&reported.response, attempt.profile.protocol) {
-                DecisionExecutionError::ProviderResponse(reported)
-            } else {
-                DecisionExecutionError::InvalidResponse(reported)
-            };
-        }
-        let final_attempt = decision_attempt_report(response.as_ref(), attempt, mode, model_source);
-        if !prior_attempts.is_empty() || final_attempt.usage.state != UsageState::Missing {
-            return DecisionExecutionError::ReportedProvider {
-                error,
-                final_attempt: Box::new(final_attempt),
-                final_attempt_dispatched: transport_attempted,
-                prior_attempts,
-            };
-        }
-    }
-    DecisionExecutionError::Provider(error)
-}
 impl<'client> RequestExecutor<'client> {
     pub(super) fn new(client: &'client ClientSnapshot) -> Self {
         Self {
@@ -668,9 +504,9 @@ impl<'client> RequestExecutor<'client> {
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         started: Instant,
-        preparation: (RequestMode, bool, bool),
+        preparation: (RequestMode, bool),
     ) -> Result<PreparedAttempt, LlmError> {
-        let (mode, authenticate, decision) = preparation;
+        let (mode, authenticate) = preparation;
         let remaining = remaining_timeout(started, opts.total_timeout)?;
         let mut attempt_opts = opts.clone();
         attempt_opts.total_timeout = remaining;
@@ -689,7 +525,7 @@ impl<'client> RequestExecutor<'client> {
             req,
             &attempt_opts,
             request_deadline,
-            (mode, authenticate, decision),
+            (mode, authenticate),
         );
         let mut prepared = within_deadline(preparation, remaining).await??;
         // Authentication may have awaited a token refresh. The transport
@@ -715,9 +551,9 @@ impl<'client> RequestExecutor<'client> {
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         request_deadline: Option<Instant>,
-        preparation: (RequestMode, bool, bool),
+        preparation: (RequestMode, bool),
     ) -> Result<PreparedAttempt, LlmError> {
-        let (mode, authenticate, decision) = preparation;
+        let (mode, authenticate) = preparation;
         let profile = attempt.profile;
         // Resolve against this exact connection before thinking validation and
         // encoding. Preserve the caller's None/explicit intent across failover.
@@ -991,11 +827,6 @@ impl<'client> RequestExecutor<'client> {
             &context,
         )?;
         http.timeout = opts.total_timeout;
-        // Request-local options and hooks may add signatures and headers, but
-        // a Decision request must keep the exact endpoint and constrained body
-        // produced by the verified codec.
-        let decision_wire =
-            decision.then(|| (http.method.clone(), http.url.clone(), http.body.clone()));
         let generation_budget_before_hooks = generation_budget_fields(&http.body)?;
         backend.apply_request_options(opts, profile, &mut http)?;
         if let Some(finalizer) = &opts.finalizer {
@@ -1075,15 +906,7 @@ impl<'client> RequestExecutor<'client> {
                 )?;
             }
         }
-        if let Some((method, url, body)) = decision_wire {
-            if http.method != method || http.url != url || http.body != body {
-                return Err(LlmError::InvalidRequest {
-                    message:
-                        "decision request hooks changed its method, endpoint, or strict schema body"
-                            .into(),
-                });
-            }
-        }
+
         Ok(PreparedAttempt {
             resolved_context,
             inference,
@@ -1105,11 +928,10 @@ impl<'client> RequestExecutor<'client> {
         req: &ResolvedRequest<'_>,
         opts: &RequestOptions,
         started: Instant,
-        execution: (RequestMode, bool),
+        mode: RequestMode,
     ) -> Result<RequestOutput, AttemptFailure> {
-        let (mode, decision) = execution;
         let prepared = self
-            .prepare_before_deadline(route, attempt, req, opts, started, (mode, true, decision))
+            .prepare_before_deadline(route, attempt, req, opts, started, (mode, true))
             .await
             .map_err(|e| AttemptFailure::new(e, None, Vec::new()))?;
         let PreparedAttempt {
@@ -1205,17 +1027,9 @@ impl<'client> RequestExecutor<'client> {
                 .with_provider_observation(backend.stream_observation(&context)),
             )));
         }
-        let mut response = if decision {
-            HttpExecutor::collect_response_with_partial(response, None)
-                .await
-                .map_err(|(error, response)| {
-                    AttemptFailure::incomplete(error, response, files.clone())
-                })?
-        } else {
-            HttpExecutor::collect_response(response, None)
-                .await
-                .map_err(|error| AttemptFailure::new(error, None, files.clone()))?
-        };
+        let mut response = HttpExecutor::collect_response(response, None)
+            .await
+            .map_err(|error| AttemptFailure::new(error, None, files.clone()))?;
         if let Err(error) = normalize_codex_completion(&mut response, codec.as_ref(), &context) {
             return Err(AttemptFailure::new(error, Some(response), files));
         }
@@ -1229,21 +1043,7 @@ impl<'client> RequestExecutor<'client> {
                 ));
             }
         };
-        if decision
-            && matches!(
-                decoded.stop_reason,
-                crate::protocol::StopReason::EndTurn | crate::protocol::StopReason::StopSequence
-            )
-            && !decision_terminal_confirmed(&response, attempt.profile.protocol)
-        {
-            return Err(AttemptFailure::incomplete(
-                LlmError::StreamInterrupted {
-                    message: "decision response lacks a confirmed terminal status".into(),
-                },
-                response,
-                files,
-            ));
-        }
+
         decoded.executed_profile = Some(attempt.profile.profile_name.clone());
         decoded.response_cache =
             backend.response_cache(attempt.profile, &request_url, &response.headers);
@@ -1356,19 +1156,7 @@ impl<'client> RequestExecutor<'client> {
     ) -> Result<RequestOutput, LlmError> {
         // Keep the large per-request state machine off callers' task stacks.
         // In particular, callers may keep several completion futures live.
-        Box::pin(self.run_inner(resolved, req, opts, mode, false))
-            .await
-            .map(|(output, _)| output)
-            .map_err(DecisionExecutionError::into_provider)
-    }
-
-    pub(super) async fn run_decision(
-        &self,
-        resolved: RequestRoute<'_>,
-        req: &ChatRequest,
-        opts: &RequestOptions,
-    ) -> Result<(RequestOutput, Vec<DecisionAttemptReport>), DecisionExecutionError> {
-        Box::pin(self.run_inner(resolved, req, opts, RequestMode::Complete, true)).await
+        Box::pin(self.run_inner(resolved, req, opts, mode)).await
     }
 
     async fn run_inner(
@@ -1377,19 +1165,16 @@ impl<'client> RequestExecutor<'client> {
         req: &ChatRequest,
         opts: &RequestOptions,
         mode: RequestMode,
-        decision: bool,
-    ) -> Result<(RequestOutput, Vec<DecisionAttemptReport>), DecisionExecutionError> {
+    ) -> Result<RequestOutput, LlmError> {
         let RequestRoute { route, connections } = resolved;
         let opts = execution_options(req, opts, mode);
         let started = Instant::now();
-        self.validate_host_request(&connections, req, &opts, mode)
-            .map_err(DecisionExecutionError::Provider)?;
+        self.validate_host_request(&connections, req, &opts, mode)?;
         let head = connections
             .first()
             .ok_or_else(|| LlmError::ModelUnavailable {
                 message: format!("no connection served {:?}", req.model),
-            })
-            .map_err(DecisionExecutionError::Provider)?;
+            })?;
         let mut replay = dispatch::chat(head.profile).replay_policy(req, &opts);
         // Interactions creates stored provider state even on a function turn.
         // An uncertain submission must never create a second interaction.
@@ -1411,23 +1196,12 @@ impl<'client> RequestExecutor<'client> {
             replay.allow_failover = false;
             replay.repair_missing_files = false;
         }
-        let prepared_request = self
-            .resolve_before_deadline(req, &opts, started)
-            .await
-            .map_err(DecisionExecutionError::Provider)?;
-        let mut prior_attempts = Vec::new();
+        let prepared_request = self.resolve_before_deadline(req, &opts, started).await?;
         let attempts = attempts(&connections, replay.pin_to_connection);
         let attempt_count = attempts.len();
         for (attempt_index, attempt) in attempts.into_iter().enumerate() {
             let outcome = self
-                .execute_attempt(
-                    &route,
-                    &attempt,
-                    &prepared_request,
-                    &opts,
-                    started,
-                    (mode, decision),
-                )
+                .execute_attempt(&route, &attempt, &prepared_request, &opts, started, mode)
                 .await;
             let missing = outcome
                 .as_ref()
@@ -1440,57 +1214,17 @@ impl<'client> RequestExecutor<'client> {
                 })
                 .unwrap_or_default();
             let outcome = if replay.repair_missing_files && !missing.is_empty() {
-                if decision {
-                    if let Err(failure) = &outcome {
-                        let reported = decision_attempt_report(
-                            failure.response.as_ref(),
-                            &attempt,
-                            mode,
-                            prepared_request.request.model_source.as_ref(),
-                        );
-                        if reported.usage.state != UsageState::Missing {
-                            prior_attempts.push(reported);
-                        }
-                    }
-                }
                 self.attachments
                     .invalidate_provider_file_cache(&missing)
                     .await;
-                self.execute_attempt(
-                    &route,
-                    &attempt,
-                    &prepared_request,
-                    &opts,
-                    started,
-                    (mode, decision),
-                )
-                .await
+                self.execute_attempt(&route, &attempt, &prepared_request, &opts, started, mode)
+                    .await
             } else {
                 outcome
             };
             match outcome {
-                Ok(output) => return Ok((output, prior_attempts)),
+                Ok(output) => return Ok(output),
                 Err(failure) => {
-                    let is_success_status = failure
-                        .response
-                        .as_ref()
-                        .is_some_and(|response| (200..300).contains(&response.status));
-                    let provider_failed = failure.response.as_ref().is_some_and(|response| {
-                        responses_provider_failed(response, attempt.profile.protocol)
-                    });
-                    if decision
-                        && is_success_status
-                        && (failure.incomplete_response || !provider_failed)
-                    {
-                        return Err(decision_failure(
-                            failure,
-                            &attempt,
-                            mode,
-                            true,
-                            prepared_request.request.model_source.as_ref(),
-                            prior_attempts,
-                        ));
-                    }
                     let may_failover = replay.allow_failover
                         && (is_attachment_capability_fallback(
                             attempt_index,
@@ -1498,35 +1232,15 @@ impl<'client> RequestExecutor<'client> {
                             &failure.error,
                         ) || route.failover.matches(&failure.error));
                     if may_failover && attempt_index + 1 < attempt_count {
-                        if decision {
-                            let reported = decision_attempt_report(
-                                failure.response.as_ref(),
-                                &attempt,
-                                mode,
-                                prepared_request.request.model_source.as_ref(),
-                            );
-                            if reported.usage.state != UsageState::Missing {
-                                prior_attempts.push(reported);
-                            }
-                        }
                         continue;
                     }
-                    return Err(decision_failure(
-                        failure,
-                        &attempt,
-                        mode,
-                        decision,
-                        prepared_request.request.model_source.as_ref(),
-                        prior_attempts,
-                    ));
+                    return Err(failure.error);
                 }
             }
         }
-        Err(DecisionExecutionError::Provider(
-            LlmError::ModelUnavailable {
-                message: format!("no connection served {:?}", req.model),
-            },
-        ))
+        Err(LlmError::ModelUnavailable {
+            message: format!("no connection served {:?}", req.model),
+        })
     }
 }
 
