@@ -271,6 +271,9 @@ pub struct AnthropicRequestPolicy {
     pub explicit_empty_tools: bool,
     /// Preserve utility callers that supplied plain string message content.
     pub plain_text_message_content: bool,
+    /// Exact final message positions proven to originate from scalar content.
+    /// Unselected one-text-block arrays retain their original source shape.
+    pub plain_text_message_content_indices: std::collections::BTreeSet<usize>,
     /// Source-backed object spread supplied by the host. Unknown provider
     /// values stay in their original JSON representation until serialization.
     pub extra_body: JsonPayload,
@@ -290,6 +293,7 @@ impl Default for AnthropicRequestPolicy {
             request_kind: AnthropicRequestKind::Main,
             explicit_empty_tools: false,
             plain_text_message_content: false,
+            plain_text_message_content_indices: Default::default(),
             extra_body: JsonPayload::parse("{}").expect("empty object is valid JSON"),
             body_betas: Vec::new(),
             effort: None,
@@ -439,12 +443,18 @@ impl AnthropicRequestPolicy {
                 &JsonPayload::parse("[]").expect("empty array"),
             )?;
         }
-        if self.plain_text_message_content {
+        if self.plain_text_message_content || !self.plain_text_message_content_indices.is_empty() {
             if let Some(mut messages) = body
                 .payload_at("/messages")
                 .and_then(|value| value.array_items())
             {
                 for (index, message) in messages.iter_mut().enumerate() {
+                    if !self.plain_text_message_content
+                        && (!self.plain_text_message_content_indices.contains(&index)
+                            || message.string_at("/role").as_deref() != Some("user"))
+                    {
+                        continue;
+                    }
                     let text = message
                         .payload_at("/content")
                         .and_then(|value| value.array_items())
@@ -2734,6 +2744,39 @@ mod tests {
             .unwrap()
             .is_root_array());
         assert!(cached_overrides.contains_key("/messages/0/content/0/text"));
+    }
+
+    #[test]
+    fn source_selected_plain_text_keeps_arrays_cache_markers_and_exact_units() {
+        let mut body = JsonPayload::parse(
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"scalar"}]},{"role":"user","content":[{"type":"text","text":"array"}]},{"role":"user","content":[{"type":"text","text":"cached","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"assistant"}]}]}"#,
+        )
+        .unwrap();
+        let scalar = vec![0xd800, 65, 0xdc00];
+        let array = vec![0xdc00, 66, 0xd800];
+        let mut overrides = BTreeMap::from([
+            ("/messages/0/content/0/text".to_owned(), scalar.clone()),
+            ("/messages/1/content/0/text".to_owned(), array.clone()),
+        ]);
+        AnthropicRequestPolicy {
+            plain_text_message_content_indices: [0, 2, 3].into_iter().collect(),
+            ..Default::default()
+        }
+        .apply(
+            &mut body,
+            &mut BTreeMap::new(),
+            &mut overrides,
+            &mut "https://api.anthropic.com/v1/messages".to_owned(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            wire(&body, &overrides),
+            r#"{"messages":[{"role":"user","content":"\ud800A\udc00"},{"role":"user","content":[{"type":"text","text":"\udc00B\ud800"}]},{"role":"user","content":[{"type":"text","text":"cached","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"assistant"}]}]}"#,
+        );
+        assert_eq!(overrides.get("/messages/0/content"), Some(&scalar));
+        assert_eq!(overrides.get("/messages/1/content/0/text"), Some(&array));
+        assert!(!overrides.contains_key("/messages/0/content/0/text"));
     }
 
     #[test]
