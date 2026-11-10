@@ -116,13 +116,20 @@ async fn native_resources_use_the_exact_host_endpoint_and_request_scoped_auth() 
         .unwrap();
     let calls = mock.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].method, "POST");
     assert_eq!(calls[0].url, "http://localhost:8000/v1/decisions");
-    assert!(calls[0]
-        .headers
-        .contains(&("authorization".into(), "Bearer private-key".into())));
-    let body: Value = serde_json::from_slice(&calls[0].body).unwrap();
-    assert!(body.get("response_format").is_none());
-    assert!(body.get("messages").is_none());
+    assert_eq!(
+        calls[0].headers,
+        vec![
+            ("content-type".into(), "application/json".into()),
+            ("accept".into(), "application/json".into()),
+            ("authorization".into(), "Bearer private-key".into()),
+        ]
+    );
+    assert_eq!(
+        calls[0].body.as_ref(),
+        br#"{"model":"gpt-6-luna","input":"test","questions":[{"type":"predicate","name":"q","instructions":"test"}]}"#
+    );
 }
 #[tokio::test]
 async fn typesafe_is_a_native_resource_without_chat_configuration() {
@@ -146,7 +153,166 @@ async fn typesafe_is_a_native_resource_without_chat_configuration() {
         )
         .await
         .unwrap();
-    assert_eq!(mock.calls.lock().unwrap().len(), 1);
+    let calls = mock.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].url, "http://localhost:8000/v1/systemone");
+    assert_eq!(
+        calls[0].body.as_ref(),
+        br#"{"model":"laya","state":{"text":"test"},"questions":{"q":{"type":"noul","instructions":"test"}}}"#
+    );
+    assert_eq!(
+        calls[0].headers,
+        vec![
+            ("content-type".into(), "application/json".into()),
+            ("accept".into(), "application/json".into()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn native_image_bodies_and_typesafe_header_scope_are_preserved() {
+    let openai = Mock {
+        calls: Mutex::new(vec![]),
+        status: 200,
+        body: r#"{"answers":[]}"#,
+    };
+    Decisions::new(&openai, "http://localhost/v1/decisions")
+        .create(
+            &CreateRequest {
+                model: "m".into(),
+                input: json!([{"role":"user","content":[
+                    {"type":"input_image","image_url":"data:image/png;base64,YQ=="},
+                    {"type":"input_json","data":{"assets":{"nested":"evidence"}}}
+                ]}]),
+                questions: vec![json!({"type":"predicate","name":"q"})],
+            },
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    let calls = openai.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].body.as_ref(),
+        br#"{"model":"m","input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,YQ=="},{"type":"input_json","data":{"assets":{"nested":"evidence"}}}]}],"questions":[{"type":"predicate","name":"q"}]}"#
+    );
+    assert!(!calls[0]
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("TypeSafe-Danger-Zone-Images")));
+    drop(calls);
+
+    let typesafe = Mock {
+        calls: Mutex::new(vec![]),
+        status: 200,
+        body: r#"{"answers":{"q":{"type":"noul","noul":0.9}}}"#,
+    };
+    SystemOne::new(&typesafe, "http://localhost/v1/systemone")
+        .evaluate(
+            &SystemOneRequest {
+                model: "m".into(),
+                state: json!({"images":["image-1"]}),
+                questions: BTreeMap::from([("q".into(), json!({"type":"noul"}))]),
+                assets: BTreeMap::from([(
+                    "image-1".into(),
+                    json!({"type":"image","format":"png","data_base64":"YQ=="}),
+                )]),
+            },
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    let calls = typesafe.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].body.as_ref(),
+        br#"{"model":"m","state":{"images":["image-1"]},"questions":{"q":{"type":"noul"}},"assets":{"image-1":{"type":"image","format":"png","data_base64":"YQ=="}}}"#
+    );
+    assert_eq!(
+        calls[0].headers,
+        vec![
+            ("content-type".into(), "application/json".into()),
+            ("accept".into(), "application/json".into()),
+            ("TypeSafe-Danger-Zone-Images".into(), "true".into()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn oversized_native_requests_are_rejected_before_transport() {
+    let mock = Mock {
+        calls: Mutex::new(vec![]),
+        status: 200,
+        body: "{}",
+    };
+    let evidence = "x".repeat(16 * 1024 * 1024);
+    let error = Decisions::new(&mock, "http://localhost/v1/decisions")
+        .create(
+            &CreateRequest {
+                model: "m".into(),
+                input: json!(evidence),
+                questions: vec![json!({"type":"predicate"})],
+            },
+            &Default::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("decision input exceeds 16 MiB"));
+    let error = SystemOne::new(&mock, "http://localhost/v1/systemone")
+        .evaluate(
+            &SystemOneRequest {
+                model: "m".into(),
+                state: json!(null),
+                questions: BTreeMap::from([("q".into(), json!({"type":"noul"}))]),
+                assets: BTreeMap::from([("image-1".into(), json!(evidence))]),
+            },
+            &Default::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("decision input exceeds 16 MiB"));
+    assert!(mock.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn malformed_native_successes_and_redirects_do_not_replay() {
+    for (status, body) in [
+        (200, "not json"),
+        (200, "[]"),
+        (200, r#"{"answers":null}"#),
+        (302, r#"{"answers":[]}"#),
+        (500, r#"{"answers":[]}"#),
+    ] {
+        let mock = Mock {
+            calls: Mutex::new(vec![]),
+            status,
+            body,
+        };
+        assert!(Decisions::new(&mock, "http://localhost/v1/decisions")
+            .create(
+                &CreateRequest {
+                    model: "m".into(),
+                    input: json!("t"),
+                    questions: vec![json!({"type":"predicate"})],
+                },
+                &Default::default(),
+            )
+            .await
+            .is_err());
+        assert!(SystemOne::new(&mock, "http://localhost/v1/systemone")
+            .evaluate(
+                &SystemOneRequest {
+                    model: "m".into(),
+                    state: json!("t"),
+                    questions: BTreeMap::from([("q".into(), json!({"type":"noul"}))]),
+                    assets: BTreeMap::new(),
+                },
+                &Default::default(),
+            )
+            .await
+            .is_err());
+        assert_eq!(mock.calls.lock().unwrap().len(), 2);
+    }
 }
 #[tokio::test]
 async fn provider_failures_preserve_status_without_exposing_response_body_or_replaying() {

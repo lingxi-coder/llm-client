@@ -38,8 +38,9 @@ impl<'a> SystemOne<'a> {
         let response = crate::providers::native_decision::send(
             self.transport,
             &self.endpoint,
-            &serde_json::to_value(request).map_err(|_| NativeDecisionError::InvalidResponse)?,
+            request,
             options,
+            !request.assets.is_empty(),
         )
         .await?;
         if !response["answers"].is_object() {
