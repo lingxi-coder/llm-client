@@ -5,6 +5,7 @@ use crate::{
     runtime::Deadline,
     transport::{HttpExecutor, HttpRequest, Transport},
 };
+use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
 
@@ -22,11 +23,12 @@ pub enum NativeDecisionError {
     InvalidResponse,
 }
 
-pub(crate) async fn send(
+pub(crate) async fn send<T: Serialize + ?Sized>(
     transport: &dyn Transport,
     endpoint: &str,
-    body: &Value,
+    body: &T,
     options: &RequestOptions,
+    has_typesafe_assets: bool,
 ) -> Result<Value, NativeDecisionError> {
     let url = url::Url::parse(endpoint).map_err(|_| NativeDecisionError::InvalidResponse)?;
     if !matches!(url.scheme(), "http" | "https")
@@ -64,11 +66,7 @@ pub(crate) async fn send(
             format!("Bearer {}", key.expose_secret()),
         ));
     }
-    if body
-        .get("assets")
-        .and_then(Value::as_object)
-        .is_some_and(|assets| !assets.is_empty())
-    {
+    if has_typesafe_assets {
         headers.push(("TypeSafe-Danger-Zone-Images".into(), "true".into()));
     }
     let bytes = serde_json::to_vec(body).map_err(|_| NativeDecisionError::InvalidResponse)?;

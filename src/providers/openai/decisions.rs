@@ -61,8 +61,9 @@ impl<'a> Decisions<'a> {
         let response = crate::providers::native_decision::send(
             self.transport,
             &self.endpoint,
-            &serde_json::to_value(request).map_err(|_| NativeDecisionError::InvalidResponse)?,
+            request,
             options,
+            false,
         )
         .await?;
         if !response["answers"].is_array() {
