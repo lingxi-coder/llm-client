@@ -68,6 +68,38 @@ struct Block {
     ended: bool,
 }
 impl Block {
+    fn append_text(&mut self, text: &str) {
+        if let Some(units) = &mut self.utf16_code_units {
+            units.extend(text.encode_utf16());
+        }
+        // A Rust string cannot start with an unpaired low surrogate, so it
+        // cannot complete a pending high surrogate from the previous delta.
+        self.text.get_or_insert_default().push_str(text);
+    }
+
+    fn append_text_utf16(&mut self, fragment: &[u16]) {
+        let text = self.text.get_or_insert_default();
+        let units = self
+            .utf16_code_units
+            .get_or_insert_with(|| text.encode_utf16().collect());
+        let trailing_high = units
+            .last()
+            .copied()
+            .filter(|unit| (0xd800..=0xdbff).contains(unit));
+        // The display already contains a replacement for a trailing high
+        // surrogate. Decode only that boundary again with the new fragment,
+        // allowing a split surrogate pair to replace the displayed U+FFFD.
+        if trailing_high.is_some() {
+            debug_assert!(text.ends_with(char::REPLACEMENT_CHARACTER));
+            text.pop();
+        }
+        text.extend(
+            char::decode_utf16(trailing_high.into_iter().chain(fragment.iter().copied()))
+                .map(|decoded| decoded.unwrap_or(char::REPLACEMENT_CHARACTER)),
+        );
+        units.extend_from_slice(fragment);
+    }
+
     fn content(&self, terminal: bool, native_terminal: bool) -> Option<ContentBlock> {
         if let Some(native) = &self.native {
             if matches!(native, ContentBlock::Native { .. }) && !native_terminal {
@@ -184,34 +216,17 @@ impl StreamAccumulator {
                 self.response_id.clone_from(response_id);
             }
             StreamEvent::TextDelta { block, text } => {
-                let block = self.blocks.entry(*block).or_default();
-                if let Some(units) = &mut block.utf16_code_units {
-                    units.extend(text.encode_utf16());
-                    block.text = Some(String::from_utf16_lossy(units));
-                } else {
-                    block.text.get_or_insert_default().push_str(text);
-                }
+                self.blocks.entry(*block).or_default().append_text(text);
             }
             StreamEvent::TextDeltaJsUtf16 {
                 block,
-                text,
                 utf16_code_units,
+                ..
             } => {
-                let block = self.blocks.entry(*block).or_default();
-                if block.utf16_code_units.is_none() {
-                    block.utf16_code_units = Some(
-                        block
-                            .text
-                            .take()
-                            .unwrap_or_default()
-                            .encode_utf16()
-                            .collect(),
-                    );
-                }
-                let units = block.utf16_code_units.as_mut().expect("initialized above");
-                units.extend(utf16_code_units);
-                block.text = Some(String::from_utf16_lossy(units));
-                let _ = text;
+                self.blocks
+                    .entry(*block)
+                    .or_default()
+                    .append_text_utf16(utf16_code_units);
             }
             StreamEvent::ReasoningDelta { block, text } => self
                 .blocks
@@ -658,6 +673,178 @@ mod tests {
             ),
             inference: Default::default(),
         }
+    }
+
+    fn exact_text(units: &[u16]) -> StreamEvent {
+        StreamEvent::TextDeltaJsUtf16 {
+            block: 0,
+            text: String::from_utf16_lossy(units),
+            utf16_code_units: units.to_vec(),
+        }
+    }
+
+    fn assert_exact_text(block: &ContentBlock, expected: &[u16]) {
+        let ContentBlock::TextJsUtf16 {
+            text,
+            utf16_code_units,
+            ..
+        } = block
+        else {
+            panic!("expected exact UTF-16 text, got {block:?}");
+        };
+        assert_eq!(utf16_code_units, expected);
+        assert_eq!(text, &String::from_utf16_lossy(expected));
+    }
+
+    #[test]
+    fn utf16_text_deltas_match_full_decode_at_every_split_boundary() {
+        let cases: &[(&[u16], &str)] = &[
+            (&[], ""),
+            (&[0xd800], "\u{fffd}"),
+            (&[0xdc00], "\u{fffd}"),
+            (&[0xd83d, 0xde00], "😀"),
+            (&[0xdbff, 0xdfff], "\u{10ffff}"),
+            (
+                &[0xd800, 0xd800, 0xdc00, 0xdc00],
+                "\u{fffd}\u{10000}\u{fffd}",
+            ),
+            (
+                &[0xd800, 0x61, 0xdc00, 0, 0xdbff],
+                "\u{fffd}a\u{fffd}\0\u{fffd}",
+            ),
+        ];
+        for &(units, expected) in cases {
+            assert_eq!(String::from_utf16_lossy(units), expected);
+            for first in 0..=units.len() {
+                for second in first..=units.len() {
+                    let mut accumulator = StreamAccumulator::new();
+                    let mut observed = Vec::new();
+                    for fragment in [&units[..first], &units[first..second], &units[second..]] {
+                        accumulator.observe(&exact_text(fragment));
+                        observed.extend_from_slice(fragment);
+                        assert_exact_text(&accumulator.content_at(0).unwrap(), &observed);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn utf16_text_deltas_preserve_mixed_exact_and_scalar_chunks() {
+        let mut accumulator = StreamAccumulator::new();
+        let prefix = "prefix \u{fffd}";
+        accumulator.observe(&StreamEvent::TextDelta {
+            block: 0,
+            text: prefix.into(),
+        });
+        let mut expected: Vec<_> = prefix.encode_utf16().collect();
+        for event in [
+            exact_text(&[0xd83d]),
+            StreamEvent::TextDelta {
+                block: 0,
+                text: String::new(),
+            },
+            exact_text(&[0xde00]),
+            exact_text(&[0xd800]),
+            StreamEvent::TextDelta {
+                block: 0,
+                text: " 😀 ".into(),
+            },
+            exact_text(&[0xdc00, 0xe9, 0xd83d]),
+            exact_text(&[]),
+            exact_text(&[0xde00, 0xd800]),
+            StreamEvent::TextDelta {
+                block: 0,
+                text: "suffix".into(),
+            },
+        ] {
+            match &event {
+                StreamEvent::TextDelta { text, .. } => expected.extend(text.encode_utf16()),
+                StreamEvent::TextDeltaJsUtf16 {
+                    utf16_code_units, ..
+                } => expected.extend_from_slice(utf16_code_units),
+                _ => unreachable!(),
+            }
+            accumulator.observe(&event);
+            assert_exact_text(&accumulator.content_at(0).unwrap(), &expected);
+        }
+        accumulator.observe(&StreamEvent::BlockEnd { block: 0 });
+        accumulator.observe(&end());
+        let result = accumulator.finish().unwrap();
+        assert_exact_text(&result.indexed_content[&0], &expected);
+        assert_exact_text(&result.response.message.content[0], &expected);
+    }
+
+    #[test]
+    fn utf16_text_deltas_repair_provider_projection_without_changing_snapshots() {
+        let mut accumulator = StreamAccumulator::new();
+        accumulator.observe(&StreamEvent::ProviderContent {
+            block: 0,
+            protocol: ProtocolFamily::AnthropicMessages,
+            value: JsonPayload::parse(
+                r#"{"type":"text","text":"\ud83d","citations":[{"native":"citation"}]}"#,
+            )
+            .unwrap(),
+        });
+        accumulator.observe(&StreamEvent::ThoughtSignature {
+            block: 0,
+            signature: "signed".into(),
+        });
+        let partial = accumulator.snapshot();
+        let cloned = partial.clone();
+        accumulator.observe(&exact_text(&[0xde00]));
+        accumulator.observe(&StreamEvent::TextDelta {
+            block: 0,
+            text: " done".into(),
+        });
+        accumulator.observe(&StreamEvent::BlockEnd { block: 0 });
+        accumulator.observe(&end());
+        let result = accumulator.finish().unwrap();
+        let expected: Vec<_> = "😀 done".encode_utf16().collect();
+        assert_exact_text(&result.indexed_content[&0], &expected);
+        assert_exact_text(&result.response.message.content[0], &expected);
+        assert_exact_text(&partial.indexed_content[&0], &[0xd83d]);
+        assert_exact_text(&cloned.response.message.content[0], &[0xd83d]);
+        assert!(matches!(
+            &result.indexed_content[&0],
+            ContentBlock::TextJsUtf16 {
+                citations: Some(Some(citations)),
+                thought_signature: Some(signature),
+                ..
+            } if citations.as_json_source() == r#"[{"native":"citation"}]"# && signature == "signed"
+        ));
+    }
+
+    #[test]
+    fn utf16_text_deltas_reuse_display_capacity_across_many_small_chunks() {
+        const CHUNKS: usize = 4096;
+        let mut accumulator = StreamAccumulator::new();
+        accumulator.observe(&exact_text(&[0xd800]));
+        let display = accumulator
+            .blocks
+            .get_mut(&0)
+            .unwrap()
+            .text
+            .as_mut()
+            .unwrap();
+        display.reserve(CHUNKS);
+        let display_buffer = display.as_ptr();
+        let scalar = StreamEvent::TextDelta {
+            block: 0,
+            text: "a".into(),
+        };
+        let exact = exact_text(&[0x61]);
+        for chunk in 0..CHUNKS {
+            accumulator.observe(if chunk % 2 == 0 { &scalar } else { &exact });
+            assert_eq!(
+                accumulator.blocks[&0].text.as_ref().unwrap().as_ptr(),
+                display_buffer,
+                "appending within reserved capacity must not replace the display buffer"
+            );
+        }
+        let mut expected = vec![0xd800];
+        expected.extend(std::iter::repeat_n(0x61, CHUNKS));
+        assert_exact_text(&accumulator.content_at(0).unwrap(), &expected);
     }
 
     #[test]
