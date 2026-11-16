@@ -56,8 +56,7 @@ struct Tool {
 
 #[derive(Debug, Clone, Default)]
 struct Block {
-    text: Option<String>,
-    utf16_code_units: Option<Vec<u16>>,
+    text: Option<crate::exact_text::ExactText>,
     citations: Option<Option<JsonPayload>>,
     thinking: Option<String>,
     signature: Option<String>,
@@ -69,35 +68,11 @@ struct Block {
 }
 impl Block {
     fn append_text(&mut self, text: &str) {
-        if let Some(units) = &mut self.utf16_code_units {
-            units.extend(text.encode_utf16());
-        }
-        // A Rust string cannot start with an unpaired low surrogate, so it
-        // cannot complete a pending high surrogate from the previous delta.
         self.text.get_or_insert_default().push_str(text);
     }
 
     fn append_text_utf16(&mut self, fragment: &[u16]) {
-        let text = self.text.get_or_insert_default();
-        let units = self
-            .utf16_code_units
-            .get_or_insert_with(|| text.encode_utf16().collect());
-        let trailing_high = units
-            .last()
-            .copied()
-            .filter(|unit| (0xd800..=0xdbff).contains(unit));
-        // The display already contains a replacement for a trailing high
-        // surrogate. Decode only that boundary again with the new fragment,
-        // allowing a split surrogate pair to replace the displayed U+FFFD.
-        if trailing_high.is_some() {
-            debug_assert!(text.ends_with(char::REPLACEMENT_CHARACTER));
-            text.pop();
-        }
-        text.extend(
-            char::decode_utf16(trailing_high.into_iter().chain(fragment.iter().copied()))
-                .map(|decoded| decoded.unwrap_or(char::REPLACEMENT_CHARACTER)),
-        );
-        units.extend_from_slice(fragment);
+        self.text.get_or_insert_default().push_units(fragment);
     }
 
     fn content(&self, terminal: bool, native_terminal: bool) -> Option<ContentBlock> {
@@ -134,15 +109,15 @@ impl Block {
                 signature: self.signature.clone(),
             });
         }
-        self.text.as_ref().map(|text| match &self.utf16_code_units {
+        self.text.as_ref().map(|text| match text.carried_units() {
             Some(utf16_code_units) => ContentBlock::TextJsUtf16 {
-                text: text.clone(),
-                utf16_code_units: utf16_code_units.clone(),
+                text: text.display().to_owned(),
+                utf16_code_units: utf16_code_units.to_vec(),
                 thought_signature: self.signature.clone(),
                 citations: self.citations.clone(),
             },
             None => ContentBlock::Text {
-                text: text.clone(),
+                text: text.display().to_owned(),
                 thought_signature: self.signature.clone(),
                 citations: self.citations.clone(),
             },
@@ -295,8 +270,11 @@ impl StreamAccumulator {
                         value: value.clone(),
                     });
                 } else if let Some((text, units, citations)) = text_projection {
-                    current.text = Some(text);
-                    current.utf16_code_units = String::from_utf16(&units).is_err().then_some(units);
+                    current.text = Some(if String::from_utf16(&units).is_err() {
+                        crate::exact_text::ExactText::from_units(units)
+                    } else {
+                        crate::exact_text::ExactText::from_text(text)
+                    });
                     current.citations = citations;
                 } else {
                     current.native = Some(ContentBlock::ProviderContent {
@@ -827,8 +805,8 @@ mod tests {
             .text
             .as_mut()
             .unwrap();
-        display.reserve(CHUNKS);
-        let display_buffer = display.as_ptr();
+        display.reserve_display(CHUNKS);
+        let display_buffer = display.display().as_ptr();
         let scalar = StreamEvent::TextDelta {
             block: 0,
             text: "a".into(),
@@ -837,7 +815,12 @@ mod tests {
         for chunk in 0..CHUNKS {
             accumulator.observe(if chunk % 2 == 0 { &scalar } else { &exact });
             assert_eq!(
-                accumulator.blocks[&0].text.as_ref().unwrap().as_ptr(),
+                accumulator.blocks[&0]
+                    .text
+                    .as_ref()
+                    .unwrap()
+                    .display()
+                    .as_ptr(),
                 display_buffer,
                 "appending within reserved capacity must not replace the display buffer"
             );

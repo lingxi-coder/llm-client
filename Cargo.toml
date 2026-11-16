@@ -11,6 +11,7 @@ exclude = [".omx/**"]
 
 [workspace]
 members = [
+    "crates/exact-text",
     "vendor/lingxi-hyper",
     "vendor/lingxi-hyper-util",
     "vendor/lingxi-hyper-rustls",
@@ -31,6 +32,7 @@ tokenizer-glm = ["dep:tokenizers", "dep:xz2"]
 tokenizers-all = ["tokenizer-openai", "tokenizer-deepseek", "tokenizer-qwen", "tokenizer-kimi", "tokenizer-glm"]
 
 [dependencies]
+lingxi-exact-text = { path = "crates/exact-text", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 jsonschema = { version = "0.46.3", default-features = false }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "raw_value"] }

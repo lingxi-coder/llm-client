@@ -1,0 +1,9 @@
+[package]
+name = "lingxi-exact-text"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+description = "Exact UTF-16 text construction without protocol or persistence policy."
+
+[dependencies]
