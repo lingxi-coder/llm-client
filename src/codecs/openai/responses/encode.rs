@@ -315,27 +315,27 @@ pub fn request<'a>(
     if let Some(instructions) = instruction_override {
         body = body.with("instructions", WireValue::owned_raw_json(instructions));
     }
-    if !req.tools.is_empty() {
+    let search_parameters = openai_tool_search.and_then(|config| config.parameters.as_ref());
+    if !req.tools.is_empty() || search_parameters.is_some() {
+        // Attach all source-backed schemas in one pass: map_array_field moves
+        // the array into an overlay, so a second pass cannot read it from value.
         body = body.map_array_field("tools", |index, tool| {
-            let Some(spec) = req.tools.get(index) else {
-                return WireValue::from(tool);
-            };
-            let payload = &encoded_tools[index];
-            let tool = WireValue::owned_raw_json(payload.clone());
-            if payload.raw_source_at("/parameters").is_some() {
-                tool.with("parameters", WireValue::raw_json(&spec.input_schema))
-            } else {
-                tool
+            if let Some(spec) = req.tools.get(index) {
+                let payload = &encoded_tools[index];
+                let tool = WireValue::owned_raw_json(payload.clone());
+                return if payload.raw_source_at("/parameters").is_some() {
+                    tool.with("parameters", WireValue::raw_json(&spec.input_schema))
+                } else {
+                    tool
+                };
             }
-        });
-    }
-    if let Some(parameters) = openai_tool_search.and_then(|config| config.parameters.as_ref()) {
-        body = body.map_array_field("tools", |_, tool| {
-            if tool.get("type").and_then(Value::as_str) == Some("tool_search") {
-                WireValue::from(tool).with("parameters", WireValue::raw_json(parameters))
-            } else {
-                WireValue::from(tool)
+            if let Some(parameters) = search_parameters {
+                if tool.get("type").and_then(Value::as_str) == Some("tool_search") {
+                    return WireValue::from(tool)
+                        .with("parameters", WireValue::raw_json(parameters));
+                }
             }
+            WireValue::from(tool)
         });
     }
     Ok(WireRequest::new(url, headers, body))
@@ -887,3 +887,7 @@ fn inline<'a>(
         }
     }))
 }
+
+#[cfg(test)]
+#[path = "encode_tests.rs"]
+mod tests;
