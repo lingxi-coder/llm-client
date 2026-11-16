@@ -14,6 +14,51 @@ pub struct ExactText {
     units: Option<Vec<u16>>,
 }
 
+/// An incremental edit to a previous display snapshot. Source units stay in
+/// the builder; this edit is for a final display sink only.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DisplayEdit<'a> {
+    /// Number of Unicode scalars to remove from the old display's end.
+    pub remove_scalars: usize,
+    /// Replacement suffix; it never includes the unchanged prefix.
+    pub append: &'a str,
+}
+
+/// Decoder for append-only sinks such as stdout. Hold at most one unfinished
+/// high surrogate so the next fragment can complete it. Finish at every
+/// message/attempt boundary; this type is never a model-input representation.
+#[derive(Debug, Default)]
+pub struct Utf16DisplayStream {
+    pending_high: Option<u16>,
+}
+
+impl Utf16DisplayStream {
+    /// Decode a fragment without emitting an unfinished trailing surrogate.
+    pub fn push(&mut self, fragment: &[u16]) -> String {
+        let mut text = ExactText::from_units(self.pending_high.take().into_iter().collect());
+        text.push_units(fragment);
+        self.pending_high = text
+            .carried_units()
+            .and_then(|units| units.last())
+            .copied()
+            .filter(|unit| is_high(*unit));
+        let (mut display, _) = text.into_parts();
+        if self.pending_high.is_some() {
+            display.pop();
+        }
+        display
+    }
+
+    /// End this stream, displaying an isolated final unit exactly once.
+    pub fn finish(&mut self) -> String {
+        ExactText::from_units(self.pending_high.take().into_iter().collect()).display
+    }
+}
+
+fn is_high(unit: u16) -> bool {
+    (0xd800..=0xdbff).contains(&unit)
+}
+
 /// Display and exact units describe different strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayMismatch;
@@ -81,25 +126,34 @@ impl ExactText {
     }
 
     pub fn push_units(&mut self, fragment: &[u16]) {
+        self.push_units_with_edit(fragment);
+    }
+
+    /// Append exact units and describe the small display edit they produced.
+    /// The only overwritten scalar is a previous unfinished high surrogate's
+    /// replacement character. No prefix copy or prefix scan is required.
+    pub fn push_units_with_edit(&mut self, fragment: &[u16]) -> DisplayEdit<'_> {
         let units = self
             .units
             .get_or_insert_with(|| self.display.encode_utf16().collect());
         // Only a pending high surrogate can join a future fragment. Re-decode
         // that one boundary; scanning the complete prefix on every frame is
         // quadratic and can also accidentally normalize historical units.
-        let high = units
-            .last()
-            .copied()
-            .filter(|unit| (0xd800..=0xdbff).contains(unit));
+        let high = units.last().copied().filter(|unit| is_high(*unit));
         if high.is_some() {
             debug_assert!(self.display.ends_with(char::REPLACEMENT_CHARACTER));
             self.display.pop();
         }
+        let start = self.display.len();
         self.display.extend(
             char::decode_utf16(high.into_iter().chain(fragment.iter().copied()))
                 .map(|ch| ch.unwrap_or(char::REPLACEMENT_CHARACTER)),
         );
         units.extend_from_slice(fragment);
+        DisplayEdit {
+            remove_scalars: usize::from(high.is_some()),
+            append: &self.display[start..],
+        }
     }
 }
 
@@ -124,17 +178,30 @@ mod tests {
         let units = [0x61, 0xd83d, 0xde00, 0xd800, 0xd801, 0xdc01, 0xdc00, 0x62];
         for mask in 0..1usize << (units.len() - 1) {
             let mut text = ExactText::default();
+            let mut display = String::new();
+            let mut stream = Utf16DisplayStream::default();
+            let mut printed = String::new();
             let mut start = 0;
             for end in 1..=units.len() {
                 if end == units.len() || mask & (1 << (end - 1)) != 0 {
-                    text.push_units(&units[start..end]);
+                    let fragment = &units[start..end];
+                    let edit = text.push_units_with_edit(fragment);
+                    for _ in 0..edit.remove_scalars {
+                        display.pop();
+                    }
+                    display.push_str(edit.append);
+                    printed.push_str(&stream.push(fragment));
                     text.push_units(&[]);
                     assert_eq!(text.display(), String::from_utf16_lossy(&units[..end]));
+                    assert_eq!(display, text.display());
                     assert_eq!(text.carried_units(), Some(&units[..end]));
                     start = end;
                 }
             }
             assert_eq!(text, ExactText::from_units(units.to_vec()));
+            printed.push_str(&stream.finish());
+            assert_eq!(printed, display);
+            assert_eq!(stream.finish(), "");
         }
     }
 
@@ -178,5 +245,20 @@ mod tests {
         let mut continued = checkpoint;
         continued.push_units(&[0xde00]);
         assert_eq!(continued.display(), "prefix 😀");
+    }
+
+    #[test]
+    fn append_only_display_flushes_at_boundaries_and_retains_no_prefix() {
+        let mut stream = Utf16DisplayStream::default();
+        assert_eq!(stream.push(&[0x61, 0xd83d]), "a");
+        assert_eq!(stream.push(&[]), "");
+        assert_eq!(stream.push(&[0xde00, 0xd800]), "😀");
+        assert_eq!(stream.finish(), "�");
+        assert_eq!(stream.push(&[0xdc00]), "�");
+        assert_eq!(stream.finish(), "");
+        assert_eq!(
+            stream.push(&"中文e\u{301}\r\n".encode_utf16().collect::<Vec<_>>()),
+            "中文e\u{301}\r\n"
+        );
     }
 }
