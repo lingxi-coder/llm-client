@@ -52,6 +52,7 @@ pub mod realtime;
 pub mod reasoning;
 pub mod replay;
 mod response_json;
+mod rfc3339;
 mod runtime;
 pub mod stream_assembly;
 pub use stream_assembly::{IncompleteTool, StreamAccumulator, StreamAssembly, StreamAssemblyError};

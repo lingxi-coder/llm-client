@@ -60,11 +60,7 @@ pub fn parse_sts_output(v: &serde_json::Value) -> Option<AwsExportedCredentials>
     let expiration_ms = creds
         .get("Expiration")
         .and_then(serde_json::Value::as_str)
-        .and_then(|raw| {
-            chrono::DateTime::parse_from_rfc3339(raw)
-                .ok()
-                .map(|dt| dt.timestamp_millis())
-        });
+        .and_then(|raw| crate::rfc3339::timestamp(raw).map(jiff::Timestamp::as_millisecond));
     Some(AwsExportedCredentials {
         access_key_id: s("AccessKeyId"),
         secret_access_key: s("SecretAccessKey"),

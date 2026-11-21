@@ -103,7 +103,9 @@ pub fn apply_credential(
                 .iter()
                 .any(|key| name.eq_ignore_ascii_case(key))
             });
-            let date: chrono::DateTime<chrono::Utc> = now.into();
+            let date = jiff::Timestamp::try_from(now).map_err(|_| LlmError::InvalidRequest {
+                message: "could not sign provider request".into(),
+            })?;
             let signed = sigv4::sign_request(
                 &request.method,
                 &request.url,
@@ -114,7 +116,7 @@ pub fn apply_credential(
                 session_token,
                 region,
                 service,
-                &date.format("%Y%m%dT%H%M%SZ").to_string(),
+                &date.strftime("%Y%m%dT%H%M%SZ").to_string(),
             )
             .map_err(|_| LlmError::InvalidRequest {
                 message: "could not sign provider request".into(),

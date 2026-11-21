@@ -61,41 +61,52 @@ impl PriceBoundary {
     /// An unpublished zone covers UTC offsets -12 through +14 hours; queries inside
     /// that transition interval cannot safely select either price.
     pub fn utc_bounds(&self) -> Result<(u64, u64), String> {
-        use chrono::{DateTime, NaiveDateTime, TimeZone};
+        use jiff::civil::DateTime;
+        use jiff::tz::TimeZone;
         let zone = self
             .time_zone
             .as_deref()
             .map(|name| {
-                name.parse::<chrono_tz::Tz>()
-                    .map_err(|_| format!("unknown billing time zone {name:?}"))
+                TimeZone::get(name).map_err(|_| format!("unknown billing time zone {name:?}"))
             })
             .transpose()?;
         let seconds = |timestamp: i64| {
             u64::try_from(timestamp).map_err(|_| "price boundary precedes Unix epoch".to_owned())
         };
-        if let Ok(explicit) = DateTime::parse_from_rfc3339(&self.local) {
-            if zone.is_some_and(|zone| {
-                explicit.with_timezone(&zone).naive_local() != explicit.naive_local()
-            }) {
+        if let (Some(instant), Some(written)) = (
+            crate::rfc3339::timestamp(&self.local),
+            crate::rfc3339::pieces(&self.local),
+        ) {
+            let written = written
+                .date()
+                .to_datetime(written.time().unwrap_or_default());
+            if zone
+                .as_ref()
+                .is_some_and(|zone| zone.to_datetime(instant) != written)
+            {
                 return Err("price boundary offset disagrees with its IANA time zone".into());
             }
-            let timestamp = seconds(explicit.timestamp())?;
+            let timestamp = seconds(instant.as_second())?;
             return Ok((timestamp, timestamp));
         }
-        let local =
-            NaiveDateTime::parse_from_str(&self.local, "%Y-%m-%dT%H:%M:%S").map_err(|_| {
-                "price boundary requires an ISO local datetime or explicit RFC 3339 offset"
-                    .to_owned()
-            })?;
+        let local = DateTime::strptime("%Y-%m-%dT%H:%M:%S", &self.local).map_err(|_| {
+            "price boundary requires an ISO local datetime or explicit RFC 3339 offset".to_owned()
+        })?;
         if let Some(zone) = zone {
-            let instant = zone.from_local_datetime(&local).single().ok_or_else(|| {
-                "ambiguous or nonexistent local price boundary; supply an explicit valid offset"
-                    .to_owned()
-            })?;
-            let timestamp = seconds(instant.timestamp())?;
+            let instant = zone
+                .to_ambiguous_timestamp(local)
+                .unambiguous()
+                .map_err(|_| {
+                    "ambiguous or nonexistent local price boundary; supply an explicit valid offset"
+                        .to_owned()
+                })?;
+            let timestamp = seconds(instant.as_second())?;
             Ok((timestamp, timestamp))
         } else {
-            let nominal = local.and_utc().timestamp();
+            let nominal = TimeZone::UTC
+                .to_timestamp(local)
+                .map_err(|_| "price boundary is out of range".to_owned())?
+                .as_second();
             Ok((seconds(nominal - 14 * 3600)?, seconds(nominal + 12 * 3600)?))
         }
     }

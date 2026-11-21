@@ -99,9 +99,9 @@ fn matrix() -> Matrix {
 }
 
 fn check_evidence_date(matrix: &Matrix, evidence_date: &str) {
-    let snapshot = chrono::NaiveDate::parse_from_str(&matrix.evidence_date, "%Y-%m-%d")
+    let snapshot = jiff::civil::Date::strptime("%Y-%m-%d", &matrix.evidence_date)
         .expect("matrix evidence_date must be a date");
-    let evidence = chrono::NaiveDate::parse_from_str(evidence_date, "%Y-%m-%d")
+    let evidence = jiff::civil::Date::strptime("%Y-%m-%d", evidence_date)
         .expect("record evidence_date must be a date");
     assert!(
         evidence <= snapshot,
@@ -293,7 +293,7 @@ fn every_claim_resolves_to_dated_first_party_evidence_without_live_claims() {
         "documentation_evidence_matrix_not_runtime_configuration"
     );
     assert_eq!(matrix.live_validation, "not_run");
-    chrono::NaiveDate::parse_from_str(&matrix.evidence_date, "%Y-%m-%d")
+    jiff::civil::Date::strptime("%Y-%m-%d", &matrix.evidence_date)
         .expect("matrix evidence_date must be a date");
     assert_eq!(
         matrix.scope["implementation_validation"],

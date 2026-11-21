@@ -61,7 +61,7 @@ fn check_sources(value: &Value, matrix: &Value, required: bool) {
         let source = matrix["sources"].get(id).expect("unknown source ID");
         assert!(first_party(source["url"].as_str().unwrap()));
         let date = source["evidence_date"].as_str().unwrap();
-        assert!(chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok());
+        assert!(jiff::civil::Date::strptime("%Y-%m-%d", date).is_ok());
         assert!(date <= matrix["evidence_date"].as_str().unwrap());
         assert!(!source["section"].as_str().unwrap().is_empty());
     }
@@ -88,11 +88,9 @@ fn check_cell(cell: &Value, matrix: &Value) {
 
 fn check_record(record: &Value, matrix: &Value) {
     let record_date =
-        chrono::NaiveDate::parse_from_str(record["evidence_date"].as_str().unwrap(), "%Y-%m-%d")
-            .unwrap();
+        jiff::civil::Date::strptime("%Y-%m-%d", record["evidence_date"].as_str().unwrap()).unwrap();
     let snapshot_date =
-        chrono::NaiveDate::parse_from_str(matrix["evidence_date"].as_str().unwrap(), "%Y-%m-%d")
-            .unwrap();
+        jiff::civil::Date::strptime("%Y-%m-%d", matrix["evidence_date"].as_str().unwrap()).unwrap();
     assert!(
         record_date <= snapshot_date,
         "record is newer than snapshot"

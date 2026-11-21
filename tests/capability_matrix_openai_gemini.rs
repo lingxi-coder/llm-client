@@ -212,8 +212,8 @@ fn every_raw_catalog_model_has_exactly_one_complete_operation_row() {
 }
 
 fn check_evidence_date(matrix: &Matrix, date: &str) {
-    let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
-    let latest = chrono::NaiveDate::parse_from_str(&matrix.evidence_date, "%Y-%m-%d").unwrap();
+    let date = jiff::civil::Date::strptime("%Y-%m-%d", date).unwrap();
+    let latest = jiff::civil::Date::strptime("%Y-%m-%d", &matrix.evidence_date).unwrap();
     assert!(
         date <= latest,
         "evidence is newer than the matrix review date"

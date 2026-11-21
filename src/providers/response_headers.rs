@@ -565,8 +565,10 @@ fn duration_from_seconds(seconds: f64) -> Option<Duration> {
 }
 
 fn retry_after_http_date(value: &str, now: SystemTime) -> Option<Duration> {
-    let date = chrono::DateTime::parse_from_rfc2822(value.trim()).ok()?;
-    let remaining_millis = i128::from(date.timestamp_millis()) - unix_millis(now);
+    let date = jiff::fmt::rfc2822::DateTimeParser::new()
+        .parse_timestamp(value.trim())
+        .ok()?;
+    let remaining_millis = i128::from(date.as_millisecond()) - unix_millis(now);
     if remaining_millis <= 0 {
         return Some(Duration::ZERO);
     }
@@ -720,16 +722,17 @@ fn parse_anthropic_utc_seconds(raw: &str) -> Option<u64> {
     {
         return None;
     }
-    let year = raw[0..4].parse::<i32>().ok()?;
-    let month = raw[5..7].parse::<u32>().ok()?;
-    let day = raw[8..10].parse::<u32>().ok()?;
-    let hour = raw[11..13].parse::<u32>().ok()?;
-    let minute = raw[14..16].parse::<u32>().ok()?;
-    let second = raw[17..19].parse::<u32>().ok()?;
-    chrono::NaiveDate::from_ymd_opt(year, month, day)?
-        .and_hms_opt(hour, minute, second)?
-        .and_utc()
-        .timestamp()
+    let year = raw[0..4].parse::<i16>().ok()?;
+    let month = raw[5..7].parse::<i8>().ok()?;
+    let day = raw[8..10].parse::<i8>().ok()?;
+    let hour = raw[11..13].parse::<i8>().ok()?;
+    let minute = raw[14..16].parse::<i8>().ok()?;
+    let second = raw[17..19].parse::<i8>().ok()?;
+    let datetime = jiff::civil::DateTime::new(year, month, day, hour, minute, second, 0).ok()?;
+    jiff::tz::TimeZone::UTC
+        .to_timestamp(datetime)
+        .ok()?
+        .as_second()
         .try_into()
         .ok()
 }

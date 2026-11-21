@@ -413,12 +413,9 @@ fn parse_provider_file_expiration(value: &str) -> Result<SystemTime, LlmError> {
             .checked_mul(1_000_000_000)
             .ok_or_else(invalid_expiration)?
     } else {
-        let datetime =
-            chrono::DateTime::parse_from_rfc3339(value).map_err(|_| invalid_expiration())?;
-        i128::from(datetime.timestamp())
-            .checked_mul(1_000_000_000)
-            .and_then(|nanos| nanos.checked_add(i128::from(datetime.timestamp_subsec_nanos())))
+        crate::rfc3339::timestamp(value)
             .ok_or_else(invalid_expiration)?
+            .as_nanosecond()
     };
     system_time_from_unix_nanos(nanos_since_epoch).ok_or_else(invalid_expiration)
 }

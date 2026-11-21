@@ -7,7 +7,6 @@ use crate::{
     transport::{HttpExecutor, HttpRequest, HttpResponse, Transport},
 };
 use bytes::Bytes;
-use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{fmt, time::Duration, time::SystemTime, time::UNIX_EPOCH};
@@ -974,9 +973,7 @@ fn expiration_millis(value: &str) -> Option<i64> {
     if let Ok(seconds) = value.parse::<i64>() {
         return seconds.checked_mul(1000);
     }
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|timestamp| timestamp.timestamp_millis())
+    crate::rfc3339::timestamp(value).map(jiff::Timestamp::as_millisecond)
 }
 
 fn validate_custom_voice_id(value: &str) -> Result<(), MiniMaxVoicesError> {

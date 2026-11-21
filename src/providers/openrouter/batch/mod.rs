@@ -1627,9 +1627,7 @@ fn valid_batch_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-fn parse_created_at_filter(
-    value: &str,
-) -> Result<chrono::DateTime<chrono::Utc>, OpenRouterBatchError> {
+fn parse_created_at_filter(value: &str) -> Result<jiff::Timestamp, OpenRouterBatchError> {
     if value.is_empty() || value.len() > 64 || value.chars().any(char::is_control) {
         return Err(invalid(
             "creation-time filters must be Unix seconds or an ISO-8601 date/time",
@@ -1661,24 +1659,21 @@ fn parse_created_at_filter(
                 "Unix creation-time filters support at most nine fractional digits",
             ));
         };
-        return chrono::DateTime::from_timestamp(seconds, nanos)
-            .ok_or_else(|| invalid("Unix creation-time filter is out of range"));
+        let nanos = i32::try_from(nanos).expect("at most nine fractional digits");
+        return jiff::Timestamp::new(seconds, nanos)
+            .map_err(|_| invalid("Unix creation-time filter is out of range"));
     }
 
-    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(value) {
-        return Ok(datetime.with_timezone(&chrono::Utc));
+    if let Some(timestamp) = crate::rfc3339::timestamp(value) {
+        return Ok(timestamp);
     }
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        return Ok(date
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight is a valid time")
-            .and_utc());
-    }
-    if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
-        return Ok(datetime.and_utc());
-    }
-    if let Ok(datetime) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
-        return Ok(datetime.and_utc());
+    // `%.f` is optional, so this also takes whole seconds.
+    let local = jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M:%S%.f", value).or_else(|_| {
+        jiff::civil::Date::strptime("%Y-%m-%d", value)
+            .map(|date| date.to_datetime(jiff::civil::Time::midnight()))
+    });
+    if let Ok(timestamp) = local.and_then(|local| jiff::tz::TimeZone::UTC.to_timestamp(local)) {
+        return Ok(timestamp);
     }
     Err(invalid(
         "creation-time filters must be Unix seconds or an ISO-8601 date/time",

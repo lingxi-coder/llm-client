@@ -40,8 +40,8 @@ thiserror = "2"
 async-trait = "0.1"
 futures = "0.3"
 bytes = "1"
-chrono = { version = "0.4.44", default-features = false, features = ["std"] }
-chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+# Bundled tzdb: billing time zones resolve the same on every platform.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "tzdb-bundle-always"] }
 base64 = "0.22"
 ring = "0.17.14"
 hmac = "0.12"

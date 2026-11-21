@@ -16,7 +16,6 @@ use crate::{
     transport::{HttpExecutor, HttpRequest, HttpResponse, Transport},
 };
 use bytes::Bytes;
-use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::time::Duration;
@@ -152,7 +151,7 @@ impl GeminiContextCacheExpiration {
     fn validate(&self) -> Result<(), GeminiContextCacheError> {
         match self {
             Self::Ttl(value) if valid_ttl(value) => Ok(()),
-            Self::ExpireTime(value) if DateTime::parse_from_rfc3339(value).is_ok() => Ok(()),
+            Self::ExpireTime(value) if crate::rfc3339::timestamp(value).is_some() => Ok(()),
             Self::Ttl(_) => Err(invalid(
                 "TTL must be a non-negative seconds duration with at most nine fractional digits",
             )),

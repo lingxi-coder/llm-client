@@ -1,9 +1,9 @@
 //! Offline evidence integrity for alternate provider routes.
-use chrono::NaiveDate;
+use jiff::civil::Date;
 use serde_json::Value;
 
-fn evidence_date(value: &Value) -> NaiveDate {
-    NaiveDate::parse_from_str(value.as_str().unwrap(), "%Y-%m-%d").unwrap()
+fn evidence_date(value: &Value) -> Date {
+    jiff::civil::Date::strptime("%Y-%m-%d", value.as_str().unwrap()).unwrap()
 }
 
 #[test]
@@ -12,7 +12,7 @@ fn alternate_catalog_evidence_is_complete_and_keeps_unknowns() {
         serde_json::from_str(include_str!("../data/capability-matrix-protocols.json")).unwrap();
     assert_eq!(matrix["live_validation"], "not_run");
     // The initial review was on this date; later additions keep their own dates.
-    let initial_review_date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+    let initial_review_date = jiff::civil::date(2026, 10, 12);
     let snapshot_date = evidence_date(&matrix["evidence_date"]);
     for p in matrix["profiles"].as_array().unwrap() {
         let raw: toml::Value = std::fs::read_to_string(
