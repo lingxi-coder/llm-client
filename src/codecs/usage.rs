@@ -30,12 +30,19 @@ pub(crate) fn response_report(
     response: &crate::transport::HttpResponse,
     context: &super::CodecContext,
 ) -> crate::protocol::UsageReport {
-    use crate::protocol::ProtocolFamily as P;
     let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+    response_report_from_body(&body, context)
+}
+
+pub(crate) fn response_report_from_body(
+    body: &Value,
+    context: &super::CodecContext,
+) -> crate::protocol::UsageReport {
+    use crate::protocol::ProtocolFamily as P;
     let body = body
         .get("response")
         .filter(|v| v.is_object())
-        .unwrap_or(&body);
+        .unwrap_or(body);
     match context.profile().protocol {
         P::AnthropicMessages | P::BedrockClaude | P::VertexClaude | P::FoundryClaude => report(
             body.get("usage"),

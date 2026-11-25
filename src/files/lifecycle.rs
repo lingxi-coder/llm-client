@@ -1,6 +1,8 @@
 //! Automatic upload ownership and cleanup.
 use super::*;
 
+static BACKGROUND_FILE_CLEANUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(16);
+
 /// Owns automatic Qwen uploads until the model response or stream is finished.
 /// A dropped preparation/stream still schedules deletion, including when a
 /// request is cancelled while file parsing is in progress.
@@ -63,20 +65,24 @@ impl AutomaticFileCleanup {
             self.account_scope.as_deref(),
         )
         .with_qwen_rate_limiter(Arc::clone(&self.rate_limiter));
-        for file in files {
+        for (index, file) in files.iter().enumerate() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
             }
+            // Give later files part of the cleanup window even if an earlier
+            // deletion stalls. A successful deletion frees its unused time.
+            let remaining_files = u32::try_from(files.len() - index).unwrap_or(u32::MAX);
+            let timeout = remaining / remaining_files;
             let deleted = if tokio::runtime::Handle::try_current().is_ok() {
-                tokio::time::timeout(remaining, service.delete(&file))
+                tokio::time::timeout(timeout, service.delete(file))
                     .await
                     .is_ok_and(|result| result.is_ok())
             } else {
                 matches!(
                     futures::future::select(
-                        Box::pin(service.delete(&file)),
-                        Box::pin(async_delay(remaining)),
+                        Box::pin(service.delete(file)),
+                        Box::pin(async_delay(timeout)),
                     )
                     .await,
                     futures::future::Either::Left((Ok(()), _))
@@ -112,6 +118,10 @@ impl Drop for AutomaticFileCleanup {
             // A stream may be dropped while the provider is still unwinding
             // its request. Do not delete the file immediately at that point.
             async_delay(Duration::from_secs(2)).await;
+            let _permit = BACKGROUND_FILE_CLEANUP
+                .acquire()
+                .await
+                .expect("cleanup semaphore is open");
             let service = FileService::new(
                 http.as_ref(),
                 &profile,
@@ -121,12 +131,22 @@ impl Drop for AutomaticFileCleanup {
             )
             .with_qwen_rate_limiter(rate_limiter);
             for file in files {
+                let deadline = tokio::time::Instant::now() + QWEN_CLEANUP_DEFAULT_TIMEOUT;
                 for attempt in 0..3 {
-                    if service.delete(&file).await.is_ok() {
-                        break;
-                    }
-                    if attempt < 2 {
-                        async_delay(Duration::from_secs(1 << attempt)).await;
+                    match tokio::time::timeout_at(deadline, service.delete(&file)).await {
+                        Ok(Ok(())) | Err(_) => break,
+                        Ok(Err(_)) if attempt < 2 => {
+                            if tokio::time::timeout_at(
+                                deadline,
+                                async_delay(Duration::from_secs(1 << attempt)),
+                            )
+                            .await
+                            .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(Err(_)) => break,
                     }
                 }
             }

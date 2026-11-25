@@ -87,6 +87,7 @@ pub struct ClientSnapshot {
 }
 
 pub(crate) struct RuntimeResources {
+    pub(crate) custom_codecs: std::collections::BTreeSet<ProtocolFamily>,
     pub(crate) region: Region,
     pub(crate) http: Arc<dyn Transport>,
     pub(crate) clock: Arc<dyn Clock>,

@@ -27,6 +27,11 @@ use bytes::{Bytes, BytesMut};
 use futures::{stream::BoxStream, Stream, StreamExt};
 use std::time::{Duration, SystemTime};
 
+pub(crate) enum ResponseReadError {
+    Stream(LlmError),
+    SizeLimit(usize),
+}
+
 pub(crate) const MAX_ERROR_BODY_SIZE: usize = 64 * 1024;
 
 /// Collect the useful prefix of an HTTP error body without letting a broken
@@ -286,49 +291,47 @@ impl<'a> HttpExecutor<'a> {
             .map_err(|(error, _)| error)
     }
 
-    pub(crate) async fn send_native_proxy_request(
-        &self,
-        request: HttpRequest,
-    ) -> Result<NativeProxyResponse, LlmError> {
-        self.send_native_proxy_with_dispatch_report(request)
-            .await
-            .map_err(|(error, _)| error)
-    }
-
     /// The flag is false when the deadline expired before the transport
     /// future was polled, so callers can distinguish an unsent attempt.
     pub(crate) async fn send_with_dispatch_report(
         &self,
-        mut request: HttpRequest,
+        request: HttpRequest,
     ) -> Result<StreamResponse, (LlmError, bool)> {
-        let deadline = self.deadline.cap(request.timeout);
-        request.timeout = deadline.remaining().map_err(|error| (error, false))?;
-        let mut transport_attempted = false;
-        let outcome = deadline
-            .run(async {
-                transport_attempted = true;
-                self.transport.send(request).await
-            })
-            .await;
-        match outcome {
-            Ok(Ok(response)) => Ok(Self::bound_response(response, deadline)),
-            Ok(Err(error)) | Err(error) => Err((error, transport_attempted)),
-        }
+        self.send_with_admission(request, false, || Ok(()))
+            .await
+            .map(|received| received.response)
     }
 
-    /// Dispatch through the Native first-party proxy route while preserving
-    /// the same deadline and dispatch accounting as ordinary sends.
     pub(crate) async fn send_native_proxy_with_dispatch_report(
         &self,
+        request: HttpRequest,
+    ) -> Result<NativeProxyResponse, (LlmError, bool)> {
+        self.send_with_admission(request, true, || Ok(())).await
+    }
+
+    /// Run final admission at the first transport poll, after all local
+    /// preparation and deadline checks, on both HTTP routes.
+    pub(crate) async fn send_with_admission(
+        &self,
         mut request: HttpRequest,
+        native_proxy: bool,
+        on_dispatch: impl FnOnce() -> Result<(), LlmError> + Send,
     ) -> Result<NativeProxyResponse, (LlmError, bool)> {
         let deadline = self.deadline.cap(request.timeout);
         request.timeout = deadline.remaining().map_err(|error| (error, false))?;
         let mut transport_attempted = false;
         let outcome = deadline
             .run(async {
+                on_dispatch()?;
                 transport_attempted = true;
-                self.transport.send_native_proxy_request(request).await
+                if native_proxy {
+                    self.transport.send_native_proxy_request(request).await
+                } else {
+                    Ok(NativeProxyResponse {
+                        response: self.transport.send(request).await?,
+                        proxy_auth_helper_challenge: None,
+                    })
+                }
             })
             .await;
         match outcome {
@@ -406,7 +409,12 @@ impl<'a> HttpExecutor<'a> {
     ) -> Result<HttpResponse, LlmError> {
         Self::collect_response_with_partial(response, limit)
             .await
-            .map_err(|(error, _)| error)
+            .map_err(|(error, _)| match error {
+                ResponseReadError::Stream(error) => error,
+                ResponseReadError::SizeLimit(_) => LlmError::Transport {
+                    message: "HTTP response body exceeds operation limit".into(),
+                },
+            })
     }
 
     /// Keep the status, headers, and bytes already received when a successful
@@ -415,7 +423,7 @@ impl<'a> HttpExecutor<'a> {
     pub(crate) async fn collect_response_with_partial(
         response: StreamResponse,
         limit: Option<usize>,
-    ) -> Result<HttpResponse, (LlmError, HttpResponse)> {
+    ) -> Result<HttpResponse, (ResponseReadError, HttpResponse)> {
         let status = response.status;
         let headers = response.headers;
         let body = if (200..300).contains(&response.status) {
@@ -432,7 +440,7 @@ impl<'a> HttpExecutor<'a> {
                         _ => error,
                     };
                     (
-                        error,
+                        ResponseReadError::Stream(error),
                         HttpResponse {
                             status,
                             headers: headers.clone(),
@@ -440,11 +448,11 @@ impl<'a> HttpExecutor<'a> {
                         },
                     )
                 })?;
-                if limit.is_some_and(|limit| chunk.len() > limit.saturating_sub(body.len())) {
+                if let Some(limit) =
+                    limit.filter(|limit| chunk.len() > limit.saturating_sub(body.len()))
+                {
                     return Err((
-                        LlmError::Transport {
-                            message: "HTTP response body exceeds operation limit".into(),
-                        },
+                        ResponseReadError::SizeLimit(limit),
                         HttpResponse {
                             status,
                             headers,
@@ -522,14 +530,18 @@ mod dispatch_tests {
             body: Bytes::new(),
             timeout: None,
         };
-        let outcome = HttpExecutor::new(&transport)
-            .with_deadline(crate::runtime::Deadline::at(Some(expired)))
-            .send_with_dispatch_report(request)
-            .await;
-        assert!(matches!(
-            outcome,
-            Err((LlmError::TransportTimeout { .. }, false))
-        ));
+        for native_proxy in [false, true] {
+            let outcome = HttpExecutor::new(&transport)
+                .with_deadline(crate::runtime::Deadline::at(Some(expired)))
+                .send_with_admission(request.clone(), native_proxy, || {
+                    panic!("expired request was admitted")
+                })
+                .await;
+            assert!(matches!(
+                outcome,
+                Err((LlmError::TransportTimeout { .. }, false))
+            ));
+        }
         assert_eq!(transport.0.load(Ordering::Relaxed), 0);
     }
 }

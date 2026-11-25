@@ -374,6 +374,23 @@ const _: Option<&dyn StreamDecoder> = None;
 /// Every codec compiled into this crate. The remaining protocol families
 /// arrive with their ports; until then `build()` refuses a profile that names
 /// one, and says which (gate 33).
+pub(crate) fn response_observations(
+    response: &HttpResponse,
+    context: &CodecContext,
+) -> (
+    crate::protocol::UsageReport,
+    crate::protocol::InferenceReport,
+) {
+    let body = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
+    (
+        usage::response_report_from_body(
+            body.as_ref().unwrap_or(&serde_json::Value::Null),
+            context,
+        ),
+        inference::response_from_body(response, context.profile(), body.as_ref()),
+    )
+}
+
 pub(crate) fn builtin() -> Vec<Arc<dyn WireCodec>> {
     vec![
         Arc::new(crate::codecs::anthropic::AnthropicMessagesCodec),

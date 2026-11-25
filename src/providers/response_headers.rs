@@ -490,7 +490,7 @@ fn credits_required_from_body(body: Option<&JsonPayload>) -> (bool, Option<Strin
     (true, body.string_at("/error/error/details/disabled_reason"))
 }
 
-fn response_request_id(
+pub(crate) fn response_request_id(
     protocol: ProtocolFamily,
     provider_id: &str,
     headers: &[(String, String)],

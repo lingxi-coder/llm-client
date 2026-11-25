@@ -29,7 +29,7 @@ pub fn request_replay_safety(request: &ChatRequest) -> RequestReplaySafety {
             .iter()
             .any(|extension| !stateless_options(extension))
         || request.messages.iter().any(|message| {
-            !message.native_options.is_empty()
+            (!message.native_options.is_empty() && !is_per_turn_effort_marker(message))
                 || message.content.iter().any(|block| match block {
                     ContentBlock::Native { .. } => true,
                     ContentBlock::ToolUse {
@@ -49,6 +49,15 @@ pub fn request_replay_safety(request: &ChatRequest) -> RequestReplaySafety {
     } else {
         RequestReplaySafety::Stateless
     }
+}
+
+fn is_per_turn_effort_marker(message: &crate::protocol::ConversationMessage) -> bool {
+    message.role == crate::protocol::MessageRole::System
+        && message.content.is_empty()
+        && message.native_options.len() == 1
+        && message
+            .anthropic_options()
+            .is_some_and(|options| options.effort.is_some() && options.clear_at.is_none())
 }
 
 fn stateless_options(extension: &NativeExtension) -> bool {
@@ -124,6 +133,50 @@ mod tests {
         assert_eq!(
             request_replay_safety(&request(direct)),
             RequestReplaySafety::Stateless
+        );
+    }
+
+    #[test]
+    fn only_typed_empty_system_effort_is_stateless() {
+        use crate::providers::anthropic::types::{AnthropicMessageEffort, AnthropicMessageOptions};
+
+        let mut request = ChatRequest::new("model");
+        let message = ConversationMessage {
+            role: MessageRole::System,
+            content: Vec::new(),
+            native_options: Vec::new(),
+        };
+        request.messages.push(
+            message
+                .clone()
+                .with_anthropic_options(AnthropicMessageOptions {
+                    effort: Some(AnthropicMessageEffort::High),
+                    ..Default::default()
+                }),
+        );
+        assert_eq!(
+            request_replay_safety(&request),
+            RequestReplaySafety::Stateless
+        );
+
+        request.messages[0].native_options[0] = NativeExtension::new(
+            AnthropicMessageOptions::FORMAT,
+            JsonPayload::parse(r#"{"effort":"high","unrecognized":true}"#).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            request_replay_safety(&request),
+            RequestReplaySafety::StatefulOrUnknown
+        );
+
+        request.messages[0] = message.with_anthropic_options(AnthropicMessageOptions {
+            effort: Some(AnthropicMessageEffort::High),
+            ..Default::default()
+        });
+        request.messages[0].role = MessageRole::User;
+        assert_eq!(
+            request_replay_safety(&request),
+            RequestReplaySafety::StatefulOrUnknown
         );
     }
 

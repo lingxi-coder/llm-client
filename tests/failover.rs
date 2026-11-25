@@ -2185,6 +2185,105 @@ mod raw_http_streams {
         )
     }
 
+    #[tokio::test]
+    async fn interrupted_success_body_preserves_response_identity_without_failover() {
+        for prepared in [false, true] {
+            let response = StreamResponse {
+                status: 200,
+                headers: vec![("x-request-id".into(), "accepted-request".into())],
+                body: Box::pin(stream::iter([
+                    Ok(Bytes::from_static(b"{")),
+                    Err(LlmError::Transport {
+                        message: "fixture response ended early".into(),
+                    }),
+                ])),
+            };
+            let (client, transport) = setup(vec![response], true);
+            let request = request("m-1");
+            let options = RequestOptions::default();
+            let error = if prepared {
+                client
+                    .prepare_on(
+                        "one",
+                        &request,
+                        &options,
+                        lingxi_llm_client::RequestMode::Complete,
+                    )
+                    .await
+                    .unwrap()
+                    .dispatch_once()
+                    .await
+                    .unwrap()
+                    .collect()
+                    .await
+                    .err()
+                    .unwrap()
+            } else {
+                client
+                    .chat()
+                    .complete(&request, &options)
+                    .await
+                    .unwrap_err()
+            };
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+            assert!(matches!(error, LlmError::ProviderResponse {
+                status: 200, request_id: Some(id),
+                classification: lingxi_llm_client::protocol::LlmErrorKind::StreamInterrupted, ..
+            } if id == "accepted-request"));
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_success_response_preserves_status_and_never_fails_over() {
+        const LIMIT: usize = 64 * 1024 * 1024;
+        for prepared in [false, true] {
+            let chunk = Bytes::from(vec![b' '; LIMIT / 8]);
+            let mut chunks = vec![Ok(chunk); 8];
+            chunks.push(Ok(Bytes::from_static(b"x")));
+            let oversized = StreamResponse {
+                status: 200,
+                headers: vec![("x-request-id".into(), "accepted-request".into())],
+                body: Box::pin(stream::iter(chunks)),
+            };
+            let (client, transport) = setup(vec![oversized], true);
+            assert_eq!(client.resolve("m-1").unwrap().connection_chain.len(), 1);
+            let request = request("m-1");
+            let options = RequestOptions::default();
+            let error = if prepared {
+                let received = client
+                    .prepare_on(
+                        "one",
+                        &request,
+                        &options,
+                        lingxi_llm_client::RequestMode::Complete,
+                    )
+                    .await
+                    .unwrap()
+                    .dispatch_once()
+                    .await
+                    .unwrap();
+                received.collect().await.err().expect("body limit error")
+            } else {
+                client
+                    .chat()
+                    .complete(&request, &options)
+                    .await
+                    .unwrap_err()
+            };
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                error,
+                LlmError::ProviderResponse {
+                    status: 200,
+                    request_id: Some("accepted-request".into()),
+                    body: Box::new(json!({"response_body_limit_bytes": LIMIT})),
+                    classification: lingxi_llm_client::protocol::LlmErrorKind::RequestTooLarge,
+                    retry_after: None,
+                },
+            );
+        }
+    }
+
     const SSE: &[u8] = concat!(
         ": keepalive\r\n\r\n",
         "event: message\r\ndata: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好\"}}]}\r\n\r\n",

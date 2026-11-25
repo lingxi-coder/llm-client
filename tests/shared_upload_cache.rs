@@ -401,6 +401,8 @@ const QWEN_NEW_ENDPOINT: &str =
 struct QwenCleanupTransport {
     requests: Mutex<Vec<HttpRequest>>,
     deleted: Notify,
+    upload_ids: Mutex<std::collections::VecDeque<&'static str>>,
+    stalled_delete_id: Option<&'static str>,
 }
 
 impl QwenCleanupTransport {
@@ -434,8 +436,12 @@ impl Transport for QwenCleanupTransport {
         };
         self.requests.lock().unwrap().push(request.clone());
         if request.method == "DELETE" {
+            let id = request.url.rsplit('/').next().unwrap();
             self.deleted.notify_one();
-            return Ok(response(200, json!({"id": file_id, "deleted": true})));
+            if self.stalled_delete_id == Some(id) {
+                std::future::pending::<()>().await;
+            }
+            return Ok(response(200, json!({"id": id, "deleted": true})));
         }
         if request.url.ends_with("/chat/completions") {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -450,6 +456,15 @@ impl Transport for QwenCleanupTransport {
             .into());
         }
         assert!(request.url.contains("/files"));
+        let file_id = if request.method == "POST" {
+            self.upload_ids
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(file_id)
+        } else {
+            request.url.rsplit('/').next().unwrap()
+        };
         Ok(response(
             200,
             json!({
@@ -563,4 +578,76 @@ async fn completed_qwen_stream_cleans_up_with_its_original_endpoint_and_credenti
 #[tokio::test(start_paused = true)]
 async fn cancelled_qwen_stream_cleans_up_with_its_original_endpoint_and_credential() {
     assert_qwen_cleanup_keeps_original_connection(true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn qwen_accounting_batch_reader_confirms_automatic_delete_before_eof() {
+    let http = Arc::new(QwenCleanupTransport::default());
+    let mut builder =
+        LlmClientBuilder::with_transport(http.clone(), &[qwen_profile(QWEN_OLD_ENDPOINT)]);
+    builder.with_attachment_resolver(Arc::new(Resolver { start: None }));
+    let client = builder.with_region(Region::ChinaMainland).build().unwrap();
+    let mut request = request();
+    request.model = "qwen-long".into();
+    let options = RequestOptions {
+        credential: Some(Secret::new("old-account-key".into())),
+        file_account_scope: Some("old-account".into()),
+        ..Default::default()
+    };
+    let mut stream = client.chat().stream(&request, &options).await.unwrap();
+    let mut ended = false;
+    while let Some(batch) = bounded(stream.next_batch()).await {
+        for event in batch.events {
+            ended |= matches!(event.unwrap(), StreamEvent::End { .. });
+        }
+    }
+    assert!(ended);
+    assert!(http
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| request.method == "DELETE"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn qwen_background_cleanup_attempts_later_files_after_delete_timeout() {
+    let http = Arc::new(QwenCleanupTransport {
+        upload_ids: Mutex::new(["file-fe-stalled", "file-fe-next"].into()),
+        stalled_delete_id: Some("file-fe-stalled"),
+        ..Default::default()
+    });
+    let mut builder =
+        LlmClientBuilder::with_transport(http.clone(), &[qwen_profile(QWEN_OLD_ENDPOINT)]);
+    builder.with_attachment_resolver(Arc::new(Resolver { start: None }));
+    let client = builder.with_region(Region::ChinaMainland).build().unwrap();
+    let mut request = request();
+    request.model = "qwen-long".into();
+    let mut second = request.messages[0].content[0].clone();
+    let ContentBlock::Document {
+        source: DocumentSource::Attachment { attachment },
+        ..
+    } = &mut second
+    else {
+        panic!("expected a document attachment");
+    };
+    attachment.attachment_id = "second-document".into();
+    request.messages[0].content.push(second);
+    let options = RequestOptions {
+        credential: Some(Secret::new("old-account-key".into())),
+        file_account_scope: Some("old-account".into()),
+        ..Default::default()
+    };
+    drop(client.chat().stream(&request, &options).await.unwrap());
+
+    tokio::time::timeout(Duration::from_secs(140), http.wait_for_deletes(2))
+        .await
+        .expect("second file should be deleted after the first times out");
+    let requests = http.requests.lock().unwrap();
+    let deleted: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method == "DELETE")
+        .map(|request| request.url.rsplit('/').next().unwrap())
+        .collect();
+    assert_eq!(deleted, ["file-fe-stalled", "file-fe-next"]);
 }

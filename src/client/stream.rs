@@ -226,13 +226,12 @@ impl ModelStream {
 
     /// Read at most one transport chunk and immediately return its observation.
     /// No await occurs after decoding and before returning accounting facts.
+    /// A subsequent EOF read finishes automatic file cleanup.
     pub async fn next_batch(&mut self) -> Option<StreamBatch> {
         let mut events: Vec<_> = self.ready.drain(..).collect();
         if events.is_empty() {
             if self.finished {
-                if let Some((cleanup, deadline)) = self.automatic_file_cleanup.take() {
-                    cleanup.finish(deadline).await;
-                }
+                self.finish_file_cleanup().await;
                 return None;
             }
             events = match self.frames.next().await {
@@ -270,9 +269,7 @@ impl ModelStream {
                 return Some(event);
             }
             if self.finished {
-                if let Some((cleanup, deadline)) = self.automatic_file_cleanup.take() {
-                    cleanup.finish(deadline).await;
-                }
+                self.finish_file_cleanup().await;
                 return None;
             }
             match self.frames.next().await {
@@ -296,6 +293,12 @@ impl ModelStream {
                     self.finish_transport();
                 }
             }
+        }
+    }
+
+    async fn finish_file_cleanup(&mut self) {
+        if let Some((cleanup, deadline)) = self.automatic_file_cleanup.take() {
+            cleanup.finish(deadline).await;
         }
     }
 

@@ -22,6 +22,49 @@ use std::{future::Future, time::Duration};
 
 use crate::providers::dispatch::{self, ChatBackend};
 
+const MAX_COMPLETION_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COUNT_RESPONSE_BYTES: usize = 1024 * 1024;
+
+pub(super) async fn collect_model_response(
+    response: crate::transport::StreamResponse,
+    mode: RequestMode,
+    profile: &ProviderProfile,
+) -> Result<HttpResponse, LlmError> {
+    use crate::transport::ResponseReadError;
+    let limit = match mode {
+        RequestMode::CountTokens => MAX_COUNT_RESPONSE_BYTES,
+        _ => MAX_COMPLETION_RESPONSE_BYTES,
+    };
+    HttpExecutor::collect_response_with_partial(response, Some(limit))
+        .await
+        .map_err(|(error, partial)| {
+            use crate::protocol::LlmErrorKind;
+            let (classification, body) = match error {
+                ResponseReadError::Stream(_) => (
+                    LlmErrorKind::StreamInterrupted,
+                    serde_json::json!({"response_body_interrupted": true}),
+                ),
+                ResponseReadError::SizeLimit(limit_bytes) => (
+                    LlmErrorKind::RequestTooLarge,
+                    serde_json::json!({"response_body_limit_bytes": limit_bytes}),
+                ),
+            };
+            // The provider accepted the request. Retain its response identity
+            // and keep local read failures out of network failover.
+            LlmError::ProviderResponse {
+                status: partial.status,
+                request_id: crate::providers::response_headers::response_request_id(
+                    profile.protocol,
+                    profile.provider_id.as_str(),
+                    &partial.headers,
+                ),
+                body: Box::new(body),
+                classification,
+                retry_after: None,
+            }
+        })
+}
+
 pub(super) fn apply_native_thinking_binding_controls_beta(
     context: &CodecContext,
     headers: &mut Vec<(String, String)>,
@@ -138,6 +181,7 @@ fn validate_prepared_file_expirations(
 /// The chain holds only the siblings, so the head is prepended here rather than
 /// special-cased inside the walk.
 pub(super) struct PreparedAttempt {
+    pub(super) custom_codec: bool,
     pub(super) resolved_context: super::context::ResolvedContext,
     pub(super) inference: crate::protocol::InferenceReport,
     pub(super) output_budget: Option<super::ResolvedOutputBudget>,
@@ -443,6 +487,7 @@ pub(super) struct RequestExecutor<'a> {
     clock: &'a Arc<dyn crate::transport::Clock>,
     http: &'a Arc<dyn Transport>,
     codecs: &'a std::collections::BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
+    custom_codecs: &'a std::collections::BTreeSet<ProtocolFamily>,
     authenticators:
         &'a std::collections::BTreeMap<AuthStrategy, Arc<dyn crate::auth::Authenticator>>,
     attachments: &'a super::AttachmentManager,
@@ -491,6 +536,7 @@ impl<'client> RequestExecutor<'client> {
             clock: &client.runtime.clock,
             http: &client.runtime.http,
             codecs: &client.runtime.codecs,
+            custom_codecs: &client.runtime.custom_codecs,
             authenticators: &client.runtime.authenticators,
             attachments: &client.runtime.attachments,
             state: &client.state,
@@ -908,6 +954,7 @@ impl<'client> RequestExecutor<'client> {
         }
 
         Ok(PreparedAttempt {
+            custom_codec: self.custom_codecs.contains(&codec.family()),
             resolved_context,
             inference,
             output_budget,
@@ -946,6 +993,7 @@ impl<'client> RequestExecutor<'client> {
             resolved_context: _,
             output_budget: _,
             output_budget_fields: _,
+            custom_codec: _,
         } = prepared;
         let deadline = opts
             .total_timeout
@@ -1027,7 +1075,7 @@ impl<'client> RequestExecutor<'client> {
                 .with_provider_observation(backend.stream_observation(&context)),
             )));
         }
-        let mut response = HttpExecutor::collect_response(response, None)
+        let mut response = collect_model_response(response, mode, context.profile())
             .await
             .map_err(|error| AttemptFailure::new(error, None, files.clone()))?;
         if let Err(error) = normalize_codex_completion(&mut response, codec.as_ref(), &context) {
@@ -1281,6 +1329,9 @@ pub(super) fn generation_budget_fields(
             message: "request body is not valid JSON".into(),
         })?;
     let mut fields = serde_json::Map::new();
+    let Ok(scanner) = body.scanner() else {
+        return Ok(fields);
+    };
     for (pointer, key) in [
         ("/max_tokens", "max_tokens"),
         ("/max_completion_tokens", "max_completion_tokens"),
@@ -1294,8 +1345,8 @@ pub(super) fn generation_budget_fields(
             "generation_config.max_output_tokens",
         ),
     ] {
-        if let Some(value) = body.raw_source_at(pointer) {
-            let value = serde_json::from_str::<u64>(&value)
+        if let Some(value) = scanner.raw_source_at(pointer) {
+            let value = serde_json::from_str::<u64>(value)
                 .ok()
                 .filter(|value| *value > 0)
                 .ok_or_else(|| LlmError::InvalidRequest {

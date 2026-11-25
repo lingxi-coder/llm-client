@@ -56,6 +56,7 @@ pub struct LlmClientBuilder {
     http: Arc<dyn Transport>,
     clock: Arc<dyn Clock>,
     pub(super) codecs: BTreeMap<ProtocolFamily, Arc<dyn WireCodec>>,
+    custom_codecs: BTreeSet<ProtocolFamily>,
     image_adapters: BTreeMap<crate::protocol::ImageApi, Arc<dyn crate::images::ImageAdapter>>,
     image_authenticators: BTreeMap<String, Arc<dyn crate::images::ImageAuthenticator>>,
     directories: BTreeMap<ProtocolFamily, Arc<dyn ModelDirectory>>,
@@ -100,6 +101,7 @@ impl LlmClientBuilder {
             http,
             clock: Arc::new(SystemClock),
             codecs,
+            custom_codecs: BTreeSet::new(),
             image_adapters: crate::images::builtin_adapters(),
             image_authenticators: BTreeMap::new(),
             directories,
@@ -134,7 +136,9 @@ impl LlmClientBuilder {
     /// Later registrations for the same family replace earlier ones; the
     /// composition root decides the order.
     pub fn register_codec(&mut self, codec: Arc<dyn WireCodec>) -> &mut Self {
-        self.codecs.insert(codec.family(), codec);
+        let family = codec.family();
+        self.codecs.insert(family, codec);
+        self.custom_codecs.insert(family);
         self
     }
 
@@ -332,6 +336,7 @@ impl LlmClientBuilder {
             http: self.http,
             clock: self.clock,
             codecs: self.codecs,
+            custom_codecs: self.custom_codecs,
             image_adapters: self.image_adapters,
             image_authenticators: self.image_authenticators,
             directories: self.directories,

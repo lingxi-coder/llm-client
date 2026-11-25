@@ -238,19 +238,14 @@ impl JsonPayload {
     }
 
     pub fn array_item(&self, index: usize) -> Option<Self> {
-        if index >= self.array_len("")? {
-            return None;
-        }
-        let source = self.raw_source_at(&format!("/{index}"))?;
-        Self::parse(&source).ok()
+        self.array_item_at("", index)
     }
 
     /// Read an array member without materializing the surrounding JSON tree.
     pub fn array_item_at(&self, pointer: &str, index: usize) -> Option<Self> {
-        if index >= self.array_len(pointer)? {
-            return None;
-        }
-        self.payload_at(&format!("{pointer}/{index}"))
+        let scanner = self.scanner().ok()?;
+        let item = scanner.node_ref_at(pointer)?.array_item(index)?;
+        Self::parse(scanner.raw_source_for_node(item)?).ok()
     }
 
     /// Remove one root property while retaining the source of every other value.
@@ -327,8 +322,11 @@ impl JsonPayload {
     }
 
     pub(crate) fn array_items(&self) -> Option<Vec<Self>> {
-        let length = self.array_len("")?;
-        (0..length).map(|index| self.array_item(index)).collect()
+        let scanner = self.scanner().ok()?;
+        let array = scanner.root_node();
+        (0..array.array_len()?)
+            .map(|index| Self::parse(scanner.raw_source_for_node(array.array_item(index)?)?).ok())
+            .collect()
     }
 
     pub fn array_from_items(
@@ -996,6 +994,21 @@ fn json_source_from_utf16_units(code_units: &[u16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_array_items_keep_exact_source() {
+        let array = JsonPayload::parse(r#"[{"x":"\ud800","x":1e400}, -0.0, [], null]"#).unwrap();
+        let items = array.array_items().unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(JsonPayload::as_json_source)
+                .collect::<Vec<_>>(),
+            [r#"{"x":"\ud800","x":1e400}"#, "-0.0", "[]", "null"],
+        );
+        assert_eq!(array.array_item(1), Some(items[1].clone()));
+        assert!(JsonPayload::parse("null").unwrap().array_items().is_none());
+    }
 
     #[test]
     fn root_edits_keep_unknown_keys_and_raw_value_source() {

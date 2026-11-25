@@ -489,14 +489,50 @@ fn reserve_native_request_properties(
         }
         AnthropicRequestKind::HookPrompt => return Ok(()),
     };
-    for key in keys {
-        let pointer = format!("/{key}");
-        if body.raw_source_at(&pointer).is_none() {
-            if let Some(value) = extra.payload_at(&pointer) {
-                *body = body.with_object_field(key, &value)?;
-            }
-        }
+    let Ok(extra) = extra.scanner() else {
+        return Ok(());
+    };
+    let reservations: Vec<_> = keys
+        .iter()
+        .filter_map(|&key| {
+            let pointer = format!("/{key}");
+            Some((key, extra.raw_source_at(&pointer)?, pointer))
+        })
+        .collect();
+    if reservations.is_empty() {
+        return Ok(());
     }
+    let scanner = body.scanner()?;
+    let mut missing = reservations
+        .into_iter()
+        .filter(|(_, _, pointer)| scanner.raw_source_at(pointer).is_none())
+        .peekable();
+    if missing.peek().is_none() {
+        return Ok(());
+    }
+    let prefix = body
+        .as_json_source()
+        .strip_suffix('}')
+        .filter(|_| scanner.root_node().kind() == FlatJsonKind::Object)
+        .ok_or_else(|| LlmError::InvalidRequest {
+            message: "editing a JSON field requires an object payload".into(),
+        })?;
+    let mut source = prefix.to_owned();
+    let mut comma = !prefix[1..].trim().is_empty();
+    for (key, value, _) in missing {
+        if comma {
+            source.push(',');
+        }
+        comma = true;
+        source.push('"');
+        source.push_str(key);
+        source.push_str("\":");
+        source.push_str(value);
+    }
+    source.push('}');
+    *body = JsonPayload::parse(&source).map_err(|error| LlmError::InvalidRequest {
+        message: format!("JSON object edit produced invalid source: {error}"),
+    })?;
     Ok(())
 }
 

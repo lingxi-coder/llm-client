@@ -801,10 +801,19 @@ pub(crate) fn response(
     resp: &crate::transport::HttpResponse,
     p: &ProviderProfile,
 ) -> InferenceReport {
+    let body = serde_json::from_slice(&resp.body).ok();
+    response_from_body(resp, p, body.as_ref())
+}
+
+pub(crate) fn response_from_body(
+    resp: &crate::transport::HttpResponse,
+    p: &ProviderProfile,
+    body: Option<&Value>,
+) -> InferenceReport {
     let mut report = InferenceReport::default();
     observe_headers(&mut report, &resp.headers, p);
-    if let Ok(body) = serde_json::from_slice::<Value>(&resp.body) {
-        observe(&mut report, &body, fast_wire(p));
+    if let Some(body) = body {
+        observe(&mut report, body, fast_wire(p));
     }
     report
 }

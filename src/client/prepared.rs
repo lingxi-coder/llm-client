@@ -745,9 +745,12 @@ impl PreparedCall {
             .ok()
             .map(|t| t.as_secs());
         let deadline = crate::runtime::Deadline::at(self.deadline).cap(self.prepared.http.timeout);
-        deadline.remaining()?;
-        on_dispatch()?;
-        let response = deadline.run(connection.send(body)).await??;
+        let response = deadline
+            .run(async {
+                on_dispatch()?;
+                connection.send(body).await
+            })
+            .await??;
         let mut response = HttpExecutor::bound_response(response, deadline);
         // Some native stacks retain the successful upgrade status on frames.
         if response.status == 101 {
@@ -835,9 +838,6 @@ impl PreparedCall {
             .ok()
             .map(|t| t.as_secs());
         self.validate_file_expirations()?;
-        // Validate the deadline before marking a physical attempt dispatched.
-        crate::runtime::Deadline::at(self.deadline).remaining()?;
-        on_dispatch()?;
         if let Some(facts) = self.native_anthropic_request_header_facts {
             crate::providers::response_headers::ensure_native_client_request_id(
                 &mut self.prepared.http.headers,
@@ -847,19 +847,18 @@ impl PreparedCall {
         }
         let http_executor =
             HttpExecutor::new(transport).with_deadline(crate::runtime::Deadline::at(self.deadline));
-        let (response, proxy_auth_helper_challenge) =
-            if super::options::uses_native_proxy_route(&self.profile) {
-                let response = http_executor
-                    .send_native_proxy_request(self.prepared.http.clone())
-                    .await?;
-                (response.response, response.proxy_auth_helper_challenge)
-            } else {
-                (http_executor.send(self.prepared.http.clone()).await?, None)
-            };
+        let received = http_executor
+            .send_with_admission(
+                self.prepared.http.clone(),
+                super::options::uses_native_proxy_route(&self.profile),
+                on_dispatch,
+            )
+            .await
+            .map_err(|(error, _)| error)?;
         Ok(ReceivedCall {
             call: self,
-            response,
-            proxy_auth_helper_challenge,
+            response: received.response,
+            proxy_auth_helper_challenge: received.proxy_auth_helper_challenge,
         })
     }
 }
@@ -896,7 +895,12 @@ impl ReceivedCall {
     /// Resource cleanup is retained until after the observation is delivered.
     pub async fn collect(self) -> Result<CollectedResponse, LlmError> {
         let mut response = if (200..300).contains(&self.response.status) {
-            HttpExecutor::collect_response(self.response, None).await?
+            super::executor::collect_model_response(
+                self.response,
+                self.call.mode,
+                self.call.prepared.context.profile(),
+            )
+            .await?
         } else {
             HttpResponse {
                 status: self.response.status,
@@ -911,16 +915,17 @@ impl ReceivedCall {
                 &self.call.prepared.context,
             )?;
         }
-        let usage = self
-            .call
-            .prepared
-            .codec
-            .response_usage(&response, &self.call.prepared.context);
-        let mut inference = self
-            .call
-            .prepared
-            .codec
-            .response_inference(&response, &self.call.prepared.context);
+        let prepared = &self.call.prepared;
+        let (usage, mut inference) = if prepared.custom_codec {
+            (
+                prepared.codec.response_usage(&response, &prepared.context),
+                prepared
+                    .codec
+                    .response_inference(&response, &prepared.context),
+            )
+        } else {
+            crate::codecs::response_observations(&response, &prepared.context)
+        };
         inference.executed_at = self.call.prepared.inference.executed_at;
         inference.requested_effort = self.call.prepared.inference.requested_effort;
         inference.requested_service_tier = self.call.prepared.inference.requested_service_tier;
