@@ -7,6 +7,25 @@ pub fn has_overload_payload(body: &JsonPayload) -> bool {
     body.string_at("/error/type").as_deref() == Some("overloaded_error")
 }
 
+/// Remove provider-authenticated assistant blocks before retrying on a different
+/// model. Their signatures are scoped to the model that produced them and must
+/// never be replayed to a fallback provider/model.
+pub fn strip_assistant_signature_blocks(messages: &mut [crate::protocol::ConversationMessage]) {
+    for message in messages
+        .iter_mut()
+        .filter(|message| message.role == crate::protocol::MessageRole::Assistant)
+    {
+        message.content.retain(|block| {
+            !matches!(
+                block,
+                crate::protocol::ContentBlock::Thinking { .. }
+                    | crate::protocol::ContentBlock::RedactedThinking { .. }
+            ) && !matches!(block, crate::protocol::ContentBlock::ProviderContent { value, .. }
+                if value.string_at("/type").as_deref() == Some("connector_text"))
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

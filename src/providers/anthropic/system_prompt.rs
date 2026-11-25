@@ -10,213 +10,16 @@ use crate::protocol::{
 };
 use std::sync::Arc;
 
-/// Native separator marker carried as a standalone source-vector element.
-pub const DYNAMIC_BOUNDARY: &str = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__";
+use crate::protocol::prompt::join_source_units;
+pub use crate::protocol::prompt::DYNAMIC_BOUNDARY;
+pub use crate::protocol::{PromptText, SystemPromptInput};
 
-const SECTION_SEP: &str = "\n\n";
 const FIRST_PARTY_API_HOST: &str = "api.anthropic.com";
 
 /// Native's current GrowthBook allowlist feature and shipped fallback values.
 pub const PROMPT_CACHE_1H_ALLOWLIST_FEATURE: &str = "tengu_prompt_cache_1h_config";
 pub const PROMPT_CACHE_1H_ALLOWLIST_DEFAULT: &[&str] =
     &["repl_main_thread*", "sdk", "auto_mode", "memdir_relevance"];
-
-/// One JavaScript string carried across the host boundary without losing
-/// lone UTF-16 surrogates. `display_text` is the ECMAScript well-formed view
-/// used by the provider wire request; `utf16_code_units` remains the source
-/// value for Native array comparisons and source-vector joins.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptText {
-    display_text: String,
-    utf16_code_units: Vec<u16>,
-}
-
-impl PromptText {
-    /// Build an exact prompt string from UTF-16 units, using the same U+FFFD
-    /// display conversion as Native's final provider request egress.
-    #[must_use]
-    pub fn from_utf16(utf16_code_units: Vec<u16>) -> Self {
-        let display_text = String::from_utf16_lossy(&utf16_code_units);
-        Self {
-            display_text,
-            utf16_code_units,
-        }
-    }
-
-    /// Build a prompt string from a Rust string without changing its value.
-    #[must_use]
-    pub fn from_string(display_text: impl Into<String>) -> Self {
-        let display_text = display_text.into();
-        let utf16_code_units = display_text.encode_utf16().collect();
-        Self {
-            display_text,
-            utf16_code_units,
-        }
-    }
-
-    /// Display-safe UTF-8 view used by the provider's JSON body.
-    #[must_use]
-    pub fn display_text(&self) -> &str {
-        &self.display_text
-    }
-
-    /// Exact JavaScript string units used for source-vector classification.
-    #[must_use]
-    pub fn utf16_code_units(&self) -> &[u16] {
-        &self.utf16_code_units
-    }
-
-    /// Whether the JavaScript string has no code units.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.utf16_code_units.is_empty()
-    }
-
-    pub fn equals_ascii(&self, value: &str) -> bool {
-        self.utf16_code_units
-            .iter()
-            .copied()
-            .eq(value.encode_utf16())
-    }
-
-    fn starts_with_ascii(&self, value: &str) -> bool {
-        self.utf16_code_units
-            .starts_with(&value.encode_utf16().collect::<Vec<_>>())
-    }
-}
-
-impl From<&str> for PromptText {
-    fn from(value: &str) -> Self {
-        Self::from_string(value)
-    }
-}
-
-impl From<String> for PromptText {
-    fn from(value: String) -> Self {
-        Self::from_string(value)
-    }
-}
-
-/// Current prompt input. Static source elements and per-query system context
-/// remain separate until provider-specific source-vector egress. Custom prompt
-/// parsing is performed by the Host at the field's Native input boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SystemPromptInput {
-    /// Ordered static sections plus the separately recomputed system context.
-    SourceVector {
-        elements: Vec<PromptText>,
-        dynamic_context: Option<PromptText>,
-        /// Host-owned identity member; never inserted into prompt text.
-        /// Native brand treatment applies only to an exact UTF-16 member match.
-        host_branding_identity: Option<PromptText>,
-    },
-    /// Opaque custom text, such as Native `overrideSystemPrompt`, which feeds
-    /// one source element to the provider projector without marker parsing.
-    CustomPrompt { text: PromptText },
-    /// A Native `customSystemPrompt` value that the Host already split with
-    /// Native's current line-marker rule. The original is retained for display;
-    /// every provider projector consumes `source_elements`.
-    NativeCustomPrompt {
-        text: PromptText,
-        source_elements: Vec<PromptText>,
-    },
-}
-
-impl SystemPromptInput {
-    /// Create a source-vector request.
-    ///
-    /// `host_branding_identity` is non-content Host metadata. The Anthropic
-    /// projector classifies a final vector member as this brand block only
-    /// when its full UTF-16 sequence exactly matches the identity. `None`
-    /// leaves only Native's built-in exact brand identities classified specially.
-    #[must_use]
-    pub fn source_vector(
-        elements: Vec<PromptText>,
-        dynamic_context: Option<PromptText>,
-        host_branding_identity: Option<PromptText>,
-    ) -> Self {
-        Self::SourceVector {
-            elements,
-            dynamic_context,
-            host_branding_identity,
-        }
-    }
-
-    /// Create a one-element Native CustomPrompt request.
-    #[must_use]
-    pub fn custom_prompt(text: PromptText) -> Self {
-        Self::CustomPrompt { text }
-    }
-
-    /// Create a current Native customSystemPrompt request after Host-side
-    /// source-vector parsing. The SDK never splits the original string.
-    #[must_use]
-    pub fn native_custom_prompt(text: PromptText, source_elements: Vec<PromptText>) -> Self {
-        Self::NativeCustomPrompt {
-            text,
-            source_elements,
-        }
-    }
-
-    /// Visible combined text used by host previews and approximate counting.
-    #[must_use]
-    pub fn display_text(&self) -> String {
-        let elements = match self {
-            Self::SourceVector {
-                elements,
-                dynamic_context,
-                ..
-            } => {
-                let mut elements = elements.clone();
-                if let Some(dynamic_context) =
-                    dynamic_context.as_ref().filter(|text| !text.is_empty())
-                {
-                    elements.push(dynamic_context.clone());
-                }
-                elements
-            }
-            Self::CustomPrompt { text } => vec![text.clone()],
-            Self::NativeCustomPrompt { text, .. } => vec![text.clone()],
-        };
-        elements
-            .iter()
-            .map(PromptText::display_text)
-            .collect::<Vec<_>>()
-            .join(SECTION_SEP)
-    }
-
-    fn host_branding_identity(&self) -> Option<&PromptText> {
-        match self {
-            Self::SourceVector {
-                host_branding_identity,
-                ..
-            } => host_branding_identity.as_ref(),
-            Self::CustomPrompt { .. } | Self::NativeCustomPrompt { .. } => None,
-        }
-    }
-
-    fn source_elements(&self) -> Vec<PromptText> {
-        match self {
-            Self::SourceVector {
-                elements,
-                dynamic_context,
-                ..
-            } => {
-                let mut result = elements.clone();
-                if let Some(dynamic_context) =
-                    dynamic_context.as_ref().filter(|text| !text.is_empty())
-                {
-                    result.push(dynamic_context.clone());
-                }
-                result
-            }
-            Self::CustomPrompt { text } => vec![text.clone()],
-            Self::NativeCustomPrompt {
-                source_elements, ..
-            } => source_elements.clone(),
-        }
-    }
-}
 
 /// Explicit host opt-in for Native's system protocol envelope. The identity is
 /// supplied by the embedding product; the SDK never inserts another brand.
@@ -867,6 +670,16 @@ pub fn project_system_prompt(
     protocol: ProtocolFamily,
     policy: CachePolicy,
 ) -> Vec<EncodedSystemBlock> {
+    if !protocol.is_anthropic_family() {
+        return system
+            .to_system_block()
+            .map(|block| EncodedSystemBlock {
+                block,
+                cache_breakpoint: None,
+            })
+            .into_iter()
+            .collect();
+    }
     let cache_enabled = prompt_caching_enabled(model, protocol);
     let global_scope = global_scope_enabled(
         profile,
@@ -881,33 +694,6 @@ pub fn project_system_prompt(
         resolve_prompt_cache_ttl(protocol, &policy, PromptCacheTtlEnvironment::from_process());
     let one_hour = ttl == CacheTtl::OneHour;
     let elements = system.source_elements();
-    if !matches!(
-        protocol,
-        ProtocolFamily::AnthropicMessages
-            | ProtocolFamily::VertexClaude
-            | ProtocolFamily::BedrockClaude
-            | ProtocolFamily::FoundryClaude
-    ) {
-        let elements = match system {
-            SystemPromptInput::SourceVector { .. }
-            | SystemPromptInput::NativeCustomPrompt { .. } => elements
-                .into_iter()
-                .filter(|element| !element.equals_ascii(DYNAMIC_BOUNDARY))
-                .collect::<Vec<_>>(),
-            SystemPromptInput::CustomPrompt { .. } => elements,
-        };
-        let text = join_source_units(
-            elements
-                .iter()
-                .map(|element| element.utf16_code_units.as_slice()),
-        );
-        return if text.is_empty() {
-            Vec::new()
-        } else {
-            vec![encoded_block(text, None, None, 0)]
-        };
-    }
-
     project_native_source_vector(
         &elements,
         cache_enabled,
@@ -1313,13 +1099,13 @@ fn classify_native_sections(
             continue;
         }
         if element.starts_with_ascii(NATIVE_BILLING_HEADER) {
-            billing_header = Some(element.utf16_code_units.clone());
+            billing_header = Some(element.utf16_code_units().to_vec());
         } else if is_native_brand_section(element, host_branding_identity) {
-            native_brand = Some(element.utf16_code_units.clone());
+            native_brand = Some(element.utf16_code_units().to_vec());
         } else if element.equals_ascii(NATIVE_REPORTING_SECTION) {
-            reporting = Some(element.utf16_code_units.clone());
+            reporting = Some(element.utf16_code_units().to_vec());
         } else {
-            ordinary.push(element.utf16_code_units.clone());
+            ordinary.push(element.utf16_code_units().to_vec());
         }
     }
     (billing_header, native_brand, reporting, ordinary)
@@ -1340,31 +1126,18 @@ fn classify_native_sections_with_boundary(
             continue;
         }
         if element.starts_with_ascii(NATIVE_BILLING_HEADER) {
-            billing_header = Some(element.utf16_code_units.clone());
+            billing_header = Some(element.utf16_code_units().to_vec());
         } else if is_native_brand_section(element, host_branding_identity) {
-            native_brand = Some(element.utf16_code_units.clone());
+            native_brand = Some(element.utf16_code_units().to_vec());
         } else if element.equals_ascii(NATIVE_REPORTING_SECTION) {
-            reporting = Some(element.utf16_code_units.clone());
+            reporting = Some(element.utf16_code_units().to_vec());
         } else if index < boundary {
-            before.push(element.utf16_code_units.clone());
+            before.push(element.utf16_code_units().to_vec());
         } else {
-            after.push(element.utf16_code_units.clone());
+            after.push(element.utf16_code_units().to_vec());
         }
     }
     (billing_header, native_brand, reporting, (before, after))
-}
-
-fn join_source_units<'a>(elements: impl IntoIterator<Item = &'a [u16]>) -> Vec<u16> {
-    let mut units = Vec::new();
-    let mut first = true;
-    for element in elements.into_iter().filter(|element| !element.is_empty()) {
-        if !first {
-            units.extend(SECTION_SEP.encode_utf16());
-        }
-        units.extend_from_slice(element);
-        first = false;
-    }
-    units
 }
 
 fn push_uncached(blocks: &mut Vec<EncodedSystemBlock>, text: Option<Vec<u16>>) {

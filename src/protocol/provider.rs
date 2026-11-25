@@ -26,6 +26,18 @@ pub enum ProtocolFamily {
 }
 
 impl ProtocolFamily {
+    /// Whether this route uses an Anthropic Messages-family codec.
+    #[must_use]
+    pub const fn is_anthropic_family(self) -> bool {
+        matches!(
+            self,
+            Self::AnthropicMessages
+                | Self::BedrockClaude
+                | Self::VertexClaude
+                | Self::FoundryClaude
+        )
+    }
+
     /// Whether the SDK codec accepts a structured response format. Model-level
     /// capability checks still apply independently of this wire support.
     #[must_use]

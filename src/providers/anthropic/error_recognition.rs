@@ -798,6 +798,80 @@ pub fn fast_not_enabled(status: u16, body: &JsonPayload) -> bool {
     status == 400 && error_message(status, body).contains("Fast mode is not enabled")
 }
 
+/// Identify explicit OAuth revocation messages returned by Anthropic.
+pub fn oauth_token_revoked(status: u16, message: Option<&str>) -> bool {
+    let Some(message) = message else {
+        return false;
+    };
+    (status == 403 && message.contains("OAuth token has been revoked"))
+        || (status == 401 && message.contains("OAuth access token has been revoked"))
+}
+
+/// Identify unavailable hosted tool features reported by an Azure Foundry workspace.
+pub fn foundry_unsupported_feature_names(message: &str) -> Option<Vec<String>> {
+    static NOT_SUPPORTED: OnceLock<regex::Regex> = OnceLock::new();
+    static AZURE_FEATURES: OnceLock<regex::Regex> = OnceLock::new();
+    static WEB_SEARCH_UNAVAILABLE: OnceLock<regex::Regex> = OnceLock::new();
+    let not_supported = NOT_SUPPORTED.get_or_init(|| {
+        regex::RegexBuilder::new(r"([a-z0-9_, ]+?)\s+not supported in your workspace")
+            .case_insensitive(true)
+            .build()
+            .expect("fixed Foundry capability pattern compiles")
+    });
+    if let Some(captures) = not_supported.captures(message) {
+        if let Some(found) = captures.get(1) {
+            let names = found
+                .as_str()
+                .split(',')
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if !names.is_empty() && names.iter().all(|name| native_foundry_feature_name(name)) {
+                return Some(names);
+            }
+        }
+    }
+
+    let azure_features = AZURE_FEATURES.get_or_init(|| {
+        regex::RegexBuilder::new(
+            r"features are not available for Azure AI Foundry workspaces?:\s*([a-z0-9_, ]+)",
+        )
+        .case_insensitive(true)
+        .build()
+        .expect("fixed Foundry capability pattern compiles")
+    });
+    if let Some(captures) = azure_features.captures(message) {
+        if let Some(found) = captures.get(1) {
+            let names = found
+                .as_str()
+                .split(|character: char| character == ',' || character.is_whitespace())
+                .filter(|name| !name.is_empty() && *name != "and")
+                .filter(|name| native_foundry_feature_name(name))
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if !names.is_empty() {
+                return Some(names);
+            }
+        }
+    }
+
+    let web_search_unavailable = WEB_SEARCH_UNAVAILABLE.get_or_init(|| {
+        regex::RegexBuilder::new(r"server-side web search is not available in this environment")
+            .case_insensitive(true)
+            .build()
+            .expect("fixed Foundry capability pattern compiles")
+    });
+    web_search_unavailable
+        .is_match(message)
+        .then(|| vec!["web_search".to_owned()])
+}
+
+fn native_foundry_feature_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes.next().is_some_and(|first| first.is_ascii_lowercase())
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 /// Complete native IR = GGt || x4e. Recognition is independent of whether the
 /// current request enabled fast mode; only the actual repair uses that fact.
 pub fn recognized(

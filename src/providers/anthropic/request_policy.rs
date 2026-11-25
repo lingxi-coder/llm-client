@@ -207,6 +207,49 @@ pub fn merge_beta_header(headers: &mut BTreeMap<String, String>, betas: &[String
     set_header(headers, "anthropic-beta", &parts.join(","));
 }
 
+/// Merge the host-selected native beta order into a Messages request.
+pub fn apply_ordered_message_betas(
+    headers: &mut BTreeMap<String, String>,
+    ordered: String,
+    replace_early_per_turn_control: bool,
+    custom: &[String],
+    oauth_subscriber: bool,
+) {
+    if replace_early_per_turn_control {
+        if let Some(existing) = headers.get_mut("anthropic-beta") {
+            *existing = existing
+                .split(',')
+                .filter(|value| value.trim() != "per-turn-control-2026-07-01")
+                .collect::<Vec<_>>()
+                .join(",");
+        }
+    }
+    merge_beta_header(headers, &[ordered]);
+    if oauth_subscriber {
+        merge_beta_header(headers, &["oauth-2025-04-20".into()]);
+    } else if !custom.is_empty() {
+        merge_beta_header(headers, custom);
+    }
+}
+
+/// Collect final wire beta tokens, including the Bedrock body carrier.
+pub fn message_beta_tokens(
+    protocol: ProtocolFamily,
+    mut header_betas: Vec<String>,
+    body: &JsonPayload,
+) -> Vec<String> {
+    if protocol == ProtocolFamily::BedrockClaude {
+        if let Some(length) = body.array_len("/anthropic_beta") {
+            header_betas.extend(
+                (0..length).filter_map(|index| {
+                    body.array_item_at("/anthropic_beta", index)?.string_at("")
+                }),
+            );
+        }
+    }
+    header_betas
+}
+
 /// Wire policy chosen by the host. Apply before request sealing/signing.
 /// The SDK neither reads flags/environment nor makes routing/retry decisions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -423,7 +466,60 @@ fn javascript_number(number: &serde_json::Number) -> String {
     crate::exact_json::javascript_number(number.as_f64().expect("JSON number"))
 }
 
+// A later JavaScript spread keeps an existing property's insertion position,
+// even if its initial value was undefined. Materialize that position only
+// for explicit extra-body members that survive the spread.
+fn reserve_native_request_properties(
+    body: &mut JsonPayload,
+    extra: &JsonPayload,
+    kind: AnthropicRequestKind,
+) -> Result<(), LlmError> {
+    let keys: &[&str] = match kind {
+        AnthropicRequestKind::Main => &[
+            "model",
+            "messages",
+            "system",
+            "tool_choice",
+            "metadata",
+            "max_tokens",
+            "thinking",
+        ],
+        AnthropicRequestKind::SideQuery => {
+            &["model", "max_tokens", "system", "messages", "metadata"]
+        }
+        AnthropicRequestKind::HookPrompt => return Ok(()),
+    };
+    for key in keys {
+        let pointer = format!("/{key}");
+        if body.raw_source_at(&pointer).is_none() {
+            if let Some(value) = extra.payload_at(&pointer) {
+                *body = body.with_object_field(key, &value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 impl AnthropicRequestPolicy {
+    /// Apply native Messages layout and preserve exact source and field order.
+    /// The stream fallback flag describes a complete request replacing a stream.
+    pub fn apply_with_native_layout(
+        self,
+        body: &mut JsonPayload,
+        headers: &mut BTreeMap<String, String>,
+        string_overrides: &mut BTreeMap<String, Vec<u16>>,
+        url: &mut String,
+        stream_fallback: bool,
+    ) -> Result<(), LlmError> {
+        reserve_native_request_properties(body, &self.extra_body, self.request_kind)?;
+        let force_complete = stream_fallback && self.protocol == ProtocolFamily::AnthropicMessages;
+        self.apply(body, headers, string_overrides, url)?;
+        if force_complete {
+            nonstream_fallback_parameters_source(body, string_overrides)?;
+        }
+        Ok(())
+    }
+
     /// Update body and exact-string sidecars together before sealing/signing.
     pub fn apply(
         mut self,

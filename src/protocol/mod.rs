@@ -30,6 +30,8 @@ pub use request_controls::*;
 pub mod llm;
 pub mod message;
 mod price_quote;
+pub(crate) mod prompt;
+pub use prompt::{PromptText, SystemPromptInput};
 pub mod provider;
 pub mod secret;
 pub use inference::*;

@@ -153,16 +153,25 @@ pub struct InferenceWire {
     pub enabled_requires_budget: Option<bool>,
 }
 
-impl ProviderProfile {
-    pub(crate) fn reasoning_wire(&self) -> ReasoningWire {
-        self.inference.reasoning.unwrap_or(match self.protocol {
+impl InferenceWire {
+    pub(crate) fn reasoning_for_protocol(&self, protocol: ProtocolFamily) -> ReasoningWire {
+        self.reasoning.unwrap_or(match protocol {
             ProtocolFamily::OpenAiChat | ProtocolFamily::AzureOpenAi => ReasoningWire::OpenAiChat,
             ProtocolFamily::OpenAiResponses => ReasoningWire::OpenAiResponses,
             ProtocolFamily::GeminiGenerateContent
             | ProtocolFamily::GeminiInteractions
             | ProtocolFamily::VertexGemini => ReasoningWire::Gemini,
-            _ => ReasoningWire::Anthropic,
+            ProtocolFamily::AnthropicMessages
+            | ProtocolFamily::BedrockClaude
+            | ProtocolFamily::VertexClaude
+            | ProtocolFamily::FoundryClaude => ReasoningWire::Anthropic,
         })
+    }
+}
+
+impl ProviderProfile {
+    pub(crate) fn reasoning_wire(&self) -> ReasoningWire {
+        self.inference.reasoning_for_protocol(self.protocol)
     }
 
     /// Project wire constraints into the same facts used by model selectors.

@@ -123,14 +123,7 @@ pub fn validate_reasoning_selection(
 
 pub fn reasoning_control_spec(target: ReasoningTarget<'_>) -> ReasoningControlSpec {
     use crate::protocol::{CapabilitySupport, ReasoningEffort, ReasoningWire, ThinkingMode};
-    let wire = target.inference.reasoning.unwrap_or(match target.protocol {
-        ProtocolFamily::OpenAiChat | ProtocolFamily::AzureOpenAi => ReasoningWire::OpenAiChat,
-        ProtocolFamily::OpenAiResponses => ReasoningWire::OpenAiResponses,
-        ProtocolFamily::GeminiGenerateContent | ProtocolFamily::VertexGemini => {
-            ReasoningWire::Gemini
-        }
-        _ => ReasoningWire::Anthropic,
-    });
+    let wire = target.inference.reasoning_for_protocol(*target.protocol);
     if wire == ReasoningWire::Unavailable {
         return ReasoningControlSpec::automatic_only();
     }
